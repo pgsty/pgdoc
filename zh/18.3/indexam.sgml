@@ -1,0 +1,858 @@
+<!-- doc/src/sgml/indexam.sgml -->
+
+<chapter id="indexam">
+ <title>索引访问方法接口定义</title>
+
+ <indexterm>
+  <primary>索引访问方法</primary>
+ </indexterm>
+ <indexterm>
+  <primary>indexam</primary>
+  <secondary>索引访问方法</secondary>
+ </indexterm>
+
+  <para>
+   本章定义 <productname>PostgreSQL</productname> 核心系统与管理各个索引类型的<firstterm>索引访问方法</firstterm>之间的接口。除这里规定的内容之外，核心系统对索引一无所知，因此可以通过编写附加代码来开发全新的索引类型。
+  </para>
+
+  <para>
+   <productname>PostgreSQL</productname> 中所有索引在技术上都称为<firstterm>二级索引</firstterm>；也就是说，索引与它所描述的表文件在物理上是分离的。每个索引都存储为独立的物理<firstterm>关系</firstterm>，因此在 <structname>pg_class</structname> 目录中都有一个条目。索引的内容完全由其索引访问方法控制。实践中，所有索引访问方法都会把索引划分为标准大小的页面，以便使用常规的存储管理器和缓冲区管理器访问索引内容。（现有的所有索引访问方法还都使用 <xref
+   linkend="storage-page-layout"/> 中描述的标准页面布局，而且大多数还对索引元组头使用相同的格式；但这些决定并不是访问方法必须遵循的。）
+  </para>
+
+  <para>
+   索引本质上是从一些数据键值到行版本（元组）在索引父表中的<firstterm>元组标识符</firstterm>（<acronym>TID</acronym>）的映射。一个 TID 由块号以及该块中的项号组成（见 <xref
+   linkend="storage-page-layout"/>）。这些信息足以从表中取出某个特定的行版本。索引并不直接知道在 MVCC 之下同一逻辑行可能会存在多个现存版本；对索引来说，每个元组都是一个独立对象，需要它自己的索引条目。因此，对一行的更新总会为该行创建全新的索引条目，即使键值并未改变也是如此。（<link linkend="storage-hot">HOT 元组</link>是这一说法的例外；但索引同样不直接处理它们。）当死元组自身被回收时（通过清理），它们对应的索引条目也会被回收。
+  </para>
+
+ <sect1 id="index-api">
+  <title>索引的基本 API 结构</title>
+
+  <para>
+   每种索引访问方法都由系统目录 <link linkend="catalog-pg-am"><structname>pg_am</structname></link> 中的一行描述。<structname>pg_am</structname> 条目指定了该索引访问方法的名称以及一个<firstterm>处理器函数</firstterm>。这些条目可以通过 <xref linkend="sql-create-access-method"/> 和 <xref linkend="sql-drop-access-method"/> SQL 命令创建和删除。
+  </para>
+
+  <para>
+   索引访问方法的处理器函数必须声明为接受一个 <type>internal</type> 类型的参数，并返回伪类型 <type>index_am_handler</type>。这个参数只是一个占位值，用来防止处理器函数被 SQL 命令直接调用。该函数的结果必须是一个通过 palloc 分配的 <structname>IndexAmRoutine</structname> 结构体，其中包含核心代码使用该索引访问方法所需的全部信息。<structname>IndexAmRoutine</structname> 结构体也称为该访问方法的<firstterm>API 结构</firstterm>，其中的字段指定了访问方法的各种固定属性，例如它是否支持多列索引。更重要的是，它包含该访问方法的支持函数指针，而这些支持函数完成了实际访问索引的全部工作。这些支持函数是普通 C 函数，在 SQL 层不可见也不可调用。支持函数将在 <xref linkend="index-functions"/> 中介绍。
+  </para>
+
+  <para>
+   <structname>IndexAmRoutine</structname> 结构定义如下：
+<programlisting>
+typedef struct IndexAmRoutine
+{
+    NodeTag     type;
+
+    /*
+     * Total number of strategies (operators) by which we can traverse/search
+     * this AM.  Zero if AM does not have a fixed set of strategy assignments.
+     */
+    uint16      amstrategies;
+    /* total number of support functions that this AM uses */
+    uint16      amsupport;
+    /* opclass options support function number or 0 */
+    uint16      amoptsprocnum;
+    /* does AM support ORDER BY indexed column's value? */
+    bool        amcanorder;
+    /* does AM support ORDER BY result of an operator on indexed column? */
+    bool        amcanorderbyop;
+    /* does AM support hashing using API consistent with the hash AM? */
+    bool        amcanhash;
+    /* do operators within an opfamily have consistent equality semantics? */
+    bool        amconsistentequality;
+    /* do operators within an opfamily have consistent ordering semantics? */
+    bool        amconsistentordering;
+    /* does AM support backward scanning? */
+    bool        amcanbackward;
+    /* does AM support UNIQUE indexes? */
+    bool        amcanunique;
+    /* does AM support multi-column indexes? */
+    bool        amcanmulticol;
+    /* does AM require scans to have a constraint on the first index column? */
+    bool        amoptionalkey;
+    /* does AM handle ScalarArrayOpExpr quals? */
+    bool        amsearcharray;
+    /* does AM handle IS NULL/IS NOT NULL quals? */
+    bool        amsearchnulls;
+    /* can index storage data type differ from column data type? */
+    bool        amstorage;
+    /* can an index of this type be clustered on? */
+    bool        amclusterable;
+    /* does AM handle predicate locks? */
+    bool        ampredlocks;
+    /* does AM support parallel scan? */
+    bool        amcanparallel;
+    /* does AM support parallel build? */
+    bool        amcanbuildparallel;
+    /* does AM support columns included with clause INCLUDE? */
+    bool        amcaninclude;
+    /* does AM use maintenance_work_mem? */
+    bool        amusemaintenanceworkmem;
+    /* does AM summarize tuples, with at least all tuples in the block
+     * summarized in one summary */
+    bool        amsummarizing;
+    /* OR of parallel vacuum flags */
+    uint8       amparallelvacuumoptions;
+    /* type of data stored in index, or InvalidOid if variable */
+    Oid         amkeytype;
+
+    /* interface functions */
+    ambuild_function ambuild;
+    ambuildempty_function ambuildempty;
+    aminsert_function aminsert;
+    aminsertcleanup_function aminsertcleanup;   /* can be NULL */
+    ambulkdelete_function ambulkdelete;
+    amvacuumcleanup_function amvacuumcleanup;
+    amcanreturn_function amcanreturn;   /* can be NULL */
+    amcostestimate_function amcostestimate;
+    amgettreeheight_function amgettreeheight;   /* can be NULL */
+    amoptions_function amoptions;
+    amproperty_function amproperty;     /* can be NULL */
+    ambuildphasename_function ambuildphasename;   /* can be NULL */
+    amvalidate_function amvalidate;
+    amadjustmembers_function amadjustmembers; /* can be NULL */
+    ambeginscan_function ambeginscan;
+    amrescan_function amrescan;
+    amgettuple_function amgettuple;     /* can be NULL */
+    amgetbitmap_function amgetbitmap;   /* can be NULL */
+    amendscan_function amendscan;
+    ammarkpos_function ammarkpos;       /* can be NULL */
+    amrestrpos_function amrestrpos;     /* can be NULL */
+
+    /* interface functions to support parallel index scans */
+    amestimateparallelscan_function amestimateparallelscan;    /* can be NULL */
+    aminitparallelscan_function aminitparallelscan;    /* can be NULL */
+    amparallelrescan_function amparallelrescan;    /* can be NULL */
+
+    /* interface functions to support planning */
+    amtranslate_strategy_function amtranslatestrategy;  /* can be NULL */
+    amtranslate_cmptype_function amtranslatecmptype;    /* can be NULL */
+} IndexAmRoutine;
+</programlisting>
+  </para>
+
+  <para>
+   要使一种索引访问方法真正可用，还必须在 <link linkend="catalog-pg-opfamily"><structname>pg_opfamily</structname></link>、<link linkend="catalog-pg-opclass"><structname>pg_opclass</structname></link>、<link linkend="catalog-pg-amop"><structname>pg_amop</structname></link> 和 <link linkend="catalog-pg-amproc"><structname>pg_amproc</structname></link> 中定义一个或多个<firstterm>操作符族</firstterm>和<firstterm>操作符类</firstterm>。这些条目使规划器能够确定该访问方法的索引可以使用哪些查询限定条件。关于操作符族和操作符类的说明见 <xref linkend="xindex"/>；阅读本章前应先掌握这些内容。
+  </para>
+
+  <para>
+   单个索引由两个系统目录条目共同定义：一个 <link linkend="catalog-pg-class"><structname>pg_class</structname></link> 条目把它描述为一个物理关系，另一个 <link linkend="catalog-pg-index"><structname>pg_index</structname></link> 条目给出索引的逻辑内容，也就是它包含哪些索引列，以及由相关操作符类定义的这些列的语义。索引列（键值）既可以是底层表的简单列，也可以是基于表行的表达式。索引访问方法通常并不关心索引键值来自何处（它拿到的总是预先计算好的键值），但会非常关心 <structname>pg_index</structname> 中的操作符类信息。这两个目录条目都可以作为传递给索引上所有操作的 <structname>Relation</structname> 数据结构的一部分来访问。
+  </para>
+
+  <para>
+   <structname>IndexAmRoutine</structname> 的某些标志字段还有一些不那么直观的含义。<structfield>amcanunique</structfield> 的要求见 <xref linkend="index-unique-checks"/>。<structfield>amcanmulticol</structfield> 标志表明该访问方法支持多键列索引，而 <structfield>amoptionalkey</structfield> 表明它允许在第一索引列上没有给出可索引限制子句时进行扫描。当 <structfield>amcanmulticol</structfield> 为假时，<structfield>amoptionalkey</structfield> 实质上表示该访问方法是否支持没有任何限制子句的全索引扫描。支持多个索引列的访问方法<emphasis>必须</emphasis>支持在第一列之后省略任意一个或全部列限制条件的扫描；但它们可以要求第一索引列必须出现某种限制条件，这通过把 <structfield>amoptionalkey</structfield> 设为假来表示。索引 <acronym>AM</acronym> 可能把 <structfield>amoptionalkey</structfield> 设为假的一个原因，是它不索引 NULL 值。由于大多数可索引操作符都是严格的（strict），因此对 NULL 输入不可能返回 true，所以乍看之下不存储 NULL 值的索引条目似乎很有吸引力：无论如何，这些条目似乎都不可能被索引扫描返回。然而，当某个索引扫描对给定索引列没有限制子句时，这个论证就不成立了。实践中这意味着，若索引把 <structfield>amoptionalkey</structfield> 设为真，就必须索引 NULL 值，因为规划器可能决定在完全没有扫描键的情况下使用这种索引。与此相关的另一个限制是，支持多个索引列的索引访问方法<emphasis>必须</emphasis>支持对第一列之后各列中的 NULL 值建立索引，因为规划器会假定该索引可用于不限制这些列的查询。例如，考虑一个在 <literal>(a,b)</literal> 上的索引以及查询 <literal>WHERE a = 4</literal>。系统会假定该索引可用于扫描满足 <literal>a = 4</literal> 的行；如果索引省略了 <literal>b</literal> 为 NULL 的行，这个假定就是错误的。不过，省略第一索引列为 NULL 的行是可以的。对 NULL 值建立索引的索引访问方法还可以设置 <structfield>amsearchnulls</structfield>，表示它支持把 <literal>IS NULL</literal> 和 <literal>IS NOT NULL</literal> 子句作为搜索条件。
+  </para>
+
+  <para>
+   <structfield>amcaninclude</structfield> 标志指示该访问方法是否支持<quote>包含</quote>列，也就是说，它是否能在键列之外额外存储其他列而不对其进行处理。上一段中的要求只适用于键列。特别是，<structfield>amcanmulticol</structfield>=<literal>false</literal> 且 <structfield>amcaninclude</structfield>=<literal>true</literal> 的组合是合理的：这表示只能有一个键列，但仍然可以有包含列。此外，不论 <structfield>amoptionalkey</structfield> 的取值如何，包含列都必须允许为 NULL。
+  </para>
+
+  <para>
+   <structfield>amsummarizing</structfield> 标志指示该访问方法是否会对被索引元组做提要化，并且提要粒度至少达到每个块一个提要。不指向单个元组，而是指向块范围（例如 <acronym>BRIN</acronym>）的访问方法，可能允许继续使用 <acronym>HOT</acronym> 优化。这不适用于索引谓词中引用的属性，对这类属性的更新总会禁用 <acronym>HOT</acronym>。
+  </para>
+
+ </sect1>
+
+ <sect1 id="index-functions">
+  <title>索引访问方法函数</title>
+
+  <para>
+   索引访问方法必须在 <structname>IndexAmRoutine</structname> 中提供如下索引构建和维护函数：
+  </para>
+
+  <para>
+<programlisting>
+IndexBuildResult *
+ambuild (Relation heapRelation,
+         Relation indexRelation,
+         IndexInfo *indexInfo);
+</programlisting>
+   构建一个新索引。索引关系已经在物理上创建，但还是空的。它必须填入访问方法所需的任何固定数据，以及表中所有现有元组对应的条目。通常，<function>ambuild</function> 函数会调用 <function>table_index_build_scan()</function> 来扫描表中已有的元组，并计算需要插入索引的键值。该函数必须返回一个通过 palloc 分配的结构体，其中包含有关新索引的统计信息。<structfield>amcanbuildparallel</structfield> 标志指示该访问方法是否支持并行索引构建。设为 <literal>true</literal> 时，系统会尝试为构建分配并行工作进程。只支持非并行索引构建的访问方法应把该标志保留为 <literal>false</literal>。
+  </para>
+
+  <para>
+<programlisting>
+void
+ambuildempty (Relation indexRelation);
+</programlisting>
+   构建一个空索引，并将其写入给定关系的初始化分支（<symbol>INIT_FORKNUM</symbol>）。只有不记日志的索引才会调用此方法；写入初始化分支的空索引会在每次服务器重启时复制到主关系分支上。
+  </para>
+
+  <para>
+<programlisting>
+bool
+aminsert (Relation indexRelation,
+          Datum *values,
+          bool *isnull,
+          ItemPointer heap_tid,
+          Relation heapRelation,
+          IndexUniqueCheck checkUnique,
+          bool indexUnchanged,
+          IndexInfo *indexInfo);
+</programlisting>
+   向现有索引中插入一个新元组。<literal>values</literal> 和 <literal>isnull</literal> 数组给出要建立索引的键值，而 <literal>heap_tid</literal> 是要建立索引的 TID。如果该访问方法支持唯一索引（其 <structfield>amcanunique</structfield> 标志为真），那么 <literal>checkUnique</literal> 指示要执行的唯一性检查类型。这取决于唯一约束是否可延迟；详见 <xref linkend="index-unique-checks"/>。通常，访问方法只会在执行唯一性检查时需要 <literal>heapRelation</literal> 参数（因为这时它必须到堆中核实元组是否仍然存活）。
+  </para>
+
+  <para>
+   <literal>indexUnchanged</literal> 布尔值提供了关于待索引元组性质的提示。当它为真时，该元组是索引中某个现有元组的副本。这个新元组是一个逻辑上未改变的后继 MVCC 元组版本。当执行一次 <command>UPDATE</command>，且它不修改该索引覆盖的任何列、但仍然需要在索引中创建新版本时，就会出现这种情况。索引 AM 可以利用这个提示，在同一逻辑行的许多版本积聚的索引区域决定是否应用自底向上的索引删除。请注意，更新非键列或只出现在部分索引谓词中的列，并不会影响 <literal>indexUnchanged</literal> 的值。核心代码使用一种低开销方法来确定每个元组的 <literal>indexUnchanged</literal> 值，这种方法允许出现误报和漏报。索引 AM 不得把 <literal>indexUnchanged</literal> 视为关于元组可见性或版本情况的权威信息来源。
+  </para>
+
+  <para>
+   该函数返回的布尔值只有在 <literal>checkUnique</literal> 为 <literal>UNIQUE_CHECK_PARTIAL</literal> 时才有意义。在这种情况下，返回真表示新条目已知是唯一的，而返回假表示它可能不是唯一的（因此必须安排一次延迟的唯一性重检）。对于其他情况，建议恒定返回假。
+  </para>
+
+  <para>
+   某些索引可能不会为所有元组建立索引。如果某个元组不应被索引，<function>aminsert</function> 应当直接返回而不做任何事。
+  </para>
+
+  <para>
+   如果索引 AM 希望在一条 SQL 语句中的连续索引插入之间缓存数据，它可以在 <literal>indexInfo-&gt;ii_Context</literal> 中分配空间，并把数据指针存入 <literal>indexInfo-&gt;ii_AmCache</literal>（该指针初始为 NULL）。如果在索引插入后需要释放内存之外的资源，可以提供 <function>aminsertcleanup</function>，它会在内存释放之前被调用。
+  </para>
+
+  <para>
+<programlisting>
+void
+aminsertcleanup (Relation indexRelation,
+                 IndexInfo *indexInfo);
+</programlisting>
+   清理由 <literal>indexInfo-&gt;ii_AmCache</literal> 在连续插入之间维护的状态。如果这些数据需要额外的清理步骤（例如释放已钉住的缓冲区），而仅释放内存还不够，那么这个函数就很有用。
+  </para>
+
+  <para>
+<programlisting>
+IndexBulkDeleteResult *
+ambulkdelete (IndexVacuumInfo *info,
+              IndexBulkDeleteResult *stats,
+              IndexBulkDeleteCallback callback,
+              void *callback_state);
+</programlisting>
+   从索引中删除元组。这是一个<quote>批量删除</quote>操作，通常应通过扫描整个索引并检查每个条目是否应被删除来实现。必须调用传入的 <literal>callback</literal> 函数，其调用形式为 <literal>callback(<replaceable>TID</replaceable>, callback_state) returns bool</literal>，以确定由其引用 TID 标识的某个索引条目是否应删除。该函数必须返回 NULL，或者返回一个通过 palloc 分配的结构体，其中包含此次删除操作影响的统计信息。如果不需要向 <function>amvacuumcleanup</function> 传递信息，返回 NULL 也是可以的。
+  </para>
+
+  <para>
+   由于 <varname>maintenance_work_mem</varname> 有限，当待删除的元组很多时，<function>ambulkdelete</function> 可能需要被调用多次。参数 <literal>stats</literal> 是此前对该索引上一次调用的结果（在一次 <command>VACUUM</command> 操作中的第一次调用时它为 NULL）。这使得 AM 可以在整个操作过程中累积统计信息。通常，如果传入的 <literal>stats</literal> 非 NULL，<function>ambulkdelete</function> 会修改并返回同一个结构体。
+  </para>
+
+  <para>
+<programlisting>
+IndexBulkDeleteResult *
+amvacuumcleanup (IndexVacuumInfo *info,
+                 IndexBulkDeleteResult *stats);
+</programlisting>
+   在一次 <command>VACUUM</command> 操作（零次或多次 <function>ambulkdelete</function> 调用）之后执行清理。它不一定要做返回索引统计信息之外的事情，但也可能执行批量清理，例如回收空索引页面。<literal>stats</literal> 是最后一次 <function>ambulkdelete</function> 调用返回的结果；如果因为没有需要删除的元组而没有调用 <function>ambulkdelete</function>，则为 NULL。如果结果不是 NULL，它必须是一个通过 palloc 分配的结构体。其中的统计信息将用于更新 <structname>pg_class</structname>，并在指定了 <literal>VERBOSE</literal> 时由 <command>VACUUM</command> 报告。如果索引在整个 <command>VACUUM</command> 操作期间完全没有变化，返回 NULL 也是可以的；否则应返回正确的统计信息。
+  </para>
+
+  <para>
+   <function>amvacuumcleanup</function> 也会在 <command>ANALYZE</command> 操作完成时被调用。在这种情况下，<literal>stats</literal> 总是 NULL，而且任何返回值都会被忽略。这种情况可以通过检查 <literal>info-&gt;analyze_only</literal> 来区分。我们建议访问方法在这种调用中除了做插入后的清理外什么都不做，而且只在自动清理工作进程中这样做。
+  </para>
+
+  <para>
+<programlisting>
+bool
+amcanreturn (Relation indexRelation, int attno);
+</programlisting>
+   检查索引是否能够在给定列上支持 <link
+   linkend="indexes-index-only-scans"><firstterm>仅索引扫描</firstterm></link>，做法是返回该列原始的被索引值。属性编号从 1 开始，也就是说第一列的 attno 为 1。若支持则返回真，否则返回假。如果支持包含列，这个函数应始终对包含列返回真，因为不能取回的包含列几乎没有意义。如果访问方法根本不支持仅索引扫描，那么它的 <structname>IndexAmRoutine</structname> 结构中的 <structfield>amcanreturn</structfield> 字段可以设为 NULL。
+  </para>
+
+  <para>
+<programlisting>
+void
+amcostestimate (PlannerInfo *root,
+                IndexPath *path,
+                double loop_count,
+                Cost *indexStartupCost,
+                Cost *indexTotalCost,
+                Selectivity *indexSelectivity,
+                double *indexCorrelation,
+                double *indexPages);
+</programlisting>
+   估计一次索引扫描的开销。该函数将在后面的 <xref linkend="index-cost-estimation"/> 中详细讨论。
+  </para>
+
+  <para>
+<programlisting>
+int
+amgettreeheight (Relation rel);
+</programlisting>
+   计算树形索引的高度。这一信息会通过 <literal>path->indexinfo->tree_height</literal> 提供给 <function>amcostestimate</function> 函数，可用于支持开销估计。其结果不会在其他地方使用，因此这个函数实际上也可以用来计算索引上任何一种适合装入整数、且开销估计函数可能想知道的数据。如果计算代价较高，把结果缓存到 <literal>RelationData.rd_amcache</literal> 中可能会有用。
+  </para>
+
+  <para>
+<programlisting>
+bytea *
+amoptions (ArrayType *reloptions,
+           bool validate);
+</programlisting>
+   解析并验证索引的 reloptions 数组。只有当该索引存在非空的 reloptions 数组时才会调用此函数。<parameter>reloptions</parameter> 是一个 <type>text</type> 数组，其中的条目形如 <replaceable>name</replaceable><literal>=</literal><replaceable>value</replaceable>。该函数应构造一个 <type>bytea</type> 值，并将其复制到索引 relcache 条目的 <structfield>rd_options</structfield> 字段中。这个 <type>bytea</type> 值中的数据内容由访问方法自行定义；大多数标准访问方法使用结构体 <structname>StdRdOptions</structname>。当 <parameter>validate</parameter> 为真时，若存在未识别选项或无效取值，函数应报告合适的错误消息；当 <parameter>validate</parameter> 为假时，无效条目应被静默忽略。（当装载已存储在 <structname>pg_catalog</structname> 中的选项时，<parameter>validate</parameter> 为假；此时只有在访问方法改变了选项规则时才可能发现无效条目，而忽略过时条目是合适的。）如果希望采用默认行为，返回 NULL 也是可以的。
+  </para>
+
+  <para>
+<programlisting>
+bool
+amproperty (Oid index_oid, int attno,
+            IndexAMProperty prop, const char *propname,
+            bool *res, bool *isnull);
+</programlisting>
+   <function>amproperty</function> 方法允许索引访问方法覆盖 <function>pg_index_column_has_property</function> 及其相关函数的默认行为。如果访问方法对索引属性查询没有任何特殊行为，那么它的 <structname>IndexAmRoutine</structname> 结构中的 <structfield>amproperty</structfield> 字段可以设为 NULL。否则，调用 <function>pg_indexam_has_property</function> 时，<function>amproperty</function> 方法会收到均为零的 <parameter>index_oid</parameter> 和 <parameter>attno</parameter>；调用 <function>pg_index_has_property</function> 时，收到有效的 <parameter>index_oid</parameter> 和为零的 <parameter>attno</parameter>；调用 <function>pg_index_column_has_property</function> 时，则收到有效的 <parameter>index_oid</parameter> 和大于零的 <parameter>attno</parameter>。<parameter>prop</parameter> 是一个枚举值，用来标识当前测试的属性；<parameter>propname</parameter> 则是原始属性名字符串。如果核心代码不认识该属性名，那么 <parameter>prop</parameter> 会是 <literal>AMPROP_UNKNOWN</literal>。访问方法可以通过检查 <parameter>propname</parameter> 是否匹配来自定义属性名（应使用 <function>pg_strcasecmp</function> 进行匹配，以与核心代码保持一致）；对核心代码已知的属性名，最好检查 <parameter>prop</parameter>。如果 <structfield>amproperty</structfield> 方法返回 <literal>true</literal>，就表示它已经确定了属性测试结果：它必须设置 <literal>*res</literal> 为要返回的布尔值，或者把 <literal>*isnull</literal> 设为 <literal>true</literal> 以返回 NULL。（这两个引用变量在调用前都会初始化为 <literal>false</literal>。）如果 <structfield>amproperty</structfield> 方法返回 <literal>false</literal>，核心代码就会按其常规逻辑继续决定属性测试结果。
+  </para>
+
+  <para>
+   支持排序操作符的访问方法应当实现 <literal>AMPROP_DISTANCE_ORDERABLE</literal> 属性测试，因为核心代码不知道如何完成该测试，只会返回 NULL。若实现成本低于打开索引并调用 <function>amcanreturn</function>（这正是核心代码的默认行为），那么实现 <literal>AMPROP_RETURNABLE</literal> 测试也可能是有利的。对于其他所有标准属性，默认行为应当已经足够。
+  </para>
+
+  <para>
+<programlisting>
+char *
+ambuildphasename (int64 phasenum);
+</programlisting>
+   返回给定构建阶段编号的文本名称。阶段编号是在索引构建期间通过 <function>pgstat_progress_update_param</function> 接口报告的，随后阶段名称会出现在 <structname>pg_stat_progress_create_index</structname> 视图中。
+  </para>
+
+  <para>
+<programlisting>
+bool
+amvalidate (Oid opclassoid);
+</programlisting>
+   在访问方法能够合理做到的范围内，为指定操作符类验证系统目录条目。例如，这可能包括检查是否提供了所有必需的支持函数。如果该 opclass 无效，<function>amvalidate</function> 函数必须返回假。发现的问题应通过 <function>ereport</function> 消息报告，通常使用 <literal>INFO</literal> 级别。
+  </para>
+
+  <para>
+<programlisting>
+void
+amadjustmembers (Oid opfamilyoid,
+                 Oid opclassoid,
+                 List *operators,
+                 List *functions);
+</programlisting>
+   在访问方法能够合理做到的范围内，验证拟议新增到某个操作符族中的操作符成员和函数成员；如果默认依赖类型不合适，还要设置它们的依赖类型。该函数会在 <command>CREATE OPERATOR CLASS</command> 期间以及 <command>ALTER OPERATOR FAMILY ADD</command> 期间调用；在后一种情况下，<parameter>opclassoid</parameter> 为 <literal>InvalidOid</literal>。<type>List</type> 参数是 <structname>OpFamilyMember</structname> 结构体的列表，其定义见 <filename>amapi.h</filename>。此函数所做的检查通常只是 <function>amvalidate</function> 所做检查的一个子集，因为 <function>amadjustmembers</function> 不能假定自己看到的是一整套成员。例如，检查支持函数的签名是合理的，但不适合检查是否提供了所有必需的支持函数。任何问题都可以通过抛出错误来报告。<structname>OpFamilyMember</structname> 结构体中与依赖相关的字段由核心代码初始化：如果这是 <command>CREATE OPERATOR CLASS</command>，则创建对 opclass 的硬依赖；如果这是 <command>ALTER OPERATOR FAMILY ADD</command>，则创建对 opfamily 的软依赖。如果其他行为更合适，<function>amadjustmembers</function> 可以调整这些字段。例如，GIN、GiST 和 SP-GiST 总是把操作符成员设为对 opfamily 的软依赖，因为在这些索引类型中，操作符和 opclass 之间的联系相对较弱；因此允许操作符成员自由增删是合理的。可选支持函数通常也会被赋予软依赖，以便在必要时能够移除。
+  </para>
+
+  <para>
+   索引的目的当然是支持扫描那些匹配可索引 <literal>WHERE</literal> 条件的元组，这种条件常被称为<firstterm>限定词</firstterm>或<firstterm>扫描键</firstterm>。关于索引扫描的语义，将在下面的 <xref linkend="index-scanning"/> 中更详细地说明。一种索引访问方法可以支持<quote>普通</quote>索引扫描、<quote>位图</quote>索引扫描，或者两者都支持。索引访问方法必须或可以提供的扫描相关函数如下：
+  </para>
+
+  <para>
+<programlisting>
+IndexScanDesc
+ambeginscan (Relation indexRelation,
+             int nkeys,
+             int norderbys);
+</programlisting>
+   为一次索引扫描做准备。<literal>nkeys</literal> 和 <literal>norderbys</literal> 参数表示扫描中将使用的限定条件和排序操作符数量，这些信息可能有助于空间分配。请注意，此时还没有提供扫描键的实际值。结果必须是一个通过 palloc 分配的结构体。出于实现上的原因，索引访问方法<emphasis>必须</emphasis>通过调用 <function>RelationGetIndexScan()</function> 来创建这个结构体。大多数情况下，<function>ambeginscan</function> 除了做这次调用以及也许获取一些锁之外，不会做太多工作；索引扫描启动中真正有意思的部分在 <function>amrescan</function> 中。
+  </para>
+
+  <para>
+<programlisting>
+void
+amrescan (IndexScanDesc scan,
+          ScanKey keys,
+          int nkeys,
+          ScanKey orderbys,
+          int norderbys);
+</programlisting>
+   开始或重新开始一次索引扫描，并且可以使用新的扫描键。（若要用之前传入的键重新开始，则为 <literal>keys</literal> 和/或 <literal>orderbys</literal> 传递 NULL。）请注意，键的数量或排序操作符的数量都不允许超过传给 <function>ambeginscan</function> 的数量。实践中，这种重启特性通常用于嵌套循环连接选中了新的外层元组，因此需要新的键比较值，但扫描键结构本身保持不变的场景。
+  </para>
+
+  <para>
+<programlisting>
+bool
+amgettuple (IndexScanDesc scan,
+            ScanDirection direction);
+</programlisting>
+   在给定扫描中取出下一个元组，并按给定方向移动（在索引中向前或向后）。若成功取得元组则返回真；若不再有匹配元组则返回假。在返回真时，元组的 TID 会存入 <literal>scan</literal> 结构中。请注意，<quote>成功</quote>仅表示索引中存在一个匹配扫描键的条目，并不表示该元组一定仍然存在于堆中，或者一定能通过调用者的快照测试。成功时，<function>amgettuple</function> 还必须把 <literal>scan-&gt;xs_recheck</literal> 设为真或假。假表示可以确定该索引条目匹配扫描键；真表示这一点并不确定，因此在取到堆元组后必须根据扫描键所代表的条件重新检查它。这一机制支持<quote>有损</quote>索引操作符。请注意，重检只会扩展到扫描条件；部分索引谓词（如果有）永远不会由 <function>amgettuple</function> 的调用者重新检查。
+  </para>
+
+  <para>
+   如果索引支持 <link linkend="indexes-index-only-scans">仅索引扫描</link>（即其任一列上 <function>amcanreturn</function> 返回真），那么成功时 AM 还必须检查 <literal>scan-&gt;xs_want_itup</literal>；若其为真，就必须返回该索引条目的原始被索引数据。对于 <function>amcanreturn</function> 返回假的列，可以把其值作为 NULL 返回。数据可以通过以下两种形式之一返回：一种是把 <structname>IndexTuple</structname> 指针存入 <literal>scan-&gt;xs_itup</literal>，其元组描述符为 <literal>scan-&gt;xs_itupdesc</literal>；另一种是把 <structname>HeapTuple</structname> 指针存入 <literal>scan-&gt;xs_hitup</literal>，其元组描述符为 <literal>scan-&gt;xs_hitupdesc</literal>。（当重建出的数据可能装不进 <structname>IndexTuple</structname> 时，应使用后一种格式。）无论采用哪种形式，指针所引用数据的管理责任都在访问方法一侧。对这份数据的有效性必须至少保持到该扫描下一次调用 <function>amgettuple</function>、<function>amrescan</function> 或 <function>amendscan</function> 为止。
+  </para>
+
+  <para>
+   只有当访问方法支持<quote>普通</quote>索引扫描时，才需要提供 <function>amgettuple</function> 函数。如果不支持，其 <structname>IndexAmRoutine</structname> 结构中的 <structfield>amgettuple</structfield> 字段必须设为 NULL。
+  </para>
+
+  <para>
+<programlisting>
+int64
+amgetbitmap (IndexScanDesc scan,
+             TIDBitmap *tbm);
+</programlisting>
+   取出给定扫描中的所有元组，并将其加入调用者提供的 <type>TIDBitmap</type> 中（也就是把这组元组 ID 与位图中已有的集合做 OR）。返回值是取得的元组数量（这可能只是近似计数，例如某些 AM 不会检测重复项）。在把元组 ID 插入位图时，<function>amgetbitmap</function> 可以指出某些具体的元组 ID 需要重新检查扫描条件。这类似于 <function>amgettuple</function> 的 <literal>xs_recheck</literal> 输出参数。注意：在当前实现中，对这一特性的支持与位图自身的有损存储支持混在一起，因此调用者会对可重检元组同时重新检查扫描条件和部分索引谓词（如果有）。不过，这并不一定永远如此。<function>amgetbitmap</function> 和 <function>amgettuple</function> 不能在同一次索引扫描中同时使用；使用 <function>amgetbitmap</function> 时还有其他限制，详见 <xref linkend="index-scanning"/>。
+  </para>
+
+  <para>
+   只有当访问方法支持<quote>位图</quote>索引扫描时，才需要提供 <function>amgetbitmap</function> 函数。如果不支持，其 <structname>IndexAmRoutine</structname> 结构中的 <structfield>amgetbitmap</structfield> 字段必须设为 NULL。
+  </para>
+
+  <para>
+<programlisting>
+void
+amendscan (IndexScanDesc scan);
+</programlisting>
+   结束一次扫描并释放资源。<literal>scan</literal> 结构本身不应被释放，但访问方法内部获取的任何锁或 pin，以及由 <function>ambeginscan</function> 和其他扫描相关函数分配的其他内存，都必须被释放。
+  </para>
+
+  <para>
+<programlisting>
+void
+ammarkpos (IndexScanDesc scan);
+</programlisting>
+   标记当前扫描位置。访问方法只需要为每次扫描支持一个被记住的扫描位置。
+  </para>
+
+  <para>
+   只有当访问方法支持有序扫描时，才需要提供 <function>ammarkpos</function> 函数。如果不支持，其 <structname>IndexAmRoutine</structname> 结构中的 <structfield>ammarkpos</structfield> 字段可以设为 NULL。
+  </para>
+
+  <para>
+<programlisting>
+void
+amrestrpos (IndexScanDesc scan);
+</programlisting>
+   将扫描恢复到最近一次标记的位置。
+  </para>
+
+  <para>
+   只有当访问方法支持有序扫描时，才需要提供 <function>amrestrpos</function> 函数。如果不支持，其 <structname>IndexAmRoutine</structname> 结构中的 <structfield>amrestrpos</structfield> 字段可以设为 NULL。
+  </para>
+
+  <para>
+   除了支持普通索引扫描外，某些类型的索引还可能希望支持<firstterm>并行索引扫描</firstterm>，这允许多个后端协同执行一次索引扫描。索引访问方法应安排好实现方式，使每个参与协作的进程返回普通非并行索引扫描本应返回的元组集合的一个子集，而且这些子集的并集应等于普通非并行索引扫描的结果集。此外，虽然并行扫描返回的元组不必具有全局顺序，但每个协作后端内部返回的那个子集的顺序必须匹配请求的顺序。可以实现下列函数来支持并行索引扫描：
+  </para>
+
+  <para>
+<programlisting>
+Size
+amestimateparallelscan (Relation indexRelation,
+                        int nkeys,
+                        int norderbys);
+</programlisting>
+   估计并返回执行并行扫描时该访问方法所需动态共享内存的字节数。（这个数字是额外需求，并不替代 <structname>ParallelIndexScanDescData</structname> 中 AM 无关数据所需的空间。）
+  </para>
+
+  <para>
+   <literal>nkeys</literal> 和 <literal>norderbys</literal> 参数表示扫描中将使用的限定条件和排序操作符数量；同样的数值也会传给 <function>amrescan</function>。请注意，此时还没有提供扫描键的实际值。
+  </para>
+
+  <para>
+   对于不支持并行扫描，或者所需额外存储字节数为零的访问方法，无需实现此函数。
+  </para>
+
+  <para>
+<programlisting>
+void
+aminitparallelscan (void *target);
+</programlisting>
+   在并行扫描开始时，会调用这个函数来初始化动态共享内存。<parameter>target</parameter> 会指向一块动态共享内存，其大小至少等于此前 <function>amestimateparallelscan</function> 返回的字节数，而该函数可以用这部分空间存储它想保存的任何数据。
+  </para>
+
+  <para>
+   对于不支持并行扫描，或者虽需要共享内存但无需初始化的情况，无需实现此函数。
+  </para>
+
+  <para>
+<programlisting>
+void
+amparallelrescan (IndexScanDesc scan);
+</programlisting>
+   如果实现了此函数，当并行索引扫描必须重新开始时就会调用它。它应重置由 <function>aminitparallelscan</function> 建立的任何共享状态，以便扫描从头开始重新执行。
+  </para>
+
+  <para>
+<programlisting>
+CompareType
+amtranslatestrategy (StrategyNumber strategy, Oid opfamily, Oid opcintype);
+
+StrategyNumber
+amtranslatecmptype (CompareType cmptype, Oid opfamily, Oid opcintype);
+</programlisting>
+   如果实现了这些函数，规划器和执行器就会调用它们，在固定的 <type>CompareType</type> 值与访问方法所使用的特定策略编号之间进行转换。提供了与内置 btree 或 hash 访问方法相似功能的访问方法可以实现这些函数；通过实现这些转换，系统就能理解该访问方法操作的语义，并在多个地方把它们当作 btree 或 hash 索引的替代。如果该访问方法的功能与这些内置访问方法并不相似，就不需要实现这些函数。若不实现，访问方法会在某些规划器和执行器决策中被忽略，但除此之外仍然完全可用。
+  </para>
+
+ </sect1>
+
+ <sect1 id="index-scanning">
+  <title>索引扫描</title>
+
+  <para>
+   在索引扫描中，索引访问方法负责返回它所知道的、匹配<firstterm>扫描键</firstterm>的所有元组的 TID。访问方法<emphasis>不</emphasis>负责从索引父表中实际取出这些元组，也不负责判断它们是否能通过扫描的可见性测试或其他条件。
+  </para>
+
+  <para>
+   扫描键是如下形式的 <literal>WHERE</literal> 子句的内部表示：<replaceable>index_key</replaceable> <replaceable>operator</replaceable> <replaceable>constant</replaceable>。其中，索引键是该索引的一列，而操作符是与该索引列关联的操作符族成员之一。一次索引扫描可以有零个或多个扫描键，这些扫描键会被隐式地以 AND 连接，也就是说，返回的元组预期应满足所有给定条件。
+  </para>
+
+  <para>
+   对于某个特定查询，访问方法可以报告该索引是<firstterm>有损的</firstterm>，或者要求重新检查。这意味着索引扫描会返回所有通过扫描键的条目，并可能额外返回一些未通过扫描键的条目。随后，核心系统的索引扫描机制会再次把索引条件应用到堆元组上，以验证它是否真的应被选中。如果没有指定重检选项，索引扫描就必须精确返回匹配条目的集合。
+  </para>
+
+  <para>
+   请注意，确保正确找出通过全部给定扫描键的所有且仅有的条目，这项工作完全由访问方法负责。此外，核心系统只是简单地把所有与索引键和操作符族匹配的 <literal>WHERE</literal> 子句交给访问方法，而不会做任何语义分析来判断它们是否冗余或互相矛盾。例如，给定 <literal>WHERE x &gt; 4 AND x &gt; 14</literal>，其中 <literal>x</literal> 是一个 B-树索引列，那么由 B-树的 <function>amrescan</function> 函数负责识别第一个扫描键是冗余的并可被丢弃。<function>amrescan</function> 期间需要做多少预处理，取决于索引访问方法需要在多大程度上把扫描键归约成一种<quote>正规化</quote>形式。
+  </para>
+
+  <para>
+   某些访问方法会按明确定义的顺序返回索引条目，另一些则不会。实际上，访问方法支持有序输出有两种不同方式：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       总是按数据自然顺序返回条目的访问方法（例如 btree）应把 <structfield>amcanorder</structfield> 设为真。目前，这类访问方法必须对其等值和排序操作符使用与 btree 兼容的策略号。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       支持排序操作符的访问方法应把 <structfield>amcanorderbyop</structfield> 设为真。这表示索引能够按满足 <literal>ORDER BY</literal> <replaceable>index_key</replaceable> <replaceable>operator</replaceable> <replaceable>constant</replaceable> 的顺序返回条目。前面已经提到，这种形式的扫描修饰符可以传给 <function>amrescan</function>。
+      </para>
+     </listitem>
+    </itemizedlist>
+  </para>
+
+  <para>
+   <function>amgettuple</function> 函数有一个 <literal>direction</literal> 参数，它可以是 <literal>ForwardScanDirection</literal>（通常情况）或 <literal>BackwardScanDirection</literal>。如果 <function>amrescan</function> 之后的第一次调用指定了 <literal>BackwardScanDirection</literal>，那么匹配条件的索引条目集合就要按从后到前的方向扫描，而不是通常的从前到后，因此 <function>amgettuple</function> 必须返回索引中最后一个匹配元组，而不是通常情况下的第一个。（这只会发生在把 <structfield>amcanorder</structfield> 设为真的访问方法上。）第一次调用之后，<function>amgettuple</function> 必须准备好从最近一次返回条目的位置继续按任一方向推进扫描。（但如果 <structfield>amcanbackward</structfield> 为假，则后续所有调用的方向都必须与第一次相同。）
+  </para>
+
+  <para>
+   支持有序扫描的访问方法必须支持在扫描中<quote>标记</quote>一个位置，并在之后返回到该标记位置。同一个位置可能会被恢复多次。不过，每次扫描只需要记住一个位置；新的 <function>ammarkpos</function> 调用会覆盖先前标记的位置。不支持有序扫描的访问方法无须在 <structname>IndexAmRoutine</structname> 中提供 <function>ammarkpos</function> 和 <function>amrestrpos</function> 函数；把这些指针设为 NULL 即可。
+  </para>
+
+  <para>
+   无论是扫描位置还是标记位置（如果有），在面对索引中的并发插入或删除时都必须保持一致。如果某个新插入的条目没有被一次扫描返回，而假如该条目在扫描开始前就已存在则本应被返回，这也是可以接受的；同样，即使某个条目在第一次扫描通过时未被返回，后续重新扫描或反向扫描时返回它也是可以接受的。类似地，并发删除也可能会或者不会反映在扫描结果中。重要的是，插入或删除本身不能导致扫描漏掉，或者重复返回那些本身并未被插入或删除的条目。
+  </para>
+
+  <para>
+   如果索引存储的是原始被索引数据值（而不是它们的某种有损表示），那么它就适合支持 <link linkend="indexes-index-only-scans">仅索引扫描</link>，在这种扫描中索引返回的是实际数据，而不只是堆元组的 TID。只有当可见性映射显示该 TID 位于一个全部可见的页面上时，这才能避免 I/O；否则仍然必须访问堆元组来检查 MVCC 可见性。不过，这并不是访问方法需要关心的事。
+  </para>
+
+  <para>
+   除了使用 <function>amgettuple</function> 外，索引扫描也可以使用 <function>amgetbitmap</function>，在一次调用中取出所有元组。与 <function>amgettuple</function> 相比，这通常明显更高效，因为它可以避免访问方法内部的反复加锁和解锁。原则上，<function>amgetbitmap</function> 应具有与重复调用 <function>amgettuple</function> 相同的效果，但为了简化实现，我们施加了若干限制。首先，<function>amgetbitmap</function> 一次性返回全部元组，因此不支持标记或恢复扫描位置。其次，元组是通过一个位图返回的，没有特定顺序，这也是为什么 <function>amgetbitmap</function> 不带 <literal>direction</literal> 参数的原因。（这种扫描也永远不会提供排序操作符。）此外，使用 <function>amgetbitmap</function> 时也没有仅索引扫描的支持，因为没有办法返回索引元组的内容。最后，<function>amgetbitmap</function> 不保证对返回的元组做任何锁定，其影响见 <xref linkend="index-locking"/>。
+  </para>
+
+  <para>
+   请注意，如果访问方法的内部实现并不适合某一个 API，那么它可以只实现 <function>amgetbitmap</function> 而不实现 <function>amgettuple</function>，反之亦然。
+  </para>
+
+ </sect1>
+
+ <sect1 id="index-locking">
+  <title>索引锁定注意事项</title>
+
+  <para>
+   索引访问方法必须处理多个进程并发更新同一个索引的情况。<productname>PostgreSQL</productname> 核心系统会在索引扫描期间对索引获取 <literal>AccessShareLock</literal>，并在更新索引时（包括普通的 <command>VACUUM</command>）获取 <literal>RowExclusiveLock</literal>。由于这些锁类型彼此不冲突，所以访问方法必须自行处理它可能需要的任何细粒度锁定。对整个索引的 <literal>ACCESS EXCLUSIVE</literal> 锁只会在索引创建、销毁或 <command>REINDEX</command> 期间获取（若使用 <literal>CONCURRENTLY</literal>，则改为获取 <literal>SHARE UPDATE EXCLUSIVE</literal>）。
+  </para>
+
+  <para>
+   构建一种支持并发更新的索引类型，通常需要对所需行为进行大量而细致的分析。对于 B-树和哈希索引类型，可以阅读 <filename>src/backend/access/nbtree/README</filename> 和 <filename>src/backend/access/hash/README</filename> 中涉及的设计决策。
+  </para>
+
+  <para>
+   除了索引自身内部一致性的要求外，并发更新还会带来父表（即<firstterm>堆</firstterm>）与索引之间一致性的问题。由于 <productname>PostgreSQL</productname> 把对堆的访问和更新与对索引的访问和更新分离开来，因此存在一些窗口期，在这些窗口期内索引可能与堆不一致。我们通过以下规则处理这个问题：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       先创建新的堆条目，再创建它对应的索引条目。（因此并发索引扫描很可能看不到这个堆条目。这是可以接受的，因为索引读取者本来也不会关心未提交的行。但也请见 <xref linkend="index-unique-checks"/>。）
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       当某个堆条目将要被删除（由 <command>VACUUM</command> 执行）时，必须先删除它的所有索引条目。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       索引扫描必须在保存 <function>amgettuple</function> 最近一次返回条目的索引页面上维护一个 pin，而 <function>ambulkdelete</function> 不能从被其他后端钉住的页面中删除条目。下面会解释为什么需要这条规则。
+      </para>
+     </listitem>
+    </itemizedlist>
+
+   如果没有第三条规则，索引读取者就有可能在某个索引条目被 <command>VACUUM</command> 删除之前先看到它，然后在对应的堆条目已被 <command>VACUUM</command> 删除之后才到达那里。如果读取者到达时，该项号仍未被重新使用，就不会造成严重问题，因为空项槽位会被 <function>heap_fetch()</function> 忽略。但如果第三个后端已经把这个项槽位重新用作别的东西呢？在使用 MVCC 兼容快照时不会有问题，因为该槽位的新占用者一定太新，无法通过快照测试。然而，对于非 MVCC 兼容的快照（例如 <literal>SnapshotAny</literal>），就可能错误地接受并返回一行实际上并不匹配扫描键的数据。我们可以要求在所有情况下都对堆行重新检查扫描键，以防范这种情形，但那样代价太高。于是，我们改为把索引页面上的 pin 作为一种代理，表示读取者可能仍处于从索引条目前往匹配堆条目的<quote>飞行中</quote>。让 <function>ambulkdelete</function> 在这种 pin 上阻塞，能够保证 <command>VACUUM</command> 不会在读取者处理完之前删除对应的堆条目。这种方案运行时开销很小，只有在真正发生冲突的少数情况下才会增加阻塞开销。
+  </para>
+
+  <para>
+   这种解决方案要求索引扫描是<quote>同步的</quote>：我们必须在扫描到相应索引条目之后立刻取出对应的堆元组。由于多种原因，这会比较昂贵。相反，<quote>异步</quote>扫描可以先从索引中收集许多 TID，再在稍后某个时刻访问堆元组，这样索引锁定的开销要小得多，也能实现更高效的堆访问模式。根据前面的分析，对于非 MVCC 兼容快照，我们必须采用同步方式；而对于使用 MVCC 快照的查询，异步扫描则是可行的。
+  </para>
+
+  <para>
+   在 <function>amgetbitmap</function> 索引扫描中，访问方法不会在任何返回的元组上保留索引 pin。因此，只有把这种扫描与 MVCC 兼容的快照一起使用才是安全的。
+  </para>
+
+  <para>
+   当未设置 <structfield>ampredlocks</structfield> 标志时，在可串行化事务中使用该索引访问方法的任何扫描，都会在整个索引上获取一个非阻塞谓词锁。这会与并发可串行化事务向该索引插入任何元组形成读写冲突。如果在一组并发可串行化事务之间检测到某些特定模式的读写冲突，为了保护数据完整性，其中某个事务可能会被取消。设置该标志则表示该索引访问方法实现了更细粒度的谓词锁，这通常会降低这类事务取消的频率。
+  </para>
+
+ </sect1>
+
+ <sect1 id="index-unique-checks">
+  <title>索引唯一性检查</title>
+
+  <para>
+   <productname>PostgreSQL</productname> 使用<firstterm>唯一索引</firstterm>来强制执行 SQL 唯一性约束；所谓唯一索引，就是不允许存在多个具有相同键值条目的索引。支持这一特性的访问方法会把 <structfield>amcanunique</structfield> 设为真。（目前只有 B-树支持这一点。）在强制唯一性时，不会考虑 <literal>INCLUDE</literal> 子句中列出的列。
+  </para>
+
+  <para>
+   由于 MVCC 的存在，索引中在物理上总是必须允许存在重复条目：这些条目可能指向同一个逻辑行的连续版本。我们真正想强制的行为是，任何 MVCC 快照都不能同时包含两行拥有相同索引键的记录。在向唯一索引插入一行新数据时，必须检查以下几种情况：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       如果某一条冲突的有效行已被当前事务删除，那么这是允许的。（特别是，因为一次 UPDATE 总是在插入新版本前删除旧版本，这就允许对某一行执行不改变键值的 UPDATE。）
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       如果某条冲突的行是由一个尚未提交的事务插入的，那么当前准备插入的事务必须等待，看看那个事务是否提交。如果它回滚，就不存在冲突；如果它提交并且没有再次删除那条冲突行，就发生了唯一性违背。（实际上，我们只是等待另一个事务结束，然后把可见性检查整个重新做一遍。）
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       类似地，如果某条冲突的有效行是由一个尚未提交的事务删除的，那么当前准备插入的事务必须等待该事务提交或中止，然后重新执行测试。
+      </para>
+     </listitem>
+    </itemizedlist>
+  </para>
+
+  <para>
+   此外，在按照上述规则报告唯一性违背之前，访问方法必须立即重新检查正在插入那一行的存活性。如果它已经是提交后死亡的状态，就不应报告违背。（这种情况不会出现在插入由当前事务刚创建的行这一普通场景中，但在 <command>CREATE UNIQUE INDEX CONCURRENTLY</command> 期间却可能发生。）
+  </para>
+
+  <para>
+   我们要求索引访问方法自行应用这些测试，这意味着它必须深入堆中检查那些根据索引内容显示为具有重复键的行的提交状态。毫无疑问，这样做既丑陋又不够模块化，但它避免了重复工作：如果我们单独再做一次探测，那么在寻找新行索引条目插入位置时，查找冲突行的索引搜索实际上就会被重复执行。更何况，除非把冲突检查作为插入新索引条目动作的一个组成部分，否则也没有明显的方法可以避免竞争条件。
+  </para>
+
+  <para>
+   如果唯一约束是可延迟的，情况会更复杂：我们需要能够为新行插入一个索引条目，但把任何唯一性违背错误延迟到语句结束时甚至更晚才报告。为了避免对索引进行不必要的重复搜索，索引访问方法应在初始插入期间执行一次初步唯一性检查。如果这表明确实不存在冲突的存活元组，那么事情就结束了。否则，我们会安排在真正强制约束时再做一次重检。若在重检时，插入的元组与另外某个具有相同键值的元组都仍然存活，就必须报告错误。（注意，就此用途而言，<quote>存活</quote>实际上是指<quote>索引条目 HOT 链中的任一元组是存活的</quote>。）为实现这一点，传给 <function>aminsert</function> 函数的 <literal>checkUnique</literal> 参数会取以下值之一：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       <literal>UNIQUE_CHECK_NO</literal> 表示不应执行唯一性检查（这不是唯一索引）。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <literal>UNIQUE_CHECK_YES</literal> 表示这是一个不可延迟的唯一索引，必须按前述方式立即执行唯一性检查。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <literal>UNIQUE_CHECK_PARTIAL</literal> 表示该唯一约束是可延迟的。<productname>PostgreSQL</productname> 会使用此模式为每一行插入索引条目。访问方法必须允许索引中出现重复条目，并通过让 <function>aminsert</function> 返回假来报告任何潜在的重复。对于每一行返回假的情况，系统都会安排一次延迟重检。
+      </para>
+
+      <para>
+       访问方法必须识别任何可能违反唯一约束的行，但报告误报并不算错误。这使得检查可以在不等待其他事务结束的情况下完成；此处报告的冲突不会被当作错误处理，而会在之后重新检查，到那时它们可能已不再冲突。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <literal>UNIQUE_CHECK_EXISTING</literal> 表示这是对某一行的延迟重检，此前该行被报告为可能违反唯一性。虽然这同样是通过调用 <function>aminsert</function> 来实现，但访问方法在这种情况下<emphasis>不得</emphasis>插入新的索引条目。该索引条目已经存在。相反，访问方法必须检查是否存在另一个存活的索引条目；如果存在，并且目标行本身也仍然存活，就应报告错误。
+      </para>
+
+      <para>
+       建议在一次 <literal>UNIQUE_CHECK_EXISTING</literal> 调用中，访问方法进一步验证目标行在索引中确实已有现存条目；若没有，就报告错误。这样做是个好主意，因为传给 <function>aminsert</function> 的索引元组值会被重新计算。如果索引定义涉及并非真正 immutable 的函数，我们就可能在索引的错误区域上做检查。确认重检时确实找到了目标行，可以验证我们扫描的仍是原始插入时使用的同一组元组值。
+      </para>
+     </listitem>
+    </itemizedlist>
+  </para>
+
+ </sect1>
+
+ <sect1 id="index-cost-estimation">
+  <title>索引开销估计函数</title>
+
+  <para>
+   <function>amcostestimate</function> 函数会收到描述某种可能索引扫描方式的信息，其中包括已经确定可用于该索引的 WHERE 子句和 ORDER BY 子句列表。它必须返回访问该索引的开销估计，以及 WHERE 子句的选择率（也就是在索引扫描期间将从父表中检索出的行所占比例）。对于简单情况，开销估计器几乎所有工作都可以通过调用优化器中的标准例程来完成；之所以提供 <function>amcostestimate</function> 函数，是为了让索引访问方法能够提供与索引类型有关的专门知识，以便在可能时改进标准估计。
+  </para>
+
+  <para>
+   每个 <function>amcostestimate</function> 函数都必须具有如下签名：
+
+<programlisting>
+void
+amcostestimate (PlannerInfo *root,
+                IndexPath *path,
+                double loop_count,
+                Cost *indexStartupCost,
+                Cost *indexTotalCost,
+                Selectivity *indexSelectivity,
+                double *indexCorrelation,
+                double *indexPages);
+</programlisting>
+
+   前三个参数是输入参数：
+
+   <variablelist>
+    <varlistentry id="zh18-auto-indexam-varlistentry-1">
+     <term><parameter>root</parameter></term>
+     <listitem>
+      <para>
+       规划器关于当前正在处理查询的信息。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-indexam-varlistentry-2">
+     <term><parameter>path</parameter></term>
+     <listitem>
+      <para>
+       当前正在考虑的索引访问路径。除开销和选择率字段外，其余字段都有效。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-indexam-varlistentry-3">
+     <term><parameter>loop_count</parameter></term>
+     <listitem>
+      <para>
+       在开销估计中应计入的索引扫描重复次数。当考虑在嵌套循环连接内部使用参数化扫描时，这个参数通常会大于 1。请注意，开销估计仍应只针对一次扫描；更大的 <parameter>loop_count</parameter> 只表示可以适当考虑多次扫描之间的一些缓存效应。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+  <para>
+   最后五个参数是按引用传递的输出参数：
+
+   <variablelist>
+    <varlistentry id="zh18-auto-indexam-varlistentry-4">
+     <term><parameter>*indexStartupCost</parameter></term>
+     <listitem>
+      <para>
+       设为索引启动处理的开销。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-indexam-varlistentry-5">
+     <term><parameter>*indexTotalCost</parameter></term>
+     <listitem>
+      <para>
+       设为索引处理的总开销。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-indexam-varlistentry-6">
+     <term><parameter>*indexSelectivity</parameter></term>
+     <listitem>
+      <para>
+       设为索引选择率。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-indexam-varlistentry-7">
+     <term><parameter>*indexCorrelation</parameter></term>
+     <listitem>
+      <para>
+       设为索引扫描顺序与底层表顺序之间的相关系数。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-indexam-varlistentry-8">
+     <term><parameter>*indexPages</parameter></term>
+     <listitem>
+      <para>
+       设为索引叶子页面数量。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+  <para>
+   请注意，开销估计函数必须用 C 编写，而不能用 SQL 或任何可用的过程语言，因为它们必须访问规划器/优化器的内部数据结构。
+  </para>
+
+  <para>
+   索引访问开销应使用 <filename>src/backend/optimizer/path/costsize.c</filename> 所采用的参数来计算：顺序磁盘块读取的开销为 <varname>seq_page_cost</varname>，非顺序读取的开销为 <varname>random_page_cost</varname>，处理一条索引行的开销通常应取为 <varname>cpu_index_tuple_cost</varname>。此外，在索引处理期间调用的任何比较操作符（特别是对 indexquals 本身的求值）都应计入适当倍数的 <varname>cpu_operator_cost</varname>。
+  </para>
+
+  <para>
+   访问开销应包括与扫描索引本身有关的全部磁盘和 CPU 开销，但<emphasis>不</emphasis>包括取出或处理由索引标识出的父表行的开销。
+  </para>
+
+  <para>
+   <quote>启动开销</quote>是整个扫描总开销中必须在开始取第一行之前先付出的那一部分。对大多数索引来说，这可以视为零；但启动开销较高的索引类型可能希望把它设为非零。
+  </para>
+
+  <para>
+   <parameter>indexSelectivity</parameter> 应设为在索引扫描期间将从父表中检索出的行的估计比例。对于有损查询，这个值通常会高于实际通过给定限定条件的行比例。
+  </para>
+
+  <para>
+   <parameter>indexCorrelation</parameter> 应设为索引顺序与表顺序之间的相关性（范围从 -1.0 到 1.0）。该值用于调整从父表取行开销的估计。
+  </para>
+
+  <para>
+   <parameter>indexPages</parameter> 应设为叶子页面数量。它会被用来估算并行索引扫描所需工作进程的数量。
+  </para>
+
+  <para>
+   当 <parameter>loop_count</parameter> 大于 1 时，返回的数字应是该索引任意一次扫描的期望平均值。
+  </para>
+
+  <procedure>
+   <title>开销估计</title>
+   <para>
+    一个典型的开销估计器会按如下步骤进行：
+   </para>
+
+   <step>
+    <para>
+     基于给定的限定条件，估计并返回将被访问的父表行比例。如果没有任何与索引类型相关的专门知识，可以使用优化器的标准函数 <function>clauselist_selectivity()</function>：
+
+<programlisting>
+*indexSelectivity = clauselist_selectivity(root, path-&gt;indexquals,
+                                           path-&gt;indexinfo-&gt;rel-&gt;relid,
+                                           JOIN_INNER, NULL);
+</programlisting>
+    </para>
+   </step>
+
+   <step>
+    <para>
+     估计扫描期间将访问的索引行数。对许多索引类型来说，这等于 <parameter>indexSelectivity</parameter> 乘以索引中的行数，但也可能更多。（请注意，索引的页面数和行数可以从 <literal>path-&gt;indexinfo</literal> 结构中取得。）
+    </para>
+   </step>
+
+   <step>
+    <para>
+     估计扫描期间将读取的索引页面数。它可能仅仅是 <parameter>indexSelectivity</parameter> 乘以索引总页面数。
+    </para>
+   </step>
+
+   <step>
+    <para>
+     计算索引访问开销。一个通用估计器可能会这样做：
+
+<programlisting>
+/*
+ * Our generic assumption is that the index pages will be read
+ * sequentially, so they cost seq_page_cost each, not random_page_cost.
+ * Also, we charge for evaluation of the indexquals at each index row.
+ * All the costs are assumed to be paid incrementally during the scan.
+ */
+cost_qual_eval(&amp;index_qual_cost, path-&gt;indexquals, root);
+*indexStartupCost = index_qual_cost.startup;
+*indexTotalCost = seq_page_cost * numIndexPages +
+    (cpu_index_tuple_cost + index_qual_cost.per_tuple) * numIndexTuples;
+</programlisting>
+
+     不过，上述做法没有考虑重复索引扫描之间索引读取的摊销效果。
+    </para>
+   </step>
+
+   <step>
+    <para>
+     估计索引的相关性。对于单列上的简单有序索引，这个值可以从 pg_statistic 中取得。如果相关性未知，保守估计应为零（即无相关性）。
+    </para>
+   </step>
+  </procedure>
+
+  <para>
+   开销估计器函数的示例可在 <filename>src/backend/utils/adt/selfuncs.c</filename> 中找到。
+  </para>
+ </sect1>
+</chapter>

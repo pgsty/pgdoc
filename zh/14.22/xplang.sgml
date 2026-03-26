@@ -1,0 +1,200 @@
+<!-- doc/src/sgml/xplang.sgml -->
+
+ <chapter id="xplang">
+  <title>过程语言</title>
+
+  <indexterm zone="xplang">
+   <primary>过程语言</primary>
+  </indexterm>
+
+  <para>
+   <productname>PostgreSQL</productname>允许使用 SQL 和 C 之外的其他语言
+   编写用户定义的函数。这些语言统称为<firstterm>过程语言</firstterm>
+   （<acronym>PL</acronym>）。对于用过程语言编写的函数，数据库服务器
+   并不内置关于如何解释函数源文本的知识。相反，这项任务会交给一个了解该
+   语言细节的专门的调用处理器。该调用处理器既可以自行完成解析、语法分析、
+   执行等全部工作，也可以在<productname>PostgreSQL</productname>与某种
+   现有编程语言实现之间充当<quote>粘合剂</quote>。与其他任何 C 函数一样，
+   调用处理器本身也是一个被编译进共享对象并按需装载的 C 语言函数。
+  </para>
+
+  <para>
+   标准<productname>PostgreSQL</productname>发行版当前提供四种过程语言：
+   <application>PL/pgSQL</application>（<xref linkend="plpgsql"/>）、
+   <application>PL/Tcl</application>（<xref linkend="pltcl"/>）、
+   <application>PL/Perl</application>（<xref linkend="plperl"/>）以及
+   <application>PL/Python</application>（<xref linkend="plpython"/>）。
+   另有一些可用的过程语言并未包含在核心发行版中。
+   <xref linkend="external-projects"/>提供了查找它们的信息。此外，用户还可
+   以自行定义其他语言；开发新过程语言的基础知识见
+   <xref linkend="plhandler"/>。
+  </para>
+
+  <sect1 id="xplang-install">
+   <title>安装过程语言</title>
+
+   <para>
+    过程语言必须在每个要使用它的数据库中<quote>安装</quote>。不过，安装在
+    数据库<literal>template1</literal>中的过程语言会自动在随后创建的所有
+    数据库中可用，因为它们在<literal>template1</literal>中的条目会由
+    <command>CREATE DATABASE</command>复制。因此，数据库管理员可以决定哪
+    些数据库提供哪些语言，并且如果需要，还可以让某些语言默认可用。
+   </para>
+
+   <para>
+    对于标准发行版附带的语言，只需执行
+    <command>CREATE EXTENSION</command>
+    <replaceable>language_name</replaceable>，即可将该语言安装到当前数据库
+    中。下文所述的手工过程只建议用于安装那些尚未打包为扩展的语言。
+   </para>
+
+   <procedure>
+    <title>手工安装过程语言</title>
+
+    <para>
+     在数据库中安装过程语言需要五个步骤，且必须由数据库超级用户执行。多数
+     情况下，所需的 SQL 命令都应打包成某个<quote>扩展</quote>的安装脚本，
+     这样就可以用<command>CREATE EXTENSION</command>来执行它们。
+    </para>
+
+    <step performance="required" id="xplang-install-cr1">
+     <para>
+      该语言调用处理器的共享对象必须先编译好并安装到合适的库目录中。这与
+      构建和安装含有普通用户定义 C 函数的模块的方法相同；见
+      <xref linkend="dfunc"/>。该语言调用处理器往往还会依赖一个提供实际编
+      程语言引擎的外部库；如果是这样，该库也必须安装。
+     </para>
+    </step>
+
+    <step performance="required" id="xplang-install-cr2">
+     <para>
+      必须用如下命令声明该调用处理器：
+<synopsis>
+CREATE FUNCTION <replaceable>handler_function_name</replaceable>()
+    RETURNS language_handler
+    AS '<replaceable>path-to-shared-object</replaceable>'
+    LANGUAGE C;
+</synopsis>
+      特殊返回类型<type>language_handler</type>会告诉数据库系统，该函数返
+      回的不是某种已定义的<acronym>SQL</acronym>数据类型，并且不能在
+      <acronym>SQL</acronym>语句中直接使用。
+     </para>
+    </step>
+
+    <step performance="optional" id="xplang-install-cr3">
+     <para>
+      可选地，语言调用处理器可以提供一个<quote>内联</quote>处理器函数，
+      用于执行用该语言编写的匿名代码块
+      （<link linkend="sql-do"><command>DO</command></link>命令）。如果
+      该语言提供了内联处理器函数，可用类似下面的命令声明它：
+<synopsis>
+CREATE FUNCTION <replaceable>inline_function_name</replaceable>(internal)
+    RETURNS void
+    AS '<replaceable>path-to-shared-object</replaceable>'
+    LANGUAGE C;
+</synopsis>
+     </para>
+    </step>
+
+    <step performance="optional" id="xplang-install-cr4">
+     <para>
+      可选地，语言调用处理器可以提供一个<quote>验证器</quote>函数，用于
+      在不实际执行的情况下检查函数定义是否正确。如果存在验证器函数，
+      <command>CREATE FUNCTION</command>就会调用它。如果该语言提供了验证
+      器函数，可用类似下面的命令声明它：
+<synopsis>
+CREATE FUNCTION <replaceable>validator_function_name</replaceable>(oid)
+    RETURNS void
+    AS '<replaceable>path-to-shared-object</replaceable>'
+    LANGUAGE C STRICT;
+</synopsis>
+     </para>
+    </step>
+
+    <step performance="required" id="xplang-install-cr5">
+     <para>
+      最后，必须用如下命令声明该 PL：
+<synopsis>
+CREATE <optional>TRUSTED</optional> LANGUAGE <replaceable>language_name</replaceable>
+    HANDLER <replaceable>handler_function_name</replaceable>
+    <optional>INLINE <replaceable>inline_function_name</replaceable></optional>
+    <optional>VALIDATOR <replaceable>validator_function_name</replaceable></optional> ;
+</synopsis>
+      可选关键字<literal>TRUSTED</literal>表示，该语言不会授予用户原本不
+      具备的数据访问能力。受信任的语言是为普通数据库用户（即没有超级用户
+      权限的用户）设计的，并允许他们安全地创建函数和过程。由于 PL 函数是
+      在数据库服务器内部执行的，因此只有那些不允许访问数据库服务器内部或
+      文件系统的语言才应带有<literal>TRUSTED</literal>标记。
+      <application>PL/pgSQL</application>、
+      <application>PL/Tcl</application>以及
+      <application>PL/Perl</application>被认为是受信任的；而
+      <application>PL/TclU</application>、
+      <application>PL/PerlU</application>以及
+      <application>PL/PythonU</application>旨在提供无限制的功能，因此
+      <emphasis>不</emphasis>应被标记为受信任的。
+     </para>
+    </step>
+   </procedure>
+
+   <para>
+    <xref linkend="xplang-install-example"/>展示了以
+    <application>PL/Perl</application>为例时，手工安装过程是如何进行的。
+   </para>
+
+   <example id="xplang-install-example">
+    <title>手工安装<application>PL/Perl</application></title>
+
+     <para>
+      下面的命令告诉数据库服务器到哪里查找
+      <application>PL/Perl</application>语言调用处理器函数的共享对象：
+
+<programlisting>
+CREATE FUNCTION plperl_call_handler() RETURNS language_handler AS
+    '$libdir/plperl' LANGUAGE C;
+</programlisting>
+     </para>
+
+     <para>
+      <application>PL/Perl</application>具有内联处理器函数和验证器函数，因
+      此我们也声明它们：
+
+<programlisting>
+CREATE FUNCTION plperl_inline_handler(internal) RETURNS void AS
+    '$libdir/plperl' LANGUAGE C STRICT;
+
+CREATE FUNCTION plperl_validator(oid) RETURNS void AS
+    '$libdir/plperl' LANGUAGE C STRICT;
+</programlisting>
+     </para>
+
+     <para>
+      下面的命令：
+<programlisting>
+CREATE TRUSTED LANGUAGE plperl
+    HANDLER plperl_call_handler
+    INLINE plperl_inline_handler
+    VALIDATOR plperl_validator;
+</programlisting>
+      随后定义了对于语言属性为<literal>plperl</literal>的函数和过程，应调
+      用前面声明的函数。
+     </para>
+  </example>
+
+   <para>
+    在默认的<productname>PostgreSQL</productname>安装中，
+    <application>PL/pgSQL</application>语言的调用处理器会被构建并安装到
+    <quote>library</quote>目录中；此外，
+    <application>PL/pgSQL</application>语言本身也安装在所有数据库中。如
+    果在构建时配置了<application>Tcl</application>支持，那么
+    <application>PL/Tcl</application>和<application>PL/TclU</application>
+    的调用处理器会被构建并安装到该库目录中，但这两种语言本身默认并不会安
+    装到任何数据库中。同样，如果在构建时配置了 Perl 支持，就会构建并安装
+    <application>PL/Perl</application>和<application>PL/PerlU</application>
+    的调用处理器；如果在构建时配置了 Python 支持，则会安装
+    <application>PL/PythonU</application>的调用处理器，但这些语言默认也
+    不会安装到任何数据库中。
+   </para>
+
+  </sect1>
+
+ </chapter>

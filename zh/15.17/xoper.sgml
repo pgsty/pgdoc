@@ -1,0 +1,379 @@
+<!-- doc/src/sgml/xoper.sgml -->
+
+ <sect1 id="xoper">
+  <title>用户定义的操作符</title>
+
+  <indexterm zone="xoper">
+   <primary>操作符</primary>
+   <secondary>用户定义的</secondary>
+  </indexterm>
+
+  <para>
+   每个操作符都是对执行实际工作的底层函数调用的一种<quote>语法糖</quote>；因此，
+   你必须先创建底层函数，才能创建操作符。不过，操作符<emphasis>并不仅仅</emphasis>是
+   语法糖，因为它还携带一些额外信息，可帮助查询规划器优化使用该操作符的查
+   询。下一节将专门解释这些附加信息。
+  </para>
+
+  <para>
+   <productname>PostgreSQL</productname>支持前缀操作符和中缀操作符。操作
+   符可以被重载；<indexterm><primary>重载</primary><secondary>操作符</secondary></indexterm>
+   也就是说，同一个操作符名可以用于不同的操作符，而这些操作符具有不同数量
+   和类型的操作数。执行查询时，系统会根据提供的操作数数量和类型确定应调用
+   哪个操作符。
+  </para>
+
+  <para>
+   下面是为两个复数相加创建一个操作符的示例。我们假设已经创建了
+   <type>complex</type>类型的定义（见<xref linkend="xtypes"/>）。首先需要
+   一个完成实际工作的函数，然后才能定义该操作符：
+
+<programlisting>
+CREATE FUNCTION complex_add(complex, complex)
+    RETURNS complex
+    AS '<replaceable>filename</replaceable>', 'complex_add'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE OPERATOR + (
+    leftarg = complex,
+    rightarg = complex,
+    function = complex_add,
+    commutator = +
+);
+</programlisting>
+  </para>
+
+  <para>
+   现在我们就可以执行下面这样的查询：
+
+<screen>
+SELECT (a + b) AS c FROM test_complex;
+
+        c
+-----------------
+ (5.2,6.05)
+ (133.42,144.95)
+</screen>
+  </para>
+
+  <para>
+   上面展示了如何创建一个二元操作符。要创建前缀操作符，只需省略
+   <literal>leftarg</literal>。在 <command>CREATE OPERATOR</command> 中，
+   <literal>function</literal> 子句和参数子句是唯一必需的项。示例中出现的
+   <literal>commutator</literal> 子句，则是给查询优化器的一个可选提示。关于
+   <literal>commutator</literal> 以及其他优化器提示的更多细节，会在下一节说
+   明。
+  </para>
+ </sect1>
+
+  <sect1 id="xoper-optimization">
+   <title>操作符优化信息</title>
+
+  <indexterm zone="xoper-optimization">
+   <primary>优化信息</primary>
+   <secondary>用于操作符</secondary>
+  </indexterm>
+
+   <para>
+    <productname>PostgreSQL</productname> 的操作符定义可以包含若干可选子句，
+    用来告诉系统该操作符行为的一些有用信息。只要适用，就应当提供这些子句，
+    因为它们可以显著加快使用该操作符的查询执行速度。但如果你提供了这些信息，
+    就必须确保它们是正确的！错误地使用优化子句可能导致查询变慢、输出出现隐
+    蔽错误，或者引发其他糟糕后果。如果你拿不准，完全可以省略某个优化子句；
+    唯一的后果，只是查询可能会比本来需要的更慢。
+   </para>
+
+   <para>
+    未来版本的 <productname>PostgreSQL</productname> 可能会加入更多优化子
+    句。这里描述的是 &version; 版本所理解的全部子句。
+   </para>
+
+   <para>
+    也可以把规划器支持函数附加到某个作为操作符底层实现的函数上，这也提供了
+    一种向系统说明该操作符行为的方式。更多信息见
+    <xref linkend="xfunc-optimization"/>。
+   </para>
+
+   <sect2 id="xoper-commutator">
+    <title><literal>COMMUTATOR</literal></title>
+
+    <para>
+     如果给出 <literal>COMMUTATOR</literal> 子句，它指定一个与正在定义的操
+     作符互为交换子的操作符。若对所有可能的输入值 x、y，都有 (x A y) 等于
+     (y B x)，则称操作符 A 是操作符 B 的交换子。注意，B 也同样是 A 的交换
+     子。例如，对某种特定数据类型而言，<literal>&lt;</literal> 和
+     <literal>&gt;</literal> 通常互为交换子，而操作符 <literal>+</literal> 通
+     常与其自身可交换。但操作符 <literal>-</literal> 通常并不与任何操作符可
+     交换。
+    </para>
+
+    <para>
+     一个可交换操作符的左操作数类型，与其交换子的右操作数类型相同，反之亦
+     然。因此，<productname>PostgreSQL</productname> 只需知道交换子操作符
+     的名称，就可以查找出该交换子，而这也正是
+     <literal>COMMUTATOR</literal> 子句中所需提供的全部内容。
+    </para>
+
+    <para>
+     对于将用于索引和连接子句的操作符，提供交换子信息至关重要，因为这样查询
+     优化器才能把这类子句<quote>翻转</quote>成不同计划类型所需的形式。例
+     如，考虑这样一个查询，其 <literal>WHERE</literal> 子句形如
+     <literal>tab1.x = tab2.y</literal>，其中 <literal>tab1.x</literal> 和
+     <literal>tab2.y</literal> 都是某种用户定义类型，并假设
+     <literal>tab2.y</literal> 上建有索引。除非优化器能够确定如何把该子句翻
+     转成 <literal>tab2.y = tab1.x</literal>，否则它就无法生成索引扫描，因为
+     索引扫描机制要求传给它的操作符左侧必须是已建立索引的列。
+     <productname>PostgreSQL</productname> <emphasis>不会</emphasis>仅凭假
+     设就认为这种转换有效；<literal>=</literal> 操作符的创建者必须通过为该操
+     作符标记交换子信息，明确声明这种转换是有效的。
+    </para>
+   </sect2>
+
+   <sect2 id="xoper-negator">
+    <title><literal>NEGATOR</literal></title>
+
+    <para>
+     如果给出 <literal>NEGATOR</literal> 子句，它指定一个与正在定义的操作符
+     互为求反器的操作符。若操作符 A 和 B 都返回布尔结果，并且对所有可能的输
+     入 x、y，都有 (x A y) 等于 NOT (x B y)，则称 A 是 B 的求反器。注意，B
+     也同样是 A 的求反器。例如，对大多数数据类型而言，
+     <literal>&lt;</literal> 和 <literal>&gt;=</literal> 构成一对求反器。一个
+     操作符永远不可能合法地成为其自身的求反器。
+    </para>
+
+   <para>
+    与交换子不同，一对一元操作符完全可能合法地被标记为彼此的求反器；这意味
+    着对所有 x，都有 (A x) 等于 NOT (B x)。
+   </para>
+
+   <para>
+    一个操作符的求反器必须与待定义操作符具有相同的左操作数类型和/或右操作数
+    类型，因此与 <literal>COMMUTATOR</literal> 一样，在
+    <literal>NEGATOR</literal> 子句中只需给出操作符名称即可。
+   </para>
+
+   <para>
+    提供求反器对查询优化器很有帮助，因为它允许把
+    <literal>NOT (x = y)</literal> 这样的表达式简化为
+    <literal>x &lt;&gt; y</literal>。这种情况比你想象得更常见，因为
+    <literal>NOT</literal> 操作可能会作为其他重排的结果被插入进来。
+   </para>
+  </sect2>
+
+  <sect2 id="xoper-restrict">
+   <title><literal>RESTRICT</literal></title>
+
+   <para>
+    如果给出 <literal>RESTRICT</literal> 子句，它指定该操作符的限制选择度估
+    算函数。（注意，这里是函数名，而不是操作符名。）
+    <literal>RESTRICT</literal> 子句只对返回 <type>boolean</type> 的二元操
+    作符有意义。限制选择度估算器的作用，是针对当前操作符和某个特定常量值，
+    猜测一张表中有多少比例的行会满足如下形式的
+    <literal>WHERE</literal> 子句条件：
+<programlisting>
+column OP constant
+</programlisting>
+    这会帮助优化器大致了解具有这种形式的 <literal>WHERE</literal> 子句将淘
+    汰多少行。（你可能会问：如果常量在左边会怎样？嗯，这正是
+    <literal>COMMUTATOR</literal> 的作用之一……）
+   </para>
+
+   <para>
+    编写新的限制选择度估算函数远远超出了本章的范围，不过幸运的是，对于你自
+    己的很多操作符，通常都可以直接使用系统提供的某个标准估算器。标准的限制
+    选择度估算器如下：
+    <simplelist>
+     <member><function>eqsel</function> 用于 <literal>=</literal></member>
+     <member><function>neqsel</function> 用于 <literal>&lt;&gt;</literal></member>
+     <member><function>scalarltsel</function> 用于 <literal>&lt;</literal></member>
+     <member><function>scalarlesel</function> 用于 <literal>&lt;=</literal></member>
+     <member><function>scalargtsel</function> 用于 <literal>&gt;</literal></member>
+     <member><function>scalargesel</function> 用于 <literal>&gt;=</literal></member>
+    </simplelist>
+   </para>
+
+   <para>
+    对于选择度非常高或非常低的操作符，即使它们实际上并不是真正的相等或不等
+    比较，你也常常可以勉强使用 <function>eqsel</function> 或
+    <function>neqsel</function>。例如，几何类型中的近似相等操作符就使用
+    <function>eqsel</function>，其依据是它们通常只会匹配表中很小一部分项。
+   </para>
+
+   <para>
+    对于那些能够以某种合理方式转换为数值标量、从而可进行范围比较的数据类
+    型，你可以使用 <function>scalarltsel</function>、
+    <function>scalarlesel</function>、<function>scalargtsel</function> 和
+    <function>scalargesel</function>。如果可能的话，请把该数据类型加入函数
+    <function>convert_to_scalar()</function>（位于
+    <filename>src/backend/utils/adt/selfuncs.c</filename>）所理解的范围
+    中。（最终，这个函数应被通过 <classname>pg_type</classname> 系统目录某一
+    列标识的、按数据类型划分的函数所取代；但这件事目前还没有发生。）如果不
+    这样做，系统仍然可以工作，但优化器的估算效果就不会像本可达到的那样好。
+   </para>
+
+   <para>
+    另一个有用的内置选择度估算函数是 <function>matchingsel</function>。只要
+    已为输入数据类型收集了标准的 MCV 和/或直方图统计信息，它几乎就适用于任
+    何二元操作符。它的默认估计值被设定为 <function>eqsel</function> 所用默认
+    估计值的两倍，因此最适合那些比相等比较稍微宽松一些的比较操作符。（或者
+    你也可以调用底层的 <function>generic_restriction_selectivity</function>
+    函数，并提供不同的默认估计值。）
+   </para>
+
+   <para>
+    在 <filename>src/backend/utils/adt/geo_selfuncs.c</filename> 中，还为几
+    何操作符提供了其他选择度估算函数：<function>areasel</function>、
+    <function>positionsel</function> 和 <function>contsel</function>。截至
+    目前，这些函数都还只是桩实现，但你也许仍会想使用它们（或者更好的是，改
+    进它们）。
+   </para>
+   </sect2>
+
+   <sect2 id="xoper-join">
+    <title><literal>JOIN</literal></title>
+
+    <para>
+     如果给出 <literal>JOIN</literal> 子句，它指定该操作符的连接选择度估算函
+     数。（注意，这里是函数名，而不是操作符名。）<literal>JOIN</literal> 子
+     句只对返回 <type>boolean</type> 的二元操作符有意义。连接选择度估算器的
+     作用，是针对当前操作符，猜测两张表中有多少比例的行对会满足如下形式的
+     <literal>WHERE</literal> 子句条件：
+<programlisting>
+table1.column1 OP table2.column2
+</programlisting>
+     与 <literal>RESTRICT</literal> 子句一样，这会极大地帮助优化器判断在若
+     干可能的连接顺序中，哪一种预计工作量最小。
+    </para>
+
+    <para>
+     与前面一样，本章不会尝试解释如何编写连接选择度估算函数，而只是建议你在
+     适用时使用某个标准估算器：
+     <simplelist>
+      <member><function>eqjoinsel</function> 用于 <literal>=</literal></member>
+      <member><function>neqjoinsel</function> 用于 <literal>&lt;&gt;</literal></member>
+      <member><function>scalarltjoinsel</function> 用于 <literal>&lt;</literal></member>
+      <member><function>scalarlejoinsel</function> 用于 <literal>&lt;=</literal></member>
+      <member><function>scalargtjoinsel</function> 用于 <literal>&gt;</literal></member>
+      <member><function>scalargejoinsel</function> 用于 <literal>&gt;=</literal></member>
+      <member><function>matchingjoinsel</function> 用于通用匹配操作符</member>
+      <member><function>areajoinsel</function> 用于基于二维面积的比较</member>
+      <member><function>positionjoinsel</function> 用于基于二维位置的比较</member>
+      <member><function>contjoinsel</function> 用于基于二维包含关系的比较</member>
+     </simplelist>
+    </para>
+   </sect2>
+
+   <sect2 id="xoper-hashes">
+    <title><literal>HASHES</literal></title>
+
+    <para>
+     如果存在 <literal>HASHES</literal> 子句，它会告知系统：在基于该操作符
+     的连接中，可以使用哈希连接方法。<literal>HASHES</literal> 只对返回
+     <literal>boolean</literal> 的二元操作符有意义；在实践中，该操作符还必须
+     表示某种数据类型或某对数据类型上的相等关系。
+    </para>
+
+    <para>
+     哈希连接背后的假设是：只有当左值和右值被哈希到同一个哈希码时，连接操作
+     符才有可能返回 true。如果两个值被放进不同的哈希桶，连接过程就根本不会
+     去比较它们，这实际上隐含假定连接操作符的结果必定为 false。因此，对于那
+     些并不表示某种相等关系的操作符，指定 <literal>HASHES</literal> 永远没有
+     意义。在大多数情况下，只有对两侧都接受同一数据类型的操作符支持哈希才是
+     现实可行的。不过，有时也可以为两种或更多数据类型设计兼容的哈希函数；也
+     就是说，尽管这些值的表示不同，但对于<quote>相等</quote>的值，函数仍会
+     生成相同的哈希码。例如，对不同位宽的整数做到这一点就相当简单。
+    </para>
+
+    <para>
+     若要被标记为 <literal>HASHES</literal>，该连接操作符必须出现在某个哈希
+     索引操作符族中。创建操作符时并不会强制这一点，因为那时引用它的操作符族
+     当然还不存在。但如果没有这样的操作符族存在，运行时尝试在哈希连接中使用
+     该操作符就会失败。系统需要通过该操作符族来查找与该操作符输入数据类型相
+     对应的哈希函数。当然，在创建该操作符族之前，你还必须先创建合适的哈希函
+     数。
+    </para>
+
+    <para>
+     准备哈希函数时应格外小心，因为它有一些依赖机器的方式可能会导致结果不正
+     确。例如，如果你的数据类型是某种结构体，其中可能包含无意义的填充位，那
+     就不能简单地把整个结构传给 <function>hash_any</function>。（除非你编写
+     了其他操作符和函数，以确保这些未使用位始终为零，而这正是推荐的策略。）
+     再比如，在符合 <acronym>IEEE</acronym> 浮点标准的机器上，负零和正零是
+     不同的值（位模式不同），但它们被定义为比较相等。如果某个浮点值可能包含
+     负零，就需要采取额外步骤，确保它生成与正零相同的哈希值。
+    </para>
+
+    <para>
+     一个可参与哈希连接的操作符，必须拥有一个交换子（如果两侧操作数数据类型
+     相同，则可以是它自身；如果不同，则应是相关的相等操作符），并且该交换子
+     也必须出现在同一个操作符族中。否则，在使用该操作符时可能会发生规划器错
+     误。另外，对于支持多种数据类型的哈希操作符族，最好（虽然并非严格必需）
+     为每一种数据类型组合都提供相等操作符；这样可以获得更好的优化效果。
+    </para>
+
+    <note>
+    <para>
+     作为可哈希连接操作符底层实现的函数，必须标记为 immutable 或 stable。
+     如果它是 volatile，系统就永远不会尝试把该操作符用于哈希连接。
+    </para>
+    </note>
+
+    <note>
+    <para>
+     如果某个可哈希连接操作符的底层函数被标记为 strict，那么该函数还必须是
+     完备的：也就是说，对于任意两个非空输入，它都应返回 true 或 false，而绝
+     不能返回 null。如果不遵循这条规则，对 <literal>IN</literal> 操作进行哈
+     希优化时可能会产生错误结果。（具体来说，<literal>IN</literal> 可能会在
+     按标准本应返回 null 的地方返回 false；或者抛出一条错误，抱怨它没有为
+     null 结果做好准备。）
+    </para>
+    </note>
+
+   </sect2>
+
+   <sect2 id="xoper-merges">
+    <title><literal>MERGES</literal></title>
+
+    <para>
+     如果存在 <literal>MERGES</literal> 子句，它会告知系统：在基于该操作符
+     的连接中，可以使用归并连接方法。<literal>MERGES</literal> 只对返回
+     <literal>boolean</literal> 的二元操作符有意义；在实践中，该操作符还必须
+     表示某种数据类型或某对数据类型上的相等关系。
+    </para>
+
+    <para>
+     归并连接的基本思想，是先把左表和右表分别排序，然后并行扫描它们。因此，
+     两种数据类型都必须能够被完全排序，而连接操作符必须只能在那对值位于排序
+     次序中<quote>同一位置</quote>时才成功。实际效果上，这意味着连接操作符
+     必须表现得像相等比较一样。不过，只要两种不同的数据类型在逻辑上兼容，也
+     完全可以对它们进行归并连接。例如，<type>smallint</type> 与
+     <type>integer</type> 之间的相等操作符就是可归并连接的。我们只需要能把
+     两种数据类型都带入逻辑兼容排序序列的排序操作符即可。
+    </para>
+
+    <para>
+     若要被标记为 <literal>MERGES</literal>，该连接操作符必须作为相等成员出
+     现在某个 <literal>btree</literal> 索引操作符族中。创建操作符时并不会强
+     制这一点，因为那时引用它的操作符族当然还不存在。但除非能找到匹配的操作
+     符族，否则该操作符实际上不会被用于归并连接。因此，
+     <literal>MERGES</literal> 标记的作用，是向规划器提供一个提示，告诉它值
+     得去查找匹配的操作符族。
+    </para>
+
+    <para>
+     一个可参与归并连接的操作符，必须拥有一个交换子（如果两侧操作数数据类型
+     相同，则可以是它自身；如果不同，则应是相关的相等操作符），并且该交换子
+     也必须出现在同一个操作符族中。否则，在使用该操作符时可能会发生规划器错
+     误。另外，对于支持多种数据类型的 <literal>btree</literal> 操作符族，最
+     好（虽然并非严格必需）为每一种数据类型组合都提供相等操作符；这样可以获
+     得更好的优化效果。
+    </para>
+
+    <note>
+    <para>
+     作为可归并连接操作符底层实现的函数，必须标记为 immutable 或 stable。如
+     果它是 volatile，系统就永远不会尝试把该操作符用于归并连接。
+    </para>
+    </note>
+   </sect2>
+  </sect1>

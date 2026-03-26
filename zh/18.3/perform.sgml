@@ -1,0 +1,1426 @@
+<!-- doc/src/sgml/perform.sgml -->
+
+ <chapter id="performance-tips">
+
+  <title>性能提示</title>
+
+  <indexterm zone="performance-tips">
+   <primary>performance</primary>
+  </indexterm>
+
+  <para>
+   查询性能可能受许多因素影响。其中一些因素可以由用户控制，另一些则属于系统底层设计的基本特性。本章提供一些帮助理解和调优<productname>PostgreSQL</productname>性能的提示。
+  </para>
+
+ <sect1 id="using-explain">
+
+  <title>使用<command>EXPLAIN</command></title>
+
+   <indexterm zone="using-explain">
+    <primary>EXPLAIN</primary>
+   </indexterm>
+
+   <indexterm zone="using-explain">
+    <primary>query plan</primary>
+   </indexterm>
+
+   <para>
+    <productname>PostgreSQL</productname>会为收到的每个查询制定一个<firstterm>查询计划</firstterm>。选择与查询结构和数据特性相匹配的正确计划，对获得良好的性能至关重要，因此系统内置了一个复杂的<firstterm>规划器</firstterm>来尽量选出好的计划。可以使用<link linkend="sql-explain"><command>EXPLAIN</command></link>命令查看规划器为任意查询生成的查询计划。读懂计划是一门需要经验积累的技能，本节将尝试介绍其中的基础知识。
+   </para>
+
+   <para>
+    本节中的示例取自执行过<command>VACUUM ANALYZE</command>的回归测试数据库，使用的是 v18 开发版本源码。如果自行尝试这些示例，通常应当能得到相近的结果，但估计代价和行计数可能略有差异，因为<command>ANALYZE</command>生成的统计信息来自随机采样而非精确计数，而且代价本身在某种程度上也依赖于平台。
+   </para>
+
+   <para>
+    这些示例使用<command>EXPLAIN</command>默认的<quote>text</quote>输出格式，它紧凑且便于人工阅读。如果希望将<command>EXPLAIN</command>的输出交给程序做进一步分析，则应改用机器可读的输出格式（XML、JSON 或 YAML）。
+   </para>
+
+  <sect2 id="using-explain-basics">
+
+   <title><command>EXPLAIN</command>基础</title>
+
+   <para>
+    查询计划的结构是一棵由<firstterm>计划节点</firstterm>组成的树。树的最底层是扫描节点，它们从表中返回原始行。不同的表访问方法对应不同类型的扫描节点，例如顺序扫描、索引扫描和位图索引扫描。也有一些并非表的行来源，例如<literal>VALUES</literal>子句和<literal>FROM</literal>中的返回集合函数，它们也各自有对应的扫描节点类型。如果查询需要对原始行执行连接、聚合、排序或其他操作，那么扫描节点之上还会出现额外的节点来完成这些操作。同样，这些操作通常不止一种实现方式，因此这里也会出现不同的节点类型。<command>EXPLAIN</command>会为计划树中的每个节点输出一行，显示基本节点类型以及规划器对该计划节点执行代价的估计值。还可能出现相对节点摘要行缩进的附加行，用来显示该节点的更多属性。第一行，也就是最顶层节点的摘要行，给出了整个计划的估计总执行代价；规划器力图最小化的正是这个数字。
+   </para>
+
+   <para>
+    下面是一个简单示例，仅用于说明输出的大致形式：
+
+<screen>
+EXPLAIN SELECT * FROM tenk1;
+
+                         QUERY PLAN
+-------------------------------------------------------------
+ Seq Scan on tenk1  (cost=0.00..445.00 rows=10000 width=244)
+</screen>
+   </para>
+
+   <para>
+    由于这个查询没有<literal>WHERE</literal>子句，它必须扫描表中的所有行，因此规划器选择了一个简单的顺序扫描计划。圆括号中的数字从左到右依次表示：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       估计启动开销。这是输出阶段开始前需要消耗的时间，例如排序节点执行排序所需的时间。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       估计总开销。这里假定该计划节点会运行到结束，也就是取回所有可用的行。实际中某个节点的父节点可能会在尚未读完所有可用行之前提前停止（见后文的<literal>LIMIT</literal>示例）。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       该计划节点输出行数的估计值。同样，也是假定该节点会运行到结束。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       预计该计划节点输出行的平均宽度，以字节计。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    这些开销使用由规划器代价参数决定的任意单位来衡量（见<xref linkend="runtime-config-query-constants"/>）。传统上通常以磁盘页读取作为代价单位；也就是说，惯例上将<xref linkend="guc-seq-page-cost"/>设为<literal>1.0</literal>，其他代价参数都相对它来设定。本节中的示例都使用默认代价参数。
+   </para>
+
+   <para>
+    需要理解的一点是，上层节点的开销包含了其所有子节点的开销。还要注意，这个开销只反映规划器关心的内容。特别是，它没有考虑将输出值转换为文本形式或传输给客户端所消耗的时间，而这些在实际耗时中可能是重要因素；但规划器会忽略这些成本，因为它无法通过改变计划来影响它们。（我们相信每个正确的计划都会输出相同的行集。）
+   </para>
+
+   <para>
+    <literal>rows</literal>值有些容易误解，因为它不是计划节点处理或扫描过的行数，而是该节点输出的行数。由于在该节点上应用的<literal>WHERE</literal>条件会过滤掉一部分扫描到的行，这个数字通常小于扫描行数。理想情况下，顶层的行数估计应当接近查询实际返回、更新或删除的行数。
+   </para>
+
+   <para>
+    回到我们的示例：
+
+<screen>
+EXPLAIN SELECT * FROM tenk1;
+
+                         QUERY PLAN
+-------------------------------------------------------------
+ Seq Scan on tenk1  (cost=0.00..445.00 rows=10000 width=244)
+</screen>
+   </para>
+
+   <para>
+    这些数字的来源非常直接。如果执行：
+
+<programlisting>
+SELECT relpages, reltuples FROM pg_class WHERE relname = 'tenk1';
+</programlisting>
+
+    可以看到<classname>tenk1</classname>有 345 个磁盘页和 10000 行。估计代价按如下公式计算：（读取的磁盘页数 * <xref linkend="guc-seq-page-cost"/>）+（扫描的行数 * <xref linkend="guc-cpu-tuple-cost"/>）。默认情况下，<varname>seq_page_cost</varname>为 1.0，<varname>cpu_tuple_cost</varname>为 0.01，因此估计代价就是 (345 * 1.0) + (10000 * 0.01) = 445。
+   </para>
+
+   <para>
+    现在给查询增加一个<literal>WHERE</literal>条件：
+
+<screen>
+EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 7000;
+
+                         QUERY PLAN
+------------------------------------------------------------
+ Seq Scan on tenk1  (cost=0.00..470.00 rows=7000 width=244)
+   Filter: (unique1 &lt; 7000)
+</screen>
+
+    注意，<command>EXPLAIN</command>输出显示，<literal>WHERE</literal>子句作为附加在 Seq Scan 计划节点上的<quote>过滤器</quote>条件被应用。这意味着该计划节点会对扫描到的每一行检查该条件，只输出满足条件的那些行。由于有了<literal>WHERE</literal>子句，估计输出行数降低了；但扫描仍然必须访问全部 10000 行，所以代价没有下降。实际上它还略微上升了一些，准确地说是上升了 10000 * <xref linkend="guc-cpu-operator-cost"/>，以反映额外检查<literal>WHERE</literal>条件所需的 CPU 时间。
+   </para>
+
+   <para>
+    这条查询实际选出的行数是 7000，但估计的<literal>rows</literal>只是近似值。如果重复这个实验，很可能会得到略有不同的估计值。此外，由于<command>ANALYZE</command>生成的统计信息来自该表的随机采样，这个估计值可能在每次执行<command>ANALYZE</command>之后发生变化。
+   </para>
+
+   <para>
+    现在把条件收紧一些：
+
+<screen>
+EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 100;
+
+                                  QUERY PLAN
+-------------------------------------------------------------------&zwsp;-----------
+ Bitmap Heap Scan on tenk1  (cost=5.06..224.98 rows=100 width=244)
+   Recheck Cond: (unique1 &lt; 100)
+   -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=100 width=0)
+         Index Cond: (unique1 &lt; 100)
+</screen>
+
+    这里规划器决定采用两步计划：子计划节点访问索引，找出满足索引条件的行位置，然后上层计划节点再从表中实际取回这些行。单独取回行比顺序读取昂贵得多，但因为不必访问表中的所有页面，这样仍然比顺序扫描便宜。（之所以采用两层计划，是因为上层计划节点会在读取前先将索引识别出的行位置按物理顺序整理，从而尽量降低零散取页的代价。节点名称中的<quote>位图</quote>就是完成这种整理的机制。）
+   </para>
+
+   <para>
+    现在给<literal>WHERE</literal>子句再增加一个条件：
+
+<screen>
+EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 100 AND stringu1 = 'xxx';
+
+                                  QUERY PLAN
+-------------------------------------------------------------------&zwsp;-----------
+ Bitmap Heap Scan on tenk1  (cost=5.04..225.20 rows=1 width=244)
+   Recheck Cond: (unique1 &lt; 100)
+   Filter: (stringu1 = 'xxx'::name)
+   -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=100 width=0)
+         Index Cond: (unique1 &lt; 100)
+</screen>
+
+    新增的条件<literal>stringu1 = 'xxx'</literal>降低了估计输出行数，但没有降低代价，因为仍然需要访问同一批行。这是因为<literal>stringu1</literal>子句不能作为索引条件使用，毕竟这个索引只建立在<literal>unique1</literal>列上。它只能作为对通过索引取回行的过滤条件。因此，为了反映这项额外检查，代价实际上略微上升了一点。
+   </para>
+
+   <para>
+    在某些情况下，规划器会更倾向于采用一个<quote>简单</quote>索引扫描计划：
+
+<screen>
+EXPLAIN SELECT * FROM tenk1 WHERE unique1 = 42;
+
+                                 QUERY PLAN
+-------------------------------------------------------------------&zwsp;----------
+ Index Scan using tenk1_unique1 on tenk1  (cost=0.29..8.30 rows=1 width=244)
+   Index Cond: (unique1 = 42)
+</screen>
+
+    在这种计划里，表中的行按索引顺序被取回，因此读取成本会更高；但由于涉及的行数很少，为行位置额外排序反而不值得。最常见到这种计划类型的场景，是只取回单行的查询。它也常用于带有与索引顺序相匹配的<literal>ORDER BY</literal>条件的查询，因为这样就不需要额外的排序步骤来满足<literal>ORDER BY</literal>。在这个示例中，如果加上<literal>ORDER BY unique1</literal>，仍会使用同一个计划，因为该索引已经隐式提供了所需顺序。
+   </para>
+
+   <para>
+     规划器可以用多种方式实现<literal>ORDER BY</literal>子句。上面的示例表明，这种排序子句可以被隐式满足。规划器也可能显式增加一个<literal>Sort</literal>步骤：
+
+<screen>
+EXPLAIN SELECT * FROM tenk1 ORDER BY unique1;
+                            QUERY PLAN
+-------------------------------------------------------------------
+ Sort  (cost=1109.39..1134.39 rows=10000 width=244)
+   Sort Key: unique1
+   ->  Seq Scan on tenk1  (cost=0.00..445.00 rows=10000 width=244)
+</screen>
+
+    如果计划中的某一部分已经保证了所需排序键前缀的顺序，规划器也可能改用<literal>Incremental Sort</literal>步骤：
+
+<screen>
+EXPLAIN SELECT * FROM tenk1 ORDER BY hundred, ten LIMIT 100;
+                                              QUERY PLAN
+-------------------------------------------------------------------&zwsp;-----------------------------
+ Limit  (cost=19.35..39.49 rows=100 width=244)
+   ->  Incremental Sort  (cost=19.35..2033.39 rows=10000 width=244)
+         Sort Key: hundred, ten
+         Presorted Key: hundred
+         ->  Index Scan using tenk1_hundred on tenk1  (cost=0.29..1574.20 rows=10000 width=244)
+</screen>
+
+    与常规排序相比，增量排序允许在整个结果集完全排好序之前就返回元组，这对于<literal>LIMIT</literal>查询尤其有利。它还可能减少内存使用以及排序溢写到磁盘的概率，但代价是把结果集拆分成多个排序批次所带来的额外开销。
+   </para>
+
+   <para>
+    如果<literal>WHERE</literal>中引用的多个列各自都有独立索引，规划器可能会选择对这些索引做 AND 或 OR 组合：
+
+<screen>
+EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 100 AND unique2 &gt; 9000;
+
+                                     QUERY PLAN
+-------------------------------------------------------------------&zwsp;------------------
+ Bitmap Heap Scan on tenk1  (cost=25.07..60.11 rows=10 width=244)
+   Recheck Cond: ((unique1 &lt; 100) AND (unique2 &gt; 9000))
+   -&gt;  BitmapAnd  (cost=25.07..25.07 rows=10 width=0)
+         -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=100 width=0)
+               Index Cond: (unique1 &lt; 100)
+         -&gt;  Bitmap Index Scan on tenk1_unique2  (cost=0.00..19.78 rows=999 width=0)
+               Index Cond: (unique2 &gt; 9000)
+</screen>
+
+    但这需要同时访问两个索引，因此与只使用一个索引并把另一个条件当作过滤器相比，未必一定更划算。改变涉及的范围后，会看到计划也随之变化。
+   </para>
+
+   <para>
+    下面是一个示例，它展示了<literal>LIMIT</literal>的效果：
+
+<screen>
+EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 100 AND unique2 &gt; 9000 LIMIT 2;
+
+                                     QUERY PLAN
+-------------------------------------------------------------------&zwsp;------------------
+ Limit  (cost=0.29..14.28 rows=2 width=244)
+   -&gt;  Index Scan using tenk1_unique2 on tenk1  (cost=0.29..70.27 rows=10 width=244)
+         Index Cond: (unique2 &gt; 9000)
+         Filter: (unique1 &lt; 100)
+</screen>
+   </para>
+
+   <para>
+    这与上面的查询相同，只是加上了<literal>LIMIT</literal>，因此不必检索全部行，规划器也就改变了选择。注意，Index Scan 节点的总代价和行计数显示得像是它会运行到结束一样；但 Limit 节点预计在只取到其中五分之一的行后就会停止，因此它的总代价也只有前者的五分之一，这才是该查询真正的估计代价。之所以更偏好这个计划，而不是在前一个计划之上再加一个 Limit 节点，是因为后者仍然无法避免位图扫描的启动代价，那样总代价仍会高于 25。
+   </para>
+
+   <para>
+    让我们尝试连接两个表，使用我们已经讨论过的列：
+
+<screen>
+EXPLAIN SELECT *
+FROM tenk1 t1, tenk2 t2
+WHERE t1.unique1 &lt; 10 AND t1.unique2 = t2.unique2;
+
+                                      QUERY PLAN
+-------------------------------------------------------------------&zwsp;-------------------
+ Nested Loop  (cost=4.65..118.50 rows=10 width=488)
+   -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=4.36..39.38 rows=10 width=244)
+         Recheck Cond: (unique1 &lt; 10)
+         -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..4.36 rows=10 width=0)
+               Index Cond: (unique1 &lt; 10)
+   -&gt;  Index Scan using tenk2_unique2 on tenk2 t2  (cost=0.29..7.90 rows=1 width=244)
+         Index Cond: (unique2 = t1.unique2)
+</screen>
+   </para>
+
+   <para>
+    在这个计划中，有一个嵌套循环连接节点，它的两个输入，也就是两个子节点，都是表扫描。节点摘要行的缩进反映了计划树结构。连接的第一个子节点，也就是<quote>外侧</quote>子节点，是一个与前面见过的位图扫描类似的节点。它的代价和行计数与<literal>SELECT ... WHERE unique1 &lt; 10</literal>得到的结果相同，因为<literal>WHERE</literal>子句<literal>unique1 &lt; 10</literal>正是在该节点上应用的。<literal>t1.unique2 = t2.unique2</literal>子句此时还无关，因此不会影响外侧扫描的行计数。嵌套循环连接节点会对从外侧子节点得到的每一行执行一次第二个，也就是<quote>内侧</quote>子节点。当前外侧行中的列值可以代入内侧扫描；这里外侧行的<literal>t1.unique2</literal>值可用，因此得到的计划和代价与前面看到的简单<literal>SELECT ... WHERE t2.unique2 = <replaceable>constant</replaceable></literal>情形类似。（由于预期在对<literal>t2</literal>反复执行索引扫描期间会发生缓存命中，估计代价实际上比前面看到的略低一些。）随后，循环节点的代价建立在外侧扫描代价之上，再加上每个外侧行都要执行一次内侧扫描的代价（这里是 10 * 7.90），以及少量连接处理的 CPU 时间。
+   </para>
+
+   <para>
+    在这个示例中，连接的输出行计数恰好等于两个扫描行计数的乘积，但并非总是如此，因为还可能存在同时提到两个表的附加<literal>WHERE</literal>子句，它们只能在连接点上应用，而不能作用于任一输入扫描。下面是一个示例：
+
+<screen>
+EXPLAIN SELECT *
+FROM tenk1 t1, tenk2 t2
+WHERE t1.unique1 &lt; 10 AND t2.unique2 &lt; 10 AND t1.hundred &lt; t2.hundred;
+
+                                         QUERY PLAN
+-------------------------------------------------------------------&zwsp;--------------------------
+ Nested Loop  (cost=4.65..49.36 rows=33 width=488)
+   Join Filter: (t1.hundred &lt; t2.hundred)
+   -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=4.36..39.38 rows=10 width=244)
+         Recheck Cond: (unique1 &lt; 10)
+         -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..4.36 rows=10 width=0)
+               Index Cond: (unique1 &lt; 10)
+   -&gt;  Materialize  (cost=0.29..8.51 rows=10 width=244)
+         -&gt;  Index Scan using tenk2_unique2 on tenk2 t2  (cost=0.29..8.46 rows=10 width=244)
+               Index Cond: (unique2 &lt; 10)
+</screen>
+
+    条件<literal>t1.hundred &lt; t2.hundred</literal>无法在<literal>tenk2_unique2</literal>索引中测试，因此它被放到连接节点上应用。这会降低连接节点估计的输出行数，但不会改变任一输入扫描。
+   </para>
+
+   <para>
+    注意，这里规划器通过在连接的内侧关系之上放置一个 Materialize 计划节点，选择将其<quote>物化</quote>。这意味着<literal>t2</literal>索引扫描只会执行一次，尽管嵌套循环连接节点需要读取那份数据十次，也就是外侧关系的每一行都要读取一次。Materialize 节点会在读取数据时将其保存在内存中，并在之后的每次遍历中从内存返回这些数据。
+   </para>
+
+   <para>
+    在处理外连接时，可能会看到连接计划节点同时带有<quote>Join Filter</quote>和普通<quote>Filter</quote>条件。Join Filter 条件来自外连接的<literal>ON</literal>子句，因此某一行即使未通过 Join Filter，仍可能作为一条补齐空值的行被输出。但普通 Filter 条件是在外连接规则应用之后再执行的，因此会无条件移除行。在内连接中，这两类过滤条件在语义上没有区别。
+   </para>
+
+   <para>
+    如果我们把查询的选择度改变一点，我们可能得到一个非常不同的连接计划：
+
+<screen>
+EXPLAIN SELECT *
+FROM tenk1 t1, tenk2 t2
+WHERE t1.unique1 &lt; 100 AND t1.unique2 = t2.unique2;
+
+                                        QUERY PLAN
+-------------------------------------------------------------------&zwsp;-----------------------
+ Hash Join  (cost=226.23..709.73 rows=100 width=488)
+   Hash Cond: (t2.unique2 = t1.unique2)
+   -&gt;  Seq Scan on tenk2 t2  (cost=0.00..445.00 rows=10000 width=244)
+   -&gt;  Hash  (cost=224.98..224.98 rows=100 width=244)
+         -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=5.06..224.98 rows=100 width=244)
+               Recheck Cond: (unique1 &lt; 100)
+               -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=100 width=0)
+                     Index Cond: (unique1 &lt; 100)
+</screen>
+   </para>
+
+   <para>
+    这里规划器选择了哈希连接：先把一个表的行放入内存中的哈希表，然后扫描另一个表，并对其中每一行到哈希表中查找匹配。再次注意缩进如何反映计划结构：<literal>tenk1</literal>上的位图扫描是 Hash 节点的输入，Hash 节点据此构造哈希表；随后该哈希表被返回给 Hash Join 节点，后者从其外侧子计划读取行，并对每一行在哈希表中进行查找。
+   </para>
+
+   <para>
+    另一种可能的连接类型是一个归并连接，如下所示：
+
+<screen>
+EXPLAIN SELECT *
+FROM tenk1 t1, onek t2
+WHERE t1.unique1 &lt; 100 AND t1.unique2 = t2.unique2;
+
+                                        QUERY PLAN
+-------------------------------------------------------------------&zwsp;-----------------------
+ Merge Join  (cost=0.56..233.49 rows=10 width=488)
+   Merge Cond: (t1.unique2 = t2.unique2)
+   -&gt;  Index Scan using tenk1_unique2 on tenk1 t1  (cost=0.29..643.28 rows=100 width=244)
+         Filter: (unique1 &lt; 100)
+   -&gt;  Index Scan using onek_unique2 on onek t2  (cost=0.28..166.28 rows=1000 width=244)
+</screen>
+   </para>
+
+   <para>
+    归并连接要求输入数据按连接键排序。在这个例子中，两个输入都通过索引扫描按正确顺序访问行而完成排序；不过也可以采用顺序扫描再排序的方式。（对于需要排序很多行的情况，顺序扫描加排序往往会胜过索引扫描，因为索引扫描需要非顺序磁盘访问。）
+   </para>
+
+   <para>
+    观察备选计划的一种方法，是利用<xref linkend="runtime-config-query-enable"/>中描述的启用/禁用标志，强迫规划器忽略它认为最便宜的策略。（这是个粗糙但有用的工具。另见<xref linkend="explicit-joins"/>。）例如，如果我们并不确信前一个示例中归并连接真的是最佳连接类型，可以试试：
+
+<screen>
+SET enable_mergejoin = off;
+
+EXPLAIN SELECT *
+FROM tenk1 t1, onek t2
+WHERE t1.unique1 &lt; 100 AND t1.unique2 = t2.unique2;
+
+                                        QUERY PLAN
+-------------------------------------------------------------------&zwsp;-----------------------
+ Hash Join  (cost=226.23..344.08 rows=10 width=488)
+   Hash Cond: (t2.unique2 = t1.unique2)
+   -&gt;  Seq Scan on onek t2  (cost=0.00..114.00 rows=1000 width=244)
+   -&gt;  Hash  (cost=224.98..224.98 rows=100 width=244)
+         -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=5.06..224.98 rows=100 width=244)
+               Recheck Cond: (unique1 &lt; 100)
+               -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=100 width=0)
+                     Index Cond: (unique1 &lt; 100)
+</screen>
+
+    这表明，规划器认为在这个场景下，哈希连接的代价几乎比归并连接高出 50%。当然，接下来的问题就是它是否判断正确。我们可以像<link linkend="using-explain-analyze">下文</link>所述，使用<command>EXPLAIN ANALYZE</command>来研究。
+   </para>
+
+   <para>
+    使用启用/禁用标志来关闭某类计划节点时，要注意许多标志只是抑制使用对应的计划节点，而不是彻底禁止规划器使用它。这是刻意设计的，这样规划器仍然能够为给定查询形成计划。如果最终计划中仍包含被禁用的节点，<command>EXPLAIN</command>输出会明确指出这一点。
+
+<screen>
+SET enable_seqscan = off;
+EXPLAIN SELECT * FROM unit;
+
+                       QUERY PLAN
+---------------------------------------------------------
+ Seq Scan on unit  (cost=0.00..21.30 rows=1130 width=44)
+   Disabled: true
+</screen>
+   </para>
+
+   <para>
+    由于<literal>unit</literal>表没有索引，因此没有其他方式可以读取其中的数据，顺序扫描就是查询规划器唯一可选的方案。
+   </para>
+
+   <para>
+    <indexterm>
+     <primary>subplan</primary>
+    </indexterm>
+    有些查询计划会涉及<firstterm>子计划</firstterm>（subplan），它们来自原始查询中的子<literal>SELECT</literal>。这类查询有时可以转换成普通连接计划；而在无法转换时，就会得到如下计划：
+
+<screen>
+EXPLAIN VERBOSE SELECT unique1
+FROM tenk1 t
+WHERE t.ten &lt; ALL (SELECT o.ten FROM onek o WHERE o.four = t.four);
+
+                               QUERY PLAN
+-------------------------------------------------------------------&zwsp;------
+ Seq Scan on public.tenk1 t  (cost=0.00..586095.00 rows=5000 width=4)
+   Output: t.unique1
+   Filter: (ALL (t.ten &lt; (SubPlan 1).col1))
+   SubPlan 1
+     -&gt;  Seq Scan on public.onek o  (cost=0.00..116.50 rows=250 width=4)
+           Output: o.ten
+           Filter: (o.four = t.four)
+</screen>
+
+    这个有些刻意的例子说明了几点：外层计划层级中的值可以向下传递到子计划中（这里传下去的是<literal>t.four</literal>），而子查询的结果又可供外层计划使用。<command>EXPLAIN</command>会用诸如<literal>(<replaceable>subplan_name</replaceable>).col<replaceable>N</replaceable></literal>这样的记法来表示这些结果值，它指的是子<literal>SELECT</literal>的第 <replaceable>N</replaceable> 个输出列。
+   </para>
+
+   <para>
+    <indexterm>
+     <primary>subplan</primary>
+     <secondary>hashed</secondary>
+    </indexterm>
+    在上面的例子中，<literal>ALL</literal>操作符会对外层查询的每一行都重新执行一次子计划（这也是估计代价很高的原因）。有些查询可以使用<firstterm>哈希子计划</firstterm>来避免这一点：
+
+<screen>
+EXPLAIN SELECT *
+FROM tenk1 t
+WHERE t.unique1 NOT IN (SELECT o.unique1 FROM onek o);
+
+                                         QUERY PLAN
+-------------------------------------------------------------------&zwsp;-------------------------
+ Seq Scan on tenk1 t  (cost=61.77..531.77 rows=5000 width=244)
+   Filter: (NOT (ANY (unique1 = (hashed SubPlan 1).col1)))
+   SubPlan 1
+     -&gt;  Index Only Scan using onek_unique1 on onek o  (cost=0.28..59.27 rows=1000 width=4)
+(4 rows)
+</screen>
+
+    这里，子计划只执行一次，其输出被装入内存中的哈希表，随后由外层的<literal>ANY</literal>操作符来探测这个哈希表。这要求子<literal>SELECT</literal>不能引用外层查询的任何变量，并且<literal>ANY</literal>比较所用的操作符必须适合做哈希。
+   </para>
+
+   <para>
+    <indexterm>
+     <primary>initplan</primary>
+    </indexterm>
+    如果子<literal>SELECT</literal>不仅不引用外层查询的任何变量，而且最多只会返回一行，那么它还可能被实现成一个<firstterm>initplan</firstterm>：
+
+<screen>
+EXPLAIN VERBOSE SELECT unique1
+FROM tenk1 t1 WHERE t1.ten = (SELECT (random() * 10)::integer);
+
+                             QUERY PLAN
+------------------------------------------------------------&zwsp;--------
+ Seq Scan on public.tenk1 t1  (cost=0.02..470.02 rows=1000 width=4)
+   Output: t1.unique1
+   Filter: (t1.ten = (InitPlan 1).col1)
+   InitPlan 1
+     -&gt;  Result  (cost=0.00..0.02 rows=1 width=4)
+           Output: ((random() * '10'::double precision))::integer
+</screen>
+
+    initplan 只会在外层计划每次执行时运行一次，其结果会被保存起来，供外层计划后续各行复用。因此在这个例子中，<literal>random()</literal>只会求值一次，而所有<literal>t1.ten</literal>的值都会与同一个随机选出的整数进行比较。这与不使用这种子<literal>SELECT</literal>构造时的行为非常不同。
+   </para>
+
+  </sect2>
+
+  <sect2 id="using-explain-analyze">
+   <title><command>EXPLAIN ANALYZE</command></title>
+
+   <para>
+    可以使用<command>EXPLAIN</command>的<literal>ANALYZE</literal>选项来检查规划器估计值的准确性。启用该选项后，<command>EXPLAIN</command>会实际执行查询，然后显示各个计划节点累计的真实行计数和真实运行时间，同时也保留普通<command>EXPLAIN</command>会显示的估计值。例如，可能会得到如下结果：
+
+<screen>
+EXPLAIN ANALYZE SELECT *
+FROM tenk1 t1, tenk2 t2
+WHERE t1.unique1 &lt; 10 AND t1.unique2 = t2.unique2;
+
+                                                           QUERY PLAN
+-------------------------------------------------------------------&zwsp;--------------------------------------------------------------
+ Nested Loop  (cost=4.65..118.50 rows=10 width=488) (actual time=0.017..0.051 rows=10.00 loops=1)
+   Buffers: shared hit=36 read=6
+   -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=4.36..39.38 rows=10 width=244) (actual time=0.009..0.017 rows=10.00 loops=1)
+         Recheck Cond: (unique1 &lt; 10)
+         Heap Blocks: exact=10
+         Buffers: shared hit=3 read=5 written=4
+         -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..4.36 rows=10 width=0) (actual time=0.004..0.004 rows=10.00 loops=1)
+               Index Cond: (unique1 &lt; 10)
+               Index Searches: 1
+               Buffers: shared hit=2
+   -&gt;  Index Scan using tenk2_unique2 on tenk2 t2  (cost=0.29..7.90 rows=1 width=244) (actual time=0.003..0.003 rows=1.00 loops=10)
+         Index Cond: (unique2 = t1.unique2)
+         Index Searches: 10
+         Buffers: shared hit=24 read=6
+ Planning:
+   Buffers: shared hit=15 dirtied=9
+ Planning Time: 0.485 ms
+ Execution Time: 0.073 ms
+</screen>
+
+    注意，<quote>actual time</quote>值以毫秒的真实时间表示，而<literal>cost</literal>估计值则以任意单位表示，因此二者通常不会直接对应。通常最值得关注的是估计行数是否与实际情况足够接近。在这个示例中，估计值完全命中，但在实践中这其实相当少见。
+   </para>
+
+   <para>
+    在某些查询计划中，一个子计划节点可能会执行多次。例如，上面那个嵌套循环计划中的内侧索引扫描会对外侧的每一行执行一次。在这种情况下，<literal>loops</literal>值报告的是该节点的总执行次数，而 actual time 和 rows 显示的是每次执行的平均值。这样做是为了让这些数字更容易与代价估计的展示方式相比较。将它们乘以<literal>loops</literal>值，就能得到该节点实际消耗的总时间。在上面的示例中，执行<literal>tenk2</literal>上的索引扫描总共花费了 0.030 毫秒。
+   </para>
+
+   <para>
+    在某些情况下，<command>EXPLAIN ANALYZE</command>会显示除计划节点执行时间和行计数之外的额外执行统计信息。例如，Sort 和 Hash 节点会提供更多信息：
+
+<screen>
+EXPLAIN ANALYZE SELECT *
+FROM tenk1 t1, tenk2 t2
+WHERE t1.unique1 &lt; 100 AND t1.unique2 = t2.unique2 ORDER BY t1.fivethous;
+
+                                                                 QUERY PLAN
+-------------------------------------------------------------------&zwsp;-------------------------------------------------------------------&zwsp;------
+ Sort  (cost=713.05..713.30 rows=100 width=488) (actual time=2.995..3.002 rows=100.00 loops=1)
+   Sort Key: t1.fivethous
+   Sort Method: quicksort  Memory: 74kB
+   Buffers: shared hit=440
+   -&gt;  Hash Join  (cost=226.23..709.73 rows=100 width=488) (actual time=0.515..2.920 rows=100.00 loops=1)
+         Hash Cond: (t2.unique2 = t1.unique2)
+         Buffers: shared hit=437
+         -&gt;  Seq Scan on tenk2 t2  (cost=0.00..445.00 rows=10000 width=244) (actual time=0.026..1.790 rows=10000.00 loops=1)
+               Buffers: shared hit=345
+         -&gt;  Hash  (cost=224.98..224.98 rows=100 width=244) (actual time=0.476..0.477 rows=100.00 loops=1)
+               Buckets: 1024  Batches: 1  Memory Usage: 35kB
+               Buffers: shared hit=92
+               -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=5.06..224.98 rows=100 width=244) (actual time=0.030..0.450 rows=100.00 loops=1)
+                     Recheck Cond: (unique1 &lt; 100)
+                     Heap Blocks: exact=90
+                     Buffers: shared hit=92
+                     -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=100 width=0) (actual time=0.013..0.013 rows=100.00 loops=1)
+                           Index Cond: (unique1 &lt; 100)
+                           Index Searches: 1
+                           Buffers: shared hit=2
+ Planning:
+   Buffers: shared hit=12
+ Planning Time: 0.187 ms
+ Execution Time: 3.036 ms
+</screen>
+
+    Sort 节点会显示所用的排序方法，特别是排序是在内存中完成还是落到磁盘上，以及所需的内存或磁盘空间。Hash 节点则会显示哈希桶和批次的数量，以及哈希表使用内存的峰值。（如果批次数超过 1，还会涉及磁盘空间使用，但这里不会显示出来。）
+   </para>
+
+   <para>
+    Index Scan 节点（以及 Bitmap Index Scan 和 Index-Only Scan 节点）会显示一行<quote>Index Searches</quote>，用于报告跨<emphasis>所有</emphasis>节点执行/<literal>loops</literal>的总搜索次数：
+
+<screen>
+EXPLAIN ANALYZE SELECT * FROM tenk1 WHERE thousand IN (1, 500, 700, 999);
+                                                            QUERY PLAN
+-------------------------------------------------------------------&zwsp;---------------------------------------------------------------
+ Bitmap Heap Scan on tenk1  (cost=9.45..73.44 rows=40 width=244) (actual time=0.012..0.028 rows=40.00 loops=1)
+   Recheck Cond: (thousand = ANY ('{1,500,700,999}'::integer[]))
+   Heap Blocks: exact=39
+   Buffers: shared hit=47
+   -&gt;  Bitmap Index Scan on tenk1_thous_tenthous  (cost=0.00..9.44 rows=40 width=0) (actual time=0.009..0.009 rows=40.00 loops=1)
+         Index Cond: (thousand = ANY ('{1,500,700,999}'::integer[]))
+         Index Searches: 4
+         Buffers: shared hit=8
+ Planning Time: 0.029 ms
+ Execution Time: 0.034 ms
+</screen>
+
+    这里看到一个 Bitmap Index Scan 节点，它需要执行 4 次独立的索引搜索。对于谓词中<literal>IN</literal>构造里的每一个<type>integer</type>值，扫描都必须从<structname>tenk1_thous_tenthous</structname>索引的根页面开始搜索一次。不过，索引搜索次数往往不会与查询谓词如此简单地一一对应：
+
+<screen>
+EXPLAIN ANALYZE SELECT * FROM tenk1 WHERE thousand IN (1, 2, 3, 4);
+                                                            QUERY PLAN
+-------------------------------------------------------------------&zwsp;---------------------------------------------------------------
+ Bitmap Heap Scan on tenk1  (cost=9.45..73.44 rows=40 width=244) (actual time=0.009..0.019 rows=40.00 loops=1)
+   Recheck Cond: (thousand = ANY ('{1,2,3,4}'::integer[]))
+   Heap Blocks: exact=38
+   Buffers: shared hit=40
+   -&gt;  Bitmap Index Scan on tenk1_thous_tenthous  (cost=0.00..9.44 rows=40 width=0) (actual time=0.005..0.005 rows=40.00 loops=1)
+         Index Cond: (thousand = ANY ('{1,2,3,4}'::integer[]))
+         Index Searches: 1
+         Buffers: shared hit=2
+ Planning Time: 0.029 ms
+ Execution Time: 0.026 ms
+</screen>
+
+    这个<literal>IN</literal>查询的变体只执行了 1 次索引搜索。与前一个查询相比，它在遍历索引时花费更少，因为它的<literal>IN</literal>构造使用的值对应的索引元组彼此相邻，位于同一个<structname>tenk1_thous_tenthous</structname>索引叶子页面上。
+   </para>
+
+   <para>
+    <quote>Index Searches</quote>这一行对于应用了<firstterm>跳跃扫描</firstterm>（skip scan）优化、以更高效方式遍历索引的 B-tree 索引扫描同样有用：
+<screen>
+EXPLAIN ANALYZE SELECT four, unique1 FROM tenk1 WHERE four BETWEEN 1 AND 3 AND unique1 = 42;
+                                                              QUERY PLAN
+-------------------------------------------------------------------&zwsp;---------------------------------------------------------------
+ Index Only Scan using tenk1_four_unique1_idx on tenk1  (cost=0.29..6.90 rows=1 width=8) (actual time=0.006..0.007 rows=1.00 loops=1)
+   Index Cond: ((four &gt;= 1) AND (four &lt;= 3) AND (unique1 = 42))
+   Heap Fetches: 0
+   Index Searches: 3
+   Buffers: shared hit=7
+ Planning Time: 0.029 ms
+ Execution Time: 0.012 ms
+</screen>
+
+    这里看到一个使用<structname>tenk1_four_unique1_idx</structname>的 Index-Only Scan 节点，该索引是<structname>tenk1</structname>表上由<structfield>four</structfield>和<structfield>unique1</structfield>两列组成的多列索引。该扫描执行了 3 次搜索，每次都只读取一个索引叶子页面：<quote><literal>four = 1 AND unique1 = 42</literal></quote>、<quote><literal>four = 2 AND unique1 = 42</literal></quote>以及<quote><literal>four = 3 AND unique1 = 42</literal></quote>。正如<xref linkend="indexes-multicolumn"/>中讨论的那样，这个索引通常很适合作为跳跃扫描的目标，因为它的前导列，也就是<structfield>four</structfield>列，只包含 4 个不同值，而它的第二列也是最后一列，即<structfield>unique1</structfield>列，则包含大量不同值。
+   </para>
+
+   <para>
+    另一类额外信息，是被过滤条件移除的行数：
+
+<screen>
+EXPLAIN ANALYZE SELECT * FROM tenk1 WHERE ten &lt; 7;
+
+                                               QUERY PLAN
+-------------------------------------------------------------------&zwsp;--------------------------------------
+ Seq Scan on tenk1  (cost=0.00..470.00 rows=7000 width=244) (actual time=0.030..1.995 rows=7000.00 loops=1)
+   Filter: (ten &lt; 7)
+   Rows Removed by Filter: 3000
+   Buffers: shared hit=345
+ Planning Time: 0.102 ms
+ Execution Time: 2.145 ms
+</screen>
+
+    这些计数对于应用在连接节点上的过滤条件尤其有价值。只有当至少有一行扫描到的行，或者在连接节点场景下至少有一对潜在连接对，被过滤条件拒绝时，才会出现<quote>Rows Removed</quote>这一行。
+   </para>
+
+   <para>
+    与过滤条件类似的一种情况，会出现在<quote>有损</quote>索引扫描中。例如，考虑这个查询，它查找包含某个指定点的多边形：
+
+<screen>
+EXPLAIN ANALYZE SELECT * FROM polygon_tbl WHERE f1 @&gt; polygon '(0.5,2.0)';
+
+                                              QUERY PLAN
+-------------------------------------------------------------------&zwsp;-----------------------------------
+ Seq Scan on polygon_tbl  (cost=0.00..1.09 rows=1 width=85) (actual time=0.023..0.023 rows=0.00 loops=1)
+   Filter: (f1 @&gt; '((0.5,2))'::polygon)
+   Rows Removed by Filter: 7
+   Buffers: shared hit=1
+ Planning Time: 0.039 ms
+ Execution Time: 0.033 ms
+</screen>
+
+    规划器认为（而且判断完全正确）这个示例表太小，不值得为它使用索引扫描，因此我们看到的是普通顺序扫描，所有行都被过滤条件拒绝了。但如果我们强制使用索引扫描，就会看到：
+
+<screen>
+SET enable_seqscan TO off;
+
+EXPLAIN ANALYZE SELECT * FROM polygon_tbl WHERE f1 @&gt; polygon '(0.5,2.0)';
+
+                                                        QUERY PLAN
+-------------------------------------------------------------------&zwsp;-------------------------------------------------------
+ Index Scan using gpolygonind on polygon_tbl  (cost=0.13..8.15 rows=1 width=85) (actual time=0.074..0.074 rows=0.00 loops=1)
+   Index Cond: (f1 @&gt; '((0.5,2))'::polygon)
+   Rows Removed by Index Recheck: 1
+   Index Searches: 1
+   Buffers: shared hit=1
+ Planning Time: 0.039 ms
+ Execution Time: 0.098 ms
+</screen>
+
+    这里我们可以看到，索引返回了一个候选行，但随后在重新检查索引条件时又将其排除。这是因为 GiST 索引在多边形包含测试上是<quote>有损的</quote>：它实际上返回的是与目标相交叠的多边形所在行，随后我们还必须对这些行执行精确的包含性测试。
+   </para>
+
+   <para>
+    <command>EXPLAIN</command>有一个<literal>BUFFERS</literal>选项，可为给定查询在规划和执行期间执行的 I/O 操作提供更详细的信息。显示出来的缓冲区数字，是该节点及其所有子节点所命中的、读取的、弄脏的和写出的非去重缓冲区总数。<literal>ANALYZE</literal>选项会隐式启用<literal>BUFFERS</literal>。如果不希望如此，也可以显式关闭<literal>BUFFERS</literal>：
+
+<screen>
+EXPLAIN (ANALYZE, BUFFERS OFF) SELECT * FROM tenk1 WHERE unique1 &lt; 100 AND unique2 &gt; 9000;
+
+                                                           QUERY PLAN
+-------------------------------------------------------------------&zwsp;--------------------------------------------------------------
+ Bitmap Heap Scan on tenk1  (cost=25.07..60.11 rows=10 width=244) (actual time=0.105..0.114 rows=10.00 loops=1)
+   Recheck Cond: ((unique1 &lt; 100) AND (unique2 &gt; 9000))
+   Heap Blocks: exact=10
+   -&gt;  BitmapAnd  (cost=25.07..25.07 rows=10 width=0) (actual time=0.100..0.101 rows=0.00 loops=1)
+         -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=100 width=0) (actual time=0.027..0.027 rows=100.00 loops=1)
+               Index Cond: (unique1 &lt; 100)
+               Index Searches: 1
+         -&gt;  Bitmap Index Scan on tenk1_unique2  (cost=0.00..19.78 rows=999 width=0) (actual time=0.070..0.070 rows=999.00 loops=1)
+               Index Cond: (unique2 &gt; 9000)
+               Index Searches: 1
+ Planning Time: 0.162 ms
+ Execution Time: 0.143 ms
+</screen>
+   </para>
+
+   <para>
+    要记住，由于<command>EXPLAIN ANALYZE</command>确实会运行查询，所以任何副作用都会照常发生，尽管查询本来可能输出的结果会被丢弃，转而打印<command>EXPLAIN</command>数据。如果想分析一个修改数据的查询，又不希望真正改动表，可以像下面这样在事后回滚命令：
+
+<screen>
+BEGIN;
+
+EXPLAIN ANALYZE UPDATE tenk1 SET hundred = hundred + 1 WHERE unique1 &lt; 100;
+
+                                                           QUERY PLAN
+-------------------------------------------------------------------&zwsp;-------------------------------------------------------------
+ Update on tenk1  (cost=5.06..225.23 rows=0 width=0) (actual time=1.634..1.635 rows=0.00 loops=1)
+   -&gt;  Bitmap Heap Scan on tenk1  (cost=5.06..225.23 rows=100 width=10) (actual time=0.065..0.141 rows=100.00 loops=1)
+         Recheck Cond: (unique1 &lt; 100)
+         Heap Blocks: exact=90
+         Buffers: shared hit=4 read=2
+         -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=100 width=0) (actual time=0.031..0.031 rows=100.00 loops=1)
+               Index Cond: (unique1 &lt; 100)
+               Index Searches: 1
+               Buffers: shared read=2
+ Planning Time: 0.151 ms
+ Execution Time: 1.856 ms
+
+ROLLBACK;
+</screen>
+   </para>
+
+   <para>
+    如本例所示，当查询是<command>INSERT</command>、<command>UPDATE</command>、<command>DELETE</command>或<command>MERGE</command>命令时，真正执行表修改的工作由顶层的 Insert、Update、Delete 或 Merge 计划节点完成。该节点下面的计划节点负责定位旧行和/或计算新数据。因此，上面看到的是前文已经介绍过的同类位图表扫描，它的输出被送入一个负责存储更新后行的 Update 节点。值得注意的是，虽然数据修改节点可能占用相当可观的运行时间（这里它消耗了大部分时间），但规划器目前不会为这部分工作额外增加任何代价估计。这是因为这项工作对每个正确的查询计划都相同，因此不会影响规划决策。
+   </para>
+
+   <para>
+    当<command>UPDATE</command>、<command>DELETE</command>或<command>MERGE</command>命令影响分区表或继承层次时，输出可能像这样：
+
+<screen>
+EXPLAIN UPDATE gtest_parent SET f1 = CURRENT_DATE WHERE f2 = 101;
+
+                                       QUERY PLAN
+-------------------------------------------------------------------&zwsp;---------------------
+ Update on gtest_parent  (cost=0.00..3.06 rows=0 width=0)
+   Update on gtest_child gtest_parent_1
+   Update on gtest_child2 gtest_parent_2
+   Update on gtest_child3 gtest_parent_3
+   -&gt;  Append  (cost=0.00..3.06 rows=3 width=14)
+         -&gt;  Seq Scan on gtest_child gtest_parent_1  (cost=0.00..1.01 rows=1 width=14)
+               Filter: (f2 = 101)
+         -&gt;  Seq Scan on gtest_child2 gtest_parent_2  (cost=0.00..1.01 rows=1 width=14)
+               Filter: (f2 = 101)
+         -&gt;  Seq Scan on gtest_child3 gtest_parent_3  (cost=0.00..1.01 rows=1 width=14)
+               Filter: (f2 = 101)
+</screen>
+
+    在这个示例中，Update 节点需要考虑三个子表，而不包括最初提到的那个分区表，因为它本身并不存储任何数据。因此这里有三个输入扫描子计划，每个表对应一个。为了便于理解，Update 节点带有注释，显示将要更新的具体目标表，其顺序与对应子计划的顺序一致。
+   </para>
+
+   <para>
+    <command>EXPLAIN ANALYZE</command>显示的<literal>Planning time</literal>，是从已解析的查询生成查询计划并完成优化所花费的时间；其中不包括解析和重写。
+   </para>
+
+   <para>
+    <command>EXPLAIN ANALYZE</command>显示的<literal>Execution time</literal>包括执行器启动和关闭所需的时间，以及运行所有已触发触发器所花费的时间，但不包括解析、重写和规划时间。若存在<literal>BEFORE</literal>触发器，其执行时间会计入相关的 Insert、Update 或 Delete 节点；而<literal>AFTER</literal>触发器的时间不会计入那里，因为<literal>AFTER</literal>触发器是在整个计划完成之后才触发的。每个触发器，无论是<literal>BEFORE</literal>还是<literal>AFTER</literal>，其总耗时也会单独显示。注意，延迟约束触发器要到事务结束时才会执行，因此<command>EXPLAIN ANALYZE</command>完全不会把它们计入其中。
+   </para>
+
+   <para>
+    顶层节点显示的时间，不包括将查询输出数据转换为可显示形式或将其发送给客户端所需的任何时间。虽然<command>EXPLAIN ANALYZE</command>永远不会把数据发送给客户端，但可以通过指定<literal>SERIALIZE</literal>选项，要求它将查询输出数据转换成可显示形式，并测量这一过程所需的时间。这段时间会单独显示出来，同时也会计入总的<literal>Execution time</literal>。
+   </para>
+
+  </sect2>
+
+  <sect2 id="using-explain-caveats">
+
+   <title>注意事项</title>
+
+   <para>
+    <command>EXPLAIN ANALYZE</command>测得的运行时间，可能以两种重要方式偏离同一查询的正常执行时间。第一，由于不会向客户端传递任何输出行，因此网络传输开销不会被计入。除非指定了<literal>SERIALIZE</literal>，I/O 转换开销同样也不会被计入。第二，<command>EXPLAIN ANALYZE</command>附加的测量开销本身可能相当可观，尤其是在操作系统调用<function>gettimeofday()</function>较慢的机器上。可以使用<xref linkend="pgtesttiming"/>工具来测量系统上的计时开销。
+   </para>
+
+   <para>
+    不应将<command>EXPLAIN</command>结果外推到与实际测试场景差异很大的情况。例如，在一个很小的表上得到的结果，不能假定也适用于大型表。规划器的代价估计不是线性的，因此它可能会为更大或更小的表选择不同的计划。一个极端示例是：对于只占用一个磁盘页的表，无论索引是否可用，几乎总会得到顺序扫描计划。规划器认识到，无论如何处理该表都需要一次磁盘页读取，因此再额外读取页面去查看索引并没有价值。（前面的<literal>polygon_tbl</literal>示例已经展示过这种情况。）
+   </para>
+
+   <para>
+    在某些情况下，实际值和估计值不会很好地对应，但这并不表示出现了问题。其中一种情况是，计划节点的执行会被<literal>LIMIT</literal>或类似效果提前截断。例如，在前面用过的<literal>LIMIT</literal>查询中：
+
+<screen>
+EXPLAIN ANALYZE SELECT * FROM tenk1 WHERE unique1 &lt; 100 AND unique2 &gt; 9000 LIMIT 2;
+
+                                                          QUERY PLAN
+-------------------------------------------------------------------&zwsp;------------------------------------------------------------
+ Limit  (cost=0.29..14.33 rows=2 width=244) (actual time=0.051..0.071 rows=2.00 loops=1)
+   Buffers: shared hit=16
+   -&gt;  Index Scan using tenk1_unique2 on tenk1  (cost=0.29..70.50 rows=10 width=244) (actual time=0.051..0.070 rows=2.00 loops=1)
+         Index Cond: (unique2 &gt; 9000)
+         Filter: (unique1 &lt; 100)
+         Rows Removed by Filter: 287
+         Index Searches: 1
+         Buffers: shared hit=16
+ Planning Time: 0.077 ms
+ Execution Time: 0.086 ms
+</screen>
+
+    Index Scan 节点的估计代价和行计数显示得像是它会运行到结束一样。但实际上，Limit 节点在拿到两行之后就停止请求更多行，因此实际行计数只有 2，运行时间也低于代价估计所暗示的水平。这并不是估计错误，只是估计值与真实值的显示方式不同而已。
+   </para>
+
+   <para>
+    归并连接也会产生一些容易误导人的计量现象。如果归并连接已经耗尽其中一个输入，而另一个输入中的下一个键值又大于前一个输入的最后一个键值，那么它就会停止继续读取前者；在这种情况下，不可能再有更多匹配，因此也就不需要扫描另一个输入的剩余部分。这会导致某个子节点没有被完整读取，其结果与前面提到的<literal>LIMIT</literal>情况类似。此外，如果外侧（第一个）子节点包含带有重复键值的行，内侧（第二个）子节点会被回退并重新扫描，以查找能够匹配该键值的行。<command>EXPLAIN ANALYZE</command>会把这些对同一内侧行的重复输出，统计得像是真实的额外行一样。当外侧存在大量重复值时，内侧子计划节点报告出的实际行计数，可能会明显大于内侧关系中真实存在的行数。
+   </para>
+
+   <para>
+    由于实现上的限制，BitmapAnd 和 BitmapOr 节点总是报告其实际行计数为零。
+   </para>
+
+   <para>
+    通常，<command>EXPLAIN</command>会显示规划器生成的每一个计划节点。不过在某些情况下，执行器能够根据那些在规划阶段尚不可用的参数值判断某些节点根本不需要执行，因为它们不可能产生任何行。（目前，这种情况只会发生在扫描分区表的 Append 或 MergeAppend 节点的子节点上。）当出现这种情况时，这些计划节点会从<command>EXPLAIN</command>输出中省略，转而显示一条<literal>Subplans Removed: <replaceable>N</replaceable></literal>标注。
+   </para>
+  </sect2>
+
+ </sect1>
+
+ <sect1 id="planner-stats">
+
+  <title>规划器使用的统计信息</title>
+
+  <indexterm zone="planner-stats">
+   <primary>statistics</primary>
+   <secondary>of the planner</secondary>
+  </indexterm>
+
+  <sect2 id="zh18-auto-perform-sect2-1">
+
+   <title>单列统计信息</title>
+
+  <para>
+   如上一节所见，查询规划器需要估计查询将检索多少行，才能对查询计划做出良好选择。本节简要介绍系统用于这些估计的统计信息。
+  </para>
+
+  <para>
+   统计信息的一部分，是每个表和索引中的项总数，以及每个表和索引占用的磁盘块数。这些信息保存在<link linkend="catalog-pg-class"><structname>pg_class</structname></link>表的<structfield>reltuples</structfield>和<structfield>relpages</structfield>列中。可以用类似下面的查询查看这些信息：
+
+<screen>
+SELECT relname, relkind, reltuples, relpages
+FROM pg_class
+WHERE relname LIKE 'tenk1%';
+
+       relname        | relkind | reltuples | relpages
+----------------------+---------+-----------+----------
+ tenk1                | r       |     10000 |      345
+ tenk1_hundred        | i       |     10000 |       11
+ tenk1_thous_tenthous | i       |     10000 |       30
+ tenk1_unique1        | i       |     10000 |       30
+ tenk1_unique2        | i       |     10000 |       30
+(5 rows)
+</screen>
+
+   这里我们可以看到<structname>tenk1</structname>包含 10000 行，它的索引也有这么多行，不过索引显然比表小得多。
+  </para>
+
+  <para>
+   出于效率考虑，<structfield>reltuples</structfield>和<structfield>relpages</structfield>不会实时更新，因此它们通常包含有些过时的值。它们会在<command>VACUUM</command>、<command>ANALYZE</command>以及少数 DDL 命令（如<command>CREATE INDEX</command>）执行时被更新。不扫描全表的<command>VACUUM</command>或<command>ANALYZE</command>操作（这很常见）会根据其实际扫描到的那一部分增量更新<structfield>reltuples</structfield>计数，因此得到的是近似值。无论如何，规划器都会将它在<structname>pg_class</structname>中找到的值按当前物理表大小进行缩放，从而得到更接近实际情况的近似值。
+  </para>
+
+  <indexterm>
+   <primary>pg_statistic</primary>
+  </indexterm>
+
+  <para>
+   大多数查询只会检索表中一部分行，因为它们通过<literal>WHERE</literal>子句限制了需要检查的行。因此，规划器需要估算<literal>WHERE</literal>子句的<firstterm>选择度</firstterm>，也就是满足<literal>WHERE</literal>子句中各个条件的行所占比例。完成这项任务所需的信息存储在<link linkend="catalog-pg-statistic"><structname>pg_statistic</structname></link>系统目录中。<structname>pg_statistic</structname>中的条目由<command>ANALYZE</command>和<command>VACUUM ANALYZE</command>命令更新，而且即使刚更新完，也始终只是近似值。
+  </para>
+
+  <indexterm>
+   <primary>pg_stats</primary>
+  </indexterm>
+
+  <para>
+   手工检查统计信息时，与其直接查看<structname>pg_statistic</structname>，通常更适合查看其视图<link linkend="view-pg-stats"><structname>pg_stats</structname></link>。<structname>pg_stats</structname>设计得更便于阅读。此外，<structname>pg_stats</structname>对所有用户都可读，而<structname>pg_statistic</structname>只有超级用户才能读取。（这样可以防止非特权用户通过统计信息推断其他用户表中的内容。<structname>pg_stats</structname>视图仅显示当前用户有权限读取的表。）例如，可以执行：
+
+<screen>
+SELECT attname, inherited, n_distinct,
+       array_to_string(most_common_vals, E'\n') as most_common_vals
+FROM pg_stats
+WHERE tablename = 'road';
+
+ attname | inherited | n_distinct |          most_common_vals
+---------+-----------+------------+------------------------------------
+ name    | f         | -0.5681108 | I- 580                        Ramp+
+         |           |            | I- 880                        Ramp+
+         |           |            | Sp Railroad                       +
+         |           |            | I- 580                            +
+         |           |            | I- 680                        Ramp+
+         |           |            | I- 80                         Ramp+
+         |           |            | 14th                          St  +
+         |           |            | I- 880                            +
+         |           |            | Mac Arthur                    Blvd+
+         |           |            | Mission                       Blvd+
+...
+ name    | t         |    -0.5125 | I- 580                        Ramp+
+         |           |            | I- 880                        Ramp+
+         |           |            | I- 580                            +
+         |           |            | I- 680                        Ramp+
+         |           |            | I- 80                         Ramp+
+         |           |            | Sp Railroad                       +
+         |           |            | I- 880                            +
+         |           |            | State Hwy 13                  Ramp+
+         |           |            | I- 80                             +
+         |           |            | State Hwy 24                  Ramp+
+...
+ thepath | f         |          0 |
+ thepath | t         |          0 |
+(4 rows)
+</screen>
+
+   注意，这里为同一列显示了两行：一行对应从<literal>road</literal>表开始的完整继承层次（<literal>inherited</literal>=<literal>t</literal>），另一行只对应<literal>road</literal>表本身（<literal>inherited</literal>=<literal>f</literal>）。（为简洁起见，这里只显示了<literal>name</literal>列前十个最常见值。）
+  </para>
+
+  <para>
+   <command>ANALYZE</command>在<structname>pg_statistic</structname>中存储的信息量，特别是每列<structfield>most_common_vals</structfield>中的最大项数和<structfield>histogram_bounds</structfield>数组的大小，可以使用<command>ALTER TABLE SET STATISTICS</command>命令按列设置，也可以通过设置配置变量<xref linkend="guc-default-statistics-target"/>进行全局设置。目前默认上限是 100 项。提高这一上限可能让规划器做出更准确的估计，尤其是对于数据分布不规则的列；代价则是<structname>pg_statistic</structname>占用更多空间，并且计算估计值所需时间也会略有增加。相反，对于数据分布较简单的列，较低的上限可能已经足够。
+  </para>
+
+  <para>
+   更多规划器对统计信息的使用可参阅<xref linkend="planner-stats-details"/>。
+  </para>
+  </sect2>
+
+  <sect2 id="planner-stats-extended">
+
+   <title>扩展统计信息</title>
+
+   <indexterm zone="planner-stats-extended">
+    <primary>统计信息</primary>
+    <secondary>规划器的</secondary>
+   </indexterm>
+
+   <indexterm>
+    <primary>correlation</primary>
+    <secondary>in the query planner</secondary>
+   </indexterm>
+
+   <indexterm>
+    <primary>pg_statistic_ext</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>pg_statistic_ext_data</primary>
+   </indexterm>
+
+   <para>
+    由于查询子句中使用的多个列彼此相关，慢查询选择了糟糕执行计划的情况并不少见。规划器通常会假设多个条件彼此独立，而当列值存在相关性时，这一假设就不成立了。常规统计信息天然是按单列组织的，因此无法表达跨列相关性的信息。不过，<productname>PostgreSQL</productname>能够计算<firstterm>多元统计信息</firstterm>，从而捕捉这类信息。
+   </para>
+
+   <para>
+    由于可能的列组合数量极其庞大，因此不可能自动计算所有多元统计信息。可以创建<firstterm>扩展统计信息对象</firstterm>，更常见的简称是<firstterm>统计信息对象</firstterm>，来指示服务器收集一组感兴趣列上的统计信息。
+   </para>
+
+   <para>
+    统计信息对象可使用<link linkend="sql-createstatistics"><command>CREATE STATISTICS</command></link>命令创建。创建这样的对象，只是建立一个表示“对此类统计信息感兴趣”的目录项。实际的数据收集由<command>ANALYZE</command>执行，无论是手工执行还是后台自动分析。收集到的值可以在<link linkend="catalog-pg-statistic-ext-data"><structname>pg_statistic_ext_data</structname></link>目录中查看。
+   </para>
+
+   <para>
+    <command>ANALYZE</command>使用与计算常规单列统计信息相同的表行样本来计算扩展统计信息。由于样本大小会随着表或列的统计信息目标值增大而增大，如前一节所述，较大的统计信息目标通常会带来更准确的扩展统计信息，同时也意味着需要花费更多时间来计算它们。
+   </para>
+
+   <para>
+    下面的小节介绍当前支持的扩展统计信息类型。
+   </para>
+
+   <sect3 id="zh18-auto-perform-sect3-1">
+
+    <title>函数依赖</title>
+
+    <para>
+     最简单的一类扩展统计信息跟踪<firstterm>函数依赖</firstterm>，这是数据库范式定义中使用的概念。如果知道列<structfield>a</structfield>的值就足以确定列<structfield>b</structfield>的值，也就是说，不存在两行具有相同的<structfield>a</structfield>值却拥有不同的<structfield>b</structfield>值，那么就称列<structfield>b</structfield>函数依赖于列<structfield>a</structfield>。在完全规范化的数据库中，函数依赖应当只存在于主键和超键上。不过在实践中，很多数据集出于各种原因并未完全规范化，常见情形之一就是为了性能而有意进行反规范化。即使在完全规范化的数据库中，某些列之间也可能存在部分相关性，这可以表现为部分函数依赖。
+    </para>
+
+    <para>
+     函数依赖的存在会直接影响某些查询中估计值的准确性。如果一个查询同时包含独立列和依赖列上的条件，那么依赖列上的条件不会进一步缩小结果集。但如果缺少函数依赖的信息，查询规划器就会假定这些条件彼此独立，从而低估结果集大小。
+    </para>
+
+    <para>
+     为了向规划器提供函数依赖信息，<command>ANALYZE</command>可以收集跨列依赖程度的度量。若要评估所有列组之间的依赖程度，成本会高到难以承受，因此数据收集仅限于那些在同一个统计信息对象中共同出现的列组，这由<literal>dependencies</literal>选项定义。建议只为强相关的列组创建<literal>dependencies</literal>统计信息，以避免在<command>ANALYZE</command>和后续查询规划中产生不必要的开销。
+    </para>
+
+    <para>
+     这里是收集函数依赖统计信息的示例：
+<programlisting>
+CREATE STATISTICS stts (dependencies) ON city, zip FROM zipcodes;
+
+ANALYZE zipcodes;
+
+SELECT stxname, stxkeys, stxddependencies
+  FROM pg_statistic_ext join pg_statistic_ext_data on (oid = stxoid)
+  WHERE stxname = 'stts';
+ stxname | stxkeys |             stxddependencies
+---------+---------+------------------------------------------
+ stts    | 1 5     | {"1 => 5": 1.000000, "5 => 1": 0.423130}
+(1 row)
+</programlisting>
+     可以看到，第1列（邮政编码）完全确定第5列（城市），所以系数为1.0，而城市只有大约42% 的时间确定邮政编码，这意味着有许多城市（58%）由多个邮政编码表示。
+    </para>
+
+    <para>
+     在为涉及函数依赖列的查询计算选择度时，规划器会使用依赖系数来调整针对条件的选择度估计，这样就不会产生低估。
+    </para>
+
+    <sect4 id="zh18-auto-perform-sect4-1">
+
+     <title>函数依赖的限制</title>
+
+     <para>
+      当前只有在考虑简单等值条件（将列与常量值比较）和具有常量值的<literal>IN</literal>
+      子句时，函数依赖才适用。不会使用它们来改进比较两个列或者比较列和表达式的等值条件的估计，
+      也不会用它们来改进范围子句、<literal>LIKE</literal>或者任何其他类型的条件。
+     </para>
+
+     <para>
+      在利用函数依赖做估计时，规划器假定涉及列上的条件彼此兼容，因此是冗余的。如果它们并不兼容，正确估计本应为零行，但这种可能性不会被考虑。例如，给定如下查询
+<programlisting>
+SELECT * FROM zipcodes WHERE city = 'San Francisco' AND zip = '94105';
+</programlisting>
+      规划器将会忽视<structfield>city</structfield>子句，因为它不改变选择度，这是正确的。不过，即便真地只有零行满足下面的查询，规划器也会做出同样的假设
+<programlisting>
+SELECT * FROM zipcodes WHERE city = 'San Francisco' AND zip = '90210';
+</programlisting>
+      不过，函数依赖统计信息无法提供足够的信息来排除这种情况。
+     </para>
+
+     <para>
+      在很多实际场景中，这种假设通常是成立的。例如，应用程序中可能存在一个图形界面，只允许选择彼此兼容的城市和邮编值用于查询。但如果不是这样，函数依赖可能就不是一个可行的选项。
+     </para>
+    </sect4>
+   </sect3>
+
+   <sect3 id="zh18-auto-perform-sect3-2">
+
+    <title>多元可区分值计数</title>
+
+    <para>
+     单列统计信息存储每一列中可区分值的数量。在组合多个列（例如<literal>GROUP BY a, b</literal>）时，如果规划器只有单列统计数据，则对可区分值数量的估计常常会错误，导致选择不好的计划。
+    </para>
+
+    <para>
+     为了改进这种估计，<command>ANALYZE</command>可以为列组收集可区分值统计信息。和以前一样，为每一种可能的列组合做这件事情是不切实际的，因此只会为一起出现在一个统计信息对象（用<literal>ndistinct</literal>选项定义）中的列组收集数据。将会为列组中列出的列的每一种可能的组合都收集数据。
+    </para>
+
+    <para>
+     继续前面的示例，ZIP 代码表中的可区分值计数可能如下所示：
+<programlisting>
+CREATE STATISTICS stts2 (ndistinct) ON city, state, zip FROM zipcodes;
+
+ANALYZE zipcodes;
+
+SELECT stxkeys AS k, stxdndistinct AS nd
+  FROM pg_statistic_ext join pg_statistic_ext_data on (oid = stxoid)
+  WHERE stxname = 'stts2';
+-[ RECORD 1 ]------------------------------------------------------&zwsp;--
+k  | 1 2 5
+nd | {"1, 2": 33178, "1, 5": 33178, "2, 5": 27435, "1, 2, 5": 33178}
+(1 row)
+</programlisting>
+     这表示有三种列组合都有 33178 个可区分值：ZIP 代码和州、ZIP 代码和城市，以及 ZIP 代码、城市和州（考虑到在这个表中仅靠 ZIP 代码就已唯一，这三者相等本来就是预期中的）。另一方面，城市和州的组合只有 27435 个可区分值。
+    </para>
+
+    <para>
+     建议只对实际用于分组的列组合以及分组数错误估计导致了糟糕计划的列组合创建<literal>ndistinct</literal>统计信息对象。否则，<command>ANALYZE</command>循环只会被浪费。
+    </para>
+   </sect3>
+
+   <sect3 id="zh18-auto-perform-sect3-3">
+
+    <title>多元 MCV 列表</title>
+
+    <para>
+     另一类按列存储的统计信息是最常见值列表。这允许对单列做出非常准确的估计，但对于同时涉及多个列条件的查询，仍可能产生显著误差。
+    </para>
+
+    <para>
+     为了改进这类估计，<command>ANALYZE</command>可以收集列组合上的 MCV 列表。
+     与函数依赖和 n-distinct 系数类似，对每一种可能的列分组都这样做并不现实。
+     对 MCV 列表而言尤其如此，因为与函数依赖和 n-distinct 系数不同，它确实要存储常见的列值本身。
+     因此，只会为那些共同出现在使用<literal>mcv</literal>选项定义的统计信息对象中的列组收集数据。
+    </para>
+
+    <para>
+     继续前面的示例，ZIP 代码表上的 MCV 列表可能如下所示（与较简单类型的统计信息不同，这里需要借助函数来检查 MCV 内容）：
+
+<programlisting>
+CREATE STATISTICS stts3 (mcv) ON city, state FROM zipcodes;
+
+ANALYZE zipcodes;
+
+SELECT m.* FROM pg_statistic_ext join pg_statistic_ext_data on (oid = stxoid),
+                pg_mcv_list_items(stxdmcv) m WHERE stxname = 'stts3';
+
+ index |         values         | nulls | frequency | base_frequency
+-------+------------------------+-------+-----------+----------------
+     0 | {Washington, DC}       | {f,f} |  0.003467 |        2.7e-05
+     1 | {Apo, AE}              | {f,f} |  0.003067 |        1.9e-05
+     2 | {Houston, TX}          | {f,f} |  0.002167 |       0.000133
+     3 | {El Paso, TX}          | {f,f} |     0.002 |       0.000113
+     4 | {New York, NY}         | {f,f} |  0.001967 |       0.000114
+     5 | {Atlanta, GA}          | {f,f} |  0.001633 |        3.3e-05
+     6 | {Sacramento, CA}       | {f,f} |  0.001433 |        7.8e-05
+     7 | {Miami, FL}            | {f,f} |    0.0014 |          6e-05
+     8 | {Dallas, TX}           | {f,f} |  0.001367 |        8.8e-05
+     9 | {Chicago, IL}          | {f,f} |  0.001333 |        5.1e-05
+   ...
+(99 行)
+</programlisting>
+     这表明城市和州的最常见组合是哥伦比亚特区的 Washington，其实际频率（在样本中）约为 0.35%。
+     该组合的基础频率，也就是根据简单的逐列频率计算出来的频率，仅为 0.0027%，从而低估了两个数量级。
+    </para>
+
+    <para>
+     建议只为那些在条件中确实会一起使用，而且错误估计会导致糟糕执行计划的列组合创建<acronym>MCV</acronym>统计对象。
+     否则，只会浪费<command>ANALYZE</command>和规划时间。
+    </para>
+   </sect3>
+
+  </sect2>
+ </sect1>
+
+ <sect1 id="explicit-joins">
+
+  <title>用显式<literal>JOIN</literal>子句控制规划器</title>
+
+  <indexterm zone="explicit-joins">
+   <primary>join</primary>
+   <secondary>controlling the order</secondary>
+  </indexterm>
+
+  <para>
+   可以在一定程度上用显式<literal>JOIN</literal>语法控制查询规划器。要理解这一点为何重要，先需要一些背景知识。
+  </para>
+
+  <para>
+   在一个简单的连接查询中，例如：
+<programlisting>
+SELECT * FROM a, b, c WHERE a.id = b.id AND b.ref = c.id;
+</programlisting>
+   规划器可以自由地按任意顺序连接这些表。例如，它可以生成一个查询计划，先利用<literal>WHERE</literal>条件<literal>a.id = b.id</literal>将 A 连接到 B，然后再利用另一个<literal>WHERE</literal>条件把 C 连接到这个结果上。也可以先连接 B 和 C，再把 A 连接到所得结果上。甚至还可以先连接 A 和 C，再与 B 连接，但这样效率会很低，因为必须先形成 A 和 C 的完整笛卡尔积，而<literal>WHERE</literal>子句中并没有可用于优化这一连接的条件。（<productname>PostgreSQL</productname>执行器中的所有连接都发生在两个输入表之间，因此结果必须以这些形式之一逐步构造出来。）关键在于，这些不同的连接可能性在语义上是等价的，但执行代价可能相差极大。因此，规划器会探索它们，力图找出最高效的查询计划。
+  </para>
+
+  <para>
+   当查询只涉及两个或三个表时，需要考虑的连接顺序并不多。但可能的连接顺序数量会随着表数增加而呈指数增长。输入表超过十个左右之后，对所有可能性做穷举搜索实际上就不再可行，甚至六七个表也可能让规划耗时长得令人厌烦。输入表过多时，<productname>PostgreSQL</productname>规划器会从穷举搜索切换到一种<firstterm>遗传</firstterm>概率搜索，只考虑有限数量的可能性。（切换阈值由运行时参数<xref linkend="guc-geqo-threshold"/>控制。）遗传搜索耗时更少，但并不一定能找到最优计划。
+  </para>
+
+  <para>
+   当查询涉及外连接时，规划器比处理普通（内）连接时拥有更小的自由度。例如，考虑：
+<programlisting>
+SELECT * FROM a LEFT JOIN (b JOIN c ON (b.ref = c.id)) ON (a.id = b.id);
+</programlisting>
+   尽管这个查询的约束表面上与前一个非常相似，但它们的语义不同，因为如果 A 中有某一行无法匹配 B 和 C 连接结果中的任何行，该行仍然必须被输出。因此这里规划器对连接顺序没有选择：它必须先连接 B 和 C，再把 A 连接到该结果上。相应地，这个查询比前一个查询需要更少的规划时间。在其他情况下，规划器可能会判断多种连接顺序都是安全的。例如：
+<programlisting>
+SELECT * FROM a LEFT JOIN b ON (a.bid = b.id) LEFT JOIN c ON (a.cid = c.id);
+</programlisting>
+   将 A 首先连接到 B 或 C 都是有效的。当前，只有<literal>FULL JOIN</literal>完全约束连接顺序。大多数涉及<literal>LEFT JOIN</literal>或<literal>RIGHT JOIN</literal>的实际情况都在某种程度上可以被重新排列。
+  </para>
+
+  <para>
+   显式连接语法（<literal>INNER JOIN</literal>、<literal>CROSS JOIN</literal>或无修饰的<literal>JOIN</literal>）在语义上和<literal>FROM</literal>中列出输入关系是一样的， 因此它不约束连接顺序。
+  </para>
+
+  <para>
+   即使大多数类型的<literal>JOIN</literal>并不会完全约束连接顺序，仍然可以指示<productname>PostgreSQL</productname>查询规划器将所有<literal>JOIN</literal>子句都当作带有连接顺序约束来处理。例如，下面三个查询在逻辑上是等价的：
+<programlisting>
+SELECT * FROM a, b, c WHERE a.id = b.id AND b.ref = c.id;
+SELECT * FROM a CROSS JOIN b CROSS JOIN c WHERE a.id = b.id AND b.ref = c.id;
+SELECT * FROM a JOIN (b JOIN c ON (b.ref = c.id)) ON (a.id = b.id);
+</programlisting>
+   但如果告诉规划器遵循<literal>JOIN</literal>顺序，那么第二个和第三个查询在规划上会比第一个花费更少时间。对于只有三个表的连接来说，这种效果微不足道；但当表很多时，它可能非常关键。
+  </para>
+
+  <para>
+   要强制规划器遵循显式<literal>JOIN</literal>给出的连接顺序，可以将运行时参数<xref linkend="guc-join-collapse-limit"/>设置为 1。（其他可能值见下文讨论。）
+  </para>
+
+  <para>
+   不必为了缩短搜索时间而完全约束连接顺序，因为可以在普通<literal>FROM</literal>列表的某一项中使用<literal>JOIN</literal>操作符。例如：
+<programlisting>
+SELECT * FROM a CROSS JOIN b, c, d, e WHERE ...;
+</programlisting>
+   如果设置<varname>join_collapse_limit</varname> = 1，就会强制规划器先将 A 连接到 B，然后再与其他表连接，但不会进一步约束它的选择。在这个示例中，可能的连接顺序数量减少了 5 倍。
+  </para>
+
+  <para>
+   以这种方式约束规划器的搜索，是一种既可减少规划时间、又可引导规划器生成更好查询计划的实用技巧。如果规划器默认选择了糟糕的连接顺序，可以通过<literal>JOIN</literal>语法强制它采用更好的顺序，前提当然是确实知道哪个顺序更好。建议进行实验。
+  </para>
+
+  <para>
+   与此密切相关、同样会影响规划时间的另一个问题，是将子查询折叠进父查询。例如：
+<programlisting>
+SELECT *
+FROM x, y,
+    (SELECT * FROM a, b, c WHERE something) AS ss
+WHERE somethingelse;
+</programlisting>
+   这种情况可能出现在使用包含连接的视图时；该视图的<literal>SELECT</literal>规则会被插入到引用视图的位置，从而得到一个与上面非常相似的查询。通常，规划器会尝试把子查询折叠进父查询，得到：
+<programlisting>
+SELECT * FROM x, y, a, b, c WHERE something AND somethingelse;
+</programlisting>
+   这通常会生成比单独规划子查询更好的计划。（例如，外层<literal>WHERE</literal>条件可能会先把 X 连接到 A，从而消除 A 中的大量行，也就避免了形成子查询完整逻辑输出的需要。）但与此同时，规划时间也增加了；这里把两个彼此独立的三路连接问题，替换成了一个五路连接问题。由于可能性数量呈指数增长，这种差别可能非常大。为了避免陷入巨大的连接搜索问题，如果折叠子查询会使父查询产生超过<varname>from_collapse_limit</varname>个<literal>FROM</literal>项，规划器就会尝试通过停止提升子查询来规避这一点。可以通过调高或调低这个运行时参数，在规划时间和计划质量之间做权衡。
+  </para>
+
+  <para>
+   <xref linkend="guc-from-collapse-limit"/>和<xref linkend="guc-join-collapse-limit"/>名称相似，因为它们做的几乎是同一件事：一个控制规划器何时将子查询<quote>平面化</quote>，另一个控制何时将显式连接平面化。通常，要么把<varname>join_collapse_limit</varname>设置为与<varname>from_collapse_limit</varname>相同，这样显式连接与子查询的行为类似；要么把<varname>join_collapse_limit</varname>设置为 1，如果想使用显式连接控制连接顺序。不过，也可以把它们设置为不同的值，以更细致地调节规划时间与运行时间之间的平衡。
+  </para>
+ </sect1>
+
+ <sect1 id="populate">
+
+  <title>填充一个数据库</title>
+
+  <para>
+   初次填充数据库时，可能需要插入大量数据。本节给出一些使这一过程尽可能高效的建议。
+  </para>
+
+  <sect2 id="disable-autocommit">
+
+   <title>禁用自动提交</title>
+
+   <indexterm>
+    <primary>autocommit</primary>
+    <secondary>bulk-loading data</secondary>
+   </indexterm>
+
+   <para>
+    使用多个<command>INSERT</command>时，应关闭自动提交，只在最后提交一次。（在普通 SQL 中，这意味着开始时发出<command>BEGIN</command>，结束时发出<command>COMMIT</command>。某些客户端库可能会替调用方完成这件事，在这种情况下需要确认它们确实会在所需的时候这样做。）如果允许每次插入都单独提交，<productname>PostgreSQL</productname>就必须为每一行的加入执行大量额外工作。把所有插入都放在一个事务中的另一个好处是：如果其中某一行插入失败，那么此前插入的所有行都会被回滚，这样就不会留下部分装载的数据。
+   </para>
+  </sect2>
+
+  <sect2 id="populate-copy-from">
+
+   <title>使用<command>COPY</command></title>
+
+   <para>
+    使用<link linkend="sql-copy"><command>COPY</command></link>在一条命令中装载所有记录，而不是使用一系列<command>INSERT</command>命令。<command>COPY</command>命令针对装载大量行做了优化；它不如<command>INSERT</command>灵活，但在大规模数据装载时开销显著更小。由于<command>COPY</command>是一条单独的命令，因此采用这种方法填充表时无须关闭自动提交。
+   </para>
+
+   <para>
+    如果不能使用<command>COPY</command>，那么用<link linkend="sql-prepare"><command>PREPARE</command></link>创建一个预备<command>INSERT</command>语句，再按需多次执行<command>EXECUTE</command>也会有所帮助。这样可以避免重复解析和规划<command>INSERT</command>的开销。不同接口以不同方式提供这一功能，可参阅接口文档中关于<quote>预备语句</quote>的说明。
+   </para>
+
+   <para>
+    请注意，在装载大量行时，使用<command>COPY</command>几乎总是比使用<command>INSERT</command>更快，即使已经使用了<command>PREPARE</command>，并把多次插入批量放入同一个事务中也是如此。
+   </para>
+
+   <para>
+    当<command>COPY</command>与更早的<command>CREATE TABLE</command>或<command>TRUNCATE</command>命令处于同一事务中时，速度最快。在这种情况下，不需要写 WAL，因为一旦出错，包含新装载数据的文件反正也会被移除。不过，这一点只有在<xref linkend="guc-wal-level"/>为<literal>minimal</literal>时才成立；否则所有命令都必须写 WAL。
+   </para>
+
+  </sect2>
+
+  <sect2 id="populate-rm-indexes">
+
+   <title>移除索引</title>
+
+   <para>
+    如果正在装载一个新创建的表，最快的方法是先创建表，用<command>COPY</command>批量装载数据，然后再创建该表所需的索引。在已有数据的表上创建索引，要比在每行装载时对索引做增量更新更快。
+   </para>
+
+   <para>
+    如果正在向现有表加入大量数据，那么删除索引、装载数据、再重建索引可能是更好的方案。当然，在索引缺失期间，其他数据库用户的性能可能会下降。删除唯一索引之前也必须慎重，因为唯一约束提供的错误检查会在索引缺失期间丧失。
+   </para>
+  </sect2>
+
+  <sect2 id="populate-rm-fkeys">
+
+   <title>移除外键约束</title>
+
+   <para>
+    与索引类似，<quote>批量</quote>检查外键约束比逐行检查更高效。因此，先删除外键约束、装载数据、再重建约束可能很有用。同样，这里也需要在装载速度与约束缺失期间失去错误检查之间做权衡。
+   </para>
+
+   <para>
+    更重要的是，当在已有外键约束的情况下向表中装载数据时，每一行新数据都需要在服务器待处理的触发器事件列表中占一个条目，因为外键约束检查是通过触发器触发完成的。装载数百万行可能导致触发器事件队列溢出可用内存，造成无法接受的交换，甚至让命令直接失败。因此在装载大量数据时，删除并重新应用外键可能是<emphasis>必须</emphasis>的，而不仅仅是期望如此。如果不能临时移除约束，唯一的替代办法可能就是把装载操作拆分成更小的事务。
+   </para>
+  </sect2>
+
+  <sect2 id="populate-work-mem">
+
+   <title>增加<varname>maintenance_work_mem</varname></title>
+
+   <para>
+    在装载大量数据时，临时增大<xref linkend="guc-maintenance-work-mem"/>配置变量可以提升性能。这个参数也有助于加速<command>CREATE INDEX</command>和<command>ALTER TABLE ADD FOREIGN KEY</command>命令。它对<command>COPY</command>本身帮助不大，因此这个建议只有在采用前述一种或两种技巧时才有意义。
+   </para>
+  </sect2>
+
+  <sect2 id="populate-max-wal-size">
+
+   <title>增加<varname>max_wal_size</varname></title>
+
+   <para>
+    临时增大<xref linkend="guc-max-wal-size"/>配置变量，也可以让大规模数据装载更快。这是因为向<productname>PostgreSQL</productname>中装载大量数据，会导致检查点比平常更频繁地发生，而正常频率由<varname>checkpoint_timeout</varname>配置变量指定。每次发生检查点时，所有脏页都必须刷写到磁盘。通过在批量装载期间临时增大<varname>max_wal_size</varname>，可以减少所需的检查点次数。
+   </para>
+  </sect2>
+
+  <sect2 id="populate-pitr">
+
+   <title>禁用 WAL 归档和流复制</title>
+
+   <para>
+    当在使用 WAL 归档或流复制的安装中载入大量数据时，完成装载后重新做一次基础备份，可能比处理大量增量 WAL 数据更快。为了避免在装载期间记录这些增量 WAL，可以通过将<xref linkend="guc-wal-level"/>设为<literal>minimal</literal>、将<xref linkend="guc-archive-mode"/>设为<literal>off</literal>，并将<xref linkend="guc-max-wal-senders"/>设为零，来禁用归档和流复制。但请注意，修改这些设置需要重启服务器，而且会使之前做的任何基础备份都无法再用于归档恢复和备库，这可能导致数据丢失。
+   </para>
+
+   <para>
+    除了避免归档器或 WAL 发送者处理 WAL 数据所需的时间之外，这样做实际上还会让某些命令更快，因为如果<varname>wal_level</varname>为<literal>minimal</literal>，并且当前子事务（或顶级事务）创建了或截断了它们所修改的表或索引，那么这些命令就完全不需要写 WAL。（相较于写 WAL，它们只需在最后执行一次<function>fsync</function>，就能以更小的代价保证崩溃安全。）
+   </para>
+  </sect2>
+
+  <sect2 id="populate-analyze">
+
+   <title>事后运行<command>ANALYZE</command></title>
+
+   <para>
+    每当显著改变了表中数据的分布，都强烈建议运行<link linkend="sql-analyze"><command>ANALYZE</command></link>。这也包括向表中批量装载大量数据。运行<command>ANALYZE</command>（或<command>VACUUM ANALYZE</command>）可以确保规划器掌握该表的最新统计信息。如果没有统计信息，或者统计信息已经过时，规划器在生成查询计划时就可能做出糟糕决定，从而导致相关表性能不佳。注意，如果启用了自动清理守护进程，它可能会自动运行<command>ANALYZE</command>；详见<xref linkend="vacuum-for-statistics"/>和<xref linkend="autovacuum"/>。
+   </para>
+  </sect2>
+
+  <sect2 id="populate-pg-dump">
+
+   <title>关于<application>pg_dump</application>的一些注记</title>
+
+   <para>
+    由<application>pg_dump</application>生成的转储脚本会自动应用上面若干条指导原则，但并非全部。
+    若要尽可能快速地还原<application>pg_dump</application>的转储，仍需手动做一些额外操作。
+    （注意，这些要点适用于<emphasis>还原</emphasis>转储，而不是<emphasis>创建</emphasis>转储。
+    无论是使用<application>psql</application>加载文本转储，还是使用<application>pg_restore</application>从<application>pg_dump</application>归档文件加载，相关要点都是一样的。）
+   </para>
+
+   <para>
+    默认情况下，<application>pg_dump</application>使用<command>COPY</command>；而当它生成完整的模式加数据转储时，也会小心地先装载数据，再创建索引和外键。因此在这种情况下，上述若干指导原则已经被自动处理。剩下需要做的是：
+    <itemizedlist>
+     <listitem>
+      <para>
+       为<varname>maintenance_work_mem</varname>和<varname>max_wal_size</varname>设置适当的（即比正常值大的）值。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       如果使用 WAL 归档或流复制，可以考虑在恢复期间禁用它们。为此，请在载入转储之前将<varname>archive_mode</varname>设为<literal>off</literal>、将<varname>wal_level</varname>设为<literal>minimal</literal>，并将<varname>max_wal_senders</varname>设为零。恢复完成后，再把这些设置改回正确的值，并重新做一次基础备份。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       试验<application>pg_dump</application>和<application>pg_restore</application>的并行转储与恢复模式，找出最优的并发任务数量。通过<option>-j</option>选项进行并行转储和恢复，通常会比串行模式获得高得多的性能。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       考虑是否应当把整个转储作为单个事务来恢复。要这样做，请把<option>-1</option>或<option>--single-transaction</option>命令行选项传给<application>psql</application>或<application>pg_restore</application>。使用这种模式时，即使是很小的错误也会回滚整个恢复过程，可能丢掉数小时的处理成果。视数据之间的关联程度而定，这种做法未必一定比手工清理更可取。如果使用单个事务并关闭 WAL 归档，<command>COPY</command>命令会运行得最快。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       如果在数据库服务器上有多个 CPU 可用，可以考虑使用<application>pg_restore</application>的<option>--jobs</option>选项。这允许并行数据载入和索引创建。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       之后运行<command>ANALYZE</command>。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    仅包含数据的转储仍然会使用<command>COPY</command>，但它不会删除或重建索引，通常也不会处理外键。
+
+     <footnote>
+      <para>
+       可以通过使用<option>--disable-triggers</option>选项达到禁用外键的效果 &mdash; 但要注意，这样做是取消外键验证，而不仅仅是推迟它。因此如果使用该选项，就有可能插入坏数据。
+      </para>
+     </footnote>
+
+    因此，在装载纯数据转储时，如果想采用这些技术，就需要自行负责删除并重建索引与外键。装载数据期间增大<varname>max_wal_size</varname>仍然有益，但没有必要同时增大<varname>maintenance_work_mem</varname>；后者更适合留到之后手工重建索引和外键时再调大。完成后也别忘了执行<command>ANALYZE</command>；详见<xref linkend="vacuum-for-statistics"/>和<xref linkend="autovacuum"/>。
+   </para>
+  </sect2>
+  </sect1>
+
+  <sect1 id="non-durability">
+
+   <title>非持久设置</title>
+
+   <indexterm zone="non-durability">
+    <primary>non-durable</primary>
+   </indexterm>
+
+   <para>
+    持久性是数据库的一项特性，它保证已提交事务会被记录下来，即使服务器崩溃或断电也是如此。不过，持久性会显著增加数据库开销，因此如果站点并不需要这样的保证，就可以将<productname>PostgreSQL</productname>配置得运行更快。在这种情况下，可以通过调整下列配置来提升性能。除下文特别说明外，即使数据库软件崩溃，持久性仍然能够得到保证；只有操作系统突然崩溃时，这些设置才会带来数据丢失或损坏的风险。
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       将数据库集簇的数据目录放在一个内存支持的文件系统上（即<acronym>RAM</acronym>磁盘）。这消除了所有的数据库磁盘 I/O，但将数据存储限制到可用的内存量（可能有交换区）。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       关闭<xref linkend="guc-fsync"/>；不需要将数据刷入磁盘。
+      </para>
+     </listitem>
+     
+     <listitem>
+      <para>
+       关闭<xref linkend="guc-synchronous-commit"/>；这样可能无需在每次提交时
+       强制将<acronym>WAL</acronym>写入磁盘。这种设置会在<emphasis>数据库</emphasis>崩溃时带来事务丢失的风险（但不会造成数据损坏）。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       关闭<xref linkend="guc-full-page-writes"/>；不需要警惕部分页面写入。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       增加<xref linkend="guc-max-wal-size"/>和<xref linkend="guc-checkpoint-timeout"/>；
+       这会降低检查点频率，但会增加<filename>/pg_wal</filename>的存储需求。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       创建<link linkend="sql-createtable-unlogged">不记录日志的表</link>
+       来避免<acronym>WAL</acronym>写入，不过这样会使表在崩溃时不再安全。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+  </sect1>
+
+ </chapter>

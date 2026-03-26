@@ -1,0 +1,189 @@
+<!-- doc/src/sgml/pgoverexplain.sgml -->
+
+<sect1 id="pgoverexplain" xreflabel="pg_overexplain">
+ <title>pg_overexplain &mdash; 允许 EXPLAIN 输出更多细节</title>
+
+ <indexterm zone="pgoverexplain">
+  <primary>pg_overexplain</primary>
+ </indexterm>
+
+ <para>
+  <filename>pg_overexplain</filename>模块通过新增选项扩展了
+  <command>EXPLAIN</command>，以提供额外输出。它主要用于辅助规划器的
+  调试和开发，而非供一般使用。由于该模块会显示规划器数据结构的内部细节，
+  要理解这些输出，可能需要查阅源代码。此外，每当这些数据结构发生变化时，
+  输出都很可能随之变化，而且变化可能相当频繁。
+ </para>
+
+ <para>
+  要使用它，只需将其加载到服务器中即可。可以将其加载到单个会话中：
+
+<programlisting>
+LOAD 'pg_overexplain';
+</programlisting>
+
+  也可以将<literal>pg_overexplain</literal>加入
+  <xref linkend="guc-session-preload-libraries"/>或
+  <xref linkend="guc-shared-preload-libraries"/>（位于
+  <filename>postgresql.conf</filename>中），
+  从而在部分或全部会话中预加载它。
+ </para>
+
+ <sect2 id="pgoverexplain-debug">
+  <title>EXPLAIN (DEBUG)</title>
+
+  <para>
+   <literal>DEBUG</literal>选项显示计划树中的一些杂项信息，这些信息通常不会
+   展示，因为一般认为它们并不具有普遍意义。对于每个单独的计划节点，它会
+   显示以下字段。关于这些字段的更多文档，请参见
+   <structname>Plan</structname>（定义见<filename>nodes/plannodes.h</filename>）。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <literal>Disabled Nodes</literal>。
+     常规的<command>EXPLAIN</command>会通过检查某个节点的禁用节点计数是否
+     大于其底层节点计数之和，来判断该节点是否被禁用。此选项显示原始计数值。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>Parallel Safe</literal>。
+     指示某个计划树节点出现在<literal>Gather</literal>或
+     <literal>Gather Merge</literal>节点之下是否安全，而不管它实际上是否位于
+     这类节点之下。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>Plan Node ID</literal>。
+     一个内部 ID 号，原则上应对计划树中的每个节点都唯一。它用于协调并行查询
+     活动。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>extParam</literal>和<literal>allParam</literal>。
+     关于哪些编号参数会影响该计划节点或其子节点的信息。在文本模式下，仅当
+     这些字段为非空集合时才会显示。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   对于每个查询，<literal>DEBUG</literal>选项还会显示以下字段一次。更多
+   细节参见<structname>PlannedStmt</structname>（定义见
+   <filename>nodes/plannodes.h</filename>）。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <literal>Command Type</literal>。
+     例如<literal>select</literal>或<literal>update</literal>。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>Flags</literal>。
+     一个以逗号分隔的布尔结构成员名称列表，对应
+     <structname>PlannedStmt</structname>中值为<literal>true</literal>的
+     字段。它涵盖以下结构成员：
+     <literal>hasReturning</literal>、<literal>hasModifyingCTE</literal>、
+     <literal>canSetTag</literal>、<literal>transientPlan</literal>、
+     <literal>dependsOnRole</literal>、<literal>parallelModeNeeded</literal>。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>Subplans Needing Rewind</literal>。
+     执行器可能需要重绕的子计划的整数 ID。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>Relation OIDs</literal>。
+     该计划所依赖的关系的 OID。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>Executor Parameter Types</literal>。
+     每个执行器参数的类型 OID（例如选择了嵌套循环，并使用参数将某个值向下
+     传递给内部索引扫描时）。这不包括用户为预备语句提供的参数。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>Parse Location</literal>。
+     该查询文本在提交给规划器的查询字符串中的位置。在某些上下文中，这个值
+     可能是<literal>Unknown</literal>。否则，它可能是某个整数
+     <literal>NNN</literal>对应的<literal>NNN to end</literal>，也可能是
+     某两个整数<literal>NNN</literal>和<literal>MMM</literal>对应的
+     <literal>NNN for MMM bytes</literal>。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect2>
+
+ <sect2 id="pgoverexplain-range-table">
+  <title>EXPLAIN (RANGE_TABLE)</title>
+
+  <para>
+   <literal>RANGE_TABLE</literal>选项显示计划树中专门与查询的范围表
+   （range table）有关的信息。范围表条目大致对应于查询
+   <literal>FROM</literal>子句中出现的各项，但也有许多例外。例如，被证明
+   不必要的子查询可能会从范围表中被完全删除，而继承展开则会为查询中未直接
+   命名的子表添加范围表条目。
+  </para>
+
+  <para>
+   在查询计划中，范围表条目通常通过范围表索引（range table index，RTI）
+   来引用。引用了一个或多个 RTI 的计划节点会使用以下字段之一进行标注：
+   <literal>Scan RTI</literal>、<literal>Nominal RTI</literal>、
+   <literal>Exclude Relation RTI</literal>、<literal>Append RTIs</literal>。
+  </para>
+
+  <para>
+   此外，整个查询还可能维护若干用于不同目的的范围表索引列表。这些列表会在
+   每个查询中显示一次，并按适当名称标注为
+   <literal>Unprunable RTIs</literal> 或 <literal>Result RTIs</literal>。
+   在文本模式下，仅当这些字段为非空集合时才会显示。
+  </para>
+
+  <para>
+   最后也是最重要的，<literal>RANGE_TABLE</literal>选项会显示整个查询范围表
+   的转储结果。每个范围表条目都会标出相应的范围表索引、范围表条目的类型
+   （例如<literal>relation</literal>、<literal>subquery</literal>或
+   <literal>join</literal>），然后列出若干通常不属于
+   <command>EXPLAIN</command>输出内容的范围表条目字段。其中某些字段只会在
+   特定类型的范围表条目上显示。例如，<literal>Eref</literal>会对所有类型的
+   范围表条目显示，而<literal>CTE Name</literal>只会对类型为
+   <literal>cte</literal>的范围表条目显示。
+  </para>
+
+  <para>
+   关于范围表条目的更多信息，请参见
+   <structname>RangeTblEntry</structname>的定义（见
+   <filename>nodes/parsenodes.h</filename>）。
+  </para>
+ </sect2>
+
+ <sect2 id="pgoverexplain-author">
+  <title>作者</title>
+
+  <para>
+   Robert Haas <email>rhaas@postgresql.org</email>
+  </para>
+ </sect2>
+
+</sect1>

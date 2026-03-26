@@ -1,0 +1,446 @@
+<!--
+doc/src/sgml/ref/vacuum.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-vacuum">
+ <indexterm zone="sql-vacuum">
+  <primary>VACUUM</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>VACUUM</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>VACUUM</refname>
+  <refpurpose>垃圾收集并按需分析数据库</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+<synopsis>
+VACUUM [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] [ <replaceable class="parameter">table_and_columns</replaceable> [, ...] ]
+
+<phrase>其中<replaceable class="parameter">option</replaceable>可以是下列之一：</phrase>
+
+    FULL [ <replaceable class="parameter">boolean</replaceable> ]
+    FREEZE [ <replaceable class="parameter">boolean</replaceable> ]
+    VERBOSE [ <replaceable class="parameter">boolean</replaceable> ]
+    ANALYZE [ <replaceable class="parameter">boolean</replaceable> ]
+    DISABLE_PAGE_SKIPPING [ <replaceable class="parameter">boolean</replaceable> ]
+    SKIP_LOCKED [ <replaceable class="parameter">boolean</replaceable> ]
+    INDEX_CLEANUP { AUTO | ON | OFF }
+    PROCESS_MAIN [ <replaceable class="parameter">boolean</replaceable> ]
+    PROCESS_TOAST [ <replaceable class="parameter">boolean</replaceable> ]
+    TRUNCATE [ <replaceable class="parameter">boolean</replaceable> ]
+    PARALLEL <replaceable class="parameter">integer</replaceable>
+    SKIP_DATABASE_STATS [ <replaceable class="parameter">boolean</replaceable> ]
+    ONLY_DATABASE_STATS [ <replaceable class="parameter">boolean</replaceable> ]
+    BUFFER_USAGE_LIMIT <replaceable class="parameter">size</replaceable>
+
+<phrase>其中<replaceable class="parameter">table_and_columns</replaceable>是：</phrase>
+
+    [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ] [ ( <replaceable class="parameter">column_name</replaceable> [, ...] ) ]
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>描述</title>
+
+  <para>
+   <command>VACUUM</command>回收死元组占用的存储空间。在正常的
+   <productname>PostgreSQL</productname>运行中，被删除或因更新而过时的元组
+   并不会从其表中物理移除；它们会一直保留，直到执行
+   <command>VACUUM</command>。因此有必要定期执行
+   <command>VACUUM</command>，尤其是对频繁更新的表。
+  </para>
+
+  <para>
+   如果没有给出<replaceable class="parameter">table_and_columns</replaceable>
+   列表，<command>VACUUM</command>会处理当前数据库中当前用户有权清理的每个表和物化视图。
+   如果给出了列表，<command>VACUUM</command>则只处理其中列出的表。
+  </para>
+
+  <para>
+   <command>VACUUM ANALYZE</command>会对每个选定表先执行
+   <command>VACUUM</command>，再执行<command>ANALYZE</command>。
+   这种便捷的组合形式很适合例行维护脚本使用。关于其处理细节，参见
+   <xref linkend="sql-analyze"/>。
+  </para>
+
+  <para>
+   普通的<command>VACUUM</command>（不带<literal>FULL</literal>）只是回收空间并使其可被重用。
+   这种形式的命令可以与表的正常读写并行运行，因为它不会获得独占锁。
+   不过，在大多数情况下，额外空间不会返还给操作系统；它只是保留在同一张表内供再次使用。
+   它还允许利用多个 CPU 来处理索引，这项功能称为<firstterm>并行清理</firstterm>。
+   如需禁用该功能，可以使用<literal>PARALLEL</literal>选项并将并行工作者数指定为零。
+   <command>VACUUM FULL</command>会把表的全部内容重写到一个没有额外空闲空间的新磁盘文件中，
+   从而让未使用的空间能够返还给操作系统。这种形式要慢得多，并且在处理每个表时都需要
+   <literal>ACCESS EXCLUSIVE</literal>锁。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>参数</title>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-vacuum-varlistentry-1">
+    <term><literal>FULL</literal></term>
+    <listitem>
+     <para>
+      选择<quote>完全</quote>清理，它可以回收更多空间，但耗时更长，并且会独占锁定该表。
+      这种方法还需要额外的磁盘空间，因为它会写出该表的一个新副本，并且在操作完成之前
+      不会释放旧副本。通常，只有当需要从表内回收大量空间时才应使用这种方法。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-2">
+    <term><literal>FREEZE</literal></term>
+    <listitem>
+     <para>
+      选择激进的元组<quote>冻结</quote>。指定<literal>FREEZE</literal>
+      等价于执行一个将<xref linkend="guc-vacuum-freeze-min-age"/>和
+      <xref linkend="guc-vacuum-freeze-table-age"/>参数设为零的
+      <command>VACUUM</command>。在表被重写时总会执行激进冻结，因此指定了
+      <literal>FULL</literal>时，这个选项就是多余的。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-3">
+    <term><literal>VERBOSE</literal></term>
+    <listitem>
+     <para>
+      为每个表以<literal>INFO</literal>级别输出详细的清理活动报告。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-4">
+    <term><literal>ANALYZE</literal></term>
+    <listitem>
+     <para>
+      更新规划器用来确定查询最高效执行方式的统计信息。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-5">
+    <term><literal>DISABLE_PAGE_SKIPPING</literal></term>
+    <listitem>
+     <para>
+      通常，<command>VACUUM</command>会根据<link
+      linkend="vacuum-for-visibility-map">可见性映射</link>跳过某些页面。已知其中所有元组都已冻结的页面总是可以跳过，
+      而已知其中所有元组都对所有事务可见的页面，也可以跳过，除非正在执行激进清理。
+      此外，除非正在执行激进清理，为了避免等待其他会话结束对页面的使用，也可能会跳过某些页面。
+      此选项会禁用所有跳页行为，只应在怀疑可见性映射内容存在问题时使用；而这种情况通常只会在
+      硬件或软件问题导致数据库损坏时发生。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-6">
+    <term><literal>SKIP_LOCKED</literal></term>
+    <listitem>
+     <para>
+      指定<command>VACUUM</command>在开始处理某个关系时，不要等待任何冲突锁被释放：
+      如果某个关系无法在无需等待的情况下立即获得锁，就跳过该关系。请注意，即使使用了此选项，
+      <command>VACUUM</command>在打开该关系的索引时仍可能发生阻塞。此外，
+      <command>VACUUM ANALYZE</command>在从分区、继承子表和某些类型的外部表获取样本行时，
+      仍然可能发生阻塞。还有，虽然<command>VACUUM</command>通常会处理指定分区表的全部分区，
+      但如果该分区表上存在冲突锁，此选项会导致<command>VACUUM</command>跳过所有分区。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-7">
+    <term><literal>INDEX_CLEANUP</literal></term>
+    <listitem>
+     <para>
+      通常，当表中的死元组很少时，<command>VACUUM</command>会跳过索引清理。
+      在这种情况下，处理该表全部索引的成本预计会远高于删除死索引元组带来的收益。
+      当表中存在多于零个死元组时，此选项可用于强制<command>VACUUM</command>处理索引。
+      默认值是<literal>AUTO</literal>，这允许<command>VACUUM</command>在适当时跳过索引清理。
+      如果<literal>INDEX_CLEANUP</literal>设为<literal>ON</literal>，
+      <command>VACUUM</command>将保守地从索引中移除所有死元组。这对于兼容
+      <productname>PostgreSQL</productname>早期版本可能很有用，因为在那些版本中这是标准行为。
+     </para>
+     <para>
+      <literal>INDEX_CLEANUP</literal>也可以设为<literal>OFF</literal>，
+      以强制<command>VACUUM</command><emphasis>总是</emphasis>跳过索引清理，即使表中有很多死元组也是如此。
+      当需要让<command>VACUUM</command>尽可能快地运行，以避免临近的事务 ID 回卷时，
+      这可能会有用（参见<xref linkend="vacuum-for-wraparound"/>）。不过，由
+      <xref linkend="guc-vacuum-failsafe-age"/>控制的回卷失效保护机制通常会自动触发，
+      以避免事务 ID 回卷失败，因此一般应优先依赖该机制。如果不定期执行索引清理，性能可能会受到影响，
+      因为随着表被修改，索引会积累死元组，而表本身也会积累在索引清理完成前无法移除的死行指针。
+     </para>
+     <para>
+      对没有索引的表，此选项没有效果；如果使用了<literal>FULL</literal>选项，它也会被忽略。
+      它对事务 ID 回卷失效保护机制同样没有影响。当该机制被触发时，即使
+      <literal>INDEX_CLEANUP</literal>设为<literal>ON</literal>，也会跳过索引清理。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-8">
+    <term><literal>PROCESS_MAIN</literal></term>
+    <listitem>
+     <para>
+      指定<command>VACUUM</command>应尝试处理主关系。这通常是期望的行为，也是默认行为。
+      当只需要清理某个关系对应的<literal>TOAST</literal>表时，将此选项设为 false 可能会有用。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-9">
+    <term><literal>PROCESS_TOAST</literal></term>
+    <listitem>
+     <para>
+      指定<command>VACUUM</command>应尝试处理每个关系对应的<literal>TOAST</literal>表
+      （如果存在）。这通常是期望的行为，也是默认行为。当只需要清理主关系时，
+      将此选项设为 false 可能会有用。使用<literal>FULL</literal>选项时必须启用此选项。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-10">
+    <term><literal>TRUNCATE</literal></term>
+    <listitem>
+     <para>
+      指定<command>VACUUM</command>应尝试截去表末尾的空页，使这些被截断页面占用的磁盘空间
+      能够返还给操作系统。通常这是期望的行为，也是默认行为，除非
+      <xref linkend="guc-vacuum-truncate"/>被设为 false，或者待清理表的
+      <literal>vacuum_truncate</literal>选项被设为 false。将此选项设为 false 有助于避免
+      截断操作所需的表级<literal>ACCESS EXCLUSIVE</literal>锁。使用<literal>FULL</literal>选项时，
+      此选项会被忽略。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-11">
+    <term><literal>PARALLEL</literal></term>
+    <listitem>
+     <para>
+      使用<replaceable class="parameter">integer</replaceable>个后台工作进程并行执行
+      <command>VACUUM</command>的清理索引阶段和清除索引阶段（每个清理阶段的细节参见
+      <xref linkend="vacuum-phases"/>）。实际用于执行操作的工作进程数量，等于该关系上支持并行清理的索引数量，
+      该数量受<literal>PARALLEL</literal>选项指定的工作进程数限制，并进一步受
+      <xref linkend="guc-max-parallel-maintenance-workers"/>限制。只有当索引大小大于
+      <xref linkend="guc-min-parallel-index-scan-size"/>时，该索引才能参与并行清理。
+      请注意，执行期间不保证一定会使用<replaceable class="parameter">integer</replaceable>中指定的并行工作进程数。
+      一次清理可能使用少于指定数量的工作进程，甚至完全不使用工作进程。每个索引最多只能使用一个工作进程，
+      因此只有当表中至少有<literal>2</literal>个索引时才会启动并行工作进程。清理工作进程会在每个阶段开始前启动，
+      并在该阶段结束时退出。这些行为未来版本中可能会发生变化。此选项不能与<literal>FULL</literal>选项一起使用。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-12">
+    <term><literal>SKIP_DATABASE_STATS</literal></term>
+    <listitem>
+     <para>
+      指定<command>VACUUM</command>应跳过更新数据库范围内关于最老未冻结 XID 的统计信息。
+      通常，<command>VACUUM</command>会在命令结束时更新这些统计信息。不过，在拥有大量表的数据库中，
+      这可能需要一段时间，而且只有当包含最老未冻结 XID 的表也在本次清理范围内时，这么做才有意义。
+      此外，如果多个<command>VACUUM</command>命令并行发出，那么同一时间只能有一个命令更新数据库范围统计信息。
+      因此，如果应用程序打算连续发出一系列<command>VACUUM</command>命令，那么除了最后一条命令之外，
+      其余命令都可以设置此选项；或者在所有命令上都设置它，然后再单独执行
+      <literal>VACUUM (ONLY_DATABASE_STATS)</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-13">
+    <term><literal>ONLY_DATABASE_STATS</literal></term>
+    <listitem>
+     <para>
+      指定<command>VACUUM</command>除了更新数据库范围内关于最老未冻结 XID 的统计信息外，不执行任何其他操作。
+      指定该选项时，<replaceable class="parameter">table_and_columns</replaceable>列表必须为空，
+      并且除了<literal>VERBOSE</literal>之外不能启用其他任何选项。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-14">
+    <term><literal>BUFFER_USAGE_LIMIT</literal></term>
+    <listitem>
+     <para>
+      指定<command>VACUUM</command>所使用的
+      <glossterm linkend="glossary-buffer-access-strategy">缓冲区访问策略（Buffer Access Strategy）</glossterm>
+      环形缓冲区大小。该大小用于计算在此策略中会被重用的共享缓冲区数量。
+      <literal>0</literal>表示禁用<literal>Buffer Access Strategy</literal>。
+      如果同时指定了<option>ANALYZE</option>，那么<option>BUFFER_USAGE_LIMIT</option>的值会同时用于清理阶段和分析阶段。
+      除非也指定了<option>ANALYZE</option>，否则该选项不能与<option>FULL</option>一起使用。
+      如果未指定该选项，<command>VACUUM</command>会使用
+      <xref linkend="guc-vacuum-buffer-usage-limit"/>中的值。更高的设置可以让
+      <command>VACUUM</command>运行得更快，但设置过大可能会把过多其他有用页面从共享缓冲区中逐出。
+      最小值是<literal>128 kB</literal>，最大值是<literal>16 GB</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-15">
+    <term><replaceable class="parameter">boolean</replaceable></term>
+    <listitem>
+     <para>
+      指定打开还是关闭所选选项。你可以写入
+      <literal>TRUE</literal>、<literal>ON</literal>或<literal>1</literal>
+      来启用该选项，以及写入<literal>FALSE</literal>、
+      <literal>OFF</literal>或<literal>0</literal>来禁用它。
+      <replaceable class="parameter">boolean</replaceable>值也可以省略，
+      此时假定为<literal>TRUE</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-16">
+    <term><replaceable class="parameter">integer</replaceable></term>
+    <listitem>
+     <para>
+      指定传递给所选选项的非负整数值。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-17">
+    <term><replaceable class="parameter">size</replaceable></term>
+    <listitem>
+     <para>
+      指定以千字节为单位的内存大小。也可以把大小写成一个字符串，即数值后跟下列任一种内存单位：
+      <literal>B</literal>（字节）、<literal>kB</literal>（千字节）、
+      <literal>MB</literal>（兆字节）、<literal>GB</literal>（吉字节）或
+      <literal>TB</literal>（太字节）。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-18">
+    <term><replaceable class="parameter">table_name</replaceable></term>
+    <listitem>
+     <para>
+      要清理的特定表或物化视图的名称（可选地带模式限定）。
+      如果在表名前指定<literal>ONLY</literal>，则只清理该表。
+      如果未指定<literal>ONLY</literal>，则还会清理该表及其所有继承子表或分区（如果有）。
+      也可以在表名后显式指定<literal>*</literal>，以明确表示要清理继承子表（或分区）。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-vacuum-varlistentry-19">
+    <term><replaceable class="parameter">column_name</replaceable></term>
+    <listitem>
+     <para>
+      要分析的特定列名。默认会分析所有列。如果指定了列列表，则也必须指定<literal>ANALYZE</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>输出</title>
+
+   <para>
+    指定<literal>VERBOSE</literal>时，<command>VACUUM</command>会输出进度消息，
+    指示当前正在处理哪个表，同时还会打印这些表的各种统计信息。
+   </para>
+ </refsect1>
+
+ <refsect1>
+  <title>注解</title>
+
+   <para>
+    要清理一个表，通常必须拥有该表上的<literal>MAINTAIN</literal>权限。
+    不过，数据库拥有者可以清理其数据库中的所有表，但共享系统目录除外。
+    <command>VACUUM</command>会跳过调用用户无权清理的任何表。
+   </para>
+
+   <para>
+    当<command>VACUUM</command>运行时，<xref linkend="guc-search-path"/>会被临时改为
+    <literal>pg_catalog, pg_temp</literal>。
+   </para>
+
+   <para>
+    <command>VACUUM</command>不能在一个事务块内被执行。
+   </para>
+
+   <para>
+    对于带有<acronym>GIN</acronym>索引的表，<command>VACUUM</command>（任何形式）还会通过把待处理的索引项移动到主
+    <acronym>GIN</acronym>索引结构中的适当位置，来完成所有挂起的索引插入。详见
+    <xref linkend="gin-fast-update"/>。
+   </para>
+
+   <para>
+    我们建议定期对所有数据库执行清理，以移除死行。<productname>PostgreSQL</productname>提供了一个<quote>autovacuum</quote>机制，
+    可以自动执行常规清理维护。有关自动与手动清理的更多信息，参见<xref linkend="routine-vacuuming"/>。
+   </para>
+
+   <para>
+    <option>FULL</option>选项不建议在日常场景中使用，但在某些特殊情况下可能很有用。
+    例如，当你删除或更新了表中的绝大多数行，并希望该表在物理上收缩以占用更少磁盘空间、
+    让表扫描更快时，这个选项就比较合适。<command>VACUUM FULL</command>通常会比普通
+    <command>VACUUM</command>更大幅度地收缩表。
+   </para>
+
+   <para>
+    <option>PARALLEL</option>选项只用于清理。如果此选项与<option>ANALYZE</option>选项一起指定，
+    它不会影响<option>ANALYZE</option>。
+   </para>
+
+   <para>
+    <command>VACUUM</command>会显著增加 I/O 流量，这可能导致其他活动会话性能变差。
+    因此，有时建议使用基于代价的清理延迟特性。对于并行清理，每个工作者的睡眠时长
+    都与该工作者完成的工作量成比例。详见<xref linkend="runtime-config-resource-vacuum-cost"/>。
+   </para>
+
+   <para>
+    每个运行不带<literal>FULL</literal>选项的<command>VACUUM</command>的后端，都会在
+    <structname>pg_stat_progress_vacuum</structname>视图中报告其进度。
+    运行<command>VACUUM FULL</command>的后端则会改为在
+    <structname>pg_stat_progress_cluster</structname>视图中报告其进度。详见
+    <xref linkend="vacuum-progress-reporting"/>和<xref linkend="cluster-progress-reporting"/>。
+   </para>
+ </refsect1>
+
+ <refsect1>
+  <title>示例</title>
+
+  <para>
+   清理单个表<literal>onek</literal>，对其执行优化器分析，并打印详细的清理活动报告：
+
+<programlisting>
+VACUUM (VERBOSE, ANALYZE) onek;
+</programlisting></para>
+ </refsect1>
+
+ <refsect1>
+  <title>兼容性</title>
+
+  <para>
+   在SQL标准中没有<command>VACUUM</command>语句。
+  </para>
+
+  <para>
+   下列语法在<productname>PostgreSQL</productname> 9.0版本之前使用，并且目前仍受支持：
+<synopsis>
+VACUUM [ FULL ] [ FREEZE ] [ VERBOSE ] [ ANALYZE ] [ <replaceable class="parameter">table_and_columns</replaceable> [, ...] ]
+</synopsis>
+   请注意，在这种语法中，选项必须严格按所示顺序指定。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>另见</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="app-vacuumdb"/></member>
+   <member><xref linkend="runtime-config-resource-vacuum-cost"/></member>
+   <member><xref linkend="autovacuum"/></member>
+   <member><xref linkend="vacuum-progress-reporting"/></member>
+   <member><xref linkend="cluster-progress-reporting"/></member>
+  </simplelist>
+ </refsect1>
+</refentry>

@@ -1,0 +1,378 @@
+<!-- doc/src/sgml/xaggr.sgml -->
+
+ <sect1 id="xaggr">
+
+  <title>用户定义的聚合</title>
+
+  <indexterm zone="xaggr">
+   <primary>聚合函数</primary>
+   <secondary>用户定义的</secondary>
+  </indexterm>
+
+  <para>
+   <productname>PostgreSQL</productname>中的聚合函数是依据<firstterm>状态值</firstterm>和<firstterm>状态转换函数</firstterm>来定义的。也就是说，聚合通过一个状态值来工作，并在处理每个后续输入行时更新该状态值。要定义一个新的聚合函数，需要为状态值选定一种数据类型、为状态选定一个初始值，并指定一个状态转换函数。状态转换函数接受先前的状态值以及当前行的聚合输入值，并返回一个新的状态值。如果聚合的期望结果不同于运行状态值中需要保存的数据，还可以指定一个<firstterm>最终函数</firstterm>。最终函数接受结束时的状态值，并返回所需的聚合结果。原则上，转换函数和最终函数都只是普通函数，因此也可以在聚合上下文之外使用。（实际上，出于性能原因，创建只能在作为聚合一部分被调用时工作的专用转换函数通常更有帮助。）
+  </para>
+
+  <para>
+   因此，除了聚合用户所看到的参数和结果数据类型之外，还存在一种内部状态值数据类型，它可能既不同于参数类型，也不同于结果类型。
+  </para>
+
+  <para>
+   如果我们定义一个不使用最终函数的聚合，那么得到的就是一个对每一行的列值进行逐步计算的聚合。<function>sum</function>就是这种聚合的一个示例。<function>sum</function>从零开始，并始终把当前行的值加到运行总和中。例如，如果我们希望让<function>sum</function>聚合能用于复数数据类型，那么只需要该数据类型的加法函数。聚合定义如下：
+
+<programlisting>
+CREATE AGGREGATE sum (complex)
+(
+    sfunc = complex_add,
+    stype = complex,
+    initcond = '(0,0)'
+);
+</programlisting>
+
+   它可以这样使用：
+
+<programlisting>
+SELECT sum(a) FROM test_complex;
+
+   sum
+-----------
+ (34,53.9)
+</programlisting>
+
+   （注意，这里依赖了函数重载：名为<function>sum</function>的聚合不止一个，但<productname>PostgreSQL</productname>能够判断对于<type>complex</type>类型的列该使用哪一种 sum。）
+  </para>
+
+  <para>
+   如果没有非空输入值，上述<function>sum</function>定义将返回零（即初始状态值）。也许我们更希望在这种情况下返回空值 &mdash; SQL 标准要求<function>sum</function>这样做。实现这一点只需省略<literal>initcond</literal>短语，使初始状态值为空。通常这意味着<literal>sfunc</literal>需要检查输入的状态值是否为空。但对于<function>sum</function>以及<function>max</function>、<function>min</function>这类其他简单聚合，只需把第一个非空输入值放入状态变量，然后从第二个非空输入值开始应用转换函数即可。如果初始状态值为空，并且转换函数被标记为<quote>strict</quote>（即不会对空输入调用），<productname>PostgreSQL</productname>会自动这样做。
+  </para>
+
+  <para>
+   <quote>strict</quote>转换函数的另一项默认行为是，只要遇到空输入值，就会保留先前的状态值不变。因此，空值会被忽略。如果你需要对空输入采用其他行为，就不要把转换函数声明为 strict，而应在函数代码中自行检测空输入并完成所需处理。
+  </para>
+
+  <para>
+   <function>avg</function>（平均值）是一个更复杂的聚合示例。它需要两项运行状态：输入值之和以及输入值的个数。最终结果通过将这两者相除得到。平均值通常通过使用数组作为状态值来实现。例如，内置的<function>avg(float8)</function>实现如下：
+
+<programlisting>
+CREATE AGGREGATE avg (float8)
+(
+    sfunc = float8_accum,
+    stype = float8[],
+    finalfunc = float8_avg,
+    initcond = '{0,0,0}'
+);
+</programlisting>
+  </para>
+
+  <note>
+
+   <para>
+   <function>float8_accum</function>需要一个三元素数组，而不只是两个元素，因为它累积的不仅是输入值的和与计数，还有平方和。这样它除了可用于<function>avg</function>之外，也可用于其他一些聚合。
+  </para>
+  </note>
+
+  <para>
+   SQL 中的聚合函数调用允许使用<literal>DISTINCT</literal>和<literal>ORDER BY</literal>选项，以控制哪些行会传递给聚合的转换函数，以及传递顺序。这些选项是在后台实现的，并不是聚合支持函数需要关心的事情。
+  </para>
+
+  <para>
+   更多细节请参见<xref linkend="sql-createaggregate"/>命令。
+  </para>
+
+ <sect2 id="xaggr-moving-aggregates">
+
+  <title>移动聚合模式</title>
+
+  <indexterm>
+   <primary>移动聚合模式</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>聚合函数</primary>
+   <secondary>移动聚合</secondary>
+  </indexterm>
+
+  <para>
+   聚合函数可以选择支持<firstterm>移动聚合模式</firstterm>，这样在帧起点会移动的窗口中执行聚合函数时，速度可以显著提高。（关于将聚合函数作为窗口函数使用的信息，见<xref linkend="tutorial-window"/>和<xref linkend="syntax-window-functions"/>。）其基本思想是，除了常规的<quote>前向</quote>转换函数外，聚合还提供一个<firstterm>逆向转换函数</firstterm>，这样当某些行离开窗口帧时，就可以把它们从聚合的运行状态值中移除。例如，<function>sum</function>聚合若使用加法作为前向转换函数，就会使用减法作为逆向转换函数。如果没有逆向转换函数，每次帧起点移动时，窗口函数机制都必须从头重新计算聚合，运行时间就与输入行数乘以平均帧长度成正比。有了逆向转换函数，运行时间就只与输入行数成正比。
+  </para>
+
+  <para>
+   逆向转换函数接收当前状态值，以及当前状态中所包含的最早那一行的聚合输入值。它必须重建这样一个状态值：就好像给定的输入行从未参与过聚合，只有其后的各行被聚合一样。这有时要求前向转换函数保存比普通聚合模式所需更多的状态。因此，移动聚合模式与普通模式采用完全独立的实现：它有自己的状态数据类型、自己的前向转换函数，以及在需要时自己的最终函数。如果不需要额外状态，这些也可以与普通模式的数据类型和函数相同。
+  </para>
+
+  <para>
+   作为示例，我们可以把上面给出的<function>sum</function>聚合扩展为支持移动聚合模式：
+
+<programlisting>
+CREATE AGGREGATE sum (complex)
+(
+    sfunc = complex_add,
+    stype = complex,
+    initcond = '(0,0)',
+    msfunc = complex_add,
+    minvfunc = complex_sub,
+    mstype = complex,
+    minitcond = '(0,0)'
+);
+</programlisting>
+
+   名称以<literal>m</literal>开头的参数定义了移动聚合的实现。除了逆向转换函数<literal>minvfunc</literal>之外，它们分别对应于不带<literal>m</literal>的普通聚合参数。
+  </para>
+
+  <para>
+   用于移动聚合模式的前向转换函数不允许返回空值作为新的状态值。如果逆向转换函数返回空值，就表示该逆向函数无法针对这个特定输入逆转状态计算，因此当前帧起始位置的聚合计算会从头重做。这一约定使得移动聚合模式可用于这样一些场景：在少数不常见的情况下，难以从运行状态值中逆向消除某个输入的影响。遇到这些情况时，逆向转换函数可以<quote>放弃处理</quote>，只要它在大多数情况下都能工作，总体上仍然划算。例如，一个处理浮点数的聚合，可能会在必须从运行状态值中移除<literal>NaN</literal>（非数字）输入时选择放弃处理。
+  </para>
+
+  <para>
+   在编写移动聚合支持函数时，务必确保逆向转换函数能够精确地重建正确的状态值。否则，是否使用移动聚合模式就可能导致用户可见的结果差异。一个看似很容易添加逆向转换函数、但实际上无法满足这一要求的聚合示例，是对<type>float4</type>或<type>float8</type>输入求和的<function>sum</function>。对<function>sum(<type>float8</type>)</function>的一种朴素的声明可能是
+
+<programlisting>
+CREATE AGGREGATE unsafe_sum (float8)
+(
+    stype = float8,
+    sfunc = float8pl,
+    mstype = float8,
+    msfunc = float8pl,
+    minvfunc = float8mi
+);
+</programlisting>
+
+   然而，这个聚合给出的结果可能与没有逆向转换函数时截然不同。例如，考虑
+
+<programlisting>
+SELECT
+  unsafe_sum(x) OVER (ORDER BY n ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING)
+FROM (VALUES (1, 1.0e20::float8),
+             (2, 1.0::float8)) AS v (n,x);
+</programlisting>
+
+   这个查询把<literal>0</literal>作为第二个结果返回，而预期答案是<literal>1</literal>。原因在于浮点值的精度有限：把<literal>1</literal>加到<literal>1e20</literal>上，结果仍然是<literal>1e20</literal>，因此再从中减去<literal>1e20</literal>得到的是<literal>0</literal>，而不是<literal>1</literal>。注意，这是浮点算术本身的一般局限，不是<productname>PostgreSQL</productname>的限制。
+  </para>
+
+ </sect2>
+
+ <sect2 id="xaggr-polymorphic-aggregates">
+
+  <title>多态和可变参数聚合</title>
+
+  <indexterm>
+   <primary>聚合函数</primary>
+   <secondary>多态</secondary>
+  </indexterm>
+
+  <indexterm>
+   <primary>聚合函数</primary>
+   <secondary>可变参数</secondary>
+  </indexterm>
+
+  <para>
+   聚合函数可以使用多态的状态转换函数或最终函数，这样同一组函数就能用于实现多个聚合。关于多态函数的解释，请参见<xref linkend="extend-types-polymorphic"/>。再进一步，聚合函数自身也可以指定为具有多态输入类型和状态类型，从而让同一个聚合定义服务于多种输入数据类型。下面是一个多态聚合的示例：
+
+<programlisting>
+CREATE AGGREGATE array_accum (anycompatible)
+(
+    sfunc = array_append,
+    stype = anycompatiblearray,
+    initcond = '{}'
+);
+</programlisting>
+
+   对于任何给定的聚合调用，其实际状态类型都是一种数组类型，该数组以实际输入类型为元素类型。这个聚合的行为是把所有输入串接成这种类型的一个数组。（注意：内置聚合<function>array_agg</function>提供了类似的功能，而且性能比这个定义更好。）
+  </para>
+
+  <para>
+   下面是以两种不同的实际数据类型作为参数时的输出：
+
+<programlisting>
+SELECT attrelid::regclass, array_accum(attname)
+    FROM pg_attribute
+    WHERE attnum &gt; 0 AND attrelid = 'pg_tablespace'::regclass
+    GROUP BY attrelid;
+
+   attrelid    |              array_accum
+---------------+---------------------------------------
+ pg_tablespace | {spcname,spcowner,spcacl,spcoptions}
+(1 row)
+
+SELECT attrelid::regclass, array_accum(atttypid::regtype)
+    FROM pg_attribute
+    WHERE attnum &gt; 0 AND attrelid = 'pg_tablespace'::regclass
+    GROUP BY attrelid;
+
+   attrelid    |        array_accum
+---------------+---------------------------
+ pg_tablespace | {name,oid,aclitem[],text[]}
+(1 row)
+</programlisting>
+  </para>
+
+  <para>
+   通常，具有多态结果类型的聚合函数也会像上例一样具有多态状态类型。这是必要的，因为否则最终函数就无法以合理方式声明：它会需要多态结果类型，却没有多态参数类型，而<command>CREATE FUNCTION</command>会以无法从调用中推断结果类型为由拒绝这种声明。不过，有时使用多态状态类型并不方便。最常见的情况是聚合支持函数要用 C 编写，而状态类型应声明为<type>internal</type>，因为在 SQL 层面并没有与之对应的类型。为了解决这种情况，可以把最终函数声明为接受额外的<quote>dummy</quote>参数，这些参数与聚合的输入参数相匹配。由于调用最终函数时没有可用的具体值，这些假参数总是以 NULL 值传入。它们唯一的作用，是让多态最终函数的结果类型与聚合的输入类型关联起来。例如，内置聚合<function>array_agg</function>的定义等效于：
+
+<programlisting>
+CREATE FUNCTION array_agg_transfn(internal, anynonarray)
+  RETURNS internal ...;
+CREATE FUNCTION array_agg_finalfn(internal, anynonarray)
+  RETURNS anyarray ...;
+
+CREATE AGGREGATE array_agg (anynonarray)
+(
+    sfunc = array_agg_transfn,
+    stype = internal,
+    finalfunc = array_agg_finalfn,
+    finalfunc_extra
+);
+</programlisting>
+
+   这里，<literal>finalfunc_extra</literal>选项指定最终函数除了状态值之外，还会接收与聚合输入参数对应的额外假参数。额外的<type>anynonarray</type>参数使<function>array_agg_finalfn</function>的声明合法。
+  </para>
+
+  <para>
+   与普通函数很类似，可以通过把聚合函数的最后一个参数声明为<literal>VARIADIC</literal>数组，使其接受可变数量的参数；见<xref linkend="xfunc-sql-variadic-functions"/>。聚合的转换函数也必须将同样的数组类型作为其最后一个参数。这些转换函数通常也会被标记为<literal>VARIADIC</literal>，但这并非严格要求。
+  </para>
+
+  <note>
+
+   <para>
+    可变参数聚合很容易与<literal>ORDER BY</literal>选项（见<xref linkend="syntax-aggregates"/>）一起被误用，因为在这种组合中，解析器无法判断是否给出了数量错误的实际参数。请记住，<literal>ORDER BY</literal>右侧的所有内容都是排序键，而不是聚合的参数。例如，在
+<programlisting>
+SELECT myaggregate(a ORDER BY a, b, c) FROM ...
+</programlisting>
+    中，解析器会把它看作一个聚合函数参数和三个排序键。然而，用户本来可能是想写
+<programlisting>
+SELECT myaggregate(a, b, c ORDER BY a) FROM ...
+</programlisting>
+    如果<literal>myaggregate</literal>是可变参数聚合，那么这两种调用都可能完全合法。
+   </para>
+
+   <para>
+    因此，在创建名称相同但常规参数个数不同的聚合函数之前，最好三思。
+   </para>
+  </note>
+
+ </sect2>
+
+ <sect2 id="xaggr-ordered-set-aggregates">
+
+  <title>有序集聚合</title>
+
+  <indexterm>
+   <primary>聚合函数</primary>
+   <secondary>有序集</secondary>
+  </indexterm>
+
+  <para>
+   到目前为止，我们所描述的都是<quote>普通</quote>聚合。<productname>PostgreSQL</productname>还支持<firstterm>有序集聚合</firstterm>，它与普通聚合有两个关键区别。第一，除了对每个输入行都求值一次的普通聚合参数之外，有序集聚合还可以拥有只在每次聚合操作中求值一次的<quote>直接</quote>参数。第二，普通聚合参数的语法会显式指定它们的排序顺序。有序集聚合通常用于实现依赖特定行顺序的计算，例如排名或百分位，因此这种排序顺序是任何调用都必须具备的一部分。例如，内置的<function>percentile_disc</function>定义等效于：
+
+<programlisting>
+CREATE FUNCTION ordered_set_transition(internal, anyelement)
+  RETURNS internal ...;
+CREATE FUNCTION percentile_disc_final(internal, float8, anyelement)
+  RETURNS anyelement ...;
+
+CREATE AGGREGATE percentile_disc (float8 ORDER BY anyelement)
+(
+    sfunc = ordered_set_transition,
+    stype = internal,
+    finalfunc = percentile_disc_final,
+    finalfunc_extra
+);
+</programlisting>
+
+   这个聚合接受一个<type>float8</type>直接参数（百分位分数）以及一个可以是任意可排序数据类型的聚合输入。它可以这样用来获取家庭收入的中位数：
+
+<programlisting>
+SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY income) FROM households;
+ percentile_disc
+-----------------
+           50489
+</programlisting>
+
+   这里，<literal>0.5</literal>是一个直接参数；如果百分位分数在不同行之间变化，那就没有意义了。
+  </para>
+
+  <para>
+   与普通聚合不同，有序集聚合的输入行排序<emphasis>不是</emphasis>在幕后完成的，而是由聚合的支持函数负责。典型的实现方法是在聚合的状态值中保存一个<quote>tuplesort</quote>对象的引用，把输入行送入该对象，然后在最终函数中完成排序并读出数据。这样的设计使最终函数可以执行特殊操作，例如向待排序数据中注入额外的<quote>假想</quote>行。普通聚合通常可以使用由<application>PL/pgSQL</application>或其他 PL 语言编写的支持函数来实现，但有序集聚合通常必须用 C 编写，因为它们的状态值无法定义为任何 SQL 数据类型。（在上面的示例中，注意状态值被声明为<type>internal</type>类型，这很典型。）另外，由于最终函数执行了排序，之后就不可能再通过再次执行转换函数来继续加入输入行。这意味着最终函数不是<literal>READ_ONLY</literal>；在<link linkend="sql-createaggregate"><command>CREATE AGGREGATE</command></link>中，必须将其声明为<literal>READ_WRITE</literal>，或者如果额外的最终函数调用能够利用已经排好序的状态，则声明为<literal>SHAREABLE</literal>。
+  </para>
+
+  <para>
+   有序集聚合的状态转换函数接收当前状态值以及每一行的聚合输入值，并返回更新后的状态值。这与普通聚合的定义相同，但要注意，不会提供直接参数（如果有的话）。最终函数接收最后的状态值、直接参数的值（如果有），以及（如果指定了<literal>finalfunc_extra</literal>）与聚合输入对应的 NULL 值。与普通聚合一样，只有当聚合是多态的时，<literal>finalfunc_extra</literal>才真正有用；这时需要这些额外的假参数来把最终函数的结果类型与聚合的输入类型关联起来。
+  </para>
+
+  <para>
+   目前，有序集聚合不能用作窗口函数，因此也就无须支持移动聚合模式。
+  </para>
+
+ </sect2>
+
+  <sect2 id="xaggr-partial-aggregates">
+
+  <title>部分聚合</title>
+
+  <indexterm>
+   <primary>聚合函数</primary>
+   <secondary>部分聚合</secondary>
+  </indexterm>
+
+  <para>
+   聚合函数还可以选择支持<firstterm>部分聚合</firstterm>。部分聚合的思想是，在输入数据的不同子集上分别独立运行聚合的状态转换函数，然后把这些子集产生的状态值组合起来，得到与一次性扫描全部输入时相同的状态值。这种模式可用于并行聚合，让不同的工作进程扫描表的不同部分。每个工作进程都会产生一个部分状态值，最后再把这些状态值组合起来，得到最终状态值。（未来，这种模式也可能用于合并本地表和远程表上的聚合结果等用途，但目前尚未实现。）
+  </para>
+
+  <para>
+   要支持部分聚合，聚合定义必须提供一个<firstterm>组合函数</firstterm>。它接收该聚合状态类型的两个值（表示分别在两组输入行子集上进行聚合的结果），并生成一个新的同类型值，表示对这两组行合并后进行聚合本应得到的状态。至于这两组输入行的相对顺序，则是未指定的。这意味着，对输入行顺序敏感的聚合通常无法定义出有用的组合函数。
+  </para>
+
+  <para>
+   举个简单的例子，<literal>MAX</literal>和<literal>MIN</literal>聚合可以通过把组合函数指定为与其转换函数相同的“两者取较大值”或“两者取较小值”比较函数，来支持部分聚合。<literal>SUM</literal>聚合则只需要把加法函数用作组合函数。（同样，除非状态值比输入数据类型更宽，否则组合函数与转换函数相同。）
+  </para>
+
+  <para>
+   组合函数很像一种转换函数，只不过它的第二个参数接受的是状态类型的值，而不是底层输入类型的值。特别是，处理空值和 strict 函数的规则与转换函数类似。另外，如果聚合定义指定了非空的<literal>initcond</literal>，要记住它不仅会用作每次部分聚合运行的初始状态，也会用作组合函数的初始状态；组合函数会被调用，把每个部分结果都合并到该状态中。
+  </para>
+
+  <para>
+   如果聚合的状态类型声明为<type>internal</type>，那么组合函数必须负责确保其结果分配在聚合状态值所使用的正确内存上下文中。这尤其意味着，当第一个输入为<literal>NULL</literal>时，不能简单返回第二个输入，因为那个值位于错误的上下文中，生命周期也不够长。
+  </para>
+
+  <para>
+   当聚合的状态类型声明为<type>internal</type>时，通常也应在聚合定义中提供<firstterm>序列化函数</firstterm>和<firstterm>反序列化函数</firstterm>，以便能把这种状态值从一个进程复制到另一个进程。如果没有这些函数，就无法进行并行聚合，而未来诸如本地/远程聚合之类的应用也很可能无法工作。
+  </para>
+
+  <para>
+   序列化函数必须接受一个<type>internal</type>类型参数，并返回一个<type>bytea</type>类型结果，用来表示打包成扁平字节块的状态值。反过来，反序列化函数负责逆转这种转换。它必须接受<type>bytea</type>和<type>internal</type>类型的两个参数，并返回一个<type>internal</type>类型结果。（第二个参数不会被使用，且总是零，但出于类型安全考虑必须保留。）与组合函数的结果不同，反序列化函数的结果不需要长期存在，因此只需在当前内存上下文中分配即可。
+  </para>
+
+  <para>
+   还要注意，若要让一个聚合能够并行执行，必须将聚合本身标记为<literal>PARALLEL SAFE</literal>。系统不会参考其支持函数上的并行安全性标记。
+  </para>
+
+ </sect2>
+
+ <sect2 id="xaggr-support-functions">
+
+  <title>聚合的支持函数</title>
+
+  <indexterm>
+   <primary>聚合函数</primary>
+   <secondary>支持函数</secondary>
+  </indexterm>
+
+  <para>
+   用 C 编写的函数可以通过调用<function>AggCheckCallContext</function>来检测自己是否作为聚合支持函数被调用，例如：
+<programlisting>
+if (AggCheckCallContext(fcinfo, NULL))
+</programlisting>
+   进行这种检查的一个原因是：如果结果为真，第一个输入必然是一个临时状态值，因此可以安全地原地修改，而不必分配新的副本。示例可见<function>int8inc()</function>。（虽然聚合转换函数总是允许原地修改转换值，但通常不鼓励聚合最终函数这样做；如果它确实这样做，则必须在创建聚合时声明这种行为。更多细节见<xref linkend="sql-createaggregate"/>。）
+  </para>
+
+  <para>
+   <function>AggCheckCallContext</function>的第二个参数可用于取得保存聚合状态值的内存上下文。这对于希望把<quote>扩展</quote>对象（见<xref linkend="xtypes-toast"/>）用作状态值的转换函数很有用。第一次调用时，转换函数应返回一个扩展对象，其内存上下文是聚合状态上下文的子上下文；之后的调用则持续返回同一个扩展对象。示例见<function>array_append()</function>。（<function>array_append()</function>并不是任何内置聚合的转换函数，但它的写法保证了在用作自定义聚合的转换函数时也能高效工作。）
+  </para>
+
+  <para>
+   另一个可供用 C 编写的聚合函数使用的支持例程是<function>AggGetAggref</function>，它返回定义该聚合调用的<literal>Aggref</literal>解析节点。这主要对有序集聚合有用，因为它们可以检查<literal>Aggref</literal>节点的子结构，以找出自己应实现的排序顺序。示例可见<productname>PostgreSQL</productname>源代码中的<filename>orderedsetaggs.c</filename>。
+  </para>
+
+ </sect2>
+
+ </sect1>

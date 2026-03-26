@@ -1,0 +1,392 @@
+<!--
+doc/src/sgml/ref/create_cast.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-createcast">
+
+ <indexterm zone="sql-createcast">
+  <primary>CREATE CAST</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>CREATE CAST</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>CREATE CAST</refname>
+  <refpurpose>定义一种新的类型转换</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+
+<synopsis>
+CREATE CAST (<replaceable>source_type</replaceable> AS <replaceable>target_type</replaceable>)
+    WITH FUNCTION <replaceable>function_name</replaceable> [ (<replaceable>argument_type</replaceable> [, ...]) ]
+    [ AS ASSIGNMENT | AS IMPLICIT ]
+
+CREATE CAST (<replaceable>source_type</replaceable> AS <replaceable>target_type</replaceable>)
+    WITHOUT FUNCTION
+    [ AS ASSIGNMENT | AS IMPLICIT ]
+
+CREATE CAST (<replaceable>source_type</replaceable> AS <replaceable>target_type</replaceable>)
+    WITH INOUT
+    [ AS ASSIGNMENT | AS IMPLICIT ]
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1 id="sql-createcast-description">
+
+  <title>描述</title>
+
+  <para>
+   <command>CREATE CAST</command>定义一种新的类型转换。
+   类型转换规定如何在两种数据类型之间执行转换。例如，
+<programlisting>
+SELECT CAST(42 AS float8);
+</programlisting>
+   通过调用一个预先指定的函数（此处是
+   <literal>float8(int4)</literal>）把整型常量 42 转换成
+   <type>float8</type>类型。（如果没有定义合适的类型转换，
+   转换就会失败。）
+  </para>
+
+  <para>
+   两种类型可以是<firstterm>二进制可强制</firstterm>的，这意味着无需调用任
+   何函数，就可以<quote>免费</quote>执行转换。这要求对应的值使用相同的内部
+   表示。例如，<type>text</type>和<type>varchar</type>这两种类型在两个方向上
+   都是二进制可强制的。二进制可强制性不一定是对称关系。例如，在当前实现
+   中，从<type>xml</type>到<type>text</type>的类型转换可以免费执行，但反方向
+   则需要一个至少执行语法检查的函数。（双向都二进制可强制的两种类型也称
+   为二进制兼容。）
+  </para>
+
+  <para>
+   使用<literal>WITH INOUT</literal>语法，你可以把一种类型转换定义为
+   <firstterm>基于 I/O 的类型转换</firstterm>。基于 I/O 的类型转换通过调用源
+   数据类型的输出函数，并将得到的字符串传给目标数据类型的输入函数来执
+   行。在许多常见情况下，这项特性避免了为转换单独编写类型转换函数的必
+   要。基于 I/O 的类型转换与常规的基于函数的类型转换行为相同，只是实现方
+   式不同。
+  </para>
+
+  <para>
+   默认情况下，只有显式请求类型转换时才会调用一种类型转换，也就是显式使
+   用<literal>CAST(<replaceable>x</replaceable> AS
+   <replaceable>typename</replaceable>)</literal>或
+   <replaceable>x</replaceable><literal>::</literal><replaceable>typename</replaceable>
+   这种构造。
+  </para>
+
+  <para>
+   如果一种类型转换被标记为<literal>AS ASSIGNMENT</literal>，那么在把值赋
+   给目标数据类型的列时就可以隐式调用它。例如，假设<literal>foo.f1</literal>
+   是一个<type>text</type>类型的列，那么如果从<type>integer</type>到
+   <type>text</type>的类型转换被标记为<literal>AS ASSIGNMENT</literal>，
+   则：
+<programlisting>
+INSERT INTO foo (f1) VALUES (42);
+</programlisting>
+   就会被允许，否则不会。（我们通常用术语<firstterm>赋值类型转换</firstterm>
+   来描述这种类型转换。）
+  </para>
+
+  <para>
+   如果一种类型转换被标记为<literal>AS IMPLICIT</literal>，那么无论是在赋
+   值上下文中还是在表达式内部，都可以在任何上下文中隐式调用它。（我们通
+   常用术语<firstterm>隐式类型转换</firstterm>来描述这种类型转换。）例如，
+   考虑这个查询：
+<programlisting>
+SELECT 2 + 4.0;
+</programlisting>
+   解析器最初分别把这两个常量标记为<type>integer</type>和
+   <type>numeric</type>类型。系统目录中没有<type>integer</type>
+   <literal>+</literal> <type>numeric</type>操作符，但有一个
+   <type>numeric</type> <literal>+</literal> <type>numeric</type>操作符。因
+   此，如果存在一种从<type>integer</type>到<type>numeric</type>的可用类型转
+   换，并且被标记为<literal>AS IMPLICIT</literal> &mdash; 实际上确实如此
+   &mdash; 该查询就会成功。解析器将应用该隐式类型转换，并把该查询解析为如
+   同它被写成了：
+<programlisting>
+SELECT CAST ( 2 AS numeric ) + 4.0;
+</programlisting>
+  </para>
+
+  <para>
+   现在，系统目录还提供了一种从<type>numeric</type>到<type>integer</type>的
+   类型转换。如果该类型转换被标记为<literal>AS IMPLICIT</literal> &mdash;
+   实际上并没有 &mdash; 那么解析器就必须在上面的解释方式和另一种方案之间作
+   出选择：把<type>numeric</type>常量转换成<type>integer</type>，然后应用
+   <type>integer</type> <literal>+</literal> <type>integer</type>操作符。由于
+   它不知道该偏向哪一种选择，就会放弃并将该查询判定为有歧义。两种类型转
+   换中只有一种是隐式的，正是借此我们让解析器倾向于把混合了
+   <type>numeric</type>和<type>integer</type>的表达式解析为
+   <type>numeric</type>；系统对此并没有内置知识。
+  </para>
+
+  <para>
+   把类型转换标记为隐式时应当保持保守。过多的隐式类型转换路径可能导致
+   <productname>PostgreSQL</productname>对命令作出令人意外的解释，或
+   者因为存在多种可能的解释而根本无法解析命令。一个好的经验法则是，只有
+   对同一一般类型分类中且能保留信息的类型间转换，才让它可以被隐式调用。
+   例如，从<type>int2</type>到<type>int4</type>的类型转换可以合理地设为隐
+   式，但从<type>float8</type>到<type>int4</type>的类型转换大概应仅限赋值
+   使用。跨类型分类的类型转换，例如从<type>text</type>到<type>int4</type>，
+   最好只允许显式调用。
+  </para>
+
+  <note>
+
+   <para>
+    有时出于可用性或标准兼容性的原因，有必要在一组类型之间提供多种隐式类
+    型转换，这会带来像上面那样无法避免的歧义。解析器有一种基于
+    <firstterm>类型分类</firstterm>和<firstterm>首选类型</firstterm>的后备启
+    发式规则，在这种情况下有助于提供期望的行为。详见
+    <xref linkend="sql-createtype"/>。
+   </para>
+  </note>
+
+  <para>
+   要能够创建一种类型转换，你必须拥有源数据类型或目标数据类型之一，并且
+   对另一种类型具有<literal>USAGE</literal>权限。要创建一种二进制可强制类
+   型转换，你必须是超级用户。（之所以有这一限制，是因为错误的二进制可强
+   制类型转换很容易使服务器崩溃。）
+  </para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>参数</title>
+
+   <variablelist>
+    <varlistentry id="zh18-auto-create_cast-varlistentry-1">
+     <term><replaceable>source_type</replaceable></term>
+
+     <listitem>
+
+      <para>
+       该类型转换的源数据类型的名称。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-create_cast-varlistentry-2">
+     <term><replaceable>target_type</replaceable></term>
+
+     <listitem>
+
+      <para>
+       该类型转换的目标数据类型的名称。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-create_cast-varlistentry-3">
+     <term><literal><replaceable>function_name</replaceable>[(<replaceable>argument_type</replaceable> [, ...])]</literal></term>
+
+     <listitem>
+
+      <para>
+       用于执行该类型转换的函数。函数名可以用模式限定；如果没有，则会在模
+       式搜索路径中查找该函数。该函数的结果数据类型必须与类型转换的目标类
+       型一致。其参数见下文。如果没有指定参数列表，则该函数名在其模式中必
+       须是唯一的。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-create_cast-varlistentry-4">
+     <term><literal>WITHOUT FUNCTION</literal></term>
+
+     <listitem>
+
+      <para>
+       表示源类型对目标类型是二进制可强制的，因此执行该类型转换不需要函
+       数。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-create_cast-varlistentry-5">
+     <term><literal>WITH INOUT</literal></term>
+
+     <listitem>
+
+      <para>
+       表示该类型转换是一种基于 I/O 的类型转换，其执行方式是调用源数据类型
+       的输出函数，并将得到的字符串传给目标数据类型的输入函数。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-create_cast-varlistentry-6">
+     <term><literal>AS ASSIGNMENT</literal></term>
+
+     <listitem>
+
+      <para>
+       表示该类型转换可以在赋值上下文中隐式调用。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-create_cast-varlistentry-7">
+     <term><literal>AS IMPLICIT</literal></term>
+
+     <listitem>
+
+      <para>
+       表示该类型转换可以在任何上下文中隐式调用。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+
+  <para>
+   类型转换实现函数可以有一到三个参数。第一个参数类型必须与源类型相同，
+   或者可以由源类型二进制可强制得到。第二个参数（如果有）必须是
+   <type>integer</type>类型；它接收与目标类型关联的类型修饰符，如果没有
+   则为<literal>-1</literal>。第三个参数（如果有）必须是<type>boolean</type>
+   类型；如果该类型转换是显式类型转换，它接收<literal>true</literal>，否则
+   接收<literal>false</literal>。（奇怪的是，SQL 标准在某些情况下要求显式类
+   型转换和隐式类型转换具有不同的行为。这个参数是为必须实现这类类型转换
+   的函数提供的。不建议你把自己的数据类型设计成需要关心这一点。）
+  </para>
+
+  <para>
+   类型转换函数的返回类型必须与类型转换的目标类型相同，或者对该目标类型
+   是二进制可强制的。
+  </para>
+
+  <para>
+   通常，类型转换的源数据类型和目标数据类型必须不同。不过，如果它具有一
+   个接受多个参数的类型转换实现函数，则允许声明源类型和目标类型相同的类
+   型转换。这用于在系统目录中表示特定类型的长度强制函数。所命名的函数用
+   于将该类型的值强制为其第二个参数给定的类型修饰符值。
+  </para>
+
+  <para>
+   当一种类型转换的源类型和目标类型不同，且其函数接受多个参数时，它支持
+   在一个步骤中同时完成从一种类型到另一种类型的转换并应用长度强制。如果
+   没有这样的条目，对使用类型修饰符的类型进行强制就需要两个类型转换步
+   骤：先在数据类型之间进行转换，再应用该修饰符。
+  </para>
+
+  <para>
+   当前，到域类型或从域类型的类型转换都没有效果。到域或从域的类型转换
+   都会使用与其底层类型关联的类型转换。
+  </para>
+
+ </refsect1>
+
+ <refsect1 id="sql-createcast-notes">
+
+  <title>注解</title>
+
+  <para>
+   使用<link linkend="sql-dropcast"><command>DROP CAST</command></link>移除用户定义的类型转换。
+  </para>
+
+  <para>
+   请记住，如果你希望能够双向转换类型，就需要在两个方向上分别显式声明类
+   型转换。
+  </para>
+
+ <indexterm zone="sql-createcast">
+  <primary>cast</primary>
+  <secondary>I/O conversion</secondary>
+ </indexterm>
+
+  <para>
+   通常没有必要在用户定义类型与标准字符串类型（<type>text</type>、
+   <type>varchar</type>和<type>char(<replaceable>n</replaceable>)</type>，
+   以及被定义为属于字符串分类的用户定义类型）之间创建类型转换。
+   <productname>PostgreSQL</productname>会自动为此提供基于 I/O 的类型转
+   换。转换到字符串类型的自动类型转换被视为赋值类型转换，而从字符串类型
+   出发的自动类型转换则只允许显式调用。你可以声明自己的类型转换来替代自
+   动类型转换，从而覆盖这种行为，但通常这样做的唯一原因，是希望该转换比
+   标准的仅赋值或仅显式设置更容易调用。另一种可能的原因是，你希望该转换
+   的行为不同于该类型的 I/O 函数；但这已经足够反常，你应该三思这是不是一
+   个好主意。（确实有少数内置类型在转换行为上有所不同，大多是由于 SQL 标
+   准的要求。）
+  </para>
+
+  <para>
+   虽然这不是强制要求，但仍建议你继续遵循这种老惯例，即按目标数据类型为
+   类型转换实现函数命名。许多用户已经习惯于用函数风格的记法进行类型转
+   换，也就是<replaceable>typename</replaceable>(<replaceable>x</replaceable>)。
+   这种记法实际上无非就是调用类型转换实现函数；它不会被特别当作类型转换
+   处理。如果你的转换函数没有按这种惯例命名，那么用户会感到意外。由于
+   <productname>PostgreSQL</productname>允许同一函数名按不同参数类型重
+   载，因此让来自不同类型的多个转换函数都使用目标类型的名称并不存在困
+   难。
+  </para>
+
+  <note>
+
+   <para>
+    实际上，前一段说得过于简单了：有两种情况下，即使一个函数调用形式没有
+    匹配到实际存在的函数，也会被当作类型转换请求。如果函数调用
+    <replaceable>name</replaceable>(<replaceable>x</replaceable>)不能与任何现有函数精确匹配，
+    但<replaceable>name</replaceable>是一个数据类型名，并且
+    <structname>pg_cast</structname>为从<replaceable>x</replaceable>的类型到该类型提供了
+    二进制可强制的类型转换，那么该调用会被解释为二进制可强制的类型转换。
+    作出这一例外，是为了让二进制可强制的类型转换即使没有任何函数，也能使
+    用函数语法调用。同样，如果没有<structname>pg_cast</structname>项，但该
+    类型转换的目标或源是字符串类型，则该调用会被解释为基于 I/O 的类型转
+    换。这一例外允许基于 I/O 的类型转换使用函数语法调用。
+   </para>
+  </note>
+
+  <note>
+
+   <para>
+    还有一个例外中的例外：从复合类型到字符串类型的基于 I/O 的类型转换不能
+    使用函数语法调用，而必须写成显式类型转换语法（<literal>CAST</literal>
+    或<literal>::</literal>记法）。增加这一例外，是因为在引入自动提供的基于
+    I/O 的类型转换之后，如果原意是函数调用或列引用，就太容易意外地触发这
+    种类型转换了。
+   </para>
+  </note>
+ </refsect1>
+
+ <refsect1 id="sql-createcast-examples">
+
+  <title>示例</title>
+
+  <para>
+   要使用函数<literal>int4(bigint)</literal>创建一种从类型
+   <type>bigint</type>到类型<type>int4</type>的赋值类型转换：
+<programlisting>
+CREATE CAST (bigint AS int4) WITH FUNCTION int4(bigint) AS ASSIGNMENT;
+</programlisting>
+   （在系统中这种类型转换已经被预定义。）
+  </para>
+ </refsect1>
+
+ <refsect1 id="sql-createcast-compat">
+
+  <title>兼容性</title>
+
+  <para>
+   <command>CREATE CAST</command>命令符合<acronym>SQL</acronym>标
+   准，不过 SQL 没有对二进制可强制类型或实现函数的额外参数作出规定。
+   <literal>AS IMPLICIT</literal>也是
+   <productname>PostgreSQL</productname>的扩展。
+  </para>
+ </refsect1>
+
+ <refsect1 id="sql-createcast-seealso">
+
+  <title>另见</title>
+
+  <para>
+   <xref linkend="sql-createfunction"/>,
+   <xref linkend="sql-createtype"/>,
+   <xref linkend="sql-dropcast"/>
+  </para>
+ </refsect1>
+
+</refentry>

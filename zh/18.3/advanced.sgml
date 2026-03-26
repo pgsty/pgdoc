@@ -1,0 +1,493 @@
+<!-- doc/src/sgml/advanced.sgml -->
+
+ <chapter id="tutorial-advanced">
+  <title>高级特性</title>
+
+  <sect1 id="tutorial-advanced-intro">
+   <title>简介</title>
+
+   <para>
+    在前一章中，我们已经介绍了如何使用<acronym>SQL</acronym>在<productname>PostgreSQL</productname>中存储和访问数据的基础知识。现在我们将讨论<acronym>SQL</acronym>的一些更高级特性，它们能够简化管理，并防止数据丢失或损坏。最后，我们还将看看一些<productname>PostgreSQL</productname>扩展。
+   </para>
+
+   <para>
+    本章有时会引用<xref
+    linkend="tutorial-sql"/>中的示例，对其加以修改或改进，因此事先读过那一章会很有帮助。本章中的一些示例也可以在教程目录中的<filename>advanced.sql</filename>文件中找到。该文件还包含一些要装载的样例数据，这里不再重复。（关于如何使用该文件，参见<xref linkend="tutorial-sql-intro"/>。）
+   </para>
+  </sect1>
+
+
+  <sect1 id="tutorial-views">
+   <title>视图</title>
+
+   <indexterm zone="tutorial-views">
+    <primary>view</primary>
+   </indexterm>
+
+   <para>
+    回过头看<xref linkend="tutorial-join"/>中的查询。假设天气记录和城市位置的组合清单对你的应用特别有用，但你又不想每次需要它时都键入这条查询。你可以在该查询之上创建一个<firstterm>视图</firstterm>，为该查询命名，以后就可以像引用普通表一样引用它：
+
+<programlisting>
+CREATE VIEW myview AS
+    SELECT name, temp_lo, temp_hi, prcp, date, location
+        FROM weather, cities
+        WHERE city = name;
+
+SELECT * FROM myview;
+</programlisting>
+   </para>
+
+   <para>
+    大量使用视图是良好的 SQL 数据库设计的一个关键方面。视图允许你通过一致的接口封装表结构的细节，而这些细节可能会随着应用演进而变化。
+   </para>
+
+   <para>
+    几乎凡是真实表可以使用的地方，都可以使用视图。在其他视图之上再构建视图也很常见。
+   </para>
+  </sect1>
+
+
+  <sect1 id="tutorial-fk">
+   <title>外键</title>
+
+   <indexterm zone="tutorial-fk">
+    <primary>foreign key</primary>
+   </indexterm>
+
+   <indexterm zone="tutorial-fk">
+    <primary>referential integrity</primary>
+   </indexterm>
+
+   <para>
+    回想<xref
+    linkend="tutorial-sql"/>中的<classname>weather</classname>和<classname>cities</classname>表。考虑这样一个问题：你希望确保没有人能向<classname>weather</classname>表中插入在<classname>cities</classname>表里没有匹配项的行。这称为维护数据的<firstterm>引用完整性</firstterm>。在简单得多的数据库系统中，这通常是通过先查看<classname>cities</classname>表、检查是否存在匹配记录，然后再插入新的<classname>weather</classname>记录或拒绝插入来实现的（如果系统压根支持的话）。这种做法有很多问题，而且很不方便，所以<productname>PostgreSQL</productname>可以替你完成这件事。
+   </para>
+
+   <para>
+    新的表声明如下：
+
+<programlisting>
+CREATE TABLE cities (
+        name     varchar(80) primary key,
+        location point
+);
+
+CREATE TABLE weather (
+        city      varchar(80) references cities(name),
+        temp_lo   int,
+        temp_hi   int,
+        prcp      real,
+        date      date
+);
+</programlisting>
+
+    现在试着插入一条无效记录：
+
+<programlisting>
+INSERT INTO weather VALUES ('Berkeley', 45, 53, 0.0, '1994-11-28');
+</programlisting>
+
+<screen>
+ERROR:  insert or update on table "weather" violates foreign key constraint "weather_city_fkey"
+DETAIL:  Key (city)=(Berkeley) is not present in table "cities".
+</screen>
+   </para>
+
+   <para>
+    外键的行为可以针对应用进行精细调整。本教程不再超出这个简单例子继续展开，更多信息请参见<xref linkend="ddl"/>。正确使用外键肯定能提高数据库应用的质量，因此强烈建议你了解它们。
+   </para>
+  </sect1>
+
+
+  <sect1 id="tutorial-transactions">
+   <title>事务</title>
+
+   <indexterm zone="tutorial-transactions">
+    <primary>transaction</primary>
+   </indexterm>
+
+   <para>
+    <firstterm>事务</firstterm>是所有数据库系统中的一个基本概念。事务的要点在于，它把多个步骤打包成一个单一的、要么全部成功要么全部失败的操作。步骤之间的中间状态对其他并发事务不可见；如果发生某种故障使事务无法完成，那么其中任何一步都不会对数据库产生影响。
+   </para>
+
+   <para>
+    例如，考虑一个银行数据库，其中保存着各个客户账户的余额，以及各营业网点的总存款余额。假设我们要记录一笔从Alice的账户向Bob的账户支付100.00美元的款项。大幅简化后，相应的 SQL 命令可能是：
+
+<programlisting>
+UPDATE accounts SET balance = balance - 100.00
+    WHERE name = 'Alice';
+UPDATE branches SET balance = balance - 100.00
+    WHERE name = (SELECT branch_name FROM accounts WHERE name = 'Alice');
+UPDATE accounts SET balance = balance + 100.00
+    WHERE name = 'Bob';
+UPDATE branches SET balance = balance + 100.00
+    WHERE name = (SELECT branch_name FROM accounts WHERE name = 'Bob');
+</programlisting>
+   </para>
+
+   <para>
+    这些命令的细节在这里并不重要；重要的是，为了完成这个相当简单的操作，涉及了若干次彼此独立的更新。银行管理人员会希望确信这些更新要么全部发生，要么一个也不发生。显然，不能因为系统故障导致Bob收到了100.00美元，而Alice那边却没有被扣款。反过来，如果Alice被扣了款而Bob没有入账，她也不会满意。我们需要保证：如果操作进行到一半出了问题，到目前为止已执行的步骤都不会生效。把这些更新归为一个<firstterm>事务</firstterm>，就能提供这种保证。事务被称为<firstterm>原子的</firstterm>：从其他事务的角度看，它要么完整发生，要么根本不发生。
+   </para>
+
+   <para>
+    我们还希望保证，一旦事务完成并得到数据库系统确认，它确实已经被永久记录下来，即便紧接着发生崩溃也不会丢失。例如，如果我们正在记录Bob的一次现金提款，我们当然不希望他刚走出银行大门，对他账户的扣款就在崩溃后消失。事务型数据库保证，在把事务报告为完成之前，会先将该事务所做的全部更新记入永久存储（即磁盘）。
+   </para>
+
+   <para>
+    事务型数据库的另一个重要性质与原子更新的概念密切相关：当多个事务并发运行时，每个事务都不应该看到其他事务尚未完成的更改。例如，如果某个事务正在统计所有营业网点的余额，就不能让它只算进Alice所在网点的扣款，却没有算进Bob所在网点的入账，反过来也不行。因此，事务不仅在对数据库的持久影响上必须是全有或全无的，在其发生过程中的可见性上也必须如此。一个未结束事务到目前为止所做的更新，对其他事务不可见；等到该事务完成时，所有更新会同时变得可见。
+   </para>
+
+   <para>
+    在<productname>PostgreSQL</productname>中，可以通过将事务中的 SQL 命令置于<command>BEGIN</command>和<command>COMMIT</command>命令之间来建立一个事务。因此，我们的银行事务实际上会是这样：
+
+<programlisting>
+BEGIN;
+UPDATE accounts SET balance = balance - 100.00
+    WHERE name = 'Alice';
+-- etc etc
+COMMIT;
+</programlisting>
+   </para>
+
+   <para>
+    如果事务执行到一半时，我们决定不想提交了（例如刚刚发现Alice的余额变成了负数），就可以发出<command>ROLLBACK</command>而不是<command>COMMIT</command>，这样到目前为止的全部更新都会被取消。
+   </para>
+
+   <para>
+    <productname>PostgreSQL</productname>实际上把每条 SQL 语句都视为在一个事务中执行。如果你没有显式发出<command>BEGIN</command>，那么每条独立语句外围都会隐式包上一对<command>BEGIN</command>和（若成功）<command>COMMIT</command>。由<command>BEGIN</command>和<command>COMMIT</command>包围起来的一组语句，有时称为<firstterm>事务块</firstterm>。
+   </para>
+
+   <note>
+    <para>
+     某些客户端库会自动发出<command>BEGIN</command>和<command>COMMIT</command>命令，因此你可能在没有主动要求的情况下，也得到了事务块的效果。请查阅你所使用接口的文档。
+    </para>
+   </note>
+
+   <para>
+    也可以借助<firstterm>保存点</firstterm>，以更细粒度控制事务中的语句。保存点允许你有选择地丢弃事务的一部分，同时提交其余部分。使用<command>SAVEPOINT</command>定义保存点之后，如有需要，可以用<command>ROLLBACK TO</command>回滚到该保存点。事务中从定义保存点到回滚到它之间所做的数据库修改都会被丢弃，而早于该保存点的修改会被保留。
+   </para>
+
+   <para>
+    回滚到某个保存点之后，该保存点仍然保持定义状态，因此你可以多次回滚到它。反过来，如果你确定不再需要回滚到某个保存点，可以将其释放，以便系统回收一些资源。请记住，无论是释放某个保存点，还是回滚到某个保存点，都会自动释放在它之后定义的所有保存点。
+   </para>
+
+   <para>
+    所有这些都发生在事务块内部，因此其他数据库会话都看不到。等到你提交整个事务块时，被提交的动作才会作为一个整体对其他会话可见，而被回滚的动作则永远不会可见。
+   </para>
+
+   <para>
+    回到银行数据库，假设我们从Alice的账户扣除了100.00美元，并记入Bob的账户，后来却发现其实应该记入Wally的账户。我们可以像下面这样利用保存点来处理：
+
+<programlisting>
+BEGIN;
+UPDATE accounts SET balance = balance - 100.00
+    WHERE name = 'Alice';
+SAVEPOINT my_savepoint;
+UPDATE accounts SET balance = balance + 100.00
+    WHERE name = 'Bob';
+-- oops ... forget that and use Wally's account
+ROLLBACK TO my_savepoint;
+UPDATE accounts SET balance = balance + 100.00
+    WHERE name = 'Wally';
+COMMIT;
+</programlisting>
+   </para>
+
+   <para>
+    当然，这个例子是过度简化的，但在事务块中借助保存点可以进行大量控制。此外，对于一个由于错误而被系统置为中止状态的事务块，要重新取得控制权，唯一的办法就是使用<command>ROLLBACK TO</command>；否则就只能把整个事务完全回滚并重新开始。
+   </para>
+
+  </sect1>
+
+
+  <sect1 id="tutorial-window">
+   <title>窗口函数</title>
+
+   <indexterm zone="tutorial-window">
+    <primary>window function</primary>
+   </indexterm>
+
+   <para>
+    <firstterm>窗口函数</firstterm>会在一组与当前行存在某种关联的表行上执行计算。这与聚合函数能够完成的计算类型类似。不过，窗口函数不会像非窗口聚合调用那样，把多行分组为一条输出行。相反，各行仍然保留各自的独立身份。在幕后，窗口函数能够访问的不仅仅是查询结果中的当前行。
+   </para>
+
+   <para>
+    下面的例子说明如何将每个雇员的工资与其所在部门的平均工资进行比较：
+
+<programlisting>
+SELECT depname, empno, salary, avg(salary) OVER (PARTITION BY depname) FROM empsalary;
+</programlisting>
+
+<screen>
+  depname  | empno | salary |          avg
+-----------+-------+--------+-----------------------
+ develop   |    11 |   5200 | 5020.0000000000000000
+ develop   |     7 |   4200 | 5020.0000000000000000
+ develop   |     9 |   4500 | 5020.0000000000000000
+ develop   |     8 |   6000 | 5020.0000000000000000
+ develop   |    10 |   5200 | 5020.0000000000000000
+ personnel |     5 |   3500 | 3700.0000000000000000
+ personnel |     2 |   3900 | 3700.0000000000000000
+ sales     |     3 |   4800 | 4866.6666666666666667
+ sales     |     1 |   5000 | 4866.6666666666666667
+ sales     |     4 |   4800 | 4866.6666666666666667
+(10 rows)
+</screen>
+
+    前三个输出列直接来自表<structname>empsalary</structname>，并且该表中的每一行对应一条输出行。第四列表示在所有<structfield>depname</structfield>值与当前行相同的表行上求得的平均值。（这其实与非窗口的<function>avg</function>聚合是同一个函数，但<literal>OVER</literal>子句使它被当作窗口函数处理，并在窗口帧上计算。）
+   </para>
+
+   <para>
+    窗口函数调用总是包含一个紧跟在窗口函数名和参数之后的<literal>OVER</literal>子句。这正是它在语法上区别于普通函数或非窗口聚合的地方。<literal>OVER</literal>子句精确决定查询中的哪些行会被拆分出来供窗口函数处理。<literal>OVER</literal>内部的<literal>PARTITION BY</literal>子句将具有相同<literal>PARTITION BY</literal>表达式值的行划分为组，也就是分区。对于每一行，窗口函数都是在与当前行处于同一分区的那些行上计算的。
+   </para>
+
+   <para>
+    你也可以在<literal>OVER</literal>内部使用<literal>ORDER BY</literal>来控制窗口函数处理行的顺序。（窗口中的<literal>ORDER BY</literal>甚至不必与行的输出顺序一致。）下面是一个例子：
+
+<programlisting>
+SELECT depname, empno, salary,
+       row_number() OVER (PARTITION BY depname ORDER BY salary DESC)
+FROM empsalary;
+</programlisting>
+
+<screen>
+  depname  | empno | salary | row_number
+-----------+-------+--------+------------
+ develop   |     8 |   6000 |          1
+ develop   |    10 |   5200 |          2
+ develop   |    11 |   5200 |          3
+ develop   |     9 |   4500 |          4
+ develop   |     7 |   4200 |          5
+ personnel |     2 |   3900 |          1
+ personnel |     5 |   3500 |          2
+ sales     |     1 |   5000 |          1
+ sales     |     4 |   4800 |          2
+ sales     |     3 |   4800 |          3
+(10 rows)
+</screen>
+
+    如上所示，<function>row_number</function>窗口函数会按照<literal>ORDER BY</literal>子句定义的顺序，为每个分区内的各行分配连续编号（并列行的编号顺序未指定）。<function>row_number</function>不需要显式参数，因为它的行为完全由<literal>OVER</literal>子句决定。
+   </para>
+
+   <para>
+    窗口函数所考虑的行，是查询的<literal>FROM</literal>子句产生并经<literal>WHERE</literal>、<literal>GROUP BY</literal>和<literal>HAVING</literal>子句（如果有）过滤后的那个<quote>虚拟表</quote>中的行。例如，由于不满足<literal>WHERE</literal>条件而被删除的行，不会被任何窗口函数看到。一个查询可以包含多个窗口函数，它们可以通过不同的<literal>OVER</literal>子句以不同方式划分数据，但它们都作用于这个虚拟表所定义的同一组行。
+   </para>
+
+   <para>
+    我们已经看到，如果行的顺序并不重要，就可以省略<literal>ORDER BY</literal>。<literal>PARTITION BY</literal>也可以省略，这时所有行构成一个分区。
+   </para>
+
+   <para>
+    与窗口函数相关的另一个重要概念是：对于每一行，在其所在分区内有一组行，称为它的<firstterm>窗口帧</firstterm>。有些窗口函数只作用于窗口帧中的行，而不是整个分区中的所有行。默认情况下，如果提供了<literal>ORDER BY</literal>，则窗口帧包含从分区起始处直到当前行的所有行，再加上根据<literal>ORDER BY</literal>子句与当前行相等的所有后续行。如果省略<literal>ORDER BY</literal>，默认窗口帧则包含该分区中的所有行。
+     <footnote>
+      <para>
+       还可以用其他方式定义窗口帧，但本教程不涉及这些选项。细节见<xref linkend="syntax-window-functions"/>。
+      </para>
+     </footnote>
+    下面是一个使用<function>sum</function>的例子：
+   </para>
+
+<programlisting>
+SELECT salary, sum(salary) OVER () FROM empsalary;
+</programlisting>
+
+<screen>
+ salary |  sum
+--------+-------
+   5200 | 47100
+   5000 | 47100
+   3500 | 47100
+   4800 | 47100
+   3900 | 47100
+   4200 | 47100
+   4500 | 47100
+   4800 | 47100
+   6000 | 47100
+   5200 | 47100
+(10 rows)
+</screen>
+
+   <para>
+    上面由于<literal>OVER</literal>子句中没有<literal>ORDER BY</literal>，窗口帧与分区相同；而在没有<literal>PARTITION BY</literal>的情况下，这个分区就是整张表。换言之，每个求和都是在整张表上计算的，因此每条输出行得到的结果都相同。但是如果加上<literal>ORDER BY</literal>子句，结果就会大不一样：
+   </para>
+
+<programlisting>
+SELECT salary, sum(salary) OVER (ORDER BY salary) FROM empsalary;
+</programlisting>
+
+<screen>
+ salary |  sum
+--------+-------
+   3500 |  3500
+   3900 |  7400
+   4200 | 11600
+   4500 | 16100
+   4800 | 25700
+   4800 | 25700
+   5000 | 30700
+   5200 | 41100
+   5200 | 41100
+   6000 | 47100
+(10 rows)
+</screen>
+
+   <para>
+    这里的求和是从第一条（最低）工资一直累加到当前行，包括与当前行工资相同的所有重复值（注意那些重复工资对应的结果）。
+   </para>
+
+   <para>
+    窗口函数只允许出现在查询的<literal>SELECT</literal>列表和<literal>ORDER BY</literal>子句中。它们不允许出现在其他地方，例如<literal>GROUP BY</literal>、<literal>HAVING</literal>和<literal>WHERE</literal>子句中。这是因为从逻辑上讲，它们在这些子句处理完成之后才执行。另外，窗口函数在非窗口聚合函数之后执行。这意味着在窗口函数的参数中包含聚合函数调用是合法的，反过来则不行。
+   </para>
+
+   <para>
+    如果需要在窗口计算执行之后再过滤或分组行，可以使用子查询。例如：
+
+<programlisting>
+SELECT depname, empno, salary, enroll_date
+FROM
+  (SELECT depname, empno, salary, enroll_date,
+     row_number() OVER (PARTITION BY depname ORDER BY salary DESC, empno) AS pos
+     FROM empsalary
+  ) AS ss
+WHERE pos &lt; 3;
+</programlisting>
+
+    上面的查询只显示内部查询中<literal>row_number</literal>小于3的那些行（也就是每个部门的前两行）。
+   </para>
+
+   <para>
+    当查询涉及多个窗口函数时，可以为每个函数分别写一个独立的<literal>OVER</literal>子句；但如果多个函数都需要相同的窗口行为，这样写既重复，又容易出错。替代方法是，在<literal>WINDOW</literal>子句中给每一种窗口行为命名，然后在<literal>OVER</literal>中引用它。例如：
+
+<programlisting>
+SELECT sum(salary) OVER w, avg(salary) OVER w
+  FROM empsalary
+  WINDOW w AS (PARTITION BY depname ORDER BY salary DESC);
+</programlisting>
+   </para>
+
+   <para>
+    关于窗口函数的更多细节可以在<xref linkend="syntax-window-functions"/>、<xref linkend="functions-window"/>、<xref linkend="queries-window"/>以及<xref linkend="sql-select"/>参考页中找到。
+   </para>
+  </sect1>
+
+
+  <sect1 id="tutorial-inheritance">
+   <title>继承</title>
+
+   <indexterm zone="tutorial-inheritance">
+    <primary>inheritance</primary>
+   </indexterm>
+
+   <para>
+    继承是面向对象数据库中的一个概念。它为数据库设计打开了一些有趣的新可能性。
+   </para>
+
+   <para>
+    让我们创建两个表：表<classname>cities</classname>和表<classname>capitals</classname>。很自然，首都也是城市，因此当你列出所有城市时，应该有某种办法能隐式地把首都也显示出来。如果你很有巧思，也许会想出这样的方案：
+
+<programlisting>
+CREATE TABLE capitals (
+  name       text,
+  population real,
+  elevation  int,    -- (in ft)
+  state      char(2)
+);
+
+CREATE TABLE non_capitals (
+  name       text,
+  population real,
+  elevation  int     -- (in ft)
+);
+
+CREATE VIEW cities AS
+  SELECT name, population, elevation FROM capitals
+    UNION
+  SELECT name, population, elevation FROM non_capitals;
+</programlisting>
+
+    就查询而言，这样做还行，但一旦需要更新多行，它就会变得很麻烦。
+   </para>
+
+   <para>
+    更好的解决办法是：
+
+<programlisting>
+CREATE TABLE cities (
+  name       text,
+  population real,
+  elevation  int     -- (in ft)
+);
+
+CREATE TABLE capitals (
+  state      char(2) UNIQUE NOT NULL
+) INHERITS (cities);
+</programlisting>
+   </para>
+
+   <para>
+    在这种情况下，<classname>capitals</classname>的一行会从它的<firstterm>父表</firstterm><classname>cities</classname><firstterm>继承</firstterm>全部列（<structfield>name</structfield>、<structfield>population</structfield>和<structfield>elevation</structfield>）。列<structfield>name</structfield>的类型是<type>text</type>，这是<productname>PostgreSQL</productname>内置的一种变长字符串类型。<classname>capitals</classname>表还有一个额外的列<structfield>state</structfield>，用来表示所在州的缩写。在<productname>PostgreSQL</productname>中，一个表可以从零个或多个其他表继承。
+   </para>
+
+   <para>
+    例如，下面的查询会找出所有海拔超过500英尺的城市名称，其中也包括州首府：
+
+<programlisting>
+SELECT name, elevation
+  FROM cities
+  WHERE elevation &gt; 500;
+</programlisting>
+
+    返回：
+
+<screen>
+   name    | elevation
+-----------+-----------
+ Las Vegas |      2174
+ Mariposa  |      1953
+ Madison   |       845
+(3 rows)
+</screen>
+   </para>
+
+   <para>
+    另一方面，下面的查询会找出所有海拔超过500英尺且不是州首府的城市：
+
+<programlisting>
+SELECT name, elevation
+    FROM ONLY cities
+    WHERE elevation &gt; 500;
+</programlisting>
+
+<screen>
+   name    | elevation
+-----------+-----------
+ Las Vegas |      2174
+ Mariposa  |      1953
+(2 rows)
+</screen>
+   </para>
+
+   <para>
+    这里，放在<literal>cities</literal>前面的<literal>ONLY</literal>表示该查询只针对<classname>cities</classname>表执行，而不包括继承层次中位于<classname>cities</classname>之下的表。我们前面已经讨论过的许多命令 &mdash; <command>SELECT</command>、<command>UPDATE</command>和<command>DELETE</command> &mdash; 都支持这种<literal>ONLY</literal>记法。
+   </para>
+
+   <note>
+    <para>
+     尽管继承经常很有用，但它尚未与唯一约束或外键集成，这限制了它的实用性。更多细节见<xref linkend="ddl-inherit"/>。
+    </para>
+   </note>
+  </sect1>
+
+
+  <sect1 id="tutorial-conclusion">
+   <title>小结</title>
+
+   <para>
+    <productname>PostgreSQL</productname>还有许多特性在这个面向<acronym>SQL</acronym>新用户的入门教程中没有涉及。本书余下部分会更详细地讨论这些特性。
+   </para>
+
+   <para>
+    如果你觉得还需要更多入门材料，请访问 PostgreSQL <ulink url="https://www.postgresql.org">官方网站</ulink>，其中有指向更多资源的链接。
+   </para>
+  </sect1>
+ </chapter>

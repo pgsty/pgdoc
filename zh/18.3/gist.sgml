@@ -1,0 +1,1107 @@
+<!-- doc/src/sgml/gist.sgml -->
+
+<sect1 id="gist">
+<title>GiST 索引</title>
+
+   <indexterm>
+    <primary>index</primary>
+    <secondary>GiST</secondary>
+   </indexterm>
+
+<sect2 id="gist-intro">
+ <title>简介</title>
+
+ <para>
+   <acronym>GiST</acronym>是 Generalized Search Tree（通用搜索树）的缩写。它是一种平衡的树形访问方法，可作为实现任意索引方案的基本模板。B-树、R 树以及许多其他索引方案都可以在<acronym>GiST</acronym>中实现。
+ </para>
+
+ <para>
+  <acronym>GiST</acronym>的一个优点是，它使数据类型所属领域的专家而不是数据库专家，能够开发带有适当访问方法的自定义数据类型。
+ </para>
+
+  <para>
+    这里的一些内容来自加州大学伯克利分校的 GiST 索引项目
+    <ulink url="http://gist.cs.berkeley.edu/">网站</ulink>以及
+    Marcel Kornacker 的论文
+    <ulink url="http://www.sai.msu.su/~megera/postgres/gist/papers/concurrency/access-methods-for-next-generation.pdf.gz">
+    Access Methods for Next-Generation Database Systems</ulink>。
+    <productname>PostgreSQL</productname>中的<acronym>GiST</acronym>
+    实现主要由 Teodor Sigaev 和 Oleg Bartunov 维护，他们的
+    <ulink url="http://www.sai.msu.su/~megera/postgres/gist/">网站</ulink>上还有更多信息。
+  </para>
+
+</sect2>
+
+<sect2 id="gist-builtin-opclasses">
+ <title>内置操作符类</title>
+
+ <para>
+  <productname>PostgreSQL</productname>核心发行版包含<xref linkend="gist-builtin-opclasses-table"/>中所示的<acronym>GiST</acronym>操作符类。（<xref linkend="contrib"/>中描述的一些可选模块还提供了额外的<acronym>GiST</acronym>操作符类。）
+ </para>
+
+  <table id="gist-builtin-opclasses-table">
+   <title>内置 <acronym>GiST</acronym> 操作符类</title>
+   <tgroup cols="3">
+     <colspec colname="col1" colwidth="2*"/>
+     <colspec colname="col2" colwidth="3*"/>
+     <colspec colname="col3" colwidth="2*"/>
+    <thead>
+     <row>
+      <entry>名称</entry>
+      <entry>可索引操作符</entry>
+      <entry>排序操作符</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry valign="middle" morerows="11"><literal>box_ops</literal></entry>
+      <entry><literal>&lt;&lt; (box, box)</literal></entry>
+      <entry valign="middle" morerows="11"><literal>&lt;-&gt; (box, point)</literal></entry>
+     </row>
+     <row><entry><literal>&amp;&lt; (box, box)</literal></entry></row>
+     <row><entry><literal>&amp;&amp; (box, box)</literal></entry></row>
+     <row><entry><literal>&amp;&gt; (box, box)</literal></entry></row>
+     <row><entry><literal>&gt;&gt; (box, box)</literal></entry></row>
+     <row><entry><literal>~= (box, box)</literal></entry></row>
+     <row><entry><literal>@&gt; (box, box)</literal></entry></row>
+     <row><entry><literal>&lt;@ (box, box)</literal></entry></row>
+     <row><entry><literal>&amp;&lt;| (box, box)</literal></entry></row>
+     <row><entry><literal>&lt;&lt;| (box, box)</literal></entry></row>
+     <row><entry><literal>|&gt;&gt; (box, box)</literal></entry></row>
+     <row><entry><literal>|&amp;&gt; (box, box)</literal></entry></row>
+
+     <row>
+      <entry valign="middle" morerows="11"><literal>circle_ops</literal></entry>
+      <entry><literal>&lt;&lt; (circle, circle)</literal></entry>
+      <entry valign="middle" morerows="11"><literal>&lt;-&gt; (circle, point)</literal></entry>
+     </row>
+     <row><entry><literal>&amp;&lt; (circle, circle)</literal></entry></row>
+     <row><entry><literal>&amp;&gt; (circle, circle)</literal></entry></row>
+     <row><entry><literal>&gt;&gt; (circle, circle)</literal></entry></row>
+     <row><entry><literal>&lt;@ (circle, circle)</literal></entry></row>
+     <row><entry><literal>@&gt; (circle, circle)</literal></entry></row>
+     <row><entry><literal>~= (circle, circle)</literal></entry></row>
+     <row><entry><literal>&amp;&amp; (circle, circle)</literal></entry></row>
+     <row><entry><literal>|&gt;&gt; (circle, circle)</literal></entry></row>
+     <row><entry><literal>&lt;&lt;| (circle, circle)</literal></entry></row>
+     <row><entry><literal>&amp;&lt;| (circle, circle)</literal></entry></row>
+     <row><entry><literal>|&amp;&gt; (circle, circle)</literal></entry></row>
+
+     <row>
+      <entry valign="middle" morerows="10"><literal>inet_ops</literal></entry>
+      <entry><literal>&lt;&lt; (inet, inet)</literal></entry>
+      <entry valign="middle" morerows="10"></entry>
+     </row>
+     <row><entry><literal>&lt;&lt;= (inet, inet)</literal></entry></row>
+     <row><entry><literal>&gt;&gt; (inet, inet)</literal></entry></row>
+     <row><entry><literal>&gt;&gt;= (inet, inet)</literal></entry></row>
+     <row><entry><literal>= (inet, inet)</literal></entry></row>
+     <row><entry><literal>&lt;&gt; (inet, inet)</literal></entry></row>
+     <row><entry><literal>&lt; (inet, inet)</literal></entry></row>
+     <row><entry><literal>&lt;= (inet, inet)</literal></entry></row>
+     <row><entry><literal>&gt; (inet, inet)</literal></entry></row>
+     <row><entry><literal>&gt;= (inet, inet)</literal></entry></row>
+     <row><entry><literal>&amp;&amp; (inet, inet)</literal></entry></row>
+
+     <row>
+      <entry valign="middle" morerows="17"><literal>multirange_ops</literal></entry>
+      <entry><literal>= (anymultirange, anymultirange)</literal></entry>
+      <entry valign="middle" morerows="17"></entry>
+     </row>
+     <row><entry><literal>&amp;&amp; (anymultirange, anymultirange)</literal></entry></row>
+     <row><entry><literal>&amp;&amp; (anymultirange, anyrange)</literal></entry></row>
+     <row><entry><literal>@&gt; (anymultirange, anyelement)</literal></entry></row>
+     <row><entry><literal>@&gt; (anymultirange, anymultirange)</literal></entry></row>
+     <row><entry><literal>@&gt; (anymultirange, anyrange)</literal></entry></row>
+     <row><entry><literal>&lt;@ (anymultirange, anymultirange)</literal></entry></row>
+     <row><entry><literal>&lt;@ (anymultirange, anyrange)</literal></entry></row>
+     <row><entry><literal>&lt;&lt; (anymultirange, anymultirange)</literal></entry></row>
+     <row><entry><literal>&lt;&lt; (anymultirange, anyrange)</literal></entry></row>
+     <row><entry><literal>&gt;&gt; (anymultirange, anymultirange)</literal></entry></row>
+     <row><entry><literal>&gt;&gt; (anymultirange, anyrange)</literal></entry></row>
+     <row><entry><literal>&amp;&lt; (anymultirange, anymultirange)</literal></entry></row>
+     <row><entry><literal>&amp;&lt; (anymultirange, anyrange)</literal></entry></row>
+     <row><entry><literal>&amp;&gt; (anymultirange, anymultirange)</literal></entry></row>
+     <row><entry><literal>&amp;&gt; (anymultirange, anyrange)</literal></entry></row>
+     <row><entry><literal>-|- (anymultirange, anymultirange)</literal></entry></row>
+     <row><entry><literal>-|- (anymultirange, anyrange)</literal></entry></row>
+
+     <row>
+      <entry valign="middle" morerows="7"><literal>point_ops</literal></entry>
+      <entry><literal>|&gt;&gt; (point, point)</literal></entry>
+      <entry valign="middle" morerows="7"><literal>&lt;-&gt; (point, point)</literal></entry>
+     </row>
+     <row><entry><literal>&lt;&lt; (point, point)</literal></entry></row>
+     <row><entry><literal>&gt;&gt; (point, point)</literal></entry></row>
+     <row><entry><literal>&lt;&lt;| (point, point)</literal></entry></row>
+     <row><entry><literal>~= (point, point)</literal></entry></row>
+     <row><entry><literal>&lt;@ (point, box)</literal></entry></row>
+     <row><entry><literal>&lt;@ (point, polygon)</literal></entry></row>
+     <row><entry><literal>&lt;@ (point, circle)</literal></entry></row>
+
+     <row>
+      <entry valign="middle" morerows="11"><literal>poly_ops</literal></entry>
+      <entry><literal>&lt;&lt; (polygon, polygon)</literal></entry>
+      <entry valign="middle" morerows="11"><literal>&lt;-&gt; (polygon, point)</literal></entry>
+     </row>
+     <row><entry><literal>&amp;&lt; (polygon, polygon)</literal></entry></row>
+     <row><entry><literal>&amp;&gt; (polygon, polygon)</literal></entry></row>
+     <row><entry><literal>&gt;&gt; (polygon, polygon)</literal></entry></row>
+     <row><entry><literal>&lt;@ (polygon, polygon)</literal></entry></row>
+     <row><entry><literal>@&gt; (polygon, polygon)</literal></entry></row>
+     <row><entry><literal>~= (polygon, polygon)</literal></entry></row>
+     <row><entry><literal>&amp;&amp; (polygon, polygon)</literal></entry></row>
+     <row><entry><literal>&lt;&lt;| (polygon, polygon)</literal></entry></row>
+     <row><entry><literal>&amp;&lt;| (polygon, polygon)</literal></entry></row>
+     <row><entry><literal>|&amp;&gt; (polygon, polygon)</literal></entry></row>
+     <row><entry><literal>|&gt;&gt; (polygon, polygon)</literal></entry></row>
+
+     <row>
+      <entry valign="middle" morerows="17"><literal>range_ops</literal></entry>
+      <entry><literal>= (anyrange, anyrange)</literal></entry>
+      <entry valign="middle" morerows="17"></entry>
+     </row>
+     <row><entry><literal>&amp;&amp; (anyrange, anyrange)</literal></entry></row>
+     <row><entry><literal>&amp;&amp; (anyrange, anymultirange)</literal></entry></row>
+     <row><entry><literal>@&gt; (anyrange, anyelement)</literal></entry></row>
+     <row><entry><literal>@&gt; (anyrange, anyrange)</literal></entry></row>
+     <row><entry><literal>@&gt; (anyrange, anymultirange)</literal></entry></row>
+     <row><entry><literal>&lt;@ (anyrange, anyrange)</literal></entry></row>
+     <row><entry><literal>&lt;@ (anyrange, anymultirange)</literal></entry></row>
+     <row><entry><literal>&lt;&lt; (anyrange, anyrange)</literal></entry></row>
+     <row><entry><literal>&lt;&lt; (anyrange, anymultirange)</literal></entry></row>
+     <row><entry><literal>&gt;&gt; (anyrange, anyrange)</literal></entry></row>
+     <row><entry><literal>&gt;&gt; (anyrange, anymultirange)</literal></entry></row>
+     <row><entry><literal>&amp;&lt; (anyrange, anyrange)</literal></entry></row>
+     <row><entry><literal>&amp;&lt; (anyrange, anymultirange)</literal></entry></row>
+     <row><entry><literal>&amp;&gt; (anyrange, anyrange)</literal></entry></row>
+     <row><entry><literal>&amp;&gt; (anyrange, anymultirange)</literal></entry></row>
+     <row><entry><literal>-|- (anyrange, anyrange)</literal></entry></row>
+     <row><entry><literal>-|- (anyrange, anymultirange)</literal></entry></row>
+
+     <row>
+      <entry valign="middle" morerows="1"><literal>tsquery_ops</literal></entry>
+      <entry><literal>&lt;@ (tsquery, tsquery)</literal></entry>
+      <entry valign="middle" morerows="1"></entry>
+     </row>
+     <row><entry><literal>@&gt; (tsquery, tsquery)</literal></entry></row>
+     <row>
+      <entry valign="middle"><literal>tsvector_ops</literal></entry>
+      <entry><literal>@@ (tsvector, tsquery)</literal></entry>
+      <entry></entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+ <para>
+  出于历史原因，<literal>inet_ops</literal>操作符类不是类型<type>inet</type>和<type>cidr</type>的默认类。要使用它，请在<command>CREATE INDEX</command>中写出该类名，例如
+<programlisting>
+CREATE INDEX ON my_table USING GIST (my_inet_column inet_ops);
+</programlisting>
+ </para>
+
+</sect2>
+
+<sect2 id="gist-extensibility">
+ <title>可扩展性</title>
+
+ <para>
+   传统上，实现一种新的索引访问方法意味着大量艰难的工作。必须理解数据库的内部机制，例如锁管理器和预写式日志。<acronym>GiST</acronym>接口具有很高的抽象层次，只要求访问方法实现者实现被访问数据类型的语义。<acronym>GiST</acronym>层本身会处理并发、日志记录以及树结构的搜索。
+ </para>
+
+ <para>
+   这种可扩展性不应与其他标准搜索树在可处理数据方面的可扩展性相混淆。例如，<productname>PostgreSQL</productname>支持可扩展的 B-树和哈希索引。这意味着你可以用<productname>PostgreSQL</productname>在任意数据类型上构建 B-树或哈希索引。但 B-树只支持范围谓词（<literal>&lt;</literal>、<literal>=</literal>、<literal>&gt;</literal>），而哈希索引只支持等值查询。
+ </para>
+
+ <para>
+   因此，如果你用<productname>PostgreSQL</productname>的 B-树为一个图像集合建立索引，你只能发出诸如<quote>imagex 是否等于 imagey</quote>、<quote>imagex 是否小于 imagey</quote>以及<quote>imagex 是否大于 imagey</quote>之类的查询。取决于你如何在这种上下文中定义<quote>等于</quote>、<quote>小于</quote>和<quote>大于</quote>，这可能仍然有用。不过，使用基于<acronym>GiST</acronym>的索引，你就可以构造出能够提出特定领域问题的查询方式，例如<quote>找出所有马的图片</quote>或者<quote>找出所有曝光过度的图片</quote>。
+ </para>
+
+ <para>
+   要让一个<acronym>GiST</acronym>访问方法运行起来，只需实现几个用户定义的方法，这些方法定义了树中键的行为。当然，要支持复杂查询，这些方法本身也必须足够巧妙；但对于所有标准查询（B-树、R 树等），它们都相对直接。简而言之，<acronym>GiST</acronym>把可扩展性与通用性、代码复用以及清晰的接口结合了起来。
+  </para>
+
+ <para>
+   一个<acronym>GiST</acronym>索引操作符类必须提供五个方法，另外还有七个可选方法。通过正确实现<function>same</function>、<function>consistent</function>和<function>union</function>方法可以保证索引的正确性，而索引的效率（大小与速度）则取决于<function>penalty</function>和<function>picksplit</function>方法。两个可选方法是<function>compress</function>和<function>decompress</function>，它们允许索引的内部树数据使用与其所索引数据不同的类型。叶子必须是被索引数据类型，而其他树节点可以是任意 C 结构体（但这里仍必须遵守<productname>PostgreSQL</productname>的数据类型规则，关于变长数据可参见<literal>varlena</literal>）。如果树的内部数据类型在 SQL 层存在，可以使用<command>CREATE OPERATOR CLASS</command>命令的<literal>STORAGE</literal>选项。可选的第八个方法是<function>distance</function>，若操作符类希望支持有序扫描（最近邻搜索），则需要它。可选的第九个方法<function>fetch</function>在操作符类希望支持仅索引扫描时需要，除非省略了<function>compress</function>方法。可选的第十个方法<function>options</function>在操作符类具有用户指定参数时需要。可选的第十一个方法<function>sortsupport</function>用于加速构建<acronym>GiST</acronym>索引。可选的第十二个方法<function>translate_cmptype</function>用于把比较类型（来自<filename>src/include/access/cmptype.h</filename>）转换为该操作符类使用的策略号。这样核心代码就可以为时态约束索引查找操作符。
+ </para>
+
+ <variablelist>
+    <varlistentry id="zh18-auto-gist-varlistentry-1">
+     <term><function>consistent</function></term>
+     <listitem>
+      <para>
+       给定一个索引项<literal>p</literal>和一个查询值<literal>q</literal>，该函数判断该索引项是否与该查询<quote>一致</quote>；也就是说，该索引项所代表的某一行是否可能使谓词<quote><replaceable>indexed_column</replaceable>
+       <replaceable>indexable_operator</replaceable> <literal>q</literal></quote>为真。对于叶子索引项，这等同于测试该可索引条件；而对于内部树节点，这决定是否有必要扫描该树节点所表示的索引子树。当结果为<literal>true</literal>时，还必须返回一个<literal>recheck</literal>标志。它表示该谓词是确定为真，还是仅可能为真。如果<literal>recheck</literal> = <literal>false</literal>，则该索引已经精确测试了谓词条件；如果<literal>recheck</literal> = <literal>true</literal>，则该行只是候选匹配。在这种情况下，系统会自动针对实际行值计算<replaceable>indexable_operator</replaceable>，以判断它是否真的匹配。这种约定使<acronym>GiST</acronym>能够同时支持无损和有损的索引结构。
+      </para>
+
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION my_consistent(internal, data_type, smallint, oid, internal)
+RETURNS bool
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
+PG_FUNCTION_INFO_V1(my_consistent);
+
+Datum
+my_consistent(PG_FUNCTION_ARGS)
+{
+    GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
+    data_type  *query = PG_GETARG_DATA_TYPE_P(1);
+    StrategyNumber strategy = (StrategyNumber) PG_GETARG_UINT16(2);
+    /* Oid subtype = PG_GETARG_OID(3); */
+    bool       *recheck = (bool *) PG_GETARG_POINTER(4);
+    data_type  *key = DatumGetDataType(entry-&gt;key);
+    bool        retval;
+
+    /*
+     * determine return value as a function of strategy, key and query.
+     *
+     * Use GIST_LEAF(entry) to know where you're called in the index tree,
+     * which comes handy when supporting the = operator for example (you could
+     * check for non empty union() in non-leaf nodes and equality in leaf
+     * nodes).
+     */
+
+    *recheck = true;        /* or false if check is exact */
+
+    PG_RETURN_BOOL(retval);
+}
+</programlisting>
+
+       这里，<varname>key</varname>是索引中的一个元素，而<varname>query</varname>是在该索引中查找的值。<literal>StrategyNumber</literal>参数指示应用的是操作符类中的哪个操作符，它对应于<command>CREATE OPERATOR CLASS</command>命令中的某个操作符编号。
+      </para>
+
+      <para>
+       取决于你在该类中包含了哪些操作符，<varname>query</varname>的数据类型可能会随操作符而变化，因为它将是操作符右侧的类型，而这可能不同于左侧出现的被索引数据类型。（上面的代码框架假定只可能有一种类型；如果不是这样，获取<varname>query</varname>参数值的方式就必须依赖于具体的操作符。）建议在<function>consistent</function>函数的 SQL 声明中，对<varname>query</varname>参数使用该操作符类的被索引数据类型，即使实际类型可能因为操作符不同而有所不同。
+      </para>
+
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gist-varlistentry-2">
+     <term><function>union</function></term>
+     <listitem>
+      <para>
+       该方法用于汇总树中的信息。给定一组项，该函数生成一个新的索引项，用来表示所有给定项。
+      </para>
+
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION my_union(internal, internal)
+RETURNS storage_type
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
+PG_FUNCTION_INFO_V1(my_union);
+
+Datum
+my_union(PG_FUNCTION_ARGS)
+{
+    GistEntryVector *entryvec = (GistEntryVector *) PG_GETARG_POINTER(0);
+    GISTENTRY  *ent = entryvec-&gt;vector;
+    data_type  *out,
+               *tmp,
+               *old;
+    int         numranges,
+                i = 0;
+
+    numranges = entryvec-&gt;n;
+    tmp = DatumGetDataType(ent[0].key);
+    out = tmp;
+
+    if (numranges == 1)
+    {
+        out = data_type_deep_copy(tmp);
+
+        PG_RETURN_DATA_TYPE_P(out);
+    }
+
+    for (i = 1; i &lt; numranges; i++)
+    {
+        old = out;
+        tmp = DatumGetDataType(ent[i].key);
+        out = my_union_implementation(out, tmp);
+    }
+
+    PG_RETURN_DATA_TYPE_P(out);
+}
+</programlisting>
+      </para>
+
+      <para>
+        如你所见，在这个框架里，我们处理的是一种满足<literal>union(X, Y, Z) = union(union(X, Y), Z)</literal>的数据类型。对于不满足这一性质的数据类型，只需在这个<acronym>GiST</acronym>支持方法中实现正确的 union 算法即可。
+      </para>
+
+      <para>
+        <function>union</function>函数的结果必须是索引存储类型的值，不管该类型是什么（它可能与被索引列的类型相同，也可能不同）。<function>union</function>函数应返回一个指向新近通过<function>palloc()</function>分配的内存的指针。即使没有类型变化，也不能原样返回输入值。
+      </para>
+
+      <para>
+       如上所示，<function>union</function>函数的第一个<type>internal</type>参数实际上是一个<structname>GistEntryVector</structname>指针。第二个参数是一个指向整数变量的指针，可以忽略。（过去要求<function>union</function>函数把结果值的大小存入该变量，但现在已经不再需要。）
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gist-varlistentry-3">
+     <term><function>compress</function></term>
+     <listitem>
+      <para>
+       将一个数据项转换成适合在索引页中物理存储的格式。如果省略<function>compress</function>方法，数据项将不经修改地存储在索引中。
+      </para>
+
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION my_compress(internal)
+RETURNS internal
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
+PG_FUNCTION_INFO_V1(my_compress);
+
+Datum
+my_compress(PG_FUNCTION_ARGS)
+{
+    GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
+    GISTENTRY  *retval;
+
+    if (entry-&gt;leafkey)
+    {
+        /* replace entry-&gt;key with a compressed version */
+        compressed_data_type *compressed_data = palloc(sizeof(compressed_data_type));
+
+        /* fill *compressed_data from entry-&gt;key ... */
+
+        retval = palloc(sizeof(GISTENTRY));
+        gistentryinit(*retval, PointerGetDatum(compressed_data),
+                      entry-&gt;rel, entry-&gt;page, entry-&gt;offset, FALSE);
+    }
+    else
+    {
+        /* typically we needn't do anything with non-leaf entries */
+        retval = entry;
+    }
+
+    PG_RETURN_POINTER(retval);
+}
+</programlisting>
+      </para>
+
+      <para>
+       当然，为了压缩叶子节点，你必须把<replaceable>compressed_data_type</replaceable>改成要转换成的具体类型。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gist-varlistentry-4">
+     <term><function>decompress</function></term>
+     <listitem>
+      <para>
+       将数据项的存储表示转换成操作符类中其他 GiST 方法能够操作的格式。如果省略<function>decompress</function>方法，就假定其他 GiST 方法可以直接处理存储的数据格式。（<function>decompress</function>不一定是<function>compress</function>方法的逆操作；特别是如果<function>compress</function>是有损的，那么<function>decompress</function>就不可能精确重建原始数据。<function>decompress</function>也不一定等同于<function>fetch</function>，因为其他 GiST 方法未必需要把数据完全重建出来。）
+      </para>
+
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION my_decompress(internal)
+RETURNS internal
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
+PG_FUNCTION_INFO_V1(my_decompress);
+
+Datum
+my_decompress(PG_FUNCTION_ARGS)
+{
+    PG_RETURN_POINTER(PG_GETARG_POINTER(0));
+}
+</programlisting>
+
+        上述框架适用于不需要解压的情况。（当然，在这种情况下，直接完全省略该方法会更简单，而且也推荐这么做。）
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gist-varlistentry-5">
+     <term><function>penalty</function></term>
+     <listitem>
+      <para>
+       返回一个值，指示把新项插入树中特定分支的<quote>代价</quote>。项会沿着树中<function>penalty</function>最小的路径插入。<function>penalty</function>返回的值应为非负；如果返回负值，它将被按零处理。
+      </para>
+
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION my_penalty(internal, internal, internal)
+RETURNS internal
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;  -- in some cases penalty functions need not be strict
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
+PG_FUNCTION_INFO_V1(my_penalty);
+
+Datum
+my_penalty(PG_FUNCTION_ARGS)
+{
+    GISTENTRY  *origentry = (GISTENTRY *) PG_GETARG_POINTER(0);
+    GISTENTRY  *newentry = (GISTENTRY *) PG_GETARG_POINTER(1);
+    float      *penalty = (float *) PG_GETARG_POINTER(2);
+    data_type  *orig = DatumGetDataType(origentry-&gt;key);
+    data_type  *new = DatumGetDataType(newentry-&gt;key);
+
+    *penalty = my_penalty_implementation(orig, new);
+    PG_RETURN_POINTER(penalty);
+}
+</programlisting>
+
+        出于历史原因，<function>penalty</function>函数并不是直接返回一个<type>float</type>结果；相反，它必须把该值存储到第三个参数指示的位置。返回值本身会被忽略，不过通常会返回该参数的地址。
+      </para>
+
+      <para>
+        <function>penalty</function>函数对于索引的良好性能至关重要。它会在插入时用于决定在树中应沿着哪个分支向下，以便选择把新项加到哪里。在查询时，索引越平衡，查找就越快。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gist-varlistentry-6">
+     <term><function>picksplit</function></term>
+     <listitem>
+      <para>
+       当索引页必须分裂时，该函数决定页面上的哪些项留在旧页中，哪些移到新页中。
+      </para>
+
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION my_picksplit(internal, internal)
+RETURNS internal
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
+PG_FUNCTION_INFO_V1(my_picksplit);
+
+Datum
+my_picksplit(PG_FUNCTION_ARGS)
+{
+    GistEntryVector *entryvec = (GistEntryVector *) PG_GETARG_POINTER(0);
+    GIST_SPLITVEC *v = (GIST_SPLITVEC *) PG_GETARG_POINTER(1);
+    OffsetNumber maxoff = entryvec-&gt;n - 1;
+    GISTENTRY  *ent = entryvec-&gt;vector;
+    int         i,
+                nbytes;
+    OffsetNumber *left,
+               *right;
+    data_type  *tmp_union;
+    data_type  *unionL;
+    data_type  *unionR;
+    GISTENTRY **raw_entryvec;
+
+    maxoff = entryvec-&gt;n - 1;
+    nbytes = (maxoff + 1) * sizeof(OffsetNumber);
+
+    v-&gt;spl_left = (OffsetNumber *) palloc(nbytes);
+    left = v-&gt;spl_left;
+    v-&gt;spl_nleft = 0;
+
+    v-&gt;spl_right = (OffsetNumber *) palloc(nbytes);
+    right = v-&gt;spl_right;
+    v-&gt;spl_nright = 0;
+
+    unionL = NULL;
+    unionR = NULL;
+
+    /* Initialize the raw entry vector. */
+    raw_entryvec = (GISTENTRY **) malloc(entryvec-&gt;n * sizeof(void *));
+    for (i = FirstOffsetNumber; i &lt;= maxoff; i = OffsetNumberNext(i))
+        raw_entryvec[i] = &amp;(entryvec-&gt;vector[i]);
+
+    for (i = FirstOffsetNumber; i &lt;= maxoff; i = OffsetNumberNext(i))
+    {
+        int         real_index = raw_entryvec[i] - entryvec-&gt;vector;
+
+        tmp_union = DatumGetDataType(entryvec-&gt;vector[real_index].key);
+        Assert(tmp_union != NULL);
+
+        /*
+         * Choose where to put the index entries and update unionL and unionR
+         * accordingly. Append the entries to either v-&gt;spl_left or
+         * v-&gt;spl_right, and care about the counters.
+         */
+
+        if (my_choice_is_left(unionL, curl, unionR, curr))
+        {
+            if (unionL == NULL)
+                unionL = tmp_union;
+            else
+                unionL = my_union_implementation(unionL, tmp_union);
+
+            *left = real_index;
+            ++left;
+            ++(v-&gt;spl_nleft);
+        }
+        else
+        {
+            /*
+             * Same on the right
+             */
+        }
+    }
+
+    v-&gt;spl_ldatum = DataTypeGetDatum(unionL);
+    v-&gt;spl_rdatum = DataTypeGetDatum(unionR);
+    PG_RETURN_POINTER(v);
+}
+</programlisting>
+
+       注意，<function>picksplit</function>函数的结果是通过修改传入的<structname>v</structname>结构来传递的。返回值本身会被忽略，不过通常会返回<structname>v</structname>的地址。
+      </para>
+
+      <para>
+        和<function>penalty</function>一样，<function>picksplit</function>函数对于索引的良好性能至关重要。设计合适的<function>penalty</function>和<function>picksplit</function>实现，正是实现高性能<acronym>GiST</acronym>索引的难点所在。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gist-varlistentry-7">
+     <term><function>same</function></term>
+     <listitem>
+      <para>
+       如果两个索引项相同则返回真，否则返回假。（<quote>索引项</quote>是索引存储类型的值，不一定是原始被索引列的类型。）
+      </para>
+
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION my_same(storage_type, storage_type, internal)
+RETURNS internal
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
+PG_FUNCTION_INFO_V1(my_same);
+
+Datum
+my_same(PG_FUNCTION_ARGS)
+{
+    prefix_range *v1 = PG_GETARG_PREFIX_RANGE_P(0);
+    prefix_range *v2 = PG_GETARG_PREFIX_RANGE_P(1);
+    bool       *result = (bool *) PG_GETARG_POINTER(2);
+
+    *result = my_eq(v1, v2);
+    PG_RETURN_POINTER(result);
+}
+</programlisting>
+
+        出于历史原因，<function>same</function>函数并不是直接返回一个布尔结果；相反，它必须把该标志存储到第三个参数指示的位置。返回值本身会被忽略，不过通常会返回该参数的地址。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gist-varlistentry-8">
+     <term><function>distance</function></term>
+     <listitem>
+      <para>
+       给定一个索引项<literal>p</literal>和一个查询值<literal>q</literal>，该函数确定索引项与查询值之间的<quote>距离</quote>。如果操作符类包含任何排序操作符，就必须提供此函数。使用排序操作符的查询会优先返回<quote>距离</quote>值最小的索引项，因此结果必须与该操作符的语义一致。对于叶子索引项，结果仅表示到该索引项的距离；对于内部树节点，结果必须是其任意子项可能具有的最小距离。
+      </para>
+
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION my_distance(internal, data_type, smallint, oid, internal)
+RETURNS float8
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
+PG_FUNCTION_INFO_V1(my_distance);
+
+Datum
+my_distance(PG_FUNCTION_ARGS)
+{
+    GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
+    data_type  *query = PG_GETARG_DATA_TYPE_P(1);
+    StrategyNumber strategy = (StrategyNumber) PG_GETARG_UINT16(2);
+    /* Oid subtype = PG_GETARG_OID(3); */
+    /* bool *recheck = (bool *) PG_GETARG_POINTER(4); */
+    data_type  *key = DatumGetDataType(entry-&gt;key);
+    double      retval;
+
+    /*
+     * determine return value as a function of strategy, key and query.
+     */
+
+    PG_RETURN_FLOAT8(retval);
+}
+</programlisting>
+
+       <function>distance</function>函数的参数与<function>consistent</function>函数的参数完全相同。
+      </para>
+
+      <para>
+       在确定距离时允许有一定近似，只要结果永不大于该项的实际距离即可。因此，例如在几何应用中，到外包盒的距离通常就足够了。对于内部树节点，返回的距离不能大于其任一子节点的距离。如果返回的距离不精确，函数必须将<literal>*recheck</literal>设为 true。（对内部树节点则不必这样做；对它们总是假定计算结果不精确。）在这种情况下，执行器会在从堆中取出元组后计算准确距离，并在必要时重新排序这些元组。
+      </para>
+
+      <para>
+       如果距离函数对任何叶节点都返回<literal>*recheck = true</literal>，原始排序操作符的返回类型必须是<type>float8</type>或<type>float4</type>，且距离函数的结果值必须能与原始排序操作符的结果进行比较，因为执行器会同时使用距离函数结果和重新计算得到的排序操作符结果进行排序。否则，距离函数的结果值可以是任意有限的<type>float8</type>值，只要这些结果值的相对顺序与排序操作符返回的顺序一致即可。（无穷大和负无穷在内部用于处理空值等情况，因此不建议<function>distance</function>函数返回这些值。）
+      </para>
+
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gist-varlistentry-9">
+     <term><function>fetch</function></term>
+     <listitem>
+      <para>
+       为了支持仅索引扫描，将数据项的压缩索引表示转换为原始数据类型。返回的数据必须是最初被索引值的精确、无损副本。
+      </para>
+
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION my_fetch(internal)
+RETURNS internal
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+</programlisting>
+
+        参数是一个指向<structname>GISTENTRY</structname>结构的指针。进入该函数时，它的<structfield>key</structfield>字段包含一个压缩形式的非 NULL 叶子 datum。返回值是另一个<structname>GISTENTRY</structname>结构，其<structfield>key</structfield>字段以原始、未压缩形式包含同一个 datum。如果该操作符类的 compress 函数对叶子项不做任何处理，<function>fetch</function>方法可以原样返回该参数。或者，如果该操作符类没有 compress 函数，那么<function>fetch</function>方法也可以省略，因为它必然是空操作。
+       </para>
+
+       <para>
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
+PG_FUNCTION_INFO_V1(my_fetch);
+
+Datum
+my_fetch(PG_FUNCTION_ARGS)
+{
+    GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
+    input_data_type *in = DatumGetPointer(entry->key);
+    fetched_data_type *fetched_data;
+    GISTENTRY  *retval;
+
+    retval = palloc(sizeof(GISTENTRY));
+    fetched_data = palloc(sizeof(fetched_data_type));
+
+    /*
+     * Convert 'fetched_data' into the a Datum of the original datatype.
+     */
+
+    /* fill *retval from fetched_data. */
+    gistentryinit(*retval, PointerGetDatum(converted_datum),
+                  entry->rel, entry->page, entry->offset, FALSE);
+
+    PG_RETURN_POINTER(retval);
+}
+</programlisting>
+      </para>
+
+      <para>
+       如果 compress 方法对叶子项是有损的，该操作符类就不能支持仅索引扫描，并且不得定义<function>fetch</function>函数。
+      </para>
+
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gist-varlistentry-10">
+     <term><function>options</function></term>
+     <listitem>
+      <para>
+       允许定义用户可见参数，用来控制操作符类的行为。
+      </para>
+
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION my_options(internal)
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+</programlisting>
+      </para>
+
+      <para>
+       该函数会收到一个指向<structname>local_relopts</structname>结构的指针，需要在其中填充一组选项，这些选项是该操作符类特有的。其他支持函数可以使用<literal>PG_HAS_OPCLASS_OPTIONS()</literal>和<literal>PG_GET_OPCLASS_OPTIONS()</literal>宏来访问这些选项。
+      </para>
+
+       <para>
+        下面给出了 my_options() 的一个实现示例，以及其他支持函数如何使用这些参数：
+
+<programlisting>
+typedef enum MyEnumType
+{
+    MY_ENUM_ON,
+    MY_ENUM_OFF,
+    MY_ENUM_AUTO
+} MyEnumType;
+
+typedef struct
+{
+    int32   vl_len_;    /* varlena header (do not touch directly!) */
+    int     int_param;  /* integer parameter */
+    double  real_param; /* real parameter */
+    MyEnumType enum_param; /* enum parameter */
+    int     str_param;  /* string parameter */
+} MyOptionsStruct;
+
+/* String representation of enum values */
+static relopt_enum_elt_def myEnumValues[] =
+{
+    {"on", MY_ENUM_ON},
+    {"off", MY_ENUM_OFF},
+    {"auto", MY_ENUM_AUTO},
+    {(const char *) NULL}   /* list terminator */
+};
+
+static char *str_param_default = "default";
+
+/*
+ * Sample validator: checks that string is not longer than 8 bytes.
+ */
+static void
+validate_my_string_relopt(const char *value)
+{
+    if (strlen(value) > 8)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("str_param must be at most 8 bytes")));
+}
+
+/*
+ * Sample filler: switches characters to lower case.
+ */
+static Size
+fill_my_string_relopt(const char *value, void *ptr)
+{
+    char   *tmp = str_tolower(value, strlen(value), DEFAULT_COLLATION_OID);
+    int     len = strlen(tmp);
+
+    if (ptr)
+        strcpy(ptr, tmp);
+
+    pfree(tmp);
+    return len + 1;
+}
+
+PG_FUNCTION_INFO_V1(my_options);
+
+Datum
+my_options(PG_FUNCTION_ARGS)
+{
+    local_relopts *relopts = (local_relopts *) PG_GETARG_POINTER(0);
+
+    init_local_reloptions(relopts, sizeof(MyOptionsStruct));
+    add_local_int_reloption(relopts, "int_param", "integer parameter",
+                            100, 0, 1000000,
+                            offsetof(MyOptionsStruct, int_param));
+    add_local_real_reloption(relopts, "real_param", "real parameter",
+                             1.0, 0.0, 1000000.0,
+                             offsetof(MyOptionsStruct, real_param));
+    add_local_enum_reloption(relopts, "enum_param", "enum parameter",
+                             myEnumValues, MY_ENUM_ON,
+                             "Valid values are: \"on\", \"off\" and \"auto\".",
+                             offsetof(MyOptionsStruct, enum_param));
+    add_local_string_reloption(relopts, "str_param", "string parameter",
+                               str_param_default,
+                               &amp;validate_my_string_relopt,
+                               &amp;fill_my_string_relopt,
+                               offsetof(MyOptionsStruct, str_param));
+
+    PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(my_compress);
+
+Datum
+my_compress(PG_FUNCTION_ARGS)
+{
+    int     int_param = 100;
+    double  real_param = 1.0;
+    MyEnumType enum_param = MY_ENUM_ON;
+    char   *str_param = str_param_default;
+
+    /*
+     * Normally, when opclass contains 'options' method, then options are always
+     * passed to support functions.  However, if you add 'options' method to
+     * existing opclass, previously defined indexes have no options, so the
+     * check is required.
+     */
+    if (PG_HAS_OPCLASS_OPTIONS())
+    {
+        MyOptionsStruct *options = (MyOptionsStruct *) PG_GET_OPCLASS_OPTIONS();
+
+        int_param = options->int_param;
+        real_param = options->real_param;
+        enum_param = options->enum_param;
+        str_param = GET_STRING_RELOPTION(options, str_param);
+    }
+
+    /* the rest implementation of support function */
+}
+
+</programlisting>
+      </para>
+
+      <para>
+       由于<acronym>GiST</acronym>中键的表示是灵活的，它可能依赖于用户指定的参数。例如，可以指定键签名的长度。参见<literal>gtsvector_options()</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gist-varlistentry-11">
+     <term><function>sortsupport</function></term>
+     <listitem>
+      <para>
+       返回一个比较器函数，用某种能够保持局部性的方式对数据进行排序。它由<command>CREATE INDEX</command>和<command>REINDEX</command>命令使用。所创建索引的质量取决于该比较器函数确定的排序顺序在多大程度上保持了输入的局部性。
+      </para>
+      <para>
+       <function>sortsupport</function>方法是可选的。如果未提供，<command>CREATE INDEX</command>会通过使用<function>penalty</function>和<function>picksplit</function>函数将每个元组插入树中来构建索引，这会慢得多。
+      </para>
+
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION my_sortsupport(internal)
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+</programlisting>
+
+       参数是一个指向<structname>SortSupport</structname>结构的指针。至少，该函数必须填写其中的 <structfield>comparator</structfield> 字段。比较器接受三个参数：两个要比较的 Datum，以及一个指向<structname>SortSupport</structname>结构的指针。这两个 Datum 就是两个被索引的值，其格式与它们在索引中的存储格式相同；也就是说，是<function>compress</function>方法返回的格式。完整的 API 定义在<filename>src/include/utils/sortsupport.h</filename>中。
+       </para>
+
+       <para>
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
+PG_FUNCTION_INFO_V1(my_sortsupport);
+
+static int
+my_fastcmp(Datum x, Datum y, SortSupport ssup)
+{
+  /* establish order between x and y by computing some sorting value z */
+
+  int z1 = ComputeSpatialCode(x);
+  int z2 = ComputeSpatialCode(y);
+
+  return z1 == z2 ? 0 : z1 > z2 ? 1 : -1;
+}
+
+Datum
+my_sortsupport(PG_FUNCTION_ARGS)
+{
+  SortSupport ssup = (SortSupport) PG_GETARG_POINTER(0);
+
+  ssup->comparator = my_fastcmp;
+  PG_RETURN_VOID();
+}
+</programlisting>
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gist-varlistentry-12">
+     <term><function>translate_cmptype</function></term>
+     <listitem>
+      <para>
+       给定一个来自<filename>src/include/access/cmptype.h</filename>的<literal>CompareType</literal>值，返回该操作符类用于匹配功能的策略号。如果该操作符类没有匹配策略，函数应返回<literal>InvalidStrategy</literal>。
+      </para>
+
+      <para>
+       这用于时态索引约束（即<literal>PRIMARY
+       KEY</literal>和<literal>UNIQUE</literal>）。如果该操作符类提供此函数，并且它会为<literal>COMPARE_EQ</literal>返回结果，那么它就可以用于索引约束中非<literal>WITHOUT OVERLAPS</literal>的部分。
+      </para>
+
+      <para>
+       这个支持函数对应于索引访问方法回调函数<structfield>amtranslatecmptype</structfield>（见<xref
+       linkend="index-functions"/>）。GiST 索引的<structfield>amtranslatecmptype</structfield>回调函数只是调用相应操作符族的<function>translate_cmptype</function>支持函数，因为 GiST 索引访问方法本身并没有固定的策略号。
+      </para>
+
+      <para>
+       该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION my_translate_cmptype(integer)
+RETURNS smallint
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+</programlisting>
+
+       而操作符族注册必须如下所示：
+<programlisting>
+ALTER OPERATOR FAMILY my_opfamily USING gist ADD
+    FUNCTION 12 ("any", "any") my_translate_cmptype(int);
+</programlisting>
+      </para>
+
+       <para>
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
+PG_FUNCTION_INFO_V1(my_translate_cmptype);
+
+Datum
+my_translate_cmptype(PG_FUNCTION_ARGS)
+{
+    CompareType cmptype = PG_GETARG_INT32(0);
+    StrategyNumber ret = InvalidStrategy;
+
+    switch (cmptype)
+    {
+        case COMPARE_EQ:
+            ret = BTEqualStrategyNumber;
+    }
+
+    PG_RETURN_UINT16(ret);
+}
+</programlisting>
+      </para>
+
+      <para>
+       <productname>PostgreSQL</productname>提供了一个翻译函数：<literal>gist_translate_cmptype_common</literal>，用于使用<literal>RT*StrategyNumber</literal>常量的操作符类。<literal>btree_gist</literal>扩展又定义了第二个翻译函数<literal>gist_translate_cmptype_btree</literal>，用于使用<literal>BT*StrategyNumber</literal>常量的操作符类。
+      </para>
+     </listitem>
+    </varlistentry>
+  </variablelist>
+
+  <para>
+   所有 GiST 支持方法通常都在短生命周期的内存上下文中被调用；也就是说，每处理完一个元组，<varname>CurrentMemoryContext</varname>都会被重置。因此通常无需过分担心释放所有通过 palloc 分配的内容。不过，在某些情况下，让支持方法在重复调用之间缓存数据是有用的。要做到这一点，可将寿命更长的数据分配在<literal>fcinfo-&gt;flinfo-&gt;fn_mcxt</literal>中，并在<literal>fcinfo-&gt;flinfo-&gt;fn_extra</literal>中保存指向它的指针。这类数据会在一次索引操作期间存活（例如一次 GiST 索引扫描、索引构建或索引元组插入）。在替换<literal>fn_extra</literal>值时要注意 pfree 旧值，否则泄漏会在整个操作期间不断累积。
+  </para>
+
+</sect2>
+
+<sect2 id="gist-implementation">
+ <title>实现</title>
+
+ <sect3 id="gist-buffering-build">
+  <title>GiST 索引构建方法</title>
+
+  <para>
+   构建 GiST 索引最简单的方法就是把所有项逐个插入。这对于大型索引往往很慢，因为如果索引元组分散在整个索引中，而索引又大到无法放入缓存，就需要大量随机 I/O。<productname>PostgreSQL</productname>支持两种用于 GiST 索引初始构建的替代方法：<firstterm>sorted</firstterm>和<firstterm>buffered</firstterm>模式。
+  </para>
+
+  <para>
+   只有当索引使用的每个操作符类都提供了<function>sortsupport</function>函数时，排序方法才可用，如<xref linkend="gist-extensibility"/>所述。如果满足这一条件，这通常是最好的方法，因此默认使用它。
+  </para>
+
+  <para>
+   缓冲方法的做法是先不把元组直接插入索引。对于非有序数据集，它可以显著减少所需的随机 I/O 量。对于顺序良好的数据集，收益较小或者根本没有，因为一次只有少量页面会接收新元组，而这些页面即使整个索引放不进缓存，也能够放进缓存。
+  </para>
+
+  <para>
+   缓冲方法比简单方法更频繁地调用<function>penalty</function>函数，这会消耗一些额外的 CPU 资源。此外，缓冲区需要临时磁盘空间，最多可达最终索引的大小。缓冲还可能正面或负面地影响最终索引的质量。这种影响取决于多种因素，例如输入数据的分布以及操作符类的实现。
+  </para>
+
+  <para>
+   如果不能排序，那么默认情况下，当索引大小达到<xref linkend="guc-effective-cache-size"/>时，GiST 索引构建会切换到缓冲方法。也可以通过 CREATE INDEX 命令的<literal>buffering</literal>参数手工强制启用或禁止缓冲。默认行为在大多数情况下都不错，但如果输入数据是有序的，关闭缓冲模式可能会略微加快构建速度。
+  </para>
+
+ </sect3>
+</sect2>
+
+<sect2 id="gist-examples">
+ <title>示例</title>
+
+ <para>
+  <productname>PostgreSQL</productname>源代码发行包包含了若干使用<acronym>GiST</acronym>实现的索引方法示例。核心系统目前提供了文本搜索支持（为<type>tsvector</type>和<type>tsquery</type>建立索引），并为某些内置几何数据类型提供了与 R 树等价的功能（见<filename>src/backend/access/gist/gistproc.c</filename>）。下列<filename>contrib</filename>模块中也包含<acronym>GiST</acronym>操作符类：
+
+ <variablelist>
+  <varlistentry id="zh18-auto-gist-varlistentry-13">
+   <term><filename>btree_gist</filename></term>
+   <listitem>
+    <para>为多种数据类型提供与 B-树等价的功能</para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-gist-varlistentry-14">
+   <term><filename>cube</filename></term>
+   <listitem>
+    <para>多维立方体的索引</para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-gist-varlistentry-15">
+   <term><filename>hstore</filename></term>
+   <listitem>
+    <para>用于存储 (key, value) 对的模块</para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-gist-varlistentry-16">
+   <term><filename>intarray</filename></term>
+   <listitem>
+    <para>一维 int4 值数组的 RD 树</para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-gist-varlistentry-17">
+   <term><filename>ltree</filename></term>
+   <listitem>
+    <para>树状结构的索引</para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-gist-varlistentry-18">
+   <term><filename>pg_trgm</filename></term>
+   <listitem>
+    <para>基于三元组匹配的文本相似度</para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-gist-varlistentry-19">
+   <term><filename>seg</filename></term>
+   <listitem>
+    <para><quote>float 范围</quote>的索引</para>
+   </listitem>
+  </varlistentry>
+ </variablelist>
+ </para>
+
+</sect2>
+
+</sect1>

@@ -1,0 +1,1092 @@
+<!--
+doc/src/sgml/ref/copy.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-copy">
+
+ <indexterm zone="sql-copy">
+  <primary>COPY</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>COPY</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>COPY</refname>
+  <refpurpose>在文件和表之间复制数据</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+
+<synopsis>
+COPY <replaceable class="parameter">table_name</replaceable> [ ( <replaceable class="parameter">column_name</replaceable> [, ...] ) ]
+    FROM { '<replaceable class="parameter">filename</replaceable>' | PROGRAM '<replaceable class="parameter">command</replaceable>' | STDIN }
+    [ [ WITH ] ( <replaceable class="parameter">option</replaceable> [, ...] ) ]
+    [ WHERE <replaceable class="parameter">condition</replaceable> ]
+
+COPY { <replaceable class="parameter">table_name</replaceable> [ ( <replaceable class="parameter">column_name</replaceable> [, ...] ) ] | ( <replaceable class="parameter">query</replaceable> ) }
+    TO { '<replaceable class="parameter">filename</replaceable>' | PROGRAM '<replaceable class="parameter">command</replaceable>' | STDOUT }
+    [ [ WITH ] ( <replaceable class="parameter">option</replaceable> [, ...] ) ]
+
+<phrase>其中<replaceable class="parameter">option</replaceable>可以是下列之一：</phrase>
+
+    FORMAT <replaceable class="parameter">format_name</replaceable>
+    FREEZE [ <replaceable class="parameter">boolean</replaceable> ]
+    DELIMITER '<replaceable class="parameter">delimiter_character</replaceable>'
+    NULL '<replaceable class="parameter">null_string</replaceable>'
+    DEFAULT '<replaceable class="parameter">default_string</replaceable>'
+    HEADER [ <replaceable class="parameter">boolean</replaceable> | MATCH ]
+    QUOTE '<replaceable class="parameter">quote_character</replaceable>'
+    ESCAPE '<replaceable class="parameter">escape_character</replaceable>'
+    FORCE_QUOTE { ( <replaceable class="parameter">column_name</replaceable> [, ...] ) | * }
+    FORCE_NOT_NULL { ( <replaceable class="parameter">column_name</replaceable> [, ...] ) | * }
+    FORCE_NULL { ( <replaceable class="parameter">column_name</replaceable> [, ...] ) | * }
+    ON_ERROR <replaceable class="parameter">error_action</replaceable>
+    REJECT_LIMIT <replaceable class="parameter">maxerror</replaceable>
+    ENCODING '<replaceable class="parameter">encoding_name</replaceable>'
+    LOG_VERBOSITY <replaceable class="parameter">verbosity</replaceable>
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+
+  <title>描述</title>
+
+  <para>
+   <command>COPY</command>在
+   <productname>PostgreSQL</productname>表与标准文件系统文件之间
+   传输数据。<command>COPY TO</command>将表的内容复制
+   <emphasis>到</emphasis>文件，而<command>COPY FROM</command>
+   则将数据<emphasis>从</emphasis>文件复制到表中（追加到表中已有的数据之
+   后）。<command>COPY TO</command>也可以复制
+   <command>SELECT</command>查询的结果。
+  </para>
+
+  <para>
+   如果指定了列列表，<command>COPY TO</command>只会将指定列中的数据复制到文件。
+   对于<command>COPY FROM</command>，文件中的每个字段会按顺序插入到指定列中。
+   未在<command>COPY FROM</command>列列表中指定的表列将接收其默认值。
+  </para>
+
+  <para>
+   带文件名的<command>COPY</command>会指示
+   <productname>PostgreSQL</productname>服务器直接从文件读取
+   或向文件写入。该文件必须可由
+   <productname>PostgreSQL</productname>用户（服务器运行时使用的用户 ID）
+   访问，并且其名称必须从服务器的视角指定。当指定
+   <literal>PROGRAM</literal>时，服务器会执行给定的命令，并从该程序的标准
+   输出读取，或者向该程序的标准输入写入。该命令必须从服务器的视角指定，并
+   且必须可由<productname>PostgreSQL</productname>用户执行。指定
+   <literal>STDIN</literal>或<literal>STDOUT</literal>时，数据通过客
+   户端与服务器之间的连接传输。
+  </para>
+
+  <para>
+    每个执行<command>COPY</command>的后端进程都会在
+    <structname>pg_stat_progress_copy</structname>视图中报告其进度。
+    有关详细信息，请参见<xref linkend="copy-progress-reporting"/>。
+  </para>
+
+  <para>
+    默认情况下，<command>COPY</command>在处理过程中遇到错误会失败。
+    如果希望尽力而为地尝试装载整个文件，可以使用
+    <literal>ON_ERROR</literal>子句指定其他行为。
+  </para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>参数</title>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-copy-varlistentry-1">
+    <term><replaceable class="parameter">table_name</replaceable></term>
+    <listitem>
+
+     <para>
+      一个现有表的名称（可以是模式限定的）。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-2">
+    <term><replaceable class="parameter">column_name</replaceable></term>
+     <listitem>
+
+     <para>
+      要复制的可选列列表。如果没有指定列列表，则会复制该表除生成列之外的所有列。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-3">
+    <term><replaceable class="parameter">query</replaceable></term>
+    <listitem>
+
+     <para>
+      其结果将被复制的<link linkend="sql-select"><command>SELECT</command></link>、
+      <link linkend="sql-values"><command>VALUES</command></link>、
+      <link linkend="sql-insert"><command>INSERT</command></link>、
+      <link linkend="sql-update"><command>UPDATE</command></link>、
+      <link linkend="sql-delete"><command>DELETE</command></link>或
+      <link linkend="sql-merge"><command>MERGE</command></link>命令。
+      注意查询外层必须带圆括号。
+     </para>
+
+     <para>
+      对于<command>INSERT</command>、<command>UPDATE</command>、
+      <command>DELETE</command>和<command>MERGE</command>查询，必须提供
+      <literal>RETURNING</literal>子句，并且目标关系不能有条件规则，也不能有
+      <literal>ALSO</literal>规则，也不能有扩展为多个语句的
+      <literal>INSTEAD</literal>规则。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-4">
+    <term><replaceable class="parameter">filename</replaceable></term>
+    <listitem>
+
+     <para>
+      输入或输出文件的路径名。输入文件名可以是绝对路径或相对路径，
+      但输出文件名必须是绝对路径。Windows 用户可能需要使用
+      <literal>E''</literal>字符串，并将路径名中的任何反斜线写成双反斜线。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-5">
+    <term><literal>PROGRAM</literal></term>
+    <listitem>
+
+     <para>
+      要执行的命令。在<command>COPY FROM</command>中，输入
+      从该命令的标准输出读取；而在<command>COPY TO</command>中，输出会
+      写入该命令的标准输入。
+     </para>
+
+     <para>
+      注意该命令由 shell 调用，因此如果需要传递来自不可信来源的参数，
+      必须小心剥离或转义任何可能对 shell 具有特殊含义的字符。出于安全考虑，
+      最好使用固定的命令字符串，至少也应避免在其中包含任何用户输入。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-6">
+    <term><literal>STDIN</literal></term>
+    <listitem>
+
+     <para>
+      指定输入来自客户端应用。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-7">
+    <term><literal>STDOUT</literal></term>
+    <listitem>
+
+     <para>
+      指定输出发送到客户端应用。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-8">
+    <term><replaceable class="parameter">boolean</replaceable></term>
+    <listitem>
+
+     <para>
+      指定所选选项应启用还是关闭。可以写<literal>TRUE</literal>、
+      <literal>ON</literal>或<literal>1</literal>来启用选项，写
+      <literal>FALSE</literal>、<literal>OFF</literal>或<literal>0</literal>来禁用它。
+      <replaceable class="parameter">boolean</replaceable>值也可以省略，
+      这种情况下将假定为<literal>TRUE</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-9">
+    <term><literal>FORMAT</literal></term>
+    <listitem>
+
+     <para>
+      选择要读取或者写入的数据格式：
+      <literal>text</literal>、
+      <literal>csv</literal>（逗号分隔值）或者<literal>binary</literal>。
+      默认是<literal>text</literal>。
+      详见下文 <xref linkend="sql-copy-file-formats"/>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-10">
+    <term><literal>FREEZE</literal></term>
+    <listitem>
+
+     <para>
+      请求在复制数据时就将行冻结，就像运行
+      <command>VACUUM FREEZE</command>命令之后那样。这是为初始
+      数据装载设计的一个性能选项。只有当被装载的表已在当前子事务中创建
+      或截断、该事务中没有打开的游标，并且该事务没有持有更旧的快照时，
+      行才会被冻结。目前无法在分区表或外部表上执行<command>COPY FREEZE</command>。
+      此选项仅允许在<command>COPY FROM</command>中使用。
+     </para>
+
+     <para>
+      注意，一旦成功装载，所有其他会话都将立即能够看到这些数据。这违背了
+      MVCC 可见性的常规规则，使用该选项的用户应当了解这可能导致的潜在问题。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-11">
+    <term><literal>DELIMITER</literal></term>
+    <listitem>
+
+     <para>
+      指定分隔文件中每一行（记录）内各列的字符。文本格式中默认是一个制表符，
+      而<literal>CSV</literal>格式中默认是一个逗号。这必须是一个单一
+      的单字节字符。使用<literal>binary</literal>格式时不允许这个选项。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-12">
+    <term><literal>NULL</literal></term>
+    <listitem>
+
+     <para>
+      指定表示一个空值的字符串。文本格式中默认是
+      <literal>\N</literal>（反斜线-N），<literal>CSV</literal>格式中默认
+      是一个未加引用的空串。在你不想区分空值和空串的情况下，即使在文本
+      格式中你也可能更喜欢空串。使用<literal>binary</literal>格式时不允许这
+      个选项。
+     </para>
+
+     <note>
+
+      <para>
+       在使用<command>COPY FROM</command>时，任何匹配此字符串的
+       数据项都会被存储为空值，因此应确保这里使用的字符串与
+       <command>COPY TO</command>时使用的相同。
+      </para>
+     </note>
+
+   </listitem>
+  </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-13">
+    <term><literal>DEFAULT</literal></term>
+    <listitem>
+     <para>
+      指定表示默认值的字符串。每次在输入文件中发现该字符串时，
+      都会使用对应列的默认值。此选项仅允许用于<command>COPY FROM</command>，
+      且不能使用<literal>binary</literal>格式。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-14">
+    <term><literal>HEADER</literal></term>
+    <listitem>
+
+     <para>
+      指定文件包含一个标题行，其中含有文件中每一列的列名。在输出时，
+      第一行包含表中的列名。在输入时，当此选项设置为<literal>true</literal>
+      （或等效的布尔值）时，第一行会被丢弃。如果此选项设置为
+      <literal>MATCH</literal>，则标题行中的列数和列名必须按顺序与表的实际列名匹配；
+      否则会报错。使用<literal>binary</literal>格式时不允许此选项。
+      <literal>MATCH</literal>选项仅对<command>COPY FROM</command>命令有效。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-15">
+    <term><literal>QUOTE</literal></term>
+    <listitem>
+
+     <para>
+      指定在对数据值加引号时使用的引用字符。默认是双引号。
+      这必须是一个单一的单字节字符。只有使用
+      <literal>CSV</literal>格式时才允许这个选项。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-16">
+    <term><literal>ESCAPE</literal></term>
+    <listitem>
+
+     <para>
+      指定在与<literal>QUOTE</literal>值匹配的数据字符之前应出现
+      的字符。默认值与<literal>QUOTE</literal>值相同（这样当引用字符
+      出现在数据中时，就会被双写）。这必须是一个单一的单字节字符。
+      只有使用<literal>CSV</literal>格式时才允许这个选项。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-17">
+    <term><literal>FORCE_QUOTE</literal></term>
+    <listitem>
+
+     <para>
+      强制对每个指定列中的所有非<literal>NULL</literal>值使用引号。
+      <literal>NULL</literal>输出永远不会加引号。如果指定了<literal>*</literal>，
+      则所有列中的非<literal>NULL</literal>值都会加引号。此选项仅允许用于
+      <command>COPY TO</command>，且只能在使用<literal>CSV</literal>格式时使用。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-18">
+    <term><literal>FORCE_NOT_NULL</literal></term>
+    <listitem>
+
+     <para>
+      不要将指定列的值与空值串进行匹配。在空值串就是空串的默认情况下，
+      这意味着空串将被读作长度为零的字符串而不是空值（即使它们没有
+      被引用）。如果指定了 <literal>*</literal>，该选项会应用到所有列。
+      只有在<command>COPY FROM</command>中使用
+      <literal>CSV</literal>格式时才允许这个选项。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-19">
+    <term><literal>FORCE_NULL</literal></term>
+    <listitem>
+
+     <para>
+      将指定列的值与空值串匹配，即使它已经被加上引号；如果找到
+      匹配，就将该值设为<literal>NULL</literal>。在空值串就是空串的默认
+      情况下，这会把一个带引号的空串转换为<literal>NULL</literal>。如果指定了
+      <literal>*</literal>，该选项会应用到所有列。
+      只有在<command>COPY FROM</command>中使用
+      <literal>CSV</literal>格式时才允许这个选项。
+     </para>
+   </listitem>
+  </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-20">
+    <term><literal>ON_ERROR</literal></term>
+    <listitem>
+     <para>
+      指定在将列输入值转换为其数据类型时遇到错误的处理方式。
+      <replaceable class="parameter">error_action</replaceable>为
+      <literal>stop</literal>时表示使命令失败；而<literal>ignore</literal>
+      表示丢弃当前输入行并继续处理下一行。默认值是<literal>stop</literal>。
+     </para>
+     <para>
+      <literal>ignore</literal>仅适用于<command>COPY FROM</command>，且
+      <literal>FORMAT</literal>为<literal>text</literal>或<literal>csv</literal>的情况。
+     </para>
+     <para>
+      如果至少丢弃了一行，在<command>COPY FROM</command>结束时会发出一条
+      包含被忽略行数的<literal>NOTICE</literal>消息。当<literal>LOG_VERBOSITY</literal>
+      设为<literal>verbose</literal>时，每丢弃一行都会发出一条
+      <literal>NOTICE</literal>消息，其中包含输入文件中的该行以及输入转换失败的列名。
+      当其设为<literal>silent</literal>时，不会发出任何关于被忽略行的消息。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-21">
+    <term><literal>REJECT_LIMIT</literal></term>
+    <listitem>
+     <para>
+      当<literal>ON_ERROR</literal>设置为<literal>ignore</literal>时，
+      指定将列输入值转换为其数据类型时可容忍的最大错误数。
+      如果输入导致的错误数超过该值，即使设置了
+      <literal>ON_ERROR</literal>=<literal>ignore</literal>，
+      <command>COPY</command>命令也会失败。该子句必须与
+      <literal>ON_ERROR</literal>=<literal>ignore</literal>一起使用，并且
+      <replaceable class="parameter">maxerror</replaceable>必须是正的
+      <type>bigint</type>。若未指定，则
+      <literal>ON_ERROR</literal>=<literal>ignore</literal>允许无限个错误，
+      也就是<command>COPY</command>会跳过所有出错数据。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-22">
+    <term><literal>ENCODING</literal></term>
+    <listitem>
+
+     <para>
+      指定文件采用<replaceable
+      class="parameter">encoding_name</replaceable>编码。如果省略此选项，
+      将使用当前客户端编码。详见下文注解。
+     </para>
+   </listitem>
+  </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-23">
+    <term><literal>LOG_VERBOSITY</literal></term>
+    <listitem>
+     <para>
+      指定<command>COPY</command>命令发出消息的详细程度：
+      <literal>default</literal>、<literal>verbose</literal>或
+      <literal>silent</literal>。如果指定<literal>verbose</literal>，
+      处理过程中会发出额外消息；<literal>silent</literal>会抑制
+      <literal>verbose</literal>和默认消息。
+     </para>
+     <para>
+      目前该选项用于<command>COPY FROM</command>且
+      <literal>ON_ERROR</literal>设置为<literal>ignore</literal>的场景。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-copy-varlistentry-24">
+    <term><literal>WHERE</literal></term>
+    <listitem>
+
+   <para>
+    可选的<literal>WHERE</literal>子句的一般形式是：
+<synopsis>
+WHERE <replaceable class="parameter">condition</replaceable>
+</synopsis>
+    其中<replaceable class="parameter">condition</replaceable>是任意求值结果为
+    <type>boolean</type>的表达式。任何不满足该条件的行都不会被插入到表中。
+    如果用实际行值替换所有变量引用后该表达式返回 true，则该行满足该条件。
+   </para>
+
+   <para>
+    目前，<literal>WHERE</literal>表达式中不允许使用子查询，并且求值时看不到
+    <command>COPY</command>自身所做的任何更改（当表达式包含对
+    <literal>VOLATILE</literal>函数的调用时，这一点很重要）。
+   </para>
+
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+
+  <title>输出</title>
+
+  <para>
+   成功完成时，<command>COPY</command>命令会返回形如
+<screen>
+COPY <replaceable class="parameter">count</replaceable>
+</screen>
+   的命令标签。<replaceable class="parameter">count</replaceable>为复制的行数。
+  </para>
+
+  <note>
+
+   <para>
+    只有当命令不是<literal>COPY ... TO STDOUT</literal>，或不是等效的
+    <application>psql</application>元命令<literal>\copy ... to stdout</literal>时，
+    <application>psql</application>才会打印这个命令标签。这是为了避免将
+    命令标签与刚刚输出的数据混淆。
+   </para>
+  </note>
+ </refsect1>
+
+ <refsect1>
+
+  <title>注解</title>
+
+   <para>
+    <command>COPY TO</command>可用于普通表和已填充的物化视图。例如，
+    <literal>COPY <replaceable class="parameter">table</replaceable> TO</literal>
+    复制的行与
+    <literal>SELECT * FROM ONLY <replaceable class="parameter">table</replaceable></literal>
+    相同。但它不直接支持其他关系类型，如分区表、继承子表或视图。
+    要复制这类关系的全部行，请使用
+    <literal>COPY (SELECT * FROM <replaceable class="parameter">table</replaceable>) TO</literal>。
+   </para>
+
+   <para>
+    <command>COPY FROM</command>可用于普通表、外部表、分区表，以及具有
+    <literal>INSTEAD OF INSERT</literal>触发器的视图。
+   </para>
+
+   <para>
+    你必须对<command>COPY TO</command>读取其值的表具有
+    <command>SELECT</command>权限，并对<command>COPY FROM</command>
+    插入其值的表具有<command>INSERT</command>权限。对于命令中列出的列，
+    具有列级权限即可。
+   </para>
+
+   <para>
+    如果对表启用了行级安全，相关的<command>SELECT</command>策略将应用于
+    <literal>COPY <replaceable class="parameter">table</replaceable> TO</literal>
+    语句。目前，对启用了行级安全的表不支持<command>COPY FROM</command>。
+    请改用等效的<command>INSERT</command>语句。
+   </para>
+
+   <para>
+    <command>COPY</command>命令中指定的文件由服务器而非客户端应用直接读取或写入。
+    因此，这些文件必须位于数据库服务器所在机器上，或者可由数据库服务器访问，
+    而不是仅由客户端访问。它们必须可由<productname>PostgreSQL</productname>用户
+    （服务器运行时使用的用户 ID）访问，并且对该用户可读或可写。同样，
+    使用<literal>PROGRAM</literal>指定的命令也是由服务器而非客户端应用直接执行，
+    因而必须可由<productname>PostgreSQL</productname>用户执行。只有数据库超级用户，
+    或被授予<literal>pg_read_server_files</literal>、
+    <literal>pg_write_server_files</literal>或
+    <literal>pg_execute_server_program</literal>之一的用户，才允许使用
+    指定文件名或命令的<command>COPY</command>，因为这允许读取或写入服务器
+    有权访问的任意文件，或者运行服务器有权执行的程序。
+   </para>
+
+   <para>
+    不要将<command>COPY</command>与
+    <application>psql</application>指令
+    <command><link linkend="app-psql-meta-commands-copy">\copy</link></command>
+    混淆。<command>\copy</command>会调用
+    <command>COPY FROM STDIN</command>或<command>COPY TO
+    STDOUT</command>，然后在<application>psql</application>客户端可访问的
+    文件中读取或存储数据。因此，使用<command>\copy</command>时，
+    文件的可访问性和访问权限取决于客户端而不是服务器。
+   </para>
+
+   <para>
+    建议在<command>COPY</command>中使用的文件名始终指定为绝对路径。
+    对于<command>COPY TO</command>，服务器会强制这一点；但对于
+    <command>COPY FROM</command>，你仍可选择从使用相对路径指定的文件中读取。
+    该路径将相对于服务器进程的工作目录（通常是集簇的数据目录）而非客户端的工作目录进行解释。
+   </para>
+
+   <para>
+    使用<literal>PROGRAM</literal>执行命令可能会受到操作系统
+    的访问控制机制（如 SELinux）的限制。
+   </para>
+
+   <para>
+    <command>COPY FROM</command>将调用目标表上的任何触发器
+    和检查约束。但是它不会调用规则。
+   </para>
+
+   <para>
+    对于标识列，<command>COPY FROM</command>命令总会写入输入数据中提供的列值，
+    其行为类似于<command>INSERT</command>的
+    <literal>OVERRIDING SYSTEM VALUE</literal>选项。
+   </para>
+
+   <para>
+    <command>COPY</command>的输入和输出会受
+    <varname>DateStyle</varname>影响。为确保数据能移植到其他可能使用非默认
+    <varname>DateStyle</varname>设置的<productname>PostgreSQL</productname>
+    安装中，使用<command>COPY TO</command>前应将
+    <varname>DateStyle</varname>设置为<literal>ISO</literal>。同样也建议避免在
+    <varname>IntervalStyle</varname>设置为<literal>sql_standard</literal>时转储
+    数据，因为负的 interval 值可能会被采用不同
+    <varname>IntervalStyle</varname>设置的服务器误解。
+   </para>
+
+   <para>
+    即使数据会被服务器直接从一个文件读取或者写入一个文件而不通过
+    客户端，输入数据也会被根据<literal>ENCODING</literal>选项或者当前
+    客户端编码解释，并且输出数据会被根据<literal>ENCODING</literal>或
+    者当前客户端编码进行编码。
+   </para>
+
+   <para>
+    <command>COPY FROM</command>在处理过程中会把输入行物理插入表中。
+    如果命令失败，这些行会处于已删除状态；它们不可见，但仍占据磁盘空间。
+    如果在大型复制操作后期失败，这可能造成大量磁盘空间浪费。
+    应使用 <command>VACUUM</command> 回收这些浪费的空间。
+   </para>
+
+   <para>
+    <literal>FORCE_NULL</literal>和<literal>FORCE_NOT_NULL</literal>可以同时
+    用于同一列。这会把带引号的空值串转换为空值，并把不带引号的空值串
+    转换为空串。
+   </para>
+
+ </refsect1>
+
+ <refsect1 id="sql-copy-file-formats" xreflabel="File Formats">
+
+  <title>文件格式</title>
+
+  <refsect2 id="sql-copy-text-format" xreflabel="Text Format">
+
+   <title>文本格式</title>
+
+   <para>
+    在使用<literal>text</literal>格式时，读取或写入的是一个文本文件，
+    其中表中的每一行对应文件中的一行。每行中的列由分隔符字符隔开。
+    列值本身是由各属性数据类型的输出函数生成、或可被其输入函数接受的
+    字符串。对于为空值的列，会使用指定的空值串代替。
+    如果输入文件中的任何一行包含的列数多于或少于预期，
+    <command>COPY FROM</command>就会报错。
+   </para>
+
+   <para>
+    数据结束可以表示为只包含反斜线加点号（<literal>\.</literal>）的一行。
+    从文件读取时，并不需要数据结束标记，因为文件结束已经足够；
+    在该上下文中保留这一规定只是为了向后兼容。不过，
+    <application>psql</application>会使用<literal>\.</literal>终止
+    <literal>COPY FROM STDIN</literal>操作（即在 SQL 脚本中读取内联
+    <command>COPY</command>数据）。在这种情况下，需要这条规则来在脚本结束前终止操作。
+   </para>
+
+   <para>
+    在<command>COPY</command>数据中，可以使用反斜线字符（<literal>\</literal>）
+    来转义那些原本可能被当作行或列分隔符的数据字符。特别是，
+    如果下列字符作为列值的一部分出现，那么它们前面<emphasis>必须</emphasis>
+    加一个反斜线：反斜线本身、换行、回车以及当前分隔符字符。
+   </para>
+
+   <para>
+    <command>COPY TO</command>输出指定的空值串时不会添加任何反斜线；
+    相反，<command>COPY FROM</command>会在去除反斜线之前先将输入
+    与空值串进行匹配。因此，像<literal>\N</literal>这样的空值串不会与实际的
+    数据值<literal>\N</literal>混淆，因为后者会表示为<literal>\\N</literal>。
+   </para>
+
+   <para>
+    <command>COPY FROM</command>识别下列特殊的反斜线序列：
+
+   <informaltable>
+    <tgroup cols="2">
+     <thead>
+      <row>
+       <entry>序列</entry>
+       <entry>表示</entry>
+      </row>
+     </thead>
+
+     <tbody>
+      <row>
+       <entry><literal>\b</literal></entry>
+       <entry>退格 (ASCII 8)</entry>
+      </row>
+      <row>
+       <entry><literal>\f</literal></entry>
+       <entry>换页 (ASCII 12)</entry>
+      </row>
+      <row>
+       <entry><literal>\n</literal></entry>
+       <entry>新行 (ASCII 10)</entry>
+      </row>
+      <row>
+       <entry><literal>\r</literal></entry>
+       <entry>回车 (ASCII 13)</entry>
+      </row>
+      <row>
+       <entry><literal>\t</literal></entry>
+       <entry>制表 (ASCII 9)</entry>
+      </row>
+      <row>
+       <entry><literal>\v</literal></entry>
+       <entry>纵向制表 (ASCII 11)</entry>
+      </row>
+      <row>
+       <entry><literal>\</literal><replaceable>digits</replaceable></entry>
+       <entry>反斜线后跟一到三个八进制数字表示该数字代码对应的字节</entry>
+      </row>
+      <row>
+       <entry><literal>\x</literal><replaceable>digits</replaceable></entry>
+       <entry>反斜线加<literal>x</literal>后跟一到两个十六进制数字表示该数字代码对应的字节</entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </informaltable>
+
+    目前，<command>COPY TO</command>从不会输出八进制或十六进制数字反斜线
+    序列，但对这些控制字符确实会使用上表列出的其他序列。
+   </para>
+
+   <para>
+    任何上表中未提到的其他反斜线字符都将表示其自身。不过，要注意不要
+    不必要地添加反斜线，因为那可能意外地产生与数据结束标记
+    （<literal>\.</literal>）或空值串（默认是<literal>\N</literal>）匹配的字符串。
+    这些字符串会在进行任何其他反斜线处理之前先被识别出来。
+   </para>
+
+   <para>
+    强烈建议生成<command>COPY</command>数据的应用将数据中的换行和回车分别
+    转换为<literal>\n</literal>和<literal>\r</literal>序列。目前，仍然可以用
+    反斜线加回车表示数据回车，用反斜线加换行表示数据换行。不过，
+    未来版本可能不再接受这些表示方式。如果<command>COPY</command>文件在不同机器之间
+    传输（例如从 Unix 到 Windows，或反之），这些表示方式也非常容易被破坏。
+   </para>
+
+   <para>
+     所有反斜线序列都在编码转换后进行解释。
+     用八进制和十六进制数字反斜线序列指定的字节必须在数据库编码中形成有效字符。
+   </para>
+
+   <para>
+    <command>COPY TO</command>会用 Unix 风格的换行（
+    <quote><literal>\n</literal></quote>）结束每一行。运行在 Microsoft Windows
+    上的服务器则会输出回车/换行（<quote><literal>\r\n</literal></quote>），但这只适用于
+    复制到服务器文件的<command>COPY</command>；为保证跨平台一致性，
+    <command>COPY TO STDOUT</command>总是发送<quote><literal>\n</literal></quote>，
+    与服务器平台无关。<command>COPY FROM</command>能够处理以换行、回车
+    或回车/换行结束的行。为减少本应是数据的未加反斜线新行或回车带来的风险，
+    如果输入中的行结束符并不一致，<command>COPY FROM</command>将会报错。
+   </para>
+  </refsect2>
+
+  <refsect2 id="sql-copy-csv-format" xreflabel="CSV Format">
+
+   <title>CSV 格式</title>
+
+   <para>
+    这种格式选项用于导入和导出许多其他程序（如电子表格）使用的
+    逗号分隔值（<literal>CSV</literal>）文件格式。不同于
+    <productname>PostgreSQL</productname>标准文本格式使用的转义规则，
+    它会生成并识别通用的<literal>CSV</literal>转义机制。
+   </para>
+
+   <para>
+    每条记录中的值由<literal>DELIMITER</literal>字符分隔。如果某个值包含
+    分隔符字符、<literal>QUOTE</literal>字符、<literal>NULL</literal>字符串、
+    回车或换行字符，那么整个值都会以前后各一个<literal>QUOTE</literal>字符包围，
+    并且该值内每次出现<literal>QUOTE</literal>字符或<literal>ESCAPE</literal>
+    字符之前都会加上转义字符。对于指定列中的非<literal>NULL</literal>值输出，
+    还可以使用<literal>FORCE_QUOTE</literal>来强制加引号。
+   </para>
+
+   <para>
+    <literal>CSV</literal>格式没有标准方式区分<literal>NULL</literal>值和空字符串。
+    <productname>PostgreSQL</productname>的<command>COPY</command>通过引号来处理
+    这一区别。<literal>NULL</literal>会按照<literal>NULL</literal>参数字符串输出，
+    且不会被加引号；而与<literal>NULL</literal>参数字符串匹配的非<literal>NULL</literal>
+    值会被加引号。例如，在默认设置下，<literal>NULL</literal>会写成一个未加引号的
+    空字符串，而空字符串数据值会写成双引号包围的形式（<literal>""</literal>）。
+    读取值时遵循类似规则。你可以使用<literal>FORCE_NOT_NULL</literal>来阻止
+    对指定列进行<literal>NULL</literal>输入比较。也可以使用<literal>FORCE_NULL</literal>
+    将带引号的空值串数据值转换为<literal>NULL</literal>。
+   </para>
+
+   <para>
+    因为反斜线在<literal>CSV</literal>格式中不是特殊字符，文本模式下使用的
+    数据结束标记（<literal>\.</literal>）在读取<literal>CSV</literal>数据时通常不会被特殊处理。
+    但有一个例外：<application>psql</application>在
+    <literal>COPY FROM STDIN</literal>操作（即在 SQL 脚本中读取内联
+    <command>COPY</command>数据）时，只要遇到仅包含<literal>\.</literal>的一行，
+    就会终止操作，无论当前是文本模式还是<literal>CSV</literal>模式。
+   </para>
+
+   <note>
+    <para>
+     <productname>PostgreSQL</productname>在 v18 之前的版本中总是将未加引号的
+     <literal>\.</literal> 识别为数据结束标记，即使是从独立文件读取时也是如此。
+     为兼容旧版本，<command>COPY TO</command>仍会在
+     <literal>\.</literal> 单独占一行时为其加引号，尽管现在已非必需。
+    </para>
+   </note>
+
+   <note>
+
+    <para>
+     在<literal>CSV</literal>格式中，所有字符都有意义。被空白字符或
+     <literal>DELIMITER</literal>之外其他字符包围的带引号值，会把这些字符
+     也包含进值中。如果你导入的数据来自某个会用空白把<literal>CSV</literal>
+     行填充到固定宽度的系统，这可能导致错误。出现这种情况时，
+     你可能需要在将数据导入<productname>PostgreSQL</productname>之前，
+     先预处理<literal>CSV</literal>文件以移除尾随空白。
+    </para>
+   </note>
+
+   <note>
+
+    <para>
+     <literal>CSV</literal>格式既能识别也会生成带引号且内嵌回车和换行的
+     <literal>CSV</literal>值。因此，这类文件不像文本格式文件那样严格地一行对应表中的一行。
+    </para>
+   </note>
+
+   <note>
+
+    <para>
+     很多程序会生成奇怪、甚至近乎反常的<literal>CSV</literal>文件，因此这种文件格式更像一种约定而非标准。
+     因而你可能会遇到无法用这种机制导入的文件，而<command>COPY</command>也可能生成其他程序无法处理的文件。
+    </para>
+   </note>
+
+  </refsect2>
+
+  <refsect2 id="sql-copy-binary-format" xreflabel="Binary Format">
+
+   <title>二进制格式</title>
+
+   <para>
+    <literal>binary</literal>格式选项会使所有数据以二进制格式而不是文本格式
+    存储或读取。它比文本和<literal>CSV</literal>格式稍快一些，但二进制格式文件在不同的
+    机器架构和<productname>PostgreSQL</productname>版本之间的可移植性较差。
+    此外，二进制格式与数据类型高度相关。例如，不能从
+    <type>smallint</type>列输出二进制数据再读入到<type>integer</type>列中，
+    尽管这种做法在文本格式下是可行的。
+   </para>
+
+   <para>
+    <literal>binary</literal>文件格式由文件头、零个或多个包含
+    行数据的元组以及一个文件尾构成。头部和数据都以网络字节序表示。
+   </para>
+
+   <note>
+
+    <para>
+     7.4 之前的<productname>PostgreSQL</productname>版本
+     使用一种不同的二进制文件格式。
+    </para>
+   </note>
+
+   <refsect3>
+
+    <title>文件头</title>
+
+    <para>
+     文件头由 15 字节的固定域构成，后面跟着一个变长的头部扩展区。
+     固定域有：
+
+    <variablelist>
+     <varlistentry id="zh18-auto-copy-varlistentry-29">
+      <term>签名</term>
+      <listitem>
+       <para>
+11 字节序列<literal>PGCOPY\n\377\r\n\0</literal> &mdash; 注意，
+零字节是签名中必不可少的一部分。（该签名的设计目的是便于识别那些在
+不具备 8 位透明性的传输过程中遭到破坏的文件。行尾转换过滤器、
+零字节丢失、高位丢失或奇偶校验变化等情况都会改变该签名。）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-copy-varlistentry-30">
+      <term>标志域</term>
+      <listitem>
+       <para>
+32 位整数位掩码，用以表示该文件格式的重要方面。位编号从
+0（<acronym>LSB</acronym>）到 31（<acronym>MSB</acronym>）。
+注意，该字段和此文件格式中使用的所有整数字段一样，都按网络字节序
+存放（最高有效字节在前）。16 到 31 位保留用于表示严重的文件格式
+问题；如果读取程序在这个范围内发现意外置位，应该中止。0 到 15 位
+保留用于表示向后兼容的格式问题；读取程序应简单忽略这个范围内任何
+意外置位。目前只定义了一个标志位，其余位都必须为零：
+        <variablelist>
+         <varlistentry id="zh18-auto-copy-varlistentry-31">
+          <term>位 16</term>
+          <listitem>
+           <para>
+            如果为 1，则数据中包含 OID；如果为 0，则不包含。当前版本的
+            <productname>PostgreSQL</productname>已不再支持 oid 系统列，
+            但该格式仍保留这个指示符。
+           </para>
+          </listitem>
+         </varlistentry>
+        </variablelist></para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-copy-varlistentry-32">
+      <term>头部扩展区长度</term>
+      <listitem>
+       <para>
+32 位整数，表示头部剩余部分的长度（以字节计），不包括该字段本身。
+当前该值为零，因此其后紧接着第一个元组。未来对这种格式的更改
+可能允许在头部中包含额外数据。如果读取程序不知道如何处理头部
+扩展区数据，应静默跳过它。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    </para>
+
+    <para>
+头部扩展区被设想为包含一系列可自我标识的块。标志域并不用于告诉
+读取程序扩展区中包含哪些内容。头部扩展内容的具体设计留待后续版本决定。
+    </para>
+
+    <para>
+     这种设计既允许向后兼容的头部新增（增加头部扩展块，或设置低位标志位），
+     也允许不向后兼容的更改（设置高位标志位来表明这类更改，并在需要时向扩展区
+     增加支持数据）。
+    </para>
+   </refsect3>
+
+   <refsect3>
+
+    <title>元组</title>
+
+    <para>
+每个元组都以一个 16 位整数计数开头，用于表示该元组中的字段数。（目前，
+一个表中的所有元组都应有相同的计数，但这未必永远如此。）随后，对元组中的
+每个字段，都会有一个 32 位长度字，后跟该字段数据的相应字节数。（长度字不
+包括其本身，且可以为零。）特殊情况下，-1 表示一个 NULL 字段值；在 NULL
+情况下，后面不会跟随任何值字节。
+    </para>
+
+    <para>
+字段之间没有对齐填充或任何其他额外数据。
+    </para>
+
+    <para>
+当前，二进制格式文件中的所有数据值都假定为二进制格式（格式代码一）。
+可以预见，未来的扩展可能会增加一个允许为各列分别指定格式代码的头部字段。
+    </para>
+
+    <para>
+要确定实际元组数据应采用的二进制格式，你应该参考
+<productname>PostgreSQL</productname>源码，特别是各列
+数据类型对应的<function>*send</function>和<function>*recv</function>函数（这些函数通常可
+以在源码分发包的<filename>src/backend/utils/adt/</filename>目录中找到）。
+    </para>
+
+    <para>
+如果文件中包含 OID，则 OID 字段会紧跟在字段计数字之后。它是一个普通字段，
+不过不计入字段数。注意，当前版本的<productname>PostgreSQL</productname>
+不再支持 oid 系统列。
+    </para>
+   </refsect3>
+
+   <refsect3>
+
+    <title>文件尾</title>
+
+    <para>
+     文件尾由一个值为 -1 的 16 位整数构成。这很容易与元组的字段计数字区分开来。
+    </para>
+
+    <para>
+     如果字段计数字既不是 -1 也不是预期的列数，读取程序应报告错误。
+     这提供了一项额外检查，以防与数据失去同步。
+    </para>
+   </refsect3>
+  </refsect2>
+ </refsect1>
+
+ <refsect1>
+
+  <title>示例</title>
+
+  <para>
+   下面的示例使用竖线（<literal>|</literal>）作为字段分隔符将一个表复制到客户端：
+<programlisting>
+COPY country TO STDOUT (DELIMITER '|');
+</programlisting>
+  </para>
+
+  <para>
+   要将文件中的数据复制到<literal>country</literal>表中：
+<programlisting>
+COPY country FROM '/usr1/proj/bray/sql/country_data';
+</programlisting>
+  </para>
+
+  <para>
+   只把名称以 'A' 开头的国家复制到一个文件中：
+<programlisting>
+COPY (SELECT * FROM country WHERE country_name LIKE 'A%') TO '/usr1/proj/bray/sql/a_list_countries.copy';
+</programlisting>
+  </para>
+
+  <para>
+   要复制到压缩文件中，可以将输出通过管道送入外部压缩程序：
+<programlisting>
+COPY country TO PROGRAM 'gzip > /usr1/proj/bray/sql/country_data.gz';
+</programlisting>
+  </para>
+
+  <para>
+   下面给出适合从<literal>STDIN</literal>复制到表中的示例数据：
+<programlisting>
+AF      AFGHANISTAN
+AL      ALBANIA
+DZ      ALGERIA
+ZM      ZAMBIA
+ZW      ZIMBABWE
+</programlisting>
+   注意每一行中的空白实际上是一个制表符。
+  </para>
+
+  <para>
+   下面是用二进制格式输出的相同数据。该数据是用 Unix 工具
+   <command>od -c</command>过滤后显示的。该表具有三列，
+   第一列类型是<type>char(2)</type>，第二列类型是<type>text</type>，
+   第三列类型是<type>integer</type>。所有行在第三列都是空值。
+<programlisting>
+0000000   P   G   C   O   P   Y  \n 377  \r  \n  \0  \0  \0  \0  \0  \0
+0000020  \0  \0  \0  \0 003  \0  \0  \0 002   A   F  \0  \0  \0 013   A
+0000040   F   G   H   A   N   I   S   T   A   N 377 377 377 377  \0 003
+0000060  \0  \0  \0 002   A   L  \0  \0  \0 007   A   L   B   A   N   I
+0000100   A 377 377 377 377  \0 003  \0  \0  \0 002   D   Z  \0  \0  \0
+0000120 007   A   L   G   E   R   I   A 377 377 377 377  \0 003  \0  \0
+0000140  \0 002   Z   M  \0  \0  \0 006   Z   A   M   B   I   A 377 377
+0000160 377 377  \0 003  \0  \0  \0 002   Z   W  \0  \0  \0  \b   Z   I
+0000200   M   B   A   B   W   E 377 377 377 377 377 377
+</programlisting></para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>兼容性</title>
+
+  <para>
+   SQL 标准中没有<command>COPY</command>语句。
+  </para>
+
+  <para>
+   下列语法在<productname>PostgreSQL</productname> 9.0 之前的版本中使用，
+   现仍受支持：
+
+<synopsis>
+COPY <replaceable class="parameter">table_name</replaceable> [ ( <replaceable class="parameter">column_name</replaceable> [, ...] ) ]
+    FROM { '<replaceable class="parameter">filename</replaceable>' | STDIN }
+    [ [ WITH ]
+          [ BINARY ]
+          [ DELIMITER [ AS ] '<replaceable class="parameter">delimiter_character</replaceable>' ]
+          [ NULL [ AS ] '<replaceable class="parameter">null_string</replaceable>' ]
+          [ CSV [ HEADER ]
+                [ QUOTE [ AS ] '<replaceable class="parameter">quote_character</replaceable>' ]
+                [ ESCAPE [ AS ] '<replaceable class="parameter">escape_character</replaceable>' ]
+                [ FORCE NOT NULL <replaceable class="parameter">column_name</replaceable> [, ...] ] ] ]
+
+COPY { <replaceable class="parameter">table_name</replaceable> [ ( <replaceable class="parameter">column_name</replaceable> [, ...] ) ] | ( <replaceable class="parameter">query</replaceable> ) }
+    TO { '<replaceable class="parameter">filename</replaceable>' | STDOUT }
+    [ [ WITH ]
+          [ BINARY ]
+          [ DELIMITER [ AS ] '<replaceable class="parameter">delimiter_character</replaceable>' ]
+          [ NULL [ AS ] '<replaceable class="parameter">null_string</replaceable>' ]
+          [ CSV [ HEADER ]
+                [ QUOTE [ AS ] '<replaceable class="parameter">quote_character</replaceable>' ]
+                [ ESCAPE [ AS ] '<replaceable class="parameter">escape_character</replaceable>' ]
+                [ FORCE QUOTE { <replaceable class="parameter">column_name</replaceable> [, ...] | * } ] ] ]
+</synopsis>
+
+   注意在这种语法中，<literal>BINARY</literal>和<literal>CSV</literal>被视为独立的关键字，
+   而不是<literal>FORMAT</literal>选项的参数。
+  </para>
+
+  <para>
+   下列语法在<productname>PostgreSQL</productname> 7.3 之前的版本中使用，
+   现仍受支持：
+
+<synopsis>
+COPY [ BINARY ] <replaceable class="parameter">table_name</replaceable>
+    FROM { '<replaceable class="parameter">filename</replaceable>' | STDIN }
+    [ [USING] DELIMITERS '<replaceable class="parameter">delimiter_character</replaceable>' ]
+    [ WITH NULL AS '<replaceable class="parameter">null_string</replaceable>' ]
+
+COPY [ BINARY ] <replaceable class="parameter">table_name</replaceable>
+    TO { '<replaceable class="parameter">filename</replaceable>' | STDOUT }
+    [ [USING] DELIMITERS '<replaceable class="parameter">delimiter_character</replaceable>' ]
+    [ WITH NULL AS '<replaceable class="parameter">null_string</replaceable>' ]
+</synopsis></para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>另见</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="copy-progress-reporting"/></member>
+  </simplelist>
+ </refsect1>
+</refentry>

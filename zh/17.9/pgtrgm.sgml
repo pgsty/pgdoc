@@ -1,0 +1,597 @@
+<!-- doc/src/sgml/pgtrgm.sgml -->
+
+<sect1 id="pgtrgm" xreflabel="pg_trgm">
+
+ <title>pg_trgm &mdash; 基于三元组匹配的文本相似度支持</title>
+
+ <indexterm zone="pgtrgm">
+  <primary>pg_trgm</primary>
+ </indexterm>
+
+ <para>
+  <filename>pg_trgm</filename>模块提供函数和操作符，用于基于三元组匹配确定字母数字文本的相似度，
+  同时还提供支持快速搜索相似字符串的索引操作符类。
+ </para>
+
+ <para>
+  该模块被认为是<quote>受信任的</quote>，也就是说，它可以由在当前数据库上具有<literal>CREATE</literal>权限的非超级用户安装。
+ </para>
+
+ <sect2 id="pgtrgm-concepts">
+
+  <title>三元组（Trigram 或 Trigraph）概念</title>
+
+  <para>
+   三元组是一组从字符串中取出的三个连续字符。我们可以通过统计两个字符串共享的三元组数量来度量它们的相似度。
+   这个简单的思想在度量许多自然语言中词的相似度时都非常有效。
+  </para>
+
+  <note>
+
+   <para>
+    从字符串中提取三元组时，<filename>pg_trgm</filename>会忽略非词字符（即非字母数字字符）。
+    在确定字符串所包含的三元组集合时，认为每个词前面都有两个空格，后面都有一个空格。
+    例如，字符串<quote><literal>cat</literal></quote>的三元组集合是
+    <quote><literal>  c</literal></quote>、
+    <quote><literal> ca</literal></quote>、
+    <quote><literal>cat</literal></quote>和
+    <quote><literal>at </literal></quote>。
+    字符串<quote><literal>foo|bar</literal></quote>的三元组集合是
+    <quote><literal>  f</literal></quote>、
+    <quote><literal> fo</literal></quote>、
+    <quote><literal>foo</literal></quote>、
+    <quote><literal>oo </literal></quote>、
+    <quote><literal>  b</literal></quote>、
+    <quote><literal> ba</literal></quote>、
+    <quote><literal>bar</literal></quote>和
+    <quote><literal>ar </literal></quote>。
+   </para>
+  </note>
+ </sect2>
+
+ <sect2 id="pgtrgm-funcs-ops">
+
+  <title>函数和操作符</title>
+
+  <para>
+   <filename>pg_trgm</filename>模块提供的函数列在<xref linkend="pgtrgm-func-table"/>中，操作符列在<xref linkend="pgtrgm-op-table"/>中。
+  </para>
+
+  <table id="pgtrgm-func-table">
+
+   <title><filename>pg_trgm</filename>函数</title>
+    <tgroup cols="1">
+     <thead>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        函数
+       </para>
+       <para>
+        描述
+       </para></entry>
+      </row>
+     </thead>
+
+     <tbody>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm><primary>similarity</primary></indexterm>
+        <function>similarity</function> ( <type>text</type>, <type>text</type> )
+        <returnvalue>real</returnvalue>
+       </para>
+       <para>
+        返回一个数值，表示两个参数的相似程度。
+        结果范围为 0 到 1：0 表示两个字符串完全不相似，1 表示两个字符串完全相同。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm><primary>show_trgm</primary></indexterm>
+        <function>show_trgm</function> ( <type>text</type> )
+        <returnvalue>text[]</returnvalue>
+       </para>
+       <para>
+        返回由给定字符串中所有三元组构成的数组。
+        （实际应用中，除了调试之外很少有用。）
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm><primary>word_similarity</primary></indexterm>
+        <function>word_similarity</function> ( <type>text</type>, <type>text</type> )
+        <returnvalue>real</returnvalue>
+       </para>
+       <para>
+        返回一个数值，表示第一个字符串中的三元组集合与第二个字符串中的有序三元组集合中任意连续区段之间的最大相似度。
+        详见下文说明。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm><primary>strict_word_similarity</primary></indexterm>
+        <function>strict_word_similarity</function> ( <type>text</type>, <type>text</type> )
+        <returnvalue>real</returnvalue>
+       </para>
+       <para>
+        与<function>word_similarity</function>相同，但会强制区段边界与词边界一致。
+        由于不存在跨词的三元组，这个函数实际上返回的是第一个字符串与第二个字符串中任意连续词区段之间的最大相似度。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm><primary>show_limit</primary></indexterm>
+        <function>show_limit</function> ()
+        <returnvalue>real</returnvalue>
+       </para>
+       <para>
+        返回<literal>%</literal>操作符当前使用的相似度阈值。
+        例如，它设置了两个词要被认为足够相似，以至于可视为彼此的拼写错误时所需的最小相似度。
+        （<emphasis>已废弃</emphasis>；请改用<command>SHOW</command> <varname>pg_trgm.similarity_threshold</varname>。）
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm><primary>set_limit</primary></indexterm>
+        <function>set_limit</function> ( <type>real</type> )
+        <returnvalue>real</returnvalue>
+       </para>
+       <para>
+        设置<literal>%</literal>操作符当前使用的相似度阈值。
+        该阈值必须介于 0 和 1 之间（默认值为 0.3）。
+        返回传入的同一个值。
+        （<emphasis>已废弃</emphasis>；请改用<command>SET</command> <varname>pg_trgm.similarity_threshold</varname>。）
+       </para></entry>
+      </row>
+     </tbody>
+    </tgroup>
+  </table>
+
+  <para>
+   考虑下面的示例：
+
+<programlisting>
+# SELECT word_similarity('word', 'two words');
+ word_similarity
+-----------------
+             0.8
+(1 row)
+</programlisting>
+
+   在第一个字符串中，三元组集合是<literal>{"  w"," wo","wor","ord","rd "}</literal>。
+   在第二个字符串中，有序三元组集合是<literal>{"  t"," tw","two","wo ","  w"," wo","wor","ord","rds","ds "}</literal>。
+   第二个字符串中最相似的有序三元组集合连续区段是<literal>{"  w"," wo","wor","ord"}</literal>，其相似度为<literal>0.8</literal>。
+  </para>
+
+  <para>
+   这个函数返回的值大致可以理解为第一个字符串与第二个字符串任意子串之间的最大相似度。
+   不过，该函数不会在这个区段的边界处添加填充。
+   因此，除了词边界不匹配的情况外，第二个字符串中额外存在的字符数不会被考虑在内。
+  </para>
+
+  <para>
+   同时，<function>strict_word_similarity</function>会在第二个字符串中选取一个连续词区段。
+   在上面的示例中，<function>strict_word_similarity</function>会选取单词<literal>'words'</literal>这一连续区段，
+   其三元组集合为<literal>{"  w"," wo","wor","ord","rds","ds "}</literal>。
+
+<programlisting>
+# SELECT strict_word_similarity('word', 'two words'), similarity('word', 'words');
+ strict_word_similarity | similarity
+------------------------+------------
+               0.571429 |   0.571429
+(1 row)
+</programlisting>
+  </para>
+
+  <para>
+   因此，<function>strict_word_similarity</function>适合查找与整个词的相似度，
+   而<function>word_similarity</function>更适合查找与词的一部分的相似度。
+  </para>
+
+  <table id="pgtrgm-op-table">
+
+   <title><filename>pg_trgm</filename>操作符</title>
+    <tgroup cols="1">
+     <thead>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        操作符
+       </para>
+       <para>
+        描述
+       </para></entry>
+      </row>
+     </thead>
+
+     <tbody>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>text</type> <literal>%</literal> <type>text</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        如果参数之间的相似度大于<varname>pg_trgm.similarity_threshold</varname>设置的当前相似度阈值，则返回<literal>true</literal>。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>text</type> <literal>&lt;%</literal> <type>text</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        如果第一个参数中的三元组集合与第二个参数中的有序三元组集合某个连续区段之间的相似度大于
+        <varname>pg_trgm.word_similarity_threshold</varname>参数设置的当前词相似度阈值，
+        则返回<literal>true</literal>。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>text</type> <literal>%&gt;</literal> <type>text</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        <literal>&lt;%</literal>操作符的交换子。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>text</type> <literal>&lt;&lt;%</literal> <type>text</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        如果第二个参数中存在一个与词边界一致的有序三元组集合连续区段，且它与第一个参数三元组集合的相似度大于
+        <varname>pg_trgm.strict_word_similarity_threshold</varname>参数设置的当前严格词相似度阈值，
+        则返回<literal>true</literal>。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>text</type> <literal>%&gt;&gt;</literal> <type>text</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        <literal>&lt;&lt;%</literal>操作符的交换子。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>text</type> <literal>&lt;-&gt;</literal> <type>text</type>
+        <returnvalue>real</returnvalue>
+       </para>
+       <para>
+        返回参数之间的<quote>距离</quote>，即 1 减去<function>similarity()</function>值。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>text</type> <literal>&lt;&lt;-&gt;</literal> <type>text</type>
+        <returnvalue>real</returnvalue>
+       </para>
+       <para>
+        返回参数之间的<quote>距离</quote>，即 1 减去<function>word_similarity()</function>的值。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>text</type> <literal>&lt;-&gt;&gt;</literal> <type>text</type>
+        <returnvalue>real</returnvalue>
+       </para>
+       <para>
+        <literal>&lt;&lt;-&gt;</literal>操作符的交换子。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>text</type> <literal>&lt;&lt;&lt;-&gt;</literal> <type>text</type>
+        <returnvalue>real</returnvalue>
+       </para>
+       <para>
+        返回参数之间的<quote>距离</quote>，即 1 减去<function>strict_word_similarity()</function>的值。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>text</type> <literal>&lt;-&gt;&gt;&gt;</literal> <type>text</type>
+        <returnvalue>real</returnvalue>
+       </para>
+       <para>
+        <literal>&lt;&lt;&lt;-&gt;</literal>操作符的交换子。
+       </para></entry>
+      </row>
+     </tbody>
+    </tgroup>
+  </table>
+ </sect2>
+
+ <sect2 id="pgtrgm-guc">
+
+  <title>GUC 参数</title>
+
+  <variablelist>
+   <varlistentry id="guc-pgtrgm-similarity-threshold" xreflabel="pg_trgm.similarity_threshold">
+
+    <term>
+     <varname>pg_trgm.similarity_threshold</varname> (<type>real</type>)
+     <indexterm>
+      <primary><varname>pg_trgm.similarity_threshold</varname> 配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+
+     <para>
+      设置<literal>%</literal>操作符使用的当前相似度阈值。该阈值必须介于 0 和 1 之间（默认值为 0.3）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry id="guc-pgtrgm-word-similarity-threshold" xreflabel="pg_trgm.word_similarity_threshold">
+
+    <term>
+     <varname>pg_trgm.word_similarity_threshold</varname> (<type>real</type>)
+     <indexterm>
+      <primary>
+       <varname>pg_trgm.word_similarity_threshold</varname> 配置参数
+      </primary>
+     </indexterm>
+    </term>
+    <listitem>
+
+     <para>
+      设置<literal>&lt;%</literal>和<literal>%&gt;</literal>操作符使用的当前词相似度阈值。该阈值必须介于 0 和 1 之间（默认值为 0.6）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry id="guc-pgtrgm-strict-word-similarity-threshold" xreflabel="pg_trgm.strict_word_similarity_threshold">
+
+    <term>
+     <varname>pg_trgm.strict_word_similarity_threshold</varname> (<type>real</type>)
+     <indexterm>
+      <primary>
+       <varname>pg_trgm.strict_word_similarity_threshold</varname> 配置参数
+      </primary>
+     </indexterm>
+    </term>
+    <listitem>
+
+     <para>
+      设置<literal>&lt;&lt;%</literal>和<literal>%&gt;&gt;</literal>操作符使用的当前严格词相似度阈值。
+      该阈值必须介于 0 和 1 之间（默认值为 0.5）。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="pgtrgm-index">
+
+  <title>索引支持</title>
+
+  <para>
+   <filename>pg_trgm</filename>模块提供 GiST 和 GIN 索引操作符类，允许你为文本列创建索引，以实现非常快速的相似度搜索。
+   这些索引类型支持前文所述的相似度操作符，并且还支持对<literal>LIKE</literal>、<literal>ILIKE</literal>、
+   <literal>~</literal>、<literal>~*</literal>和<literal>=</literal>查询执行基于三元组的索引搜索。
+   在默认构建的<filename>pg_trgm</filename>中，相似度比较不区分大小写。
+   不支持不等操作符。
+   注意，对于等值操作符，这些索引的效率可能不如常规 B-树索引。
+  </para>
+
+  <para>
+   示例：
+
+<programlisting>
+CREATE TABLE test_trgm (t text);
+CREATE INDEX trgm_idx ON test_trgm USING GIST (t gist_trgm_ops);
+</programlisting>
+或者
+<programlisting>
+CREATE INDEX trgm_idx ON test_trgm USING GIN (t gin_trgm_ops);
+</programlisting>
+  </para>
+
+  <para>
+   <literal>gist_trgm_ops</literal> GiST 操作符类将一组三元组近似表示为位图签名。
+   其可选整数参数<literal>siglen</literal>以字节为单位指定签名长度。
+   默认长度为 12 字节。
+   签名长度的有效取值为 1 到 2024 字节。
+   更长的签名会带来更精确的搜索（扫描更小比例的索引以及更少的堆页），但代价是索引更大。
+  </para>
+
+  <para>
+   下面是创建签名长度为 32 字节的这类索引的示例：
+  </para>
+
+<programlisting>
+CREATE INDEX trgm_idx ON test_trgm USING GIST (t gist_trgm_ops(siglen=32));
+</programlisting>
+
+  <para>
+   此时，你已经在<structfield>t</structfield>列上建立了一个可用于相似度搜索的索引。
+   典型查询如下：
+<programlisting>
+SELECT t, similarity(t, '<replaceable>word</replaceable>') AS sml
+  FROM test_trgm
+  WHERE t % '<replaceable>word</replaceable>'
+  ORDER BY sml DESC, t;
+</programlisting>
+   这会返回文本列中所有与<replaceable>word</replaceable>足够相似的值，并按从最佳匹配到最差匹配的顺序排序。
+   即使在非常大的数据集上，索引也会让这一操作保持高效。
+  </para>
+
+  <para>
+   上述查询的一个变体是
+<programlisting>
+SELECT t, t &lt;-&gt; '<replaceable>word</replaceable>' AS dist
+  FROM test_trgm
+  ORDER BY dist LIMIT 10;
+</programlisting>
+   GiST 索引可以相当高效地实现这一点，但 GIN 索引不能。
+   当只需要少量最接近的匹配项时，它通常会优于第一种写法。
+  </para>
+
+  <para>
+   还可以把<structfield>t</structfield>列上的索引用于词相似度或严格词相似度搜索。
+   典型查询如下：
+<programlisting>
+SELECT t, word_similarity('<replaceable>word</replaceable>', t) AS sml
+  FROM test_trgm
+  WHERE '<replaceable>word</replaceable>' &lt;% t
+  ORDER BY sml DESC, t;
+</programlisting>
+   以及
+<programlisting>
+SELECT t, strict_word_similarity('<replaceable>word</replaceable>', t) AS sml
+  FROM test_trgm
+  WHERE '<replaceable>word</replaceable>' &lt;&lt;% t
+  ORDER BY sml DESC, t;
+</programlisting>
+   这会返回文本列中所有满足以下条件的值：在其对应的有序三元组集合中，存在一个连续区段与<replaceable>word</replaceable>的三元组集合足够相似。
+   结果按从最佳匹配到最差匹配的顺序排序。
+   即使在非常大的数据集上，索引也会让这一操作保持高效。
+  </para>
+
+  <para>
+   上述查询的可能变体还有：
+<programlisting>
+SELECT t, '<replaceable>word</replaceable>' &lt;&lt;-&gt; t AS dist
+  FROM test_trgm
+  ORDER BY dist LIMIT 10;
+</programlisting>
+   以及
+<programlisting>
+SELECT t, '<replaceable>word</replaceable>' &lt;&lt;&lt;-&gt; t AS dist
+  FROM test_trgm
+  ORDER BY dist LIMIT 10;
+</programlisting>
+   GiST 索引可以相当高效地实现这一点，但 GIN 索引不能。
+  </para>
+
+  <para>
+   从<productname>PostgreSQL</productname> 9.1 起，这些索引类型还支持<literal>LIKE</literal>和<literal>ILIKE</literal>的索引搜索，例如
+<programlisting>
+SELECT * FROM test_trgm WHERE t LIKE '%foo%bar';
+</programlisting>
+   索引搜索的工作方式是从搜索字符串中提取三元组，然后在索引中查找这些三元组。
+   搜索字符串中包含的三元组越多，索引搜索就越有效。
+   与基于 B-树的搜索不同，搜索字符串不需要在左端锚定。
+  </para>
+
+  <para>
+   从<productname>PostgreSQL</productname> 9.3 起，这些索引类型还支持正则表达式匹配
+   （<literal>~</literal>和<literal>~*</literal>操作符）的索引搜索，例如
+<programlisting>
+SELECT * FROM test_trgm WHERE t ~ '(foo|bar)';
+</programlisting>
+   索引搜索的工作方式是从正则表达式中提取三元组，然后在索引中查找这些三元组。
+   能从正则表达式中提取出的三元组越多，索引搜索就越有效。
+   与基于 B-树的搜索不同，搜索字符串不需要在左端锚定。
+  </para>
+
+  <para>
+   对于<literal>LIKE</literal>和正则表达式搜索，都要记住：无法提取出三元组的模式会退化为全索引扫描。
+  </para>
+
+  <para>
+   GiST 和 GIN 索引之间如何取舍，取决于二者各自的相对性能特征；相关讨论见其他章节。
+  </para>
+ </sect2>
+
+ <sect2 id="pgtrgm-text-search">
+
+  <title>文本搜索集成</title>
+
+  <para>
+   与全文索引结合使用时，三元组匹配是非常有用的工具。
+   尤其是，它有助于识别那些因拼写错误而无法被全文搜索机制直接匹配的输入词。
+  </para>
+
+  <para>
+   第一步是生成一个辅助表，其中包含文档中的全部唯一词：
+
+<programlisting>
+CREATE TABLE words AS SELECT word FROM
+        ts_stat('SELECT to_tsvector(''simple'', bodytext) FROM documents');
+</programlisting>
+
+   其中<structname>documents</structname>是一个表，包含我们希望搜索的文本字段<structfield>bodytext</structfield>。
+   之所以对<function>to_tsvector</function>函数使用<literal>simple</literal>配置，而不是使用特定语言的配置，
+   是因为我们需要原始的（未经词干提取的）词列表。
+  </para>
+
+  <para>
+   接下来，在词列上创建一个三元组索引：
+
+<programlisting>
+CREATE INDEX words_idx ON words USING GIN (word gin_trgm_ops);
+</programlisting>
+
+   现在，可以使用与前面示例类似的<command>SELECT</command>查询，为用户搜索词中拼错的单词提供拼写建议。
+   一个有用的附加测试是要求选出的词长度也与该拼错单词相近。
+  </para>
+
+  <note>
+
+   <para>
+    由于<structname>words</structname>表是作为一张独立的静态表生成的，因此需要定期重新生成，
+    以便与文档集合保持大致同步。
+    通常没有必要让它始终保持精确同步。
+   </para>
+  </note>
+ </sect2>
+
+ <sect2 id="pgtrgm-references">
+
+  <title>参考</title>
+
+  <para>
+   GiST 开发站点
+   <ulink url="http://www.sai.msu.su/~megera/postgres/gist/"></ulink>
+  </para>
+
+  <para>
+   Tsearch2 开发站点
+   <ulink url="http://www.sai.msu.su/~megera/postgres/gist/tsearch/V2/"></ulink>
+  </para>
+ </sect2>
+
+ <sect2 id="pgtrgm-authors">
+
+  <title>作者</title>
+
+  <para>
+   Oleg Bartunov <email>oleg@sai.msu.su</email>，俄罗斯莫斯科，莫斯科大学
+  </para>
+
+  <para>
+   Teodor Sigaev <email>teodor@sigaev.ru</email>，俄罗斯莫斯科，Delta-Soft Ltd.
+  </para>
+
+  <para>
+   Alexander Korotkov <email>a.korotkov@postgrespro.ru</email>，俄罗斯莫斯科，Postgres Professional
+  </para>
+
+  <para>
+   文档：Christopher Kings-Lynne
+  </para>
+
+  <para>
+   该模块由俄罗斯莫斯科的 Delta-Soft Ltd. 赞助。
+  </para>
+ </sect2>
+
+</sect1>

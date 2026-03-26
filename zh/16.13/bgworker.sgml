@@ -1,0 +1,145 @@
+<!-- doc/src/sgml/bgworker.sgml -->
+
+<chapter id="bgworker">
+ <title>后台工作进程</title>
+
+ <indexterm zone="bgworker">
+  <primary>后台工作进程</primary>
+ </indexterm>
+
+ <para>
+  <productname>PostgreSQL</productname>可以扩展为在独立进程中运行用户提供的代码。这类进程由<command>postgres</command>启动、停止并监控，因此它们的生命周期能够与服务器状态紧密关联。这些进程会附着到<productname>PostgreSQL</productname>的共享内存区域，并且可以选择在内部连接到数据库；它们还可以像普通的客户端连接服务器进程一样串行运行多个事务。此外，通过链接<application>libpq</application>，它们还可以连接到服务器，并表现得像普通客户端应用程序一样。
+ </para>
+
+ <warning>
+  <para>
+   使用后台工作进程存在相当大的健壮性和安全风险，因为它们是用<literal>C</literal>语言编写的，对数据具有不受限制的访问权限。希望启用包含后台工作进程的模块的管理员必须极其谨慎。只应允许经过仔细审计的模块运行后台工作进程。
+  </para>
+ </warning>
+
+ <para>
+  可以通过在<varname>shared_preload_libraries</varname>中包含模块名，在<productname>PostgreSQL</productname>启动时初始化后台工作进程。希望运行后台工作进程的模块可以在其<function>_PG_init()</function>函数中调用<function>RegisterBackgroundWorker(<type>BackgroundWorker</type> *<parameter>worker</parameter>)</function>来注册它。系统启动并运行后，也可以通过调用<function>RegisterDynamicBackgroundWorker(<type>BackgroundWorker</type> *<parameter>worker</parameter>, <type>BackgroundWorkerHandle</type> **<parameter>handle</parameter>)</function>来启动后台工作进程。与只能在 postmaster 进程内调用的<function>RegisterBackgroundWorker</function>不同，<function>RegisterDynamicBackgroundWorker</function>必须由普通后端或另一个后台工作进程调用。
+ </para>
+
+ <para>
+  <structname>BackgroundWorker</structname>结构定义如下：
+<programlisting>
+typedef void (*bgworker_main_type)(Datum main_arg);
+typedef struct BackgroundWorker
+{
+    char        bgw_name[BGW_MAXLEN];
+    char        bgw_type[BGW_MAXLEN];
+    int         bgw_flags;
+    BgWorkerStartTime bgw_start_time;
+    int         bgw_restart_time;       /* in seconds, or BGW_NEVER_RESTART */
+    char        bgw_library_name[MAXPGPATH];
+    char        bgw_function_name[BGW_MAXLEN];
+    Datum       bgw_main_arg;
+    char        bgw_extra[BGW_EXTRALEN];
+    pid_t       bgw_notify_pid;
+} BackgroundWorker;
+</programlisting>
+ </para>
+
+ <para>
+  <structfield>bgw_name</structfield>和<structfield>bgw_type</structfield>是用于日志消息、进程列表及类似场景的字符串。对于同一类型的所有后台工作进程，<structfield>bgw_type</structfield>都应相同，这样例如就可以在进程列表中将这类工作进程归为一组。另一方面，<structfield>bgw_name</structfield>可以包含该特定进程的额外信息。（通常，<structfield>bgw_name</structfield>中的字符串会以某种方式包含该类型，但这并非严格要求。）
+ </para>
+
+ <para>
+  <structfield>bgw_flags</structfield>是一个按位或组合的位掩码，用于指示模块所需的能力。可能的值有：
+  <variablelist>
+
+   <varlistentry id="zh18-auto-bgworker-varlistentry-1">
+    <term><literal>BGWORKER_SHMEM_ACCESS</literal></term>
+    <listitem>
+     <para>
+      <indexterm><primary>BGWORKER_SHMEM_ACCESS</primary></indexterm>
+      请求共享内存访问。此标志是必需的。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-bgworker-varlistentry-2">
+    <term><literal>BGWORKER_BACKEND_DATABASE_CONNECTION</literal></term>
+    <listitem>
+     <para>
+      <indexterm><primary>BGWORKER_BACKEND_&zwsp;DATABASE_CONNECTION</primary></indexterm>
+      请求建立数据库连接的能力，以便之后运行事务和查询。使用<literal>BGWORKER_BACKEND_DATABASE_CONNECTION</literal>连接数据库的后台工作进程，还必须使用<literal>BGWORKER_SHMEM_ACCESS</literal>附着到共享内存，否则工作进程启动将失败。
+     </para>
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+
+ </para>
+
+ <para>
+  <structfield>bgw_start_time</structfield>表示<command>postgres</command>应在服务器的哪个状态下启动该进程；它可以是<literal>BgWorkerStart_PostmasterStart</literal>（在<command>postgres</command>自身完成初始化后立即启动；请求此值的进程不能建立数据库连接）、<literal>BgWorkerStart_ConsistentState</literal>（在热备达到一致状态后立即启动，允许进程连接数据库并运行只读查询），或<literal>BgWorkerStart_RecoveryFinished</literal>（在系统进入正常读写状态后立即启动）。请注意，在非热备服务器中，后两个值是等价的。还要注意，此设置只表示何时启动进程；当到达其他状态时，这些进程不会停止。
+ </para>
+
+ <para>
+  <structfield>bgw_restart_time</structfield>是以秒计的时间间隔，表示在进程崩溃时，<command>postgres</command>在重新启动该进程之前应等待多久。它可以是任意正值，也可以是<literal>BGW_NEVER_RESTART</literal>，表示在进程崩溃时不重新启动该进程。
+ </para>
+
+ <para>
+  <structfield>bgw_library_name</structfield>是一个库的名称，后台工作进程的初始入口点将在该库中查找。该库会由工作进程动态加载，而<structfield>bgw_function_name</structfield>将用于标识要调用的函数。如果调用的是核心代码中的函数，此字段必须设置为<literal>"postgres"</literal>。
+ </para>
+
+ <para>
+  <structfield>bgw_function_name</structfield>是新后台工作进程初始入口函数的名称。如果该函数位于动态加载库中，则必须将其标记为<literal>PGDLLEXPORT</literal>（而不是<literal>static</literal>）。
+ </para>
+
+ <para>
+  <structfield>bgw_main_arg</structfield>是传给后台工作进程主函数的<type>Datum</type>参数。该主函数应接受一个<type>Datum</type>类型的参数，并返回<type>void</type>。<structfield>bgw_main_arg</structfield>会作为该参数传入。此外，全局变量<literal>MyBgworkerEntry</literal>指向注册时传入的<structname>BackgroundWorker</structname>结构的一份副本；检查该结构可能会对工作进程有所帮助。
+ </para>
+
+ <para>
+  在 Windows（以及任何定义了<literal>EXEC_BACKEND</literal>的地方）上，或者在动态后台工作进程中，以引用方式传递<type>Datum</type>并不安全，只能按值传递。如果需要传递参数，最安全的方式是传递一个 int32 或其他较小的值，并将其用作共享内存中分配的数组的索引。如果传递的是<type>cstring</type>或<type>text</type>这样的值，那么该指针在新的后台工作进程中将无效。
+ </para>
+
+ <para>
+  <structfield>bgw_extra</structfield>可以包含要传递给后台工作进程的额外数据。与<structfield>bgw_main_arg</structfield>不同，这些数据不会作为参数传递给工作进程的主函数，但可以如上所述通过<literal>MyBgworkerEntry</literal>访问。
+ </para>
+
+ <para>
+  <structfield>bgw_notify_pid</structfield>是一个 PostgreSQL 后端进程的 PID，当后台工作进程启动或退出时，postmaster 应向该后端进程发送<literal>SIGUSR1</literal>。对于在 postmaster 启动时注册的工作进程，或者注册该工作进程的后端不希望等待其启动时，它应为 0。否则，它应初始化为<literal>MyProcPid</literal>。
+ </para>
+
+ <para>进程一旦开始运行，就可以通过调用
+  <function>BackgroundWorkerInitializeConnection(<parameter>char *dbname</parameter>, <parameter>char *username</parameter>, <parameter>uint32 flags</parameter>)</function>或
+  <function>BackgroundWorkerInitializeConnectionByOid(<parameter>Oid dboid</parameter>, <parameter>Oid useroid</parameter>, <parameter>uint32 flags</parameter>)</function>连接到数据库。这使得该进程能够通过<literal>SPI</literal>接口运行事务和查询。如果<varname>dbname</varname>为 NULL，或<varname>dboid</varname>为<literal>InvalidOid</literal>，则该会话不会连接到任何特定数据库，但仍可访问共享系统目录。如果<varname>username</varname>为 NULL，或<varname>useroid</varname>为<literal>InvalidOid</literal>，则该进程将以<command>initdb</command>期间创建的超级用户身份运行。如果将<literal>BGWORKER_BYPASS_ALLOWCONN</literal>指定为<varname>flags</varname>，则可以绕过对不允许用户连接的数据库的连接限制。如果将<literal>BGWORKER_BYPASS_ROLELOGINCHECK</literal>指定为<varname>flags</varname>，则可以绕过用于连接数据库的角色登录检查。后台工作进程只能调用这两个函数中的一个，而且只能调用一次。不能切换数据库。
+ </para>
+
+ <para>
+  当控制流到达后台工作进程的主函数时，信号起初处于阻塞状态，必须由它解除阻塞；这样做是为了在必要时允许该进程自定义其信号处理器。在新进程中，可以调用<function>BackgroundWorkerUnblockSignals</function>解除信号阻塞，并调用<function>BackgroundWorkerBlockSignals</function>重新阻塞信号。
+ </para>
+
+ <para>
+  如果后台工作进程的<structfield>bgw_restart_time</structfield>配置为<literal>BGW_NEVER_RESTART</literal>，或者它以退出码 0 退出，或者被<function>TerminateBackgroundWorker</function>终止，则 postmaster 会在其退出时自动注销它。否则，它会在<structfield>bgw_restart_time</structfield>配置的时间段之后重新启动；如果 postmaster 因某个后端失败而重新初始化集簇，则会立即重新启动它。只需暂时挂起执行的后端应使用可中断的睡眠而不是退出；这可以通过调用<function>WaitLatch()</function>来实现。调用该函数时，要确保设置了<literal>WL_POSTMASTER_DEATH</literal>标志，并检查返回码，以便在<command>postgres</command>自身终止的紧急情况下及时退出。
+ </para>
+
+ <para>
+  当使用<function>RegisterDynamicBackgroundWorker</function>函数注册后台工作进程时，执行注册的后端可以获取有关该工作进程状态的信息。希望这样做的后端应将<type>BackgroundWorkerHandle *</type>的地址作为第二个参数传递给<function>RegisterDynamicBackgroundWorker</function>。如果工作进程成功注册，该指针将初始化为一个不透明句柄，随后可以将其传递给<function>GetBackgroundWorkerPid(<parameter>BackgroundWorkerHandle *</parameter>, <parameter>pid_t *</parameter>)</function>或<function>TerminateBackgroundWorker(<parameter>BackgroundWorkerHandle *</parameter>)</function>。<function>GetBackgroundWorkerPid</function>可用于轮询工作进程的状态：返回值为<literal>BGWH_NOT_YET_STARTED</literal>表示该工作进程尚未由 postmaster 启动；<literal>BGWH_STOPPED</literal>表示它已经启动但不再运行；<literal>BGWH_STARTED</literal>表示它当前正在运行。在最后一种情况下，PID 也会通过第二个参数返回。<function>TerminateBackgroundWorker</function>会使 postmaster 在该工作进程运行时向其发送<literal>SIGTERM</literal>，并在其不再运行后尽快将其注销。
+ </para>
+
+ <para>
+  在某些情况下，注册后台工作进程的进程可能希望等待该工作进程启动。这可以通过将<structfield>bgw_notify_pid</structfield>初始化为<literal>MyProcPid</literal>，然后把注册时获得的<type>BackgroundWorkerHandle *</type>传递给<function>WaitForBackgroundWorkerStartup(<parameter>BackgroundWorkerHandle
+  *handle</parameter>, <parameter>pid_t *</parameter>)</function>函数来实现。该函数会阻塞，直到 postmaster 已尝试启动该后台工作进程，或者直到 postmaster 死亡。如果后台工作进程正在运行，返回值将是<literal>BGWH_STARTED</literal>，其 PID 会被写入所提供的地址。否则，返回值将是<literal>BGWH_STOPPED</literal>或<literal>BGWH_POSTMASTER_DIED</literal>。
+ </para>
+
+ <para>
+  进程也可以通过使用<function>WaitForBackgroundWorkerShutdown(<parameter>BackgroundWorkerHandle *handle</parameter>)</function>函数，并传入注册时获得的<type>BackgroundWorkerHandle *</type>，来等待后台工作进程关闭。该函数会阻塞，直到后台工作进程退出，或者 postmaster 死亡。当后台工作进程退出时，返回值为<literal>BGWH_STOPPED</literal>；如果 postmaster 死亡，则返回<literal>BGWH_POSTMASTER_DIED</literal>。
+ </para>
+
+ <para>
+  后台工作进程可以发送异步通知消息，既可以通过<acronym>SPI</acronym>使用<command>NOTIFY</command>命令，也可以直接调用<function>Async_Notify()</function>。这类通知会在事务提交时发送。后台工作进程不应使用<command>LISTEN</command>命令注册接收异步通知，因为没有供工作进程消费此类通知的基础设施。
+ </para>
+
+ <para>
+  <filename>src/test/modules/worker_spi</filename>模块包含一个可工作的示例，展示了一些有用的技巧。
+ </para>
+
+ <para>
+  已注册后台工作进程的最大数量受<xref linkend="guc-max-worker-processes"/>限制。
+ </para>
+</chapter>

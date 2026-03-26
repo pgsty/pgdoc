@@ -1,0 +1,683 @@
+<!--
+doc/src/sgml/ref/merge.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-merge">
+ <indexterm zone="sql-merge">
+  <primary>MERGE</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>MERGE</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>MERGE</refname>
+  <refpurpose>有条件地插入、更新或删除表中的行</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+<synopsis>
+[ WITH <replaceable class="parameter">with_query</replaceable> [, ...] ]
+MERGE INTO [ ONLY ] <replaceable class="parameter">target_table_name</replaceable> [ * ] [ [ AS ] <replaceable class="parameter">target_alias</replaceable> ]
+    USING <replaceable class="parameter">data_source</replaceable> ON <replaceable class="parameter">join_condition</replaceable>
+    <replaceable class="parameter">when_clause</replaceable> [...]
+    [ RETURNING [ WITH ( { OLD | NEW } AS <replaceable class="parameter">output_alias</replaceable> [, ...] ) ]
+                { * | <replaceable class="parameter">output_expression</replaceable> [ [ AS ] <replaceable class="parameter">output_name</replaceable> ] } [, ...] ]
+
+<phrase>where <replaceable class="parameter">data_source</replaceable> is:</phrase>
+
+    { [ ONLY ] <replaceable class="parameter">source_table_name</replaceable> [ * ] | ( <replaceable class="parameter">source_query</replaceable> ) } [ [ AS ] <replaceable class="parameter">source_alias</replaceable> ]
+
+<phrase>and <replaceable class="parameter">when_clause</replaceable> is:</phrase>
+
+    { WHEN MATCHED [ AND <replaceable class="parameter">condition</replaceable> ] THEN { <replaceable class="parameter">merge_update</replaceable> | <replaceable class="parameter">merge_delete</replaceable> | DO NOTHING } |
+      WHEN NOT MATCHED BY SOURCE [ AND <replaceable class="parameter">condition</replaceable> ] THEN { <replaceable class="parameter">merge_update</replaceable> | <replaceable class="parameter">merge_delete</replaceable> | DO NOTHING } |
+      WHEN NOT MATCHED [ BY TARGET ] [ AND <replaceable class="parameter">condition</replaceable> ] THEN { <replaceable class="parameter">merge_insert</replaceable> | DO NOTHING } }
+
+<phrase>and <replaceable class="parameter">merge_insert</replaceable> is:</phrase>
+
+    INSERT [( <replaceable class="parameter">column_name</replaceable> [, ...] )]
+        [ OVERRIDING { SYSTEM | USER } VALUE ]
+        { VALUES ( { <replaceable class="parameter">expression</replaceable> | DEFAULT } [, ...] ) | DEFAULT VALUES }
+
+<phrase>and <replaceable class="parameter">merge_update</replaceable> is:</phrase>
+
+    UPDATE SET { <replaceable class="parameter">column_name</replaceable> = { <replaceable class="parameter">expression</replaceable> | DEFAULT } |
+                 ( <replaceable class="parameter">column_name</replaceable> [, ...] ) = [ ROW ] ( { <replaceable class="parameter">expression</replaceable> | DEFAULT } [, ...] ) |
+                 ( <replaceable class="parameter">column_name</replaceable> [, ...] ) = ( <replaceable class="parameter">sub-SELECT</replaceable> )
+               } [, ...]
+
+<phrase>and <replaceable class="parameter">merge_delete</replaceable> is:</phrase>
+
+    DELETE
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>描述</title>
+
+  <para>
+   <command>MERGE</command>使用<replaceable class="parameter">data_source</replaceable>
+   对由<replaceable class="parameter">target_table_name</replaceable>标识的目标表中的行执行修改动作。
+   <command>MERGE</command>提供了一条单独的<acronym>SQL</acronym>语句，
+   可按条件对行执行<command>INSERT</command>、<command>UPDATE</command>或<command>DELETE</command>；
+   否则，这项工作通常需要多条过程语言语句。
+  </para>
+
+  <para>
+   首先，<command>MERGE</command>命令会将<replaceable class="parameter">data_source</replaceable>
+   与目标表执行连接，生成零个或多个候选变更行。对于每个候选变更行，
+   系统只会确定一次其状态是<literal>MATCHED</literal>、
+   <literal>NOT MATCHED BY SOURCE</literal>还是
+   <literal>NOT MATCHED [BY TARGET]</literal>，然后按指定顺序对
+   <literal>WHEN</literal>子句求值。对于每个候选变更行，
+   只执行第一个求值为真的子句。任何候选变更行都不会执行多个
+   <literal>WHEN</literal>子句。
+  </para>
+
+  <para>
+   <command>MERGE</command>中的各个动作，与常规的
+   <command>UPDATE</command>、<command>INSERT</command>或
+   <command>DELETE</command>同名命令具有相同效果。不过这些动作的语法有所不同，
+   尤其是没有<literal>WHERE</literal>子句，也不指定表名。
+   所有动作都针对目标表，不过也可以借助触发器修改其他表。
+  </para>
+
+  <para>
+   当指定<literal>DO NOTHING</literal>时，源行会被跳过。由于动作会按其指定顺序求值，
+   <literal>DO NOTHING</literal>有助于在进行更细粒度处理之前跳过不需要关注的源行。
+  </para>
+
+  <para>
+   可选的<literal>RETURNING</literal>子句会让<command>MERGE</command>
+   针对每个被插入、更新或删除的行计算并返回值。可以计算任何使用源表或目标表列的表达式，
+   也可以调用<link linkend="merge-action"><function>merge_action()</function></link>函数。
+   默认情况下，执行<command>INSERT</command>或<command>UPDATE</command>动作时，
+   使用目标表各列的新值；执行<command>DELETE</command>动作时，使用目标表各列的旧值，
+   但也可以显式请求旧值和新值。<literal>RETURNING</literal>列表的语法与
+   <command>SELECT</command>的输出列表完全相同。
+  </para>
+
+  <para>
+   没有单独的<literal>MERGE</literal>权限。
+   如果指定更新动作，则必须对目标表中<literal>SET</literal>子句所引用的列具有<literal>UPDATE</literal>权限。
+   如果指定插入动作，则必须对目标表具有<literal>INSERT</literal>权限。
+   如果指定删除动作，则必须对目标表具有<literal>DELETE</literal>权限。
+   如果指定<literal>DO NOTHING</literal>动作，则必须对目标表中至少一列具有<literal>SELECT</literal>权限。
+   对于<replaceable class="parameter">data_source</replaceable>以及目标表中在任何
+   <literal>condition</literal>（包括<literal>join_condition</literal>）或
+   <literal>expression</literal>中引用的列，你还必须具有<literal>SELECT</literal>权限。
+   权限只会在语句开始时测试一次，而且无论特定的<literal>WHEN</literal>子句是否执行，都会进行检查。
+  </para>
+
+  <para>
+   如果目标表是物化视图、外部表，或者其上定义了任何规则，则不支持<command>MERGE</command>。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>参数</title>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-merge-varlistentry-1">
+    <term><replaceable class="parameter">with_query</replaceable></term>
+    <listitem>
+     <para>
+      <literal>WITH</literal>子句允许你指定一个或多个子查询，
+      以便在<command>MERGE</command>查询中按名称引用它们。
+      有关细节请参见<xref linkend="queries-with"/>和<xref linkend="sql-select"/>。
+      请注意，<command>MERGE</command>不支持<literal>WITH RECURSIVE</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-2">
+    <term><replaceable class="parameter">target_table_name</replaceable></term>
+    <listitem>
+     <para>
+      要合并到其中的目标表或视图名称（可选模式限定）。
+      如果在表名前指定<literal>ONLY</literal>，则匹配行只会在该命名表中被更新或删除。
+      如果未指定<literal>ONLY</literal>，则匹配行还会在继承自该命名表的任何表中被更新或删除。
+      也可以在表名后指定<literal>*</literal>，以显式表明包含后代表。
+      <literal>ONLY</literal>关键字和<literal>*</literal>选项不会影响插入动作，
+      因为插入动作始终只会插入到该命名表中。
+     </para>
+
+     <para>
+      如果<replaceable class="parameter">target_table_name</replaceable>是一个视图，
+      它必须要么是没有<literal>INSTEAD OF</literal>触发器的自动可更新视图，
+      要么为<literal>WHEN</literal>子句中指定的每一种动作类型
+      （<literal>INSERT</literal>、<literal>UPDATE</literal>和<literal>DELETE</literal>）
+      都定义了<literal>INSTEAD OF</literal>触发器。
+      不支持带有规则的视图。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-3">
+    <term><replaceable class="parameter">target_alias</replaceable></term>
+    <listitem>
+     <para>
+      目标表的替代名称。提供别名后，它会完全隐藏表的实际名称。
+      例如，给定<literal>MERGE INTO foo AS f</literal>，
+      则<command>MERGE</command>语句的其余部分必须将该表称为<literal>f</literal>，
+      而不是<literal>foo</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-4">
+    <term><replaceable class="parameter">source_table_name</replaceable></term>
+    <listitem>
+     <para>
+      源表、视图或过渡表的名称（可选模式限定）。
+      如果在表名前指定<literal>ONLY</literal>，则只包含来自该命名表的匹配行。
+      如果未指定<literal>ONLY</literal>，则还会包含来自继承自该命名表的任何表的匹配行。
+      也可以在表名后指定<literal>*</literal>，以显式表明包含后代表。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-5">
+    <term><replaceable class="parameter">source_query</replaceable></term>
+    <listitem>
+     <para>
+      一个查询（<command>SELECT</command>语句或<command>VALUES</command>语句），
+      用于提供要合并到目标表中的行。其语法说明请参见
+      <xref linkend="sql-select"/>语句或<xref linkend="sql-values"/>语句。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-6">
+    <term><replaceable class="parameter">source_alias</replaceable></term>
+    <listitem>
+     <para>
+      数据源的替代名称。提供别名后，它会完全隐藏表的实际名称，
+      或者隐藏此处实际使用的是一个查询这一事实。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-7">
+    <term><replaceable class="parameter">join_condition</replaceable></term>
+    <listitem>
+     <para>
+      <replaceable class="parameter">join_condition</replaceable>是一个返回
+      <type>boolean</type>类型值的表达式（类似于<literal>WHERE</literal>子句），
+      用于指定<replaceable class="parameter">data_source</replaceable>中的哪些行
+      与目标表中的行匹配。
+     </para>
+     <warning>
+      <para>
+       只有那些用于尝试将<replaceable class="parameter">data_source</replaceable>行
+       与目标表行匹配的目标表列，才应出现在<replaceable class="parameter">join_condition</replaceable>中。
+       只引用目标表列的<replaceable class="parameter">join_condition</replaceable>子表达式
+       可能影响所采取的动作，而且常常会令人意外。
+      </para>
+      <para>
+       如果同时指定了<literal>WHEN NOT MATCHED BY SOURCE</literal>和
+       <literal>WHEN NOT MATCHED [BY TARGET]</literal>子句，
+       <command>MERGE</command>命令将对<replaceable class="parameter">data_source</replaceable>
+       与目标表执行<literal>FULL</literal>连接。要做到这一点，
+       至少有一个<replaceable class="parameter">join_condition</replaceable>子表达式
+       必须使用可支持哈希连接的操作符，或者所有子表达式都必须使用可支持归并连接的操作符。
+      </para>
+     </warning>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-8">
+    <term><replaceable class="parameter">when_clause</replaceable></term>
+    <listitem>
+     <para>
+      至少需要一个<literal>WHEN</literal>子句。
+     </para>
+     <para>
+      <literal>WHEN</literal>子句可以指定<literal>WHEN MATCHED</literal>、
+      <literal>WHEN NOT MATCHED BY SOURCE</literal>或
+      <literal>WHEN NOT MATCHED [BY TARGET]</literal>。
+      请注意，<acronym>SQL</acronym>标准只定义了<literal>WHEN MATCHED</literal>和
+      <literal>WHEN NOT MATCHED</literal>（后者定义为没有匹配的目标行）。
+      <literal>WHEN NOT MATCHED BY SOURCE</literal>是对<acronym>SQL</acronym>标准的扩展，
+      而给<literal>WHEN NOT MATCHED</literal>追加<literal>BY TARGET</literal>选项
+      也是扩展，用以使其含义更加明确。
+     </para>
+     <para>
+      如果<literal>WHEN</literal>子句指定了<literal>WHEN MATCHED</literal>，
+      并且候选变更行表示<replaceable class="parameter">data_source</replaceable>中的一行
+      与目标表中的一行相匹配，那么如果
+      <replaceable class="parameter">condition</replaceable>未指定，
+      或其求值结果为<literal>true</literal>，就会执行该<literal>WHEN</literal>子句。
+     </para>
+     <para>
+      如果<literal>WHEN</literal>子句指定了<literal>WHEN NOT MATCHED BY SOURCE</literal>，
+      并且候选变更行表示目标表中的某一行与
+      <replaceable class="parameter">data_source</replaceable>中的任何行都不匹配，
+      那么如果<replaceable class="parameter">condition</replaceable>未指定，
+      或其求值结果为<literal>true</literal>，就会执行该<literal>WHEN</literal>子句。
+     </para>
+     <para>
+      如果<literal>WHEN</literal>子句指定了<literal>WHEN NOT MATCHED [BY TARGET]</literal>，
+      并且候选变更行表示<replaceable class="parameter">data_source</replaceable>中的某一行
+      与目标表中的任何行都不匹配，那么如果
+      <replaceable class="parameter">condition</replaceable>未指定，
+      或其求值结果为<literal>true</literal>，就会执行该<literal>WHEN</literal>子句。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-9">
+    <term><replaceable class="parameter">condition</replaceable></term>
+    <listitem>
+     <para>
+      一个返回<type>boolean</type>类型值的表达式。
+      如果某个<literal>WHEN</literal>子句中的这个表达式返回<literal>true</literal>，
+      则会对该行执行该子句对应的动作。
+     </para>
+     <para>
+      <literal>WHEN MATCHED</literal>子句上的条件可以引用源关系和目标关系中的列。
+      <literal>WHEN NOT MATCHED BY SOURCE</literal>子句上的条件只能引用目标关系中的列，
+      因为按定义不存在匹配的源行。
+      <literal>WHEN NOT MATCHED [BY TARGET]</literal>子句上的条件只能引用源关系中的列，
+      因为按定义不存在匹配的目标行。
+      只能访问目标表的系统属性。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-10">
+    <term><replaceable class="parameter">merge_insert</replaceable></term>
+    <listitem>
+     <para>
+      用于向目标表插入一行的<literal>INSERT</literal>动作规范。
+      目标列名可以按任意顺序列出。如果根本没有给出列名列表，
+      则默认为按声明顺序使用该表的所有列。
+     </para>
+     <para>
+      每个未出现在显式或隐式列列表中的列都将填充为默认值，
+      即其声明的默认值；如果没有默认值，则为<literal>NULL</literal>。
+     </para>
+     <para>
+      如果目标表是分区表，则每一行都会被路由到适当的分区并插入其中。
+      如果目标表本身是一个分区，而任何输入行违反了分区约束，就会报错。
+     </para>
+     <para>
+      列名不得指定多次。<command>INSERT</command>动作不能包含子查询。
+     </para>
+     <para>
+      只能指定一个<literal>VALUES</literal>子句。
+      <literal>VALUES</literal>子句只能引用源关系中的列，
+      因为按定义不存在匹配的目标行。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-11">
+    <term><replaceable class="parameter">merge_update</replaceable></term>
+    <listitem>
+     <para>
+      用于更新目标表当前行的<literal>UPDATE</literal>动作规范。
+      列名不得指定多次。
+     </para>
+     <para>
+      既不允许表名，也不允许<literal>WHERE</literal>子句。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-12">
+    <term><replaceable class="parameter">merge_delete</replaceable></term>
+    <listitem>
+     <para>
+      指定一个<literal>DELETE</literal>动作，用于删除目标表的当前行。
+      不要像通常编写<xref linkend="sql-delete"/>命令那样包含表名或其他子句。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-13">
+    <term><replaceable class="parameter">column_name</replaceable></term>
+    <listitem>
+     <para>
+      目标表中某一列的名称。如有需要，列名可以使用子字段名或数组下标进行限定。
+      （只向组合列的部分字段插入值会使其余字段为<literal>NULL</literal>。）
+      在指定目标列时不要包含表名。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-14">
+    <term><literal>OVERRIDING SYSTEM VALUE</literal></term>
+    <listitem>
+     <para>
+      如果没有这个子句，那么为定义为<literal>GENERATED ALWAYS</literal>的标识列
+      指定显式值（除<literal>DEFAULT</literal>外）会报错。
+      这个子句会覆盖该限制。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-15">
+    <term><literal>OVERRIDING USER VALUE</literal></term>
+    <listitem>
+     <para>
+      如果指定了这个子句，那么为定义为<literal>GENERATED BY DEFAULT</literal>的标识列
+      提供的任何值都会被忽略，并应用默认的序列生成值。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-16">
+    <term><literal>DEFAULT VALUES</literal></term>
+    <listitem>
+     <para>
+      所有列都将填充其默认值。
+      （这种形式不允许使用<literal>OVERRIDING</literal>子句。）
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-17">
+    <term><replaceable class="parameter">expression</replaceable></term>
+    <listitem>
+     <para>
+      赋给该列的表达式。如果用于<literal>WHEN MATCHED</literal>子句，
+      该表达式可以使用目标表中原始行的值以及
+      <replaceable class="parameter">data_source</replaceable>行的值。
+      如果用于<literal>WHEN NOT MATCHED BY SOURCE</literal>子句，
+      该表达式只能使用目标表中原始行的值。
+      如果用于<literal>WHEN NOT MATCHED [BY TARGET]</literal>子句，
+      该表达式只能使用<replaceable class="parameter">data_source</replaceable>行的值。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-18">
+    <term><literal>DEFAULT</literal></term>
+    <listitem>
+     <para>
+      将该列设为其默认值（如果没有为其指定特定的默认表达式，则为<literal>NULL</literal>）。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-19">
+    <term><replaceable class="parameter">sub-SELECT</replaceable></term>
+    <listitem>
+     <para>
+      一个<literal>SELECT</literal>子查询，其输出列数必须与它前面的括号列列表中列出的数量相同。
+      执行时，该子查询最多只能产生一行。如果产生一行，其列值会赋给目标列；
+      如果不产生任何行，则向目标列赋<literal>NULL</literal>值。
+      如果用于<literal>WHEN MATCHED</literal>子句，子查询可以引用目标表中原始行的值，
+      以及<replaceable class="parameter">data_source</replaceable>行的值。
+      如果用于<literal>WHEN NOT MATCHED BY SOURCE</literal>子句，
+      子查询只能引用目标表中原始行的值。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-20">
+    <term><replaceable class="parameter">output_alias</replaceable></term>
+    <listitem>
+     <para>
+      <literal>RETURNING</literal>列表中<literal>OLD</literal>或<literal>NEW</literal>行的可选替代名称。
+     </para>
+     <para>
+      默认情况下，可以通过写
+      <literal>OLD.<replaceable class="parameter">column_name</replaceable></literal>
+      或<literal>OLD.*</literal>返回目标表中的旧值，也可以通过写
+      <literal>NEW.<replaceable class="parameter">column_name</replaceable></literal>
+      或<literal>NEW.*</literal>返回新值。提供别名后，这些名称会被隐藏，
+      此时必须使用该别名来引用旧行或新行。例如
+      <literal>RETURNING WITH (OLD AS o, NEW AS n) o.*, n.*</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-21">
+    <term><replaceable class="parameter">output_expression</replaceable></term>
+    <listitem>
+     <para>
+      由<command>MERGE</command>命令在每一行发生变化后
+      （无论是插入、更新还是删除）计算并返回的表达式。
+      该表达式可以使用源表或目标表的任意列，也可以使用
+      <link linkend="merge-action"><function>merge_action()</function></link>函数
+      返回关于已执行动作的附加信息。
+     </para>
+     <para>
+      写成<literal>*</literal>将返回源表的全部列，然后返回目标表的全部列。
+      这往往会导致大量重复，因为源表和目标表通常有很多相同的列。
+      可以通过使用源表或目标表的名称或别名限定<literal>*</literal>来避免这一点。
+     </para>
+     <para>
+      列名或<literal>*</literal>也可以用<literal>OLD</literal>或<literal>NEW</literal>，
+      或者用它们对应的<replaceable class="parameter">output_alias</replaceable>来限定，
+      以返回目标表中的旧值或新值。来自目标表的未限定列名，
+      或者使用目标表名或别名限定的列名或
+      <literal>*</literal>，会在<literal>INSERT</literal>和<literal>UPDATE</literal>动作中返回新值，
+      在<literal>DELETE</literal>动作中返回旧值。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-merge-varlistentry-22">
+    <term><replaceable class="parameter">output_name</replaceable></term>
+    <listitem>
+     <para>
+      返回列所使用的名称。
+     </para>
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>输出</title>
+
+  <para>
+   成功完成时，<command>MERGE</command>命令返回如下形式的命令标签：
+<screen>
+MERGE <replaceable class="parameter">total_count</replaceable>
+</screen>
+   <replaceable class="parameter">total_count</replaceable>是发生变化的总行数
+   （无论是插入、更新还是删除）。
+   如果<replaceable class="parameter">total_count</replaceable>为 0，
+   则没有任何行以任何方式发生变化。
+  </para>
+
+  <para>
+   如果<command>MERGE</command>命令包含<literal>RETURNING</literal>子句，
+   则其结果将类似于一条<command>SELECT</command>语句，
+   包含<literal>RETURNING</literal>列表中定义的列和值，
+   这些值是针对该命令插入、更新或删除的行计算得到的。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>注解</title>
+
+  <para>
+   在执行<command>MERGE</command>期间会发生以下步骤：
+    <orderedlist>
+     <listitem>
+      <para>
+       对所有已指定的动作执行任何<literal>BEFORE STATEMENT</literal>触发器，
+       无论其<literal>WHEN</literal>子句是否匹配。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       执行从源到目标表的连接。生成的查询会按常规方式优化，并产生一组候选变更行。
+       对于每个候选变更行，
+       <orderedlist>
+        <listitem>
+         <para>
+          判定该行是<literal>MATCHED</literal>、
+          <literal>NOT MATCHED BY SOURCE</literal>还是
+          <literal>NOT MATCHED [BY TARGET]</literal>。
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          按指定顺序测试每个<literal>WHEN</literal>条件，直到有一个返回<literal>true</literal>。
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          当某个条件返回<literal>true</literal>时，执行以下动作：
+          <orderedlist>
+           <listitem>
+            <para>
+             执行为该动作事件类型触发的任何<literal>BEFORE ROW</literal>触发器。
+            </para>
+           </listitem>
+           <listitem>
+            <para>
+             执行指定的动作，并对目标表应用任何检查约束。
+            </para>
+           </listitem>
+           <listitem>
+            <para>
+             执行为该动作事件类型触发的任何<literal>AFTER ROW</literal>触发器。
+            </para>
+           </listitem>
+          </orderedlist>
+          如果目标关系是一个视图，并且为该动作的事件类型定义了
+          <literal>INSTEAD OF ROW</literal>触发器，则改由这些触发器执行该动作。
+         </para>
+        </listitem>
+       </orderedlist></para>
+     </listitem>
+     <listitem>
+      <para>
+       对已指定的动作执行任何<literal>AFTER STATEMENT</literal>触发器，
+       无论这些动作是否实际发生。这类似于一条未修改任何行的
+       <command>UPDATE</command>语句的行为。
+      </para>
+     </listitem>
+    </orderedlist>
+   总之，只要我们<emphasis>指定</emphasis>了某种动作，
+   对应事件类型（例如<command>INSERT</command>）的语句级触发器就会被触发。
+   相反，行级触发器只会针对实际被<emphasis>执行</emphasis>的特定事件类型触发。
+   因此，一条<command>MERGE</command>命令可能同时触发
+   <command>UPDATE</command>和<command>INSERT</command>的语句级触发器，
+   即使实际上只触发了<command>UPDATE</command>的行级触发器。
+  </para>
+
+  <para>
+   你应确保该连接对每个目标行最多只生成一个候选变更行。
+   换句话说，一个目标行不应连接到多于一个数据源行。
+   如果发生这种情况，则只会使用其中一个候选变更行来修改目标行；
+   随后再次尝试修改该行会导致错误。
+   如果行级触发器对目标表进行了修改，而随后这些已被修改的行又被
+   <command>MERGE</command>再次修改，也可能发生这种情况。
+   如果重复的动作是<command>INSERT</command>，则会导致唯一性违例错误；
+   而重复的<command>UPDATE</command>或<command>DELETE</command>则会导致基数违规；
+   后者是<acronym>SQL</acronym>标准要求的行为。
+   这不同于<productname>PostgreSQL</productname>历史上在
+   <command>UPDATE</command>和<command>DELETE</command>语句中处理连接的行为：
+   对同一行的第二次及后续修改尝试会被直接忽略。
+  </para>
+
+  <para>
+   如果某个<literal>WHEN</literal>子句省略了<literal>AND</literal>子句，
+   它就会成为该类型（<literal>MATCHED</literal>、
+   <literal>NOT MATCHED BY SOURCE</literal>或
+   <literal>NOT MATCHED [BY TARGET]</literal>）最后一个可达的子句。
+   如果之后又指定了同一类型的<literal>WHEN</literal>子句，
+   则可证明它不可达，并会引发错误。
+   如果这三类中都没有指定最后一个可达子句，则候选变更行可能不会执行任何动作。
+  </para>
+
+  <para>
+   默认情况下，从数据源生成行的顺序是不确定的。
+   如果需要，可以使用<replaceable class="parameter">source_query</replaceable>指定一致的排序，
+   这可能有助于避免并发事务之间的死锁。
+  </para>
+
+  <para>
+   当<command>MERGE</command>与其他修改目标表的命令并发运行时，
+   适用通常的事务隔离规则；请参见<xref linkend="transaction-iso"/>，
+   了解各个隔离级别下的行为说明。
+   你也可以考虑使用<command>INSERT ... ON CONFLICT</command>作为替代语句，
+   它提供了在发生并发<command>INSERT</command>时执行<command>UPDATE</command>的能力。
+   这两种语句类型之间存在各种差异和限制，因此不能互换。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>示例</title>
+
+  <para>
+   根据新的<literal>recent_transactions</literal>对
+   <literal>customer_accounts</literal>执行维护。
+
+<programlisting>
+MERGE INTO customer_account ca
+USING recent_transactions t
+ON t.customer_id = ca.customer_id
+WHEN MATCHED THEN
+  UPDATE SET balance = balance + transaction_value
+WHEN NOT MATCHED THEN
+  INSERT (customer_id, balance)
+  VALUES (t.customer_id, t.transaction_value);
+</programlisting>
+  </para>
+
+  <para>
+   尝试插入一个新的库存项及其库存数量。如果该项已存在，
+   则改为更新现有项的库存数量。不允许库存为零的条目。
+   返回所有已发生更改的详细信息。
+<programlisting>
+MERGE INTO wines w
+USING wine_stock_changes s
+ON s.winename = w.winename
+WHEN NOT MATCHED AND s.stock_delta > 0 THEN
+  INSERT VALUES(s.winename, s.stock_delta)
+WHEN MATCHED AND w.stock + s.stock_delta > 0 THEN
+  UPDATE SET stock = w.stock + s.stock_delta
+WHEN MATCHED THEN
+  DELETE
+RETURNING merge_action(), w.winename, old.stock AS old_stock, new.stock AS new_stock;
+</programlisting>
+
+   例如，<literal>wine_stock_changes</literal>表可能是一个刚装载到数据库中的临时表。
+  </para>
+
+  <para>
+   根据替换后的酒单更新<literal>wines</literal>：为任何新库存插入行，
+   更新已修改的库存条目，并删除新列表中不存在的任何葡萄酒。
+<programlisting>
+MERGE INTO wines w
+USING new_wine_list s
+ON s.winename = w.winename
+WHEN NOT MATCHED BY TARGET THEN
+  INSERT VALUES(s.winename, s.stock)
+WHEN MATCHED AND w.stock != s.stock THEN
+  UPDATE SET stock = s.stock
+WHEN NOT MATCHED BY SOURCE THEN
+  DELETE;
+</programlisting>
+  </para>
+
+ </refsect1>
+
+ <refsect1>
+  <title>兼容性</title>
+   <para>
+    这个命令符合<acronym>SQL</acronym>标准。
+  </para>
+   <para>
+    <literal>WITH</literal>子句、<literal>WHEN NOT MATCHED</literal>上的
+    <literal>BY SOURCE</literal>和<literal>BY TARGET</literal>限定词、
+    <literal>DO NOTHING</literal>动作以及<literal>RETURNING</literal>子句，
+    都是对<acronym>SQL</acronym>标准的扩展。
+  </para>
+ </refsect1>
+</refentry>

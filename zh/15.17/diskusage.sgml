@@ -1,0 +1,111 @@
+<!-- doc/src/sgml/diskusage.sgml -->
+
+<chapter id="diskusage">
+ <title>监控磁盘使用情况</title>
+
+ <para>
+  本章讨论如何监控<productname>PostgreSQL</productname>数据库系统的磁盘使用情况。
+ </para>
+
+ <sect1 id="disk-usage">
+  <title>确定磁盘使用情况</title>
+
+  <indexterm zone="disk-usage">
+   <primary>磁盘使用情况</primary>
+  </indexterm>
+
+  <para>
+   每个表都有一个主堆磁盘文件，其中存储了大部分数据。如果该表有任何值可能较宽的列，还可能会有一个与该表关联的<acronym>TOAST</acronym>文件，用于存储宽到无法方便地放入主表中的值（见<xref linkend="storage-toast"/>）。如果存在，还会在<acronym>TOAST</acronym>表上有一个有效索引。也可能会有与基表关联的索引。每个表和索引都存储在单独的磁盘文件中 &mdash; 如果文件会超过 1 GB，则可能分成多个文件。这些文件的命名约定见<xref linkend="storage-file-layout"/>。
+  </para>
+
+  <para>
+   可以通过三种方式监控磁盘空间：使用<xref linkend="functions-admin-dbsize"/>中列出的 SQL 函数，使用<xref linkend="oid2name"/>模块，或者手工检查系统目录。SQL 函数最容易使用，通常也是推荐的方法。本节其余部分展示如何通过检查系统目录来完成此事。
+  </para>
+
+  <para>
+   在最近做过 vacuum 或 analyze 的数据库上使用<application>psql</application>时，可以发出查询以查看任意表的磁盘使用情况：
+<programlisting>
+SELECT pg_relation_filepath(oid), relpages FROM pg_class WHERE relname = 'customer';
+
+ pg_relation_filepath | relpages
+----------------------+----------
+ base/16384/16806     |       60
+(1 row)
+</programlisting>
+   每个页通常为 8 KB。（请记住，<structfield>relpages</structfield>只会由<command>VACUUM</command>、<command>ANALYZE</command>以及少数 DDL 命令（如<command>CREATE INDEX</command>）更新。）如果你想直接检查该表的磁盘文件，文件路径名就很有用。
+  </para>
+
+  <para>
+   要显示<acronym>TOAST</acronym>表使用的空间，可使用如下查询：
+<programlisting>
+SELECT relname, relpages
+FROM pg_class,
+     (SELECT reltoastrelid
+      FROM pg_class
+      WHERE relname = 'customer') AS ss
+WHERE oid = ss.reltoastrelid OR
+      oid = (SELECT indexrelid
+             FROM pg_index
+             WHERE indrelid = ss.reltoastrelid)
+ORDER BY relname;
+
+       relname        | relpages
+----------------------+----------
+ pg_toast_16806       |        0
+ pg_toast_16806_index |        1
+</programlisting>
+  </para>
+
+  <para>
+   也可以很容易地显示索引大小：
+<programlisting>
+SELECT c2.relname, c2.relpages
+FROM pg_class c, pg_class c2, pg_index i
+WHERE c.relname = 'customer' AND
+      c.oid = i.indrelid AND
+      c2.oid = i.indexrelid
+ORDER BY c2.relname;
+
+      relname      | relpages
+-------------------+----------
+ customer_id_index |       26
+</programlisting>
+  </para>
+
+  <para>
+   利用这些信息，可以很容易找出最大的表和索引：
+<programlisting>
+SELECT relname, relpages
+FROM pg_class
+ORDER BY relpages DESC;
+
+       relname        | relpages
+----------------------+----------
+ bigtable             |     3290
+ customer             |     3144
+</programlisting>
+  </para>
+ </sect1>
+
+ <sect1 id="disk-full">
+  <title>磁盘已满故障</title>
+
+  <para>
+   数据库管理员最重要的磁盘监控任务，是确保磁盘不会被写满。数据盘被写满不会导致数据损坏，但可能使有用的活动无法继续进行。如果存放 WAL 文件的磁盘逐渐被写满，数据库服务器可能会进入 panic 状态并随后关闭。
+  </para>
+
+  <para>
+   如果无法通过删除其他内容来释放磁盘上的额外空间，可以利用表空间将部分数据库文件移到其他文件系统上。有关更多信息，请参见<xref linkend="manage-ag-tablespaces"/>。
+  </para>
+
+  <tip>
+   <para>
+    有些文件系统在接近写满时性能很差，因此不要等到磁盘完全写满才采取措施。
+   </para>
+  </tip>
+
+  <para>
+   如果系统支持按用户设置磁盘配额，那么数据库自然会受限于运行服务器的那个用户所被施加的配额。超出配额与磁盘空间完全耗尽会产生同样的不良影响。
+  </para>
+ </sect1>
+</chapter>

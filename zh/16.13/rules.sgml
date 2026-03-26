@@ -1,0 +1,1781 @@
+<!-- doc/src/sgml/rules.sgml -->
+
+<chapter id="rules">
+
+<title>规则系统</title>
+
+ <indexterm zone="rules">
+  <primary>规则</primary>
+ </indexterm>
+
+<para>
+     本章讨论<productname>PostgreSQL</productname>中的规则系统。产生式规则系统在概念上很简单，但在实际使用时涉及许多微妙之处。
+</para>
+
+<para>
+     有些其他数据库系统定义了主动型数据库规则，它们通常表现为存储过程和触发器。在<productname>PostgreSQL</productname>中，这类功能同样可以用函数和触发器实现。
+</para>
+
+<para>
+     规则系统（更准确地说，查询重写规则系统）与存储过程和触发器完全不同。它会修改查询，使其将规则纳入考虑，然后把修改后的查询交给查询规划器进行规划和执行。它非常强大，可用于查询语言过程、视图和版本等许多用途。关于这一规则系统的理论基础及其能力，另见<xref linkend="ston90b"/>和<xref linkend="ong90"/>。
+</para>
+
+<sect1 id="querytree">
+
+<title>查询树</title>
+
+<indexterm zone="querytree">
+ <primary>查询树</primary>
+</indexterm>
+
+<para>
+    要理解规则系统如何工作，必须先知道它在何时被调用，以及它的输入和输出是什么。
+</para>
+
+<para>
+    规则系统位于解析器和规划器之间。它接收解析器的输出，即一棵查询树，以及用户定义的重写规则；这些规则本身也是带有一些附加信息的查询树。它会生成零棵或多棵查询树作为结果。因此，它的输入和输出始终都是解析器本身也可能产生的东西，所以它看到的任何内容基本上都可以表示为一个<acronym>SQL</acronym>语句。
+</para>
+
+<para>
+    那么什么是查询树？它是<acronym>SQL</acronym>语句的一种内部表示，其中构成语句的各个部分被分别存储。如果你设置了配置参数<varname>debug_print_parse</varname>、<varname>debug_print_rewritten</varname>或<varname>debug_print_plan</varname>，这些查询树就可以显示在服务器日志中。规则动作也以查询树的形式存储在系统目录<structname>pg_rewrite</structname>中。它们的格式不像日志输出，但包含的却是完全相同的信息。
+</para>
+
+<para>
+    阅读原始查询树需要一些经验。但由于查询树的<acronym>SQL</acronym>表示已足以理解规则系统，本章不会讲解如何阅读它们。
+</para>
+
+<para>
+    在阅读本章中查询树的<acronym>SQL</acronym>表示时，必须能够识别语句在查询树结构中被拆分成的各个部分。查询树的组成部分有：
+
+<variablelist>
+    <varlistentry id="zh18-auto-rules-varlistentry-8">
+    <term>
+        命令类型
+    </term>
+    <listitem>
+    <para>
+        这是一个简单的值，用来说明是哪一种命令（<command>SELECT</command>、<command>INSERT</command>、<command>UPDATE</command>、<command>DELETE</command>）产生了该查询树。
+    </para>
+    </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-rules-varlistentry-9">
+    <term>
+        范围表
+        <indexterm><primary>范围表</primary></indexterm>
+    </term>
+    <listitem>
+    <para>
+        范围表是查询中使用的关系列表。在<command>SELECT</command>语句中，它们就是关键字<literal>FROM</literal>后面给出的关系。
+    </para>
+
+    <para>
+        每个范围表项标识一个表或视图，并说明在查询的其他部分以哪个名称来称呼它。在查询树中，范围表项是按编号而不是按名称引用的，因此即使像<acronym>SQL</acronym>语句中那样出现重名，这里也无关紧要。这种情况可能出现在规则的范围表被合并之后。本章中的示例不会涉及这种情形。
+    </para>
+    </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-rules-varlistentry-10">
+    <term>
+        结果关系
+    </term>
+    <listitem>
+    <para>
+        这是范围表中的一个索引，用来标识查询结果应写入哪个关系。
+    </para>
+
+    <para>
+        <command>SELECT</command>查询没有结果关系。（<command>SELECT INTO</command>这一特殊情况与<command>CREATE TABLE</command>后接<literal>INSERT ... SELECT</literal>几乎相同，这里不再单独讨论。）
+    </para>
+
+    <para>
+        对于<command>INSERT</command>、<command>UPDATE</command>和<command>DELETE</command>命令，结果关系就是要让修改生效的表（或视图！）。
+    </para>
+    </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-rules-varlistentry-11">
+    <term>
+        目标列表
+        <indexterm><primary>目标列表</primary></indexterm>
+    </term>
+    <listitem>
+    <para>
+        目标列表是定义查询结果的表达式列表。对于<command>SELECT</command>，这些表达式构成查询的最终输出。它们对应于关键字<command>SELECT</command>和<command>FROM</command>之间的表达式。（<literal>*</literal>只是某个关系全部列名的缩写。解析器会把它展开为各个独立列，因此规则系统永远不会看到它。）
+    </para>
+
+    <para>
+        <command>DELETE</command>命令不需要普通的目标列表，因为它们不产生任何结果。相反，规划器会向空目标列表加入一个特殊的<acronym>CTID</acronym>项，以便执行器找到要删除的行。（当结果关系是普通表时，会加入<acronym>CTID</acronym>；如果结果关系是视图，则规则系统会改为加入一个整行变量，如<xref linkend="rules-views-update"/>所述。）
+    </para>
+
+    <para>
+        对于<command>INSERT</command>命令，目标列表描述的是将要进入结果关系的新行。它由<literal>VALUES</literal>子句中的表达式，或<literal>INSERT ... SELECT</literal>里<command>SELECT</command>子句中的表达式组成。重写过程的第一步会为原始命令未赋值但带有默认值的列补上目标列表项。其余列（既没有给定值也没有默认值）将由规划器填入常量空值表达式。
+    </para>
+
+    <para>
+        对于<command>UPDATE</command>命令，目标列表描述要替换旧行的新行。在规则系统中，它只包含命令中<literal>SET column = expression</literal>部分的表达式。规划器会通过插入把旧行值复制到新行的表达式来处理缺失列。与<command>DELETE</command>一样，还会加入一个<acronym>CTID</acronym>或整行变量，以便执行器标识要更新的旧行。
+    </para>
+
+    <para>
+        目标列表中的每一项都包含一个表达式，它可以是常量值、指向范围表中某个关系列的变量、一个参数，或者由函数调用、常量、变量、操作符等构成的表达式树。
+    </para>
+    </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-rules-varlistentry-12">
+    <term>
+        条件
+    </term>
+    <listitem>
+    <para>
+        查询的条件是一个表达式，与目标列表项中的表达式很相似。该表达式的结果值是布尔值，用来说明是否应对最终结果行执行相应操作（<command>INSERT</command>、<command>UPDATE</command>、<command>DELETE</command>或<command>SELECT</command>）。它对应于<acronym>SQL</acronym>语句的<literal>WHERE</literal>子句。
+    </para>
+    </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-rules-varlistentry-13">
+    <term>
+        连接树
+    </term>
+    <listitem>
+    <para>
+        查询的连接树显示了<literal>FROM</literal>子句的结构。对于<literal>SELECT ... FROM a, b, c</literal>这样的简单查询，连接树只是<literal>FROM</literal>项的一个列表，因为允许按任意顺序连接它们。但当使用<literal>JOIN</literal>表达式，特别是外连接时，就必须按连接所显示的顺序进行连接。在这种情况下，连接树展示的是<literal>JOIN</literal>表达式的结构。与特定<literal>JOIN</literal>子句相关的限制（来自<literal>ON</literal>或<literal>USING</literal>表达式）会作为条件表达式附着在相应的连接树节点上。把顶层<literal>WHERE</literal>表达式也存储为附着在顶层连接树项上的一个条件，会很方便。因此，连接树实际上同时表示<command>SELECT</command>的<literal>FROM</literal>和<literal>WHERE</literal>子句。
+    </para>
+    </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-rules-varlistentry-14">
+    <term>
+        其他
+    </term>
+    <listitem>
+    <para>
+        查询树的其他部分，如<literal>ORDER BY</literal>子句，这里不作关注。规则系统在应用规则时会替换其中某些项，但这与规则系统的基本原理关系不大。
+    </para>
+    </listitem>
+    </varlistentry>
+
+</variablelist>
+</para>
+</sect1>
+
+<sect1 id="rules-views">
+
+<title>视图和规则系统</title>
+
+<indexterm zone="rules-views">
+ <primary>规则</primary>
+ <secondary>和视图</secondary>
+</indexterm>
+
+<indexterm zone="rules-views">
+ <primary>视图</primary>
+ <secondary>通过规则实现</secondary>
+</indexterm>
+
+<para>
+    <productname>PostgreSQL</productname>中的视图是通过规则系统实现的。视图基本上就是一个空表（没有实际存储），再加上一条<literal>ON SELECT DO INSTEAD</literal>规则。按惯例，这条规则名为<literal>_RETURN</literal>。因此，像下面这样的视图：
+
+<programlisting>
+CREATE VIEW myview AS SELECT * FROM mytab;
+</programlisting>
+
+    与下面的定义几乎等价：
+
+<programlisting>
+CREATE TABLE myview (<replaceable>same column list as mytab</replaceable>);
+CREATE RULE "_RETURN" AS ON SELECT TO myview DO INSTEAD
+    SELECT * FROM mytab;
+</programlisting>
+
+    虽然你实际上不能这样写，因为表不允许拥有<literal>ON SELECT</literal>规则。
+</para>
+
+<para>
+    视图还可以拥有其他类型的<literal>DO INSTEAD</literal>规则，从而即使它本身没有底层存储，也能在该视图上执行<command>INSERT</command>、<command>UPDATE</command>或<command>DELETE</command>命令。下面会在<xref linkend="rules-views-update"/>中进一步讨论这一点。
+</para>
+
+<sect2 id="rules-select">
+
+<title><command>SELECT</command> 规则如何工作</title>
+
+<indexterm zone="rules-select">
+ <primary>规则</primary>
+ <secondary sortas="SELECT">用于 <command>SELECT</command></secondary>
+</indexterm>
+
+<para>
+    <literal>ON SELECT</literal>规则会在所有查询上作为最后一步应用，即使给出的命令是<command>INSERT</command>、<command>UPDATE</command>或<command>DELETE</command>也一样。它们与其他命令类型上的规则在语义上不同，因为它们是就地修改查询树，而不是创建新的查询树。因此我们先讨论<command>SELECT</command>规则。
+</para>
+
+<para>
+    目前，一个<literal>ON SELECT</literal>规则中只能有一个动作，而且它必须是一个无条件、带有<literal>INSTEAD</literal>的<command>SELECT</command>动作。之所以有这个限制，是为了让规则足够安全，从而能够向普通用户开放；它也把<literal>ON SELECT</literal>规则限制为像视图那样工作。
+</para>
+
+<para>
+    本章的示例是两个进行一些计算的连接视图，以及另外一些依次使用它们的视图。最初两个视图中的一个会在后面通过为<command>INSERT</command>、<command>UPDATE</command>和<command>DELETE</command>操作添加规则来定制，从而最终得到一个在行为上像真正的表、但又带有某些特殊功能的视图。作为入门示例，这并不算简单，因此会让理解变得更难一些。但与其使用许多可能令人混淆的不同示例，不如用一个示例逐步覆盖这里讨论的全部要点。
+</para>
+
+<para>
+    在前两节对规则系统的描述中，我们需要用到如下真实表：
+
+<programlisting>
+CREATE TABLE shoe_data (
+    shoename   text,          -- primary key
+    sh_avail   integer,       -- available number of pairs
+    slcolor    text,          -- preferred shoelace color
+    slminlen   real,          -- minimum shoelace length
+    slmaxlen   real,          -- maximum shoelace length
+    slunit     text           -- length unit
+);
+
+CREATE TABLE shoelace_data (
+    sl_name    text,          -- primary key
+    sl_avail   integer,       -- available number of pairs
+    sl_color   text,          -- shoelace color
+    sl_len     real,          -- shoelace length
+    sl_unit    text           -- length unit
+);
+
+CREATE TABLE unit (
+    un_name    text,          -- primary key
+    un_fact    real           -- factor to transform to cm
+);
+</programlisting>
+
+    如你所见，它们表示的是鞋店数据。
+</para>
+
+<para>
+    这些视图是这样创建的：
+
+<programlisting>
+CREATE VIEW shoe AS
+    SELECT sh.shoename,
+           sh.sh_avail,
+           sh.slcolor,
+           sh.slminlen,
+           sh.slminlen * un.un_fact AS slminlen_cm,
+           sh.slmaxlen,
+           sh.slmaxlen * un.un_fact AS slmaxlen_cm,
+           sh.slunit
+      FROM shoe_data sh, unit un
+     WHERE sh.slunit = un.un_name;
+
+CREATE VIEW shoelace AS
+    SELECT s.sl_name,
+           s.sl_avail,
+           s.sl_color,
+           s.sl_len,
+           s.sl_unit,
+           s.sl_len * u.un_fact AS sl_len_cm
+      FROM shoelace_data s, unit u
+     WHERE s.sl_unit = u.un_name;
+
+CREATE VIEW shoe_ready AS
+    SELECT rsh.shoename,
+           rsh.sh_avail,
+           rsl.sl_name,
+           rsl.sl_avail,
+           least(rsh.sh_avail, rsl.sl_avail) AS total_avail
+      FROM shoe rsh, shoelace rsl
+     WHERE rsl.sl_color = rsh.slcolor
+       AND rsl.sl_len_cm &gt;= rsh.slminlen_cm
+       AND rsl.sl_len_cm &lt;= rsh.slmaxlen_cm;
+</programlisting>
+
+    创建<literal>shoelace</literal>视图的<command>CREATE VIEW</command>命令（这是我们这里最简单的一个例子）会创建一个关系<literal>shoelace</literal>，并在<structname>pg_rewrite</structname>中创建一项，说明只要查询的范围表中引用了关系<literal>shoelace</literal>，就必须应用一条重写规则。该规则没有规则条件（稍后在讨论非<command>SELECT</command>规则时再谈，因为目前<command>SELECT</command>规则不能有规则条件），并且它是<literal>INSTEAD</literal>规则。注意，规则条件与查询条件不是一回事。这里我们的规则动作带有一个查询条件。规则动作本身是一棵查询树，它是视图创建命令中<command>SELECT</command>语句的一个副本。
+</para>
+
+    <note>
+
+    <para>
+    你在<structname>pg_rewrite</structname>项中看到的、用于<literal>NEW</literal>和<literal>OLD</literal>的两个额外范围表项，与<command>SELECT</command>规则无关。
+    </para>
+    </note>
+
+<para>
+    现在我们填充<literal>unit</literal>、<literal>shoe_data</literal>和<literal>shoelace_data</literal>，并在一个视图上运行简单查询：
+
+<programlisting>
+INSERT INTO unit VALUES ('cm', 1.0);
+INSERT INTO unit VALUES ('m', 100.0);
+INSERT INTO unit VALUES ('inch', 2.54);
+
+INSERT INTO shoe_data VALUES ('sh1', 2, 'black', 70.0, 90.0, 'cm');
+INSERT INTO shoe_data VALUES ('sh2', 0, 'black', 30.0, 40.0, 'inch');
+INSERT INTO shoe_data VALUES ('sh3', 4, 'brown', 50.0, 65.0, 'cm');
+INSERT INTO shoe_data VALUES ('sh4', 3, 'brown', 40.0, 50.0, 'inch');
+
+INSERT INTO shoelace_data VALUES ('sl1', 5, 'black', 80.0, 'cm');
+INSERT INTO shoelace_data VALUES ('sl2', 6, 'black', 100.0, 'cm');
+INSERT INTO shoelace_data VALUES ('sl3', 0, 'black', 35.0 , 'inch');
+INSERT INTO shoelace_data VALUES ('sl4', 8, 'black', 40.0 , 'inch');
+INSERT INTO shoelace_data VALUES ('sl5', 4, 'brown', 1.0 , 'm');
+INSERT INTO shoelace_data VALUES ('sl6', 0, 'brown', 0.9 , 'm');
+INSERT INTO shoelace_data VALUES ('sl7', 7, 'brown', 60 , 'cm');
+INSERT INTO shoelace_data VALUES ('sl8', 1, 'brown', 40 , 'inch');
+
+SELECT * FROM shoelace;
+
+ sl_name   | sl_avail | sl_color | sl_len | sl_unit | sl_len_cm
+-----------+----------+----------+--------+---------+-----------
+ sl1       |        5 | black    |     80 | cm      |        80
+ sl2       |        6 | black    |    100 | cm      |       100
+ sl7       |        7 | brown    |     60 | cm      |        60
+ sl3       |        0 | black    |     35 | inch    |      88.9
+ sl4       |        8 | black    |     40 | inch    |     101.6
+ sl8       |        1 | brown    |     40 | inch    |     101.6
+ sl5       |        4 | brown    |      1 | m       |       100
+ sl6       |        0 | brown    |    0.9 | m       |        90
+(8 rows)
+</programlisting>
+   </para>
+
+   <para>
+    这是你能在这些视图上执行的最简单的<command>SELECT</command>，因此我们借此机会说明视图规则的基础。<literal>SELECT * FROM shoelace</literal>由解析器解释后，会生成如下查询树：
+
+<programlisting>
+SELECT shoelace.sl_name, shoelace.sl_avail,
+       shoelace.sl_color, shoelace.sl_len,
+       shoelace.sl_unit, shoelace.sl_len_cm
+  FROM shoelace shoelace;
+</programlisting>
+
+    然后它会被交给规则系统。规则系统遍历范围表，检查其中的关系是否有相应规则。在处理<literal>shoelace</literal>的范围表项时（到目前为止只有这一个），它会找到带有如下查询树的<literal>_RETURN</literal>规则：
+
+<programlisting>
+SELECT s.sl_name, s.sl_avail,
+       s.sl_color, s.sl_len, s.sl_unit,
+       s.sl_len * u.un_fact AS sl_len_cm
+  FROM shoelace old, shoelace new,
+       shoelace_data s, unit u
+ WHERE s.sl_unit = u.un_name;
+</programlisting>
+</para>
+
+<para>
+    为了展开该视图，重写器只需创建一个包含规则动作查询树的子查询范围表项，再用这个范围表项替换原先引用该视图的项。重写后的查询树几乎就像你直接写下了下面这条语句：
+
+<programlisting>
+SELECT shoelace.sl_name, shoelace.sl_avail,
+       shoelace.sl_color, shoelace.sl_len,
+       shoelace.sl_unit, shoelace.sl_len_cm
+  FROM (SELECT s.sl_name,
+               s.sl_avail,
+               s.sl_color,
+               s.sl_len,
+               s.sl_unit,
+               s.sl_len * u.un_fact AS sl_len_cm
+          FROM shoelace_data s, unit u
+         WHERE s.sl_unit = u.un_name) shoelace;
+</programlisting>
+
+     不过有一个区别：子查询的范围表中多了两个项，<literal>shoelace old</literal>和<literal>shoelace new</literal>。这些项并不直接参与查询，因为子查询的连接树或目标列表都没有引用它们。重写器利用它们保存原先存在于引用视图的范围表项中的访问权限检查信息。这样，即使在重写后的查询中不再直接使用该视图，执行器仍会检查用户是否具有访问该视图的适当权限。
+</para>
+
+<para>
+    这就是应用的第一条规则。规则系统接着会检查顶层查询中剩余的范围表项（本例中已经没有了），并递归检查新增子查询中的范围表项，看它们是否引用了视图。（但它不会展开<literal>old</literal>或<literal>new</literal>，否则就会出现无限递归！）在这个例子中，<literal>shoelace_data</literal>和<literal>unit</literal>都没有重写规则，因此重写到此结束，上面的结果就是交给规划器的最终结果。
+</para>
+
+<para>
+    现在我们想写一个查询，找出商店里目前哪些鞋子有颜色和长度都匹配的鞋带，并且完全匹配的总双数大于等于二。
+
+<programlisting>
+SELECT * FROM shoe_ready WHERE total_avail &gt;= 2;
+
+ shoename | sh_avail | sl_name | sl_avail | total_avail
+----------+----------+---------+----------+-------------
+ sh1      |        2 | sl1     |        5 |           2
+ sh3      |        4 | sl7     |        7 |           4
+(2 rows)
+</programlisting>
+</para>
+
+<para>
+    这一次解析器的输出是如下查询树：
+
+<programlisting>
+SELECT shoe_ready.shoename, shoe_ready.sh_avail,
+       shoe_ready.sl_name, shoe_ready.sl_avail,
+       shoe_ready.total_avail
+  FROM shoe_ready shoe_ready
+ WHERE shoe_ready.total_avail &gt;= 2;
+</programlisting>
+
+    首先应用的是用于<literal>shoe_ready</literal>视图的规则，它得到如下查询树：
+
+<programlisting>
+SELECT shoe_ready.shoename, shoe_ready.sh_avail,
+       shoe_ready.sl_name, shoe_ready.sl_avail,
+       shoe_ready.total_avail
+  FROM (SELECT rsh.shoename,
+               rsh.sh_avail,
+               rsl.sl_name,
+               rsl.sl_avail,
+               least(rsh.sh_avail, rsl.sl_avail) AS total_avail
+          FROM shoe rsh, shoelace rsl
+         WHERE rsl.sl_color = rsh.slcolor
+           AND rsl.sl_len_cm &gt;= rsh.slminlen_cm
+           AND rsl.sl_len_cm &lt;= rsh.slmaxlen_cm) shoe_ready
+ WHERE shoe_ready.total_avail &gt;= 2;
+</programlisting>
+
+    同样地，用于<literal>shoe</literal>和<literal>shoelace</literal>的规则也会被替换进子查询的范围表，从而得到一个三层的最终查询树：
+
+<programlisting>
+SELECT shoe_ready.shoename, shoe_ready.sh_avail,
+       shoe_ready.sl_name, shoe_ready.sl_avail,
+       shoe_ready.total_avail
+  FROM (SELECT rsh.shoename,
+               rsh.sh_avail,
+               rsl.sl_name,
+               rsl.sl_avail,
+               least(rsh.sh_avail, rsl.sl_avail) AS total_avail
+          FROM (SELECT sh.shoename,
+                       sh.sh_avail,
+                       sh.slcolor,
+                       sh.slminlen,
+                       sh.slminlen * un.un_fact AS slminlen_cm,
+                       sh.slmaxlen,
+                       sh.slmaxlen * un.un_fact AS slmaxlen_cm,
+                       sh.slunit
+                  FROM shoe_data sh, unit un
+                 WHERE sh.slunit = un.un_name) rsh,
+               (SELECT s.sl_name,
+                       s.sl_avail,
+                       s.sl_color,
+                       s.sl_len,
+                       s.sl_unit,
+                       s.sl_len * u.un_fact AS sl_len_cm
+                  FROM shoelace_data s, unit u
+                 WHERE s.sl_unit = u.un_name) rsl
+         WHERE rsl.sl_color = rsh.slcolor
+           AND rsl.sl_len_cm &gt;= rsh.slminlen_cm
+           AND rsl.sl_len_cm &lt;= rsh.slmaxlen_cm) shoe_ready
+ WHERE shoe_ready.total_avail &gt; 2;
+</programlisting>
+   </para>
+
+   <para>
+    这看起来可能效率不高，但规划器会通过<quote>上拉</quote>子查询把它折叠成单层查询树，然后像我们手工写出这些连接一样来规划它们。因此，折叠查询树属于一种优化，重写系统本身无须关心。
+   </para>
+</sect2>
+
+<sect2 id="rules-views-non-select">
+
+<title>非 <command>SELECT</command> 语句中的视图规则</title>
+
+<para>
+    上文对视图规则的说明没有涉及查询树中的两个细节：命令类型和结果关系。实际上，视图规则并不需要命令类型，但结果关系可能会影响查询重写器的工作方式，因为当结果关系是视图时，必须进行特殊处理。
+</para>
+
+<para>
+    <command>SELECT</command>的查询树与其他任何命令的查询树之间只有少数差别。显然，它们的命令类型不同；对于<command>SELECT</command>之外的命令，结果关系会指向结果应写入的那个范围表项。除此之外，其余部分完全相同。因此，假设有两个表<literal>t1</literal>和<literal>t2</literal>，都具有列<literal>a</literal>和<literal>b</literal>，那么下面两条语句的查询树：
+
+<programlisting>
+SELECT t2.b FROM t1, t2 WHERE t1.a = t2.a;
+
+UPDATE t1 SET b = t2.b FROM t2 WHERE t1.a = t2.a;
+</programlisting>
+
+    几乎是一样的。特别是：
+
+    <itemizedlist>
+        <listitem>
+        <para>
+            范围表中包含表<literal>t1</literal>和<literal>t2</literal>的项。
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            目标列表中都包含一个变量，该变量指向表<literal>t2</literal>的范围表项中的列<literal>b</literal>。
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            条件表达式会比较两个范围表项中的列<literal>a</literal>是否相等。
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            连接树都表示<literal>t1</literal>与<literal>t2</literal>之间的一次简单连接。
+        </para>
+        </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    结果是，这两个查询树都会产生相似的执行计划：它们都是对这两个表的连接。对于<command>UPDATE</command>，规划器会把<literal>t1</literal>中缺失的列补入目标列表，最终查询树会变成：
+
+<programlisting>
+UPDATE t1 SET a = t1.a, b = t2.b FROM t2 WHERE t1.a = t2.a;
+</programlisting>
+
+    因而，执行器在这个连接上运行时会产生与下面语句完全相同的结果集：
+
+<programlisting>
+SELECT t1.a, t2.b FROM t1, t2 WHERE t1.a = t2.a;
+</programlisting>
+
+    但在<command>UPDATE</command>中有个小问题：执行器计划中负责连接的那一部分并不关心连接结果将被用于什么。它只是生成一个行结果集。一个是<command>SELECT</command>命令，另一个是<command>UPDATE</command>命令，这一差别是在执行器更高层处理的；在那里，系统知道这是一个<command>UPDATE</command>，也知道结果应写入表<literal>t1</literal>。但问题在于：其中哪一行应当被新行替换？
+</para>
+
+<para>
+    为了解决这个问题，<command>UPDATE</command>（以及<command>DELETE</command>）语句的目标列表中会额外加入一项：当前元组 ID（<acronym>CTID</acronym>）。<indexterm><primary>CTID</primary></indexterm>这是一个系统列，包含该行所在的文件块号以及在块中的位置。已知表之后，就可以利用<acronym>CTID</acronym>取回要更新的<literal>t1</literal>原始行。把<acronym>CTID</acronym>加入目标列表后，查询实际上会变成：
+
+<programlisting>
+SELECT t1.a, t2.b, t1.ctid FROM t1, t2 WHERE t1.a = t2.a;
+</programlisting>
+
+    现在还要引入<productname>PostgreSQL</productname>的另一个细节。旧表行不会被覆盖，这也是<command>ROLLBACK</command>之所以很快的原因。在<command>UPDATE</command>中，新结果行会被插入表中（去掉<acronym>CTID</acronym>之后），而<acronym>CTID</acronym>所指向的旧行，其行头中的<literal>cmax</literal>和<literal>xmax</literal>项会被设置为当前命令计数器和当前事务 ID。于是旧行被隐藏起来，事务提交后，清理器最终就可以移除这条死行。
+</para>
+
+<para>
+    知道了这些以后，我们就可以用完全相同的方式把视图规则应用到任何命令上。没有区别。
+</para>
+</sect2>
+
+<sect2 id="rules-views-power">
+
+<title><productname>PostgreSQL</productname> 中视图的威力</title>
+
+<para>
+    上文演示了规则系统如何把视图定义整合进原始查询树。在第二个示例中，从一个视图发出的简单<command>SELECT</command>最终生成了一棵四表连接的查询树（<literal>unit</literal>以不同名称使用了两次）。
+</para>
+
+<para>
+    用规则系统实现视图的好处在于：规划器能够在单棵查询树中同时看到哪些表必须被扫描、这些表之间的关系、来自视图的限制条件，以及原始查询自身的条件。即使原始查询本身已经是对若干视图的连接，情况也仍然如此。规划器必须决定执行查询的最佳路径，而它掌握的信息越多，这个决定通常就越好。<productname>PostgreSQL</productname>实现的规则系统能够保证，到那个阶段为止，关于该查询的全部可用信息都已经集中在这里。
+</para>
+</sect2>
+
+<sect2 id="rules-views-update">
+
+<title>更新视图</title>
+
+<para>
+    如果某个视图被指定为<command>INSERT</command>、<command>UPDATE</command>、<command>DELETE</command>或<command>MERGE</command>的目标关系，会发生什么？如果按上文描述的方式进行替换，就会得到一棵结果关系指向子查询范围表项的查询树，而这是行不通的。不过，<productname>PostgreSQL</productname>仍有几种方法能够支持“更新视图”这种表象。按用户感受到的复杂度从低到高排列，这些方法是：自动将视图替换为底层表、执行用户定义的触发器，或依据用户定义的规则重写查询。下面将分别讨论这些选项。
+</para>
+
+<para>
+    如果子查询从单个基础关系取数并且足够简单，重写器就可以自动用底层基础关系替换该子查询，使<command>INSERT</command>、<command>UPDATE</command>、<command>DELETE</command>或<command>MERGE</command>以适当方式作用于基础关系。对这种<quote>足够简单</quote>的视图，称为<firstterm>自动可更新</firstterm>视图。关于哪些视图可以自动更新的详细信息，请参见<xref linkend="sql-createview"/>。
+</para>
+
+<para>
+    另一种办法是由视图上的用户自定义<literal>INSTEAD OF</literal>触发器来处理该操作（见<xref linkend="sql-createtrigger"/>）。在这种情况下，重写的工作方式会略有不同。对于<command>INSERT</command>，重写器完全不处理该视图，而是让它继续作为查询的结果关系。对于<command>UPDATE</command>、<command>DELETE</command>和<command>MERGE</command>，仍然需要展开视图查询，以产生命令打算更新、删除或合并的<quote>旧</quote>行。因此，视图会照常展开，但查询中还会再添加一个未展开的范围表项，用来表示该视图作为结果关系时的角色。
+</para>
+
+<para>
+    此时出现的问题是，如何标识视图中需要更新的行。回想一下，当结果关系是表时，目标列表中会加入一个特殊的<acronym>CTID</acronym>项，用来标识待更新行的物理位置。如果结果关系是视图，这就行不通了，因为视图没有<acronym>CTID</acronym>，它的行并没有实际物理位置。取而代之的是，对于<command>UPDATE</command>、<command>DELETE</command>或<command>MERGE</command>操作，目标列表中会加入一个特殊的<literal>wholerow</literal>项，它会展开为该视图的全部列。执行器利用这个值把<quote>旧</quote>行传给<literal>INSTEAD OF</literal>触发器。之后由触发器根据旧行值和新行值决定应当更新什么。
+</para>
+
+<para>
+    还有一种可能，是由用户定义<literal>INSTEAD</literal>规则，为视图上的<command>INSERT</command>、<command>UPDATE</command>和<command>DELETE</command>命令指定替代动作。这些规则会重写命令，通常是把它改写成更新一个或多个表而不是视图的命令。这正是<xref linkend="rules-update"/>的主题。请注意，这种方法不适用于<command>MERGE</command>，因为目前除<command>SELECT</command>规则外，<command>MERGE</command>不支持目标关系上的其他规则。
+</para>
+
+<para>
+    注意，规则总是先被处理，也就是在原始查询被规划和执行之前先完成重写。因此，如果一个视图上同时有<literal>INSTEAD OF</literal>触发器以及<command>INSERT</command>、<command>UPDATE</command>或<command>DELETE</command>规则，那么规则会先执行；根据其结果，触发器甚至可能完全不会被用到。
+</para>
+
+<para>
+    对简单视图上的<command>INSERT</command>、<command>UPDATE</command>、<command>DELETE</command>或<command>MERGE</command>查询，总是最后才尝试自动重写。因此，如果某个视图定义了规则或触发器，它们会覆盖自动可更新视图的默认行为。
+</para>
+
+<para>
+    如果该视图既没有<literal>INSTEAD</literal>规则，也没有<literal>INSTEAD OF</literal>触发器，并且重写器又无法把查询自动改写成对底层基础关系的更新，那么就会抛出错误，因为执行器本身并不能直接更新视图。
+</para>
+
+</sect2>
+
+</sect1>
+
+<sect1 id="rules-materializedviews">
+
+<title>物化视图</title>
+
+<indexterm zone="rules-materializedviews">
+ <primary>规则</primary>
+ <secondary>和物化视图</secondary>
+</indexterm>
+
+<indexterm zone="rules-materializedviews">
+ <primary>物化视图</primary>
+ <secondary>通过规则实现</secondary>
+</indexterm>
+
+<indexterm zone="rules-materializedviews">
+ <primary>视图</primary>
+ <secondary>物化</secondary>
+</indexterm>
+
+<para>
+    <productname>PostgreSQL</productname>中的物化视图和视图一样使用规则系统，但会以类似表的形式持久保存结果。下面两者之间的主要区别是：
+
+<programlisting>
+CREATE MATERIALIZED VIEW mymatview AS SELECT * FROM mytab;
+</programlisting>
+
+    以及：
+
+<programlisting>
+CREATE TABLE mymatview AS SELECT * FROM mytab;
+</programlisting>
+
+    物化视图之后不能被直接更新，并且用于创建物化视图的查询，其存储方式与视图查询的存储方式完全相同，因此可以通过下面的命令为物化视图生成新数据：
+
+<programlisting>
+REFRESH MATERIALIZED VIEW mymatview;
+</programlisting>
+
+    在<productname>PostgreSQL</productname>系统目录中，物化视图的信息与表或视图的信息完全相同。因此，对于解析器来说，物化视图也是一种关系，就像表或视图一样。当查询引用物化视图时，数据会像从表中那样直接从物化视图返回；规则只用于填充物化视图。
+</para>
+
+<para>
+    访问存储在物化视图中的数据，通常比直接访问底层表或通过视图访问要快得多；但这些数据并不总是最新的，而有时我们也并不需要当前数据。考虑这样一个记录销售情况的表：
+
+<programlisting>
+CREATE TABLE invoice (
+    invoice_no    integer        PRIMARY KEY,
+    seller_no     integer,       -- ID of salesperson
+    invoice_date  date,          -- date of sale
+    invoice_amt   numeric(13,2)  -- amount of sale
+);
+</programlisting>
+
+    如果人们希望快速绘制历史销售数据图表，他们可能想要做汇总，并且不会在意当前日期数据尚不完整：
+
+<programlisting>
+CREATE MATERIALIZED VIEW sales_summary AS
+  SELECT
+      seller_no,
+      invoice_date,
+      sum(invoice_amt)::numeric(13,2) as sales_amt
+    FROM invoice
+    WHERE invoice_date &lt; CURRENT_DATE
+    GROUP BY
+      seller_no,
+      invoice_date;
+
+CREATE UNIQUE INDEX sales_summary_seller
+  ON sales_summary (seller_no, invoice_date);
+</programlisting>
+
+    这个物化视图可能很适合在为销售人员构建的仪表板中显示图表。可以安排一个作业，每晚用下面这条 SQL 语句更新统计信息：
+
+<programlisting>
+REFRESH MATERIALIZED VIEW sales_summary;
+</programlisting>
+</para>
+
+<para>
+    物化视图的另一种用途，是让通过外部数据包装器从远程系统获取的数据能够被更快地访问。下面给出一个使用<literal>file_fdw</literal>的简单示例，并附带计时结果；不过由于这里使用的是本地系统缓存，因此与真正访问远程系统相比，性能差异通常会比这里展示的更大。还要注意，我们同时利用了可以在物化视图上建立索引这一能力，而<literal>file_fdw</literal>本身并不支持索引；对其他类型的外部数据访问，这一优势未必适用。
+</para>
+
+<para>
+    设置如下：
+
+<programlisting>
+CREATE EXTENSION file_fdw;
+CREATE SERVER local_file FOREIGN DATA WRAPPER file_fdw;
+CREATE FOREIGN TABLE words (word text NOT NULL)
+  SERVER local_file
+  OPTIONS (filename '/usr/share/dict/words');
+CREATE MATERIALIZED VIEW wrd AS SELECT * FROM words;
+CREATE UNIQUE INDEX wrd_word ON wrd (word);
+CREATE EXTENSION pg_trgm;
+CREATE INDEX wrd_trgm ON wrd USING gist (word gist_trgm_ops);
+VACUUM ANALYZE wrd;
+</programlisting>
+
+    现在让我们检查一个单词的拼写。直接使用<literal>file_fdw</literal>：
+
+<programlisting>
+SELECT count(*) FROM words WHERE word = 'caterpiler';
+
+ count
+-------
+     0
+(1 row)
+</programlisting>
+
+    使用<command>EXPLAIN ANALYZE</command>，可以看到：
+
+<programlisting>
+ Aggregate  (cost=21763.99..21764.00 rows=1 width=0) (actual time=188.180..188.181 rows=1.00 loops=1)
+   -&gt;  Foreign Scan on words  (cost=0.00..21761.41 rows=1032 width=0) (actual time=188.177..188.177 rows=0.00 loops=1)
+         Filter: (word = 'caterpiler'::text)
+         Rows Removed by Filter: 479829
+         Foreign File: /usr/share/dict/words
+         Foreign File Size: 4953699
+ Planning time: 0.118 ms
+ Execution time: 188.273 ms
+</programlisting>
+
+    如果改用物化视图，查询会快得多：
+
+<programlisting>
+ Aggregate  (cost=4.44..4.45 rows=1 width=0) (actual time=0.042..0.042 rows=1.00 loops=1)
+   -&gt;  Index Only Scan using wrd_word on wrd  (cost=0.42..4.44 rows=1 width=0) (actual time=0.039..0.039 rows=0.00 loops=1)
+         Index Cond: (word = 'caterpiler'::text)
+         Heap Fetches: 0
+         Index Searches: 1
+ Planning time: 0.164 ms
+ Execution time: 0.117 ms
+</programlisting>
+
+    无论哪种方式，这个词都拼错了，所以让我们看看可能真正想找的是什么。再次使用<literal>file_fdw</literal>和<literal>pg_trgm</literal>：
+
+<programlisting>
+SELECT word FROM words ORDER BY word &lt;-&gt; 'caterpiler' LIMIT 10;
+
+     word
+---------------
+ cater
+ caterpillar
+ Caterpillar
+ caterpillars
+ caterpillar's
+ Caterpillar's
+ caterer
+ caterer's
+ caters
+ catered
+(10 rows)
+</programlisting>
+
+<programlisting>
+ Limit  (cost=11583.61..11583.64 rows=10 width=32) (actual time=1431.591..1431.594 rows=10.00 loops=1)
+   -&gt;  Sort  (cost=11583.61..11804.76 rows=88459 width=32) (actual time=1431.589..1431.591 rows=10.00 loops=1)
+         Sort Key: ((word &lt;-&gt; 'caterpiler'::text))
+         Sort Method: top-N heapsort  Memory: 25kB
+         -&gt;  Foreign Scan on words  (cost=0.00..9672.05 rows=88459 width=32) (actual time=0.057..1286.455 rows=479829.00 loops=1)
+               Foreign File: /usr/share/dict/words
+               Foreign File Size: 4953699
+ Planning time: 0.128 ms
+ Execution time: 1431.679 ms
+</programlisting>
+
+    使用物化视图时：
+
+<programlisting>
+ Limit  (cost=0.29..1.06 rows=10 width=10) (actual time=187.222..188.257 rows=10.00 loops=1)
+   -&gt;  Index Scan using wrd_trgm on wrd  (cost=0.29..37020.87 rows=479829 width=10) (actual time=187.219..188.252 rows=10.00 loops=1)
+         Order By: (word &lt;-&gt; 'caterpiler'::text)
+         Index Searches: 1
+ Planning time: 0.196 ms
+ Execution time: 198.640 ms
+</programlisting>
+
+    如果你能够容忍定期把远程数据更新到本地数据库，那么性能收益可能非常可观。
+</para>
+
+</sect1>
+
+<sect1 id="rules-update">
+
+<title><command>INSERT</command>、<command>UPDATE</command>和<command>DELETE</command>规则</title>
+
+<indexterm zone="rules-update">
+ <primary>规则</primary>
+ <secondary sortas="INSERT">用于 <command>INSERT</command></secondary>
+</indexterm>
+
+<indexterm zone="rules-update">
+ <primary>规则</primary>
+ <secondary sortas="UPDATE">用于 <command>UPDATE</command></secondary>
+</indexterm>
+
+<indexterm zone="rules-update">
+ <primary>规则</primary>
+ <secondary sortas="DELETE">用于 <command>DELETE</command></secondary>
+</indexterm>
+
+<para>
+    定义在<command>INSERT</command>、<command>UPDATE</command>和<command>DELETE</command>上的规则与前几节描述的视图规则有明显的不同。首先，它们的<command>CREATE RULE</command>命令允许更多：
+
+    <itemizedlist>
+        <listitem>
+        <para>
+            它们可以没有动作。
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            它们可以有多个动作。
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            它们可以是<literal>INSTEAD</literal>或<literal>ALSO</literal>（缺省）。
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            伪关系<literal>NEW</literal>和<literal>OLD</literal>可以派上用场。
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            它们可以有规则条件。
+        </para>
+        </listitem>
+    </itemizedlist>
+
+    第二，它们不是就地修改查询树，而是创建零棵或多棵新查询树，并且可能丢弃原始查询树。
+</para>
+
+<caution>
+
+ <para>
+    在很多情况下，使用<command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command>规则完成的任务，用触发器会做得更好。触发器在写法上稍微复杂一些，但它们的语义要简单得多。当原始查询包含易变函数时，规则往往会产生出人意料的结果：在执行规则的过程中，易变函数的执行次数可能比预期更多。
+ </para>
+
+ <para>
+  此外，还有一些情况根本无法由这些类型的规则支持，尤其是原始查询中包含<literal>WITH</literal>子句，或者<command>UPDATE</command>查询的<literal>SET</literal>列表中存在多重赋值的子<literal>SELECT</literal>。这是因为把这些结构复制到规则查询中会导致子查询被多次求值，这与查询作者的明确意图相违背。
+ </para>
+</caution>
+
+<sect2 id="rules-update-how">
+
+<title>更新规则如何工作</title>
+
+<para>
+    记住以下语法：
+
+<programlisting>
+CREATE [ OR REPLACE ] RULE <replaceable class="parameter">name</replaceable> AS ON <replaceable class="parameter">event</replaceable>
+    TO <replaceable class="parameter">table</replaceable> [ WHERE <replaceable class="parameter">condition</replaceable> ]
+    DO [ ALSO | INSTEAD ] { NOTHING | <replaceable class="parameter">command</replaceable> | ( <replaceable class="parameter">command</replaceable> ; <replaceable class="parameter">command</replaceable> ... ) }
+</programlisting>
+
+    在后文中，<firstterm>更新规则</firstterm>是指定义在<command>INSERT</command>、<command>UPDATE</command>或<command>DELETE</command>上的规则。
+</para>
+
+<para>
+    当查询树的结果关系和命令类型分别等于<command>CREATE RULE</command>命令中给出的对象和事件时，规则系统就会应用更新规则。对于更新规则，规则系统会创建一个查询树列表，初始时该列表为空。动作可以有零个（关键字<literal>NOTHING</literal>）、一个或多个。为简化说明，我们先看只有一个动作的规则。这个规则可以有条件，也可以没有条件；它还可以是<literal>INSTEAD</literal>或<literal>ALSO</literal>（默认值）。
+</para>
+
+<para>
+    什么是规则条件？它是一种限制，用来说明何时执行规则动作、何时不执行。这个条件只能引用伪关系<literal>NEW</literal>和/或<literal>OLD</literal>，它们基本上表示作为对象给出的那个关系，只是带有特殊含义。
+</para>
+
+   <para>
+    因此，对于单动作规则，生成的查询树会有以下三种情况。
+
+    <variablelist>
+     <varlistentry id="zh18-auto-rules-varlistentry-18">
+      <term>没有条件，有<literal>ALSO</literal>或<literal>INSTEAD</literal></term>
+      <listitem>
+       <para>
+        规则动作的查询树，再附加原始查询树的条件
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-rules-varlistentry-19">
+      <term>给出了条件，有<literal>ALSO</literal></term>
+      <listitem>
+       <para>
+        规则动作的查询树，再附加规则条件和原始查询树的条件
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-rules-varlistentry-20">
+      <term>给出了条件，有<literal>INSTEAD</literal></term>
+      <listitem>
+       <para>
+        规则动作的查询树，再附加规则条件和原始查询树的条件；以及附加了规则条件取反后的原始查询树
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+
+    最后，如果规则是<literal>ALSO</literal>，则未修改的原始查询树也会被加入列表。由于只有带条件的<literal>INSTEAD</literal>规则才会额外加入原始查询树，因此对于单动作规则，最终会得到一棵或两棵输出查询树。
+</para>
+
+<para>
+    对于<literal>ON INSERT</literal>规则，原始查询（如果未被<literal>INSTEAD</literal>抑制）会先于规则添加的任何动作执行。这样一来，这些动作就能看到被插入的行。但对<literal>ON UPDATE</literal>和<literal>ON DELETE</literal>规则，原始查询会在规则添加的动作之后执行。这就保证了这些动作能够看到将被更新或删除的行；否则，动作可能什么也做不了，因为它们找不到符合条件的行。
+</para>
+
+<para>
+    由规则动作生成的查询树会再次送入重写系统，随后可能还会有更多规则被应用，从而产生更多或更少的查询树。因此，一个规则的动作必须具有不同的命令类型，或者具有与该规则自身不同的结果关系。否则，这种递归过程就会陷入无限循环。（规则的递归展开会被检测出来，并作为错误报告。）
+</para>
+
+<para>
+    <structname>pg_rewrite</structname>系统目录中动作里的查询树只是模板。由于它们可以引用<literal>NEW</literal>和<literal>OLD</literal>的范围表项，因此在使用前必须进行一些替换。对任何<literal>NEW</literal>的引用，都会先在原始查询的目标列表中查找相应项。如果找到了，就用该项的表达式替换该引用。否则，<literal>NEW</literal>就与<literal>OLD</literal>含义相同（对于<command>UPDATE</command>），或者被替换为一个空值（对于<command>INSERT</command>）。任何对<literal>OLD</literal>的引用，都会被替换为对结果关系对应范围表项的引用。
+</para>
+
+<para>
+    在系统完成应用更新规则后，它再应用视图规则到生成的查询树上。视图无法插入新的更新动作，所以没有必要向视图重写的输出应用更新规则。
+</para>
+
+<sect3 id="rules-update-how-first">
+
+<title>第一个规则：逐步分析</title>
+
+<para>
+    假设我们想跟踪<literal>shoelace_data</literal>关系中<literal>sl_avail</literal>列的变化。因此，我们建立一个日志表和一条规则，使其在<literal>shoelace_data</literal>上执行<command>UPDATE</command>时，有条件地写入一条日志记录。
+
+<programlisting>
+CREATE TABLE shoelace_log (
+    sl_name    text,          -- shoelace changed
+    sl_avail   integer,       -- new available value
+    log_who    text,          -- who did it
+    log_when   timestamp      -- when
+);
+
+CREATE RULE log_shoelace AS ON UPDATE TO shoelace_data
+    WHERE NEW.sl_avail &lt;&gt; OLD.sl_avail
+    DO INSERT INTO shoelace_log VALUES (
+                                    NEW.sl_name,
+                                    NEW.sl_avail,
+                                    current_user,
+                                    current_timestamp
+                                );
+</programlisting>
+</para>
+
+<para>
+    现在有人执行了：
+
+<programlisting>
+UPDATE shoelace_data SET sl_avail = 6 WHERE sl_name = 'sl7';
+</programlisting>
+
+    然后我们查看日志表：
+
+<programlisting>
+SELECT * FROM shoelace_log;
+
+ sl_name | sl_avail | log_who | log_when
+---------+----------+---------+----------------------------------
+ sl7     |        6 | Al      | Tue Oct 20 16:14:45 1998 MET DST
+(1 row)
+</programlisting>
+   </para>
+
+   <para>
+    这正是我们预期的结果。后台发生的事情如下。解析器创建了查询树：
+
+<programlisting>
+UPDATE shoelace_data SET sl_avail = 6
+  FROM shoelace_data shoelace_data
+ WHERE shoelace_data.sl_name = 'sl7';
+</programlisting>
+
+    此时存在一条<literal>ON UPDATE</literal>规则<literal>log_shoelace</literal>，它带有如下规则条件表达式：
+
+<programlisting>
+NEW.sl_avail &lt;&gt; OLD.sl_avail
+</programlisting>
+
+    其动作是：
+
+<programlisting>
+INSERT INTO shoelace_log VALUES (
+       new.sl_name, new.sl_avail,
+       current_user, current_timestamp )
+  FROM shoelace_data new, shoelace_data old;
+</programlisting>
+
+    （这看起来有点奇怪，因为通常你不能写<literal>INSERT ... VALUES ... FROM</literal>。这里的<literal>FROM</literal>子句只是为了表明查询树中存在用于<literal>new</literal>和<literal>old</literal>的范围表项。之所以需要这些项，是为了让<command>INSERT</command>命令查询树中的变量能够引用它们。）
+</para>
+
+<para>
+    该规则是一条带条件的<literal>ALSO</literal>规则，因此规则系统必须返回两棵查询树：修改后的规则动作，以及原始查询树。第 1 步中，原始查询的范围表会并入规则动作的查询树，得到：
+
+<programlisting>
+INSERT INTO shoelace_log VALUES (
+       new.sl_name, new.sl_avail,
+       current_user, current_timestamp )
+  FROM shoelace_data new, shoelace_data old,
+       <emphasis>shoelace_data shoelace_data</emphasis>;
+</programlisting>
+
+    第 2 步将规则条件加进去，因此结果集被限制为<literal>sl_avail</literal>发生变化的行：
+
+<programlisting>
+INSERT INTO shoelace_log VALUES (
+       new.sl_name, new.sl_avail,
+       current_user, current_timestamp )
+  FROM shoelace_data new, shoelace_data old,
+       shoelace_data shoelace_data
+ <emphasis>WHERE new.sl_avail &lt;&gt; old.sl_avail</emphasis>;
+</programlisting>
+
+    （这看起来更奇怪，因为<literal>INSERT ... VALUES</literal>同样没有<literal>WHERE</literal>子句，但规划器和执行器处理它并无困难。反正它们本来也需要为<literal>INSERT ... SELECT</literal>支持相同功能。）
+   </para>
+
+   <para>
+    第 3 步把原始查询树的条件加进去，把结果集进一步限制为只有那些原始查询会触及的行：
+
+<programlisting>
+INSERT INTO shoelace_log VALUES (
+       new.sl_name, new.sl_avail,
+       current_user, current_timestamp )
+  FROM shoelace_data new, shoelace_data old,
+       shoelace_data shoelace_data
+ WHERE new.sl_avail &lt;&gt; old.sl_avail
+   <emphasis>AND shoelace_data.sl_name = 'sl7'</emphasis>;
+</programlisting>
+   </para>
+
+   <para>
+    第 4 步把<literal>NEW</literal>引用替换为原始查询树中的目标列表项，或者替换为结果关系中相应的变量引用：
+
+<programlisting>
+INSERT INTO shoelace_log VALUES (
+       <emphasis>shoelace_data.sl_name</emphasis>, <emphasis>6</emphasis>,
+       current_user, current_timestamp )
+  FROM shoelace_data new, shoelace_data old,
+       shoelace_data shoelace_data
+ WHERE <emphasis>6</emphasis> &lt;&gt; old.sl_avail
+   AND shoelace_data.sl_name = 'sl7';
+</programlisting>
+
+   </para>
+
+   <para>
+    第 5 步把<literal>OLD</literal>引用替换为结果关系引用：
+
+<programlisting>
+INSERT INTO shoelace_log VALUES (
+       shoelace_data.sl_name, 6,
+       current_user, current_timestamp )
+  FROM shoelace_data new, shoelace_data old,
+       shoelace_data shoelace_data
+ WHERE 6 &lt;&gt; <emphasis>shoelace_data.sl_avail</emphasis>
+   AND shoelace_data.sl_name = 'sl7';
+</programlisting>
+   </para>
+
+   <para>
+    至此就完成了。由于规则是<literal>ALSO</literal>，我们还要输出原始查询树。简而言之，规则系统输出的是一个包含两棵查询树的列表，它们对应于以下语句：
+
+<programlisting>
+INSERT INTO shoelace_log VALUES (
+       shoelace_data.sl_name, 6,
+       current_user, current_timestamp )
+  FROM shoelace_data
+ WHERE 6 &lt;&gt; shoelace_data.sl_avail
+   AND shoelace_data.sl_name = 'sl7';
+
+UPDATE shoelace_data SET sl_avail = 6
+ WHERE sl_name = 'sl7';
+</programlisting>
+
+    它们会按这个顺序执行，而这正是该规则想要达到的效果。
+   </para>
+
+   <para>
+    上述替换以及附加的条件能够保证：如果原始查询是下面这样，就不会写入任何日志记录：
+
+<programlisting>
+UPDATE shoelace_data SET sl_color = 'green'
+ WHERE sl_name = 'sl7';
+</programlisting>
+
+    在这种情况下，原始查询树不包含<literal>sl_avail</literal>的目标列表项，因此<literal>NEW.sl_avail</literal>会被<literal>shoelace_data.sl_avail</literal>替换。于是，规则生成的额外命令是：
+
+<programlisting>
+INSERT INTO shoelace_log VALUES (
+       shoelace_data.sl_name, <emphasis>shoelace_data.sl_avail</emphasis>,
+       current_user, current_timestamp )
+  FROM shoelace_data
+ WHERE <emphasis>shoelace_data.sl_avail</emphasis> &lt;&gt; shoelace_data.sl_avail
+   AND shoelace_data.sl_name = 'sl7';
+</programlisting>
+
+    而该条件永远不可能为真。
+   </para>
+
+   <para>
+    如果原始查询修改多行，这种机制同样能够正常工作。例如，假设有人发出如下命令：
+
+<programlisting>
+UPDATE shoelace_data SET sl_avail = 0
+ WHERE sl_color = 'black';
+</programlisting>
+
+    实际上会更新四行（<literal>sl1</literal>、<literal>sl2</literal>、<literal>sl3</literal>和<literal>sl4</literal>）。但<literal>sl3</literal>本来就已经是<literal>sl_avail = 0</literal>。在这种情况下，原始查询树的条件不同，因此规则会产生额外的查询树：
+
+<programlisting>
+INSERT INTO shoelace_log
+SELECT shoelace_data.sl_name, 0,
+       current_user, current_timestamp
+  FROM shoelace_data
+ WHERE 0 &lt;&gt; shoelace_data.sl_avail
+   AND <emphasis>shoelace_data.sl_color = 'black'</emphasis>;
+</programlisting>
+
+    这棵查询树必然会插入三条新的日志记录。这完全正确。
+</para>
+
+<para>
+    到这里就能看出，为什么原始查询树最后执行至关重要。如果先执行<command>UPDATE</command>，那么所有行都已经被设为零，记日志的<command>INSERT</command>就找不到任何满足<literal>0 &lt;&gt; shoelace_data.sl_avail</literal>的行了。
+</para>
+</sect3>
+
+</sect2>
+
+<sect2 id="rules-update-views">
+
+<title>与视图的协作</title>
+
+<indexterm zone="rules-update-views"><primary>view</primary><secondary>updating</secondary></indexterm>
+
+<para>
+    为了防止有人像前面提到的那样对视图关系执行<command>INSERT</command>、<command>UPDATE</command>或<command>DELETE</command>，一种简单的办法是让那些查询树直接被丢弃。因此我们可以创建如下规则：
+
+<programlisting>
+CREATE RULE shoe_ins_protect AS ON INSERT TO shoe
+    DO INSTEAD NOTHING;
+CREATE RULE shoe_upd_protect AS ON UPDATE TO shoe
+    DO INSTEAD NOTHING;
+CREATE RULE shoe_del_protect AS ON DELETE TO shoe
+    DO INSTEAD NOTHING;
+</programlisting>
+
+    如果现在某人尝试对视图关系<literal>shoe</literal>执行这些操作，规则系统就会应用这些规则。由于这些规则没有动作而且是<literal>INSTEAD</literal>，生成的查询树列表将为空；整个查询也就什么都不会做，因为规则系统处理完后已经没有任何内容可供优化或执行。
+</para>
+
+<para>
+    另一种更完善的做法，是创建一些规则，把查询树重写成在真实表上执行正确操作的查询树。要在视图<literal>shoelace</literal>上做到这一点，我们创建下列规则：
+
+<programlisting>
+CREATE RULE shoelace_ins AS ON INSERT TO shoelace
+    DO INSTEAD
+    INSERT INTO shoelace_data VALUES (
+           NEW.sl_name,
+           NEW.sl_avail,
+           NEW.sl_color,
+           NEW.sl_len,
+           NEW.sl_unit
+    );
+
+CREATE RULE shoelace_upd AS ON UPDATE TO shoelace
+    DO INSTEAD
+    UPDATE shoelace_data
+       SET sl_name = NEW.sl_name,
+           sl_avail = NEW.sl_avail,
+           sl_color = NEW.sl_color,
+           sl_len = NEW.sl_len,
+           sl_unit = NEW.sl_unit
+     WHERE sl_name = OLD.sl_name;
+
+CREATE RULE shoelace_del AS ON DELETE TO shoelace
+    DO INSTEAD
+    DELETE FROM shoelace_data
+     WHERE sl_name = OLD.sl_name;
+</programlisting>
+   </para>
+
+   <para>
+    如果你想在视图上支持<literal>RETURNING</literal>查询，就需要让规则包含计算视图行的<literal>RETURNING</literal>子句。对于单表视图，这通常很简单；但对于像<literal>shoelace</literal>这样的连接视图，就会有点烦琐。插入场景的一个示例如下：
+
+<programlisting>
+CREATE RULE shoelace_ins AS ON INSERT TO shoelace
+    DO INSTEAD
+    INSERT INTO shoelace_data VALUES (
+           NEW.sl_name,
+           NEW.sl_avail,
+           NEW.sl_color,
+           NEW.sl_len,
+           NEW.sl_unit
+    )
+    RETURNING
+           shoelace_data.*,
+           (SELECT shoelace_data.sl_len * u.un_fact
+            FROM unit u WHERE shoelace_data.sl_unit = u.un_name);
+</programlisting>
+
+   请注意，这一条规则同时支持该视图上的<command>INSERT</command>和<command>INSERT RETURNING</command>查询；对于普通<command>INSERT</command>，<literal>RETURNING</literal>子句会被简单忽略。
+   </para>
+
+   <para>
+    请注意，在规则的<literal>RETURNING</literal>子句中，<literal>OLD</literal>和<literal>NEW</literal>指的是作为额外范围表项加入重写后查询中的伪关系，而不是结果关系里的旧行或新行。因此，举例来说，在一条支持该视图上<command>UPDATE</command>查询的规则中，如果<literal>RETURNING</literal>子句包含<literal>old.sl_name</literal>，那么返回的总会是旧名称，而不管视图上的查询在其<literal>RETURNING</literal>子句中指定的是<literal>OLD</literal>还是<literal>NEW</literal>；这可能会让人困惑。为了避免这种混淆，并支持在视图上的查询中返回旧值和新值，规则定义里的<literal>RETURNING</literal>子句应当引用结果关系中的项，例如<literal>shoelace_data.sl_name</literal>，而不要显式指定<literal>OLD</literal>或<literal>NEW</literal>。
+   </para>
+
+   <para>
+    现在假设商店偶尔会收到一大包鞋带，并附带一份很长的零件清单。但你并不想每次都手工更新<literal>shoelace</literal>视图。于是我们设置两个小表：一个用来插入零件清单中的项目，另一个则带着一个特殊花招。它们的创建命令如下：
+
+<programlisting>
+CREATE TABLE shoelace_arrive (
+    arr_name    text,
+    arr_quant   integer
+);
+
+CREATE TABLE shoelace_ok (
+    ok_name     text,
+    ok_quant    integer
+);
+
+CREATE RULE shoelace_ok_ins AS ON INSERT TO shoelace_ok
+    DO INSTEAD
+    UPDATE shoelace
+       SET sl_avail = sl_avail + NEW.ok_quant
+     WHERE sl_name = NEW.ok_name;
+</programlisting>
+
+    现在你可以把零件清单中的数据填入表<literal>shoelace_arrive</literal>：
+
+<programlisting>
+SELECT * FROM shoelace_arrive;
+
+ arr_name | arr_quant
+----------+-----------
+ sl3      |        10
+ sl6      |        20
+ sl8      |        20
+(3 rows)
+</programlisting>
+
+    快速查看当前数据：
+
+<programlisting>
+SELECT * FROM shoelace;
+
+ sl_name  | sl_avail | sl_color | sl_len | sl_unit | sl_len_cm
+----------+----------+----------+--------+---------+-----------
+ sl1      |        5 | black    |     80 | cm      |        80
+ sl2      |        6 | black    |    100 | cm      |       100
+ sl7      |        6 | brown    |     60 | cm      |        60
+ sl3      |        0 | black    |     35 | inch    |      88.9
+ sl4      |        8 | black    |     40 | inch    |     101.6
+ sl8      |        1 | brown    |     40 | inch    |     101.6
+ sl5      |        4 | brown    |      1 | m       |       100
+ sl6      |        0 | brown    |    0.9 | m       |        90
+(8 rows)
+</programlisting>
+
+    现在将到达的鞋带放入：
+
+<programlisting>
+INSERT INTO shoelace_ok SELECT * FROM shoelace_arrive;
+</programlisting>
+
+    并检查结果：
+
+<programlisting>
+SELECT * FROM shoelace ORDER BY sl_name;
+
+ sl_name  | sl_avail | sl_color | sl_len | sl_unit | sl_len_cm
+----------+----------+----------+--------+---------+-----------
+ sl1      |        5 | black    |     80 | cm      |        80
+ sl2      |        6 | black    |    100 | cm      |       100
+ sl7      |        6 | brown    |     60 | cm      |        60
+ sl4      |        8 | black    |     40 | inch    |     101.6
+ sl3      |       10 | black    |     35 | inch    |      88.9
+ sl8      |       21 | brown    |     40 | inch    |     101.6
+ sl5      |        4 | brown    |      1 | m       |       100
+ sl6      |       20 | brown    |    0.9 | m       |        90
+(8 rows)
+
+SELECT * FROM shoelace_log;
+
+ sl_name | sl_avail | log_who| log_when
+---------+----------+--------+----------------------------------
+ sl7     |        6 | Al     | Tue Oct 20 19:14:45 1998 MET DST
+ sl3     |       10 | Al     | Tue Oct 20 19:25:16 1998 MET DST
+ sl6     |       20 | Al     | Tue Oct 20 19:25:16 1998 MET DST
+ sl8     |       21 | Al     | Tue Oct 20 19:25:16 1998 MET DST
+(4 rows)
+</programlisting>
+   </para>
+
+   <para>
+    从一个<literal>INSERT ... SELECT</literal>到这些结果，中间要经历相当长的一段过程。本章最后再来描述这一查询树转换的细节。首先，看一下解析器的输出：
+
+<programlisting>
+INSERT INTO shoelace_ok
+SELECT shoelace_arrive.arr_name, shoelace_arrive.arr_quant
+  FROM shoelace_arrive shoelace_arrive, shoelace_ok shoelace_ok;
+</programlisting>
+
+    现在应用第一条规则<literal>shoelace_ok_ins</literal>，它会把这一输出转换成：
+
+<programlisting>
+UPDATE shoelace
+   SET sl_avail = shoelace.sl_avail + shoelace_arrive.arr_quant
+  FROM shoelace_arrive shoelace_arrive, shoelace_ok shoelace_ok,
+       shoelace_ok old, shoelace_ok new,
+       shoelace shoelace
+ WHERE shoelace.sl_name = shoelace_arrive.arr_name;
+</programlisting>
+
+    同时会丢弃针对<literal>shoelace_ok</literal>的原始<command>INSERT</command>。这个重写后的查询会再次交给规则系统，而接下来应用的规则<literal>shoelace_upd</literal>会生成：
+
+<programlisting>
+UPDATE shoelace_data
+   SET sl_name = shoelace.sl_name,
+       sl_avail = shoelace.sl_avail + shoelace_arrive.arr_quant,
+       sl_color = shoelace.sl_color,
+       sl_len = shoelace.sl_len,
+       sl_unit = shoelace.sl_unit
+  FROM shoelace_arrive shoelace_arrive, shoelace_ok shoelace_ok,
+       shoelace_ok old, shoelace_ok new,
+       shoelace shoelace, shoelace old,
+       shoelace new, shoelace_data shoelace_data
+ WHERE shoelace.sl_name = shoelace_arrive.arr_name
+   AND shoelace_data.sl_name = shoelace.sl_name;
+</programlisting>
+
+    这同样是一条<literal>INSTEAD</literal>规则，因此前一个查询树会被丢弃。注意，这个查询仍然使用视图<literal>shoelace</literal>。但规则系统尚未完成，因此会继续在其上应用<literal>_RETURN</literal>规则，于是得到：
+
+<programlisting>
+UPDATE shoelace_data
+   SET sl_name = s.sl_name,
+       sl_avail = s.sl_avail + shoelace_arrive.arr_quant,
+       sl_color = s.sl_color,
+       sl_len = s.sl_len,
+       sl_unit = s.sl_unit
+  FROM shoelace_arrive shoelace_arrive, shoelace_ok shoelace_ok,
+       shoelace_ok old, shoelace_ok new,
+       shoelace shoelace, shoelace old,
+       shoelace new, shoelace_data shoelace_data,
+       shoelace old, shoelace new,
+       shoelace_data s, unit u
+ WHERE s.sl_name = shoelace_arrive.arr_name
+   AND shoelace_data.sl_name = s.sl_name;
+</programlisting>
+
+    最后，规则<literal>log_shoelace</literal>被应用，生成额外的查询树：
+
+<programlisting>
+INSERT INTO shoelace_log
+SELECT s.sl_name,
+       s.sl_avail + shoelace_arrive.arr_quant,
+       current_user,
+       current_timestamp
+  FROM shoelace_arrive shoelace_arrive, shoelace_ok shoelace_ok,
+       shoelace_ok old, shoelace_ok new,
+       shoelace shoelace, shoelace old,
+       shoelace new, shoelace_data shoelace_data,
+       shoelace old, shoelace new,
+       shoelace_data s, unit u,
+       shoelace_data old, shoelace_data new
+       shoelace_log shoelace_log
+ WHERE s.sl_name = shoelace_arrive.arr_name
+   AND shoelace_data.sl_name = s.sl_name
+   AND (s.sl_avail + shoelace_arrive.arr_quant) &lt;&gt; s.sl_avail;
+</programlisting>
+
+    到这里，规则系统已经没有更多规则可用，并返回生成的查询树。
+   </para>
+
+   <para>
+    因此，我们最终得到两棵查询树，它们等效于以下<acronym>SQL</acronym>语句：
+
+<programlisting>
+INSERT INTO shoelace_log
+SELECT s.sl_name,
+       s.sl_avail + shoelace_arrive.arr_quant,
+       current_user,
+       current_timestamp
+  FROM shoelace_arrive shoelace_arrive, shoelace_data shoelace_data,
+       shoelace_data s
+ WHERE s.sl_name = shoelace_arrive.arr_name
+   AND shoelace_data.sl_name = s.sl_name
+   AND s.sl_avail + shoelace_arrive.arr_quant &lt;&gt; s.sl_avail;
+
+UPDATE shoelace_data
+   SET sl_avail = shoelace_data.sl_avail + shoelace_arrive.arr_quant
+  FROM shoelace_arrive shoelace_arrive,
+       shoelace_data shoelace_data,
+       shoelace_data s
+ WHERE s.sl_name = shoelace_arrive.sl_name
+   AND shoelace_data.sl_name = s.sl_name;
+</programlisting>
+
+    结果是：来自一个关系的数据被插入到另一个关系中，这个插入被改写为对第三个关系的更新，再被改写为对第四个关系的更新外加在第五个关系中记录该更新，最后整个过程被化简为两个查询。
+</para>
+
+<para>
+    这里有个稍显难看的小细节。观察这两个查询会发现，<literal>shoelace_data</literal>关系在范围表中出现了两次，而实际上完全可以缩减成一次。规划器不会处理这一点，因此规则系统为<command>INSERT</command>输出的执行计划会是
+
+<literallayout class="monospaced">
+Nested Loop
+  -&gt;  Merge Join
+        -&gt;  Seq Scan
+              -&gt;  Sort
+                    -&gt;  Seq Scan on s
+        -&gt;  Seq Scan
+              -&gt;  Sort
+                    -&gt;  Seq Scan on shoelace_arrive
+  -&gt;  Seq Scan on shoelace_data
+</literallayout>
+
+    而省略那个额外的范围表项则会得到
+
+<literallayout class="monospaced">
+Merge Join
+  -&gt;  Seq Scan
+        -&gt;  Sort
+              -&gt;  Seq Scan on s
+  -&gt;  Seq Scan
+        -&gt;  Sort
+              -&gt;  Seq Scan on shoelace_arrive
+</literallayout>
+
+    这会在日志表中生成完全相同的项。因此，规则系统导致了对<literal>shoelace_data</literal>表的一次完全不必要的额外扫描。而在<command>UPDATE</command>中，同样的冗余扫描还会再发生一次。不过，能让这一切总体上工作起来，已经是一项相当艰巨的工作。
+</para>
+
+<para>
+    现在我们来做一个关于<productname>PostgreSQL</productname>规则系统及其威力的最后演示。假设你向数据库中加入了一些颜色特别的鞋带：
+
+<programlisting>
+INSERT INTO shoelace VALUES ('sl9', 0, 'pink', 35.0, 'inch', 0.0);
+INSERT INTO shoelace VALUES ('sl10', 1000, 'magenta', 40.0, 'inch', 0.0);
+</programlisting>
+
+    我们想建立一个视图，用来检查哪些<literal>shoelace</literal>项在颜色上与任何鞋子都不匹配。这个视图是：
+
+<programlisting>
+CREATE VIEW shoelace_mismatch AS
+    SELECT * FROM shoelace WHERE NOT EXISTS
+        (SELECT shoename FROM shoe WHERE slcolor = sl_color);
+</programlisting>
+
+    它的输出是：
+
+<programlisting>
+SELECT * FROM shoelace_mismatch;
+
+ sl_name | sl_avail | sl_color | sl_len | sl_unit | sl_len_cm
+---------+----------+----------+--------+---------+-----------
+ sl9     |        0 | pink     |     35 | inch    |      88.9
+ sl10    |     1000 | magenta  |     40 | inch    |     101.6
+</programlisting>
+   </para>
+
+   <para>
+    现在我们想把它设置成这样：凡是不匹配且没有库存的鞋带，都要从数据库中删除。为了让<productname>PostgreSQL</productname>多费一点工夫，我们不直接删除它们，而是再创建一个视图：
+
+<programlisting>
+CREATE VIEW shoelace_can_delete AS
+    SELECT * FROM shoelace_mismatch WHERE sl_avail = 0;
+</programlisting>
+
+    然后这样做：
+
+<programlisting>
+DELETE FROM shoelace WHERE EXISTS
+    (SELECT * FROM shoelace_can_delete
+             WHERE sl_name = shoelace.sl_name);
+</programlisting>
+
+    结果如下：
+
+<programlisting>
+SELECT * FROM shoelace;
+
+ sl_name | sl_avail | sl_color | sl_len | sl_unit | sl_len_cm
+---------+----------+----------+--------+---------+-----------
+ sl1     |        5 | black    |     80 | cm      |        80
+ sl2     |        6 | black    |    100 | cm      |       100
+ sl7     |        6 | brown    |     60 | cm      |        60
+ sl4     |        8 | black    |     40 | inch    |     101.6
+ sl3     |       10 | black    |     35 | inch    |      88.9
+ sl8     |       21 | brown    |     40 | inch    |     101.6
+ sl10    |     1000 | magenta  |     40 | inch    |     101.6
+ sl5     |        4 | brown    |      1 | m       |       100
+ sl6     |       20 | brown    |    0.9 | m       |        90
+(9 rows)
+</programlisting>
+   </para>
+
+   <para>
+    作用于一个视图上的<command>DELETE</command>，其子查询条件总共使用了四个嵌套/连接的视图，其中一个视图自身又带有一个包含视图的子查询条件，并且还用到了计算得到的视图列，最终仍会被重写成单棵查询树，从真正的表中删除所请求的数据。
+</para>
+
+<para>
+    在现实世界中，大概只有很少的场景会需要这样的构造。但知道它确实能工作，总归让人安心。
+</para>
+</sect2>
+
+</sect1>
+
+<sect1 id="rules-privileges">
+
+<title>规则和权限</title>
+
+<indexterm zone="rules-privileges">
+ <primary>权限</primary>
+ <secondary sortas="Regeln">与规则</secondary>
+</indexterm>
+
+<indexterm zone="rules-privileges">
+ <primary>权限</primary>
+ <secondary sortas="Sichten">与视图</secondary>
+</indexterm>
+
+<para>
+    由于<productname>PostgreSQL</productname>规则系统会重写查询，因此可能访问原始查询中并未使用的其他表或视图。使用更新规则时，这甚至可能包括对表的写访问。
+</para>
+
+<para>
+    重写规则没有单独的所有者。关系（表或视图）的所有者会自动成为为其定义的重写规则的所有者。<productname>PostgreSQL</productname>规则系统改变了默认访问控制系统的行为。除了与安全调用者视图相关的<literal>SELECT</literal>规则
+    （参见<link linkend="sql-createview"><command>CREATE VIEW</command></link>），
+    由于规则而使用的所有关系都会根据规则所有者的权限进行检查，而不是调用规则的用户。
+    这意味着，除了安全调用者视图外，用户只需要对其查询中明确命名的表/视图具有所需的权限。
+</para>
+
+<para>
+    例如，某个用户有一份电话号码列表，其中一部分是私人的，另一部分对办公室助理有用。该用户可以这样构造：
+
+<programlisting>
+CREATE TABLE phone_data (person text, phone text, private boolean);
+CREATE VIEW phone_number AS
+    SELECT person, CASE WHEN NOT private THEN phone END AS phone
+    FROM phone_data;
+GRANT SELECT ON phone_number TO assistant;
+</programlisting>
+
+    除了该用户本人（以及数据库超级用户）之外，没有人可以访问<literal>phone_data</literal>表。但由于<command>GRANT</command>的存在，助理可以对<literal>phone_number</literal>视图执行<command>SELECT</command>。规则系统会把对<literal>phone_number</literal>的<command>SELECT</command>重写成对<literal>phone_data</literal>的<command>SELECT</command>。由于该用户是<literal>phone_number</literal>的所有者，因此也是规则的所有者，对<literal>phone_data</literal>的读访问会按照该用户的权限进行检查，于是查询被允许。同时，对<literal>phone_number</literal>本身的访问检查仍会执行，但这是针对调用用户进行的，因此除了用户本人和助理之外，没有其他人能使用它。
+</para>
+
+<para>
+    权限是逐条规则检查的。因此，目前助理是唯一能看到公开电话号码的人。但助理还可以再建立一个视图，并把该视图授予公众访问。这样，任何人都可以通过助理的视图看到<literal>phone_number</literal>中的数据。助理做不到的是创建一个直接访问<literal>phone_data</literal>的视图。（其实助理可以创建，但它不会起作用，因为每次访问都会在权限检查时被拒绝。）而且，一旦用户发现助理开放了其<literal>phone_number</literal>视图，用户就可以撤销助理的访问权限。那样一来，对助理视图的任何访问都会立即失败。
+</para>
+
+<para>
+    这种逐条规则的检查看起来似乎像是一个安全漏洞，但实际上并不是。因为即使不这样工作，助理也可以建立一个与<literal>phone_number</literal>具有相同列的表，每天把数据复制进去。那样一来，这些就是助理自己的数据，助理同样可以把访问权限授予任何人。<command>GRANT</command>的含义本来就是<quote>我信任你</quote>。如果某个你信任的人做了上面的事，那么该重新考虑这份信任，并使用<command>REVOKE</command>了。
+</para>
+
+<para>
+    需要注意的是，虽然视图可以用前文展示的技术来隐藏某些列的内容，但除非设置了<literal>security_barrier</literal>标志，否则它们不能被用来可靠地隐藏不可见行中的数据。例如，下面这个视图就是不安全的：
+<programlisting>
+CREATE VIEW phone_number AS
+    SELECT person, phone FROM phone_data WHERE phone NOT LIKE '412%';
+</programlisting>
+    这个视图看起来似乎很安全，因为规则系统会把对<literal>phone_number</literal>的任何<command>SELECT</command>重写为对<literal>phone_data</literal>的<command>SELECT</command>，并附加条件，要求只处理<literal>phone</literal>不以 412 开头的项。但是，如果用户可以创建自己的函数，就不难让规划器在<function>NOT LIKE</function>表达式之前先执行用户定义函数。例如：
+<programlisting>
+CREATE FUNCTION tricky(text, text) RETURNS bool AS $$
+BEGIN
+    RAISE NOTICE '% =&gt; %', $1, $2;
+    RETURN true;
+END;
+$$ LANGUAGE plpgsql COST 0.0000000000000000000001;
+
+SELECT * FROM phone_number WHERE tricky(person, phone);
+</programlisting>
+    <literal>phone_data</literal>表中的每个人和电话号码都会被打印为一条<literal>NOTICE</literal>，因为规划器会选择先执行廉价的<function>tricky</function>函数，再执行更昂贵的<function>NOT LIKE</function>。即使禁止用户定义新函数，内置函数也可以用于类似攻击。（例如，大多数类型转换函数都会在其错误消息中包含输入值。）
+</para>
+
+<para>
+    类似的考虑也适用于更新规则。在上一节的示例中，示例数据库中那些表的所有者可以把<literal>shoelace</literal>视图上的<literal>SELECT</literal>、<literal>INSERT</literal>、<literal>UPDATE</literal>和<literal>DELETE</literal>权限授予其他用户，但对<literal>shoelace_log</literal>只授予<literal>SELECT</literal>权限。写日志记录的规则动作仍会成功执行，因此其他用户可以看到日志记录。但他们不能伪造记录，也不能操纵或删除已有记录。在这个例子里，不存在通过说服规划器改变操作顺序来破坏规则的可能性，因为唯一引用<literal>shoelace_log</literal>的规则是一条无条件的<literal>INSERT</literal>。在更复杂的场景中，情况未必如此。
+</para>
+
+<para>
+    当视图需要提供行级安全时，应当给它设置<literal>security_barrier</literal>属性。这样可以防止恶意选择的函数和操作符在视图完成自己的工作之前就接触到行值。例如，如果前文展示的视图按下面方式创建，它就是安全的：
+<programlisting>
+CREATE VIEW phone_number WITH (security_barrier) AS
+    SELECT person, phone FROM phone_data WHERE phone NOT LIKE '412%';
+</programlisting>
+    使用<literal>security_barrier</literal>创建的视图，其性能可能远差于未使用该选项的视图。一般来说，这无法避免：如果最快的候选计划可能损害安全性，那它就必须被拒绝。因此，这个选项默认并不启用。
+</para>
+
+<para>
+    在处理没有副作用的函数时，查询规划器有更大的灵活性。这类函数称为<literal>LEAKPROOF</literal>，其中包括许多简单且常用的操作符，例如大量等值操作符。规划器可以安全地允许这类函数在查询执行过程中的任意位置求值，因为即便把它们应用到用户不可见的行上，也不会泄露这些不可见行的信息。此外，不带参数的函数，或者没有从安全屏障视图接收任何参数的函数，即使未被标记为<literal>LEAKPROOF</literal>，也可以下推，因为它们根本不会接收到来自视图的数据。相反，那些可能根据参数值抛出错误的函数（例如在发生溢出或除零时抛错的函数）就不是<literal>LEAKPROOF</literal>；如果在安全视图的行过滤之前对其求值，就可能泄露关于不可见行的重要信息。
+</para>
+
+<para>
+    例如，对于安全屏障视图（或定义了行级安全策略的表）上的查询，如果<literal>WHERE</literal>子句中使用的某个操作符属于该索引的操作符族，但其底层函数未被标记为<literal>LEAKPROOF</literal>，那么就不能选择索引扫描。<xref linkend="app-psql"/>程序的元命令<command><link linkend="app-psql-meta-command-dao">\dAo+</link></command>可用于列出操作符族，并判断其中哪些操作符被标记为<literal>LEAKPROOF</literal>。
+</para>
+
+<para>
+    需要理解的一点是，即使一个视图是用<literal>security_barrier</literal>选项创建的，它的安全性也只限于这样一种意义：不可见元组的内容不会被传递给可能不安全的函数。用户仍然可能通过其他方式推断不可见数据；例如，他们可以使用<command>EXPLAIN</command>查看查询计划，或者测量针对该视图执行查询所需的时间。恶意攻击者或许能够推断出不可见数据的大致数量，甚至获得有关数据分布或最常见值的一些信息（因为这些因素可能影响计划运行时间，甚至影响计划的选择，因为它们同样反映在优化器统计信息中）。如果这类“隐通道”攻击值得担心，那么向任何人授予这类数据的访问权限本身就可能是不明智的。
+</para>
+</sect1>
+
+<sect1 id="rules-status">
+
+<title>规则和命令状态</title>
+
+<para>
+    <productname>PostgreSQL</productname>服务器会为收到的每条命令返回一个命令状态字符串，例如<literal>INSERT 149592 1</literal>。在没有规则参与时，这很简单；但当查询被规则重写时会发生什么呢？
+</para>
+
+<para>
+    规则对命令状态的影响如下：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       如果该查询没有无条件的<literal>INSTEAD</literal>规则，那么原始给出的查询就会照常执行，并返回它自身的命令状态。（但请注意，如果存在任何带条件的<literal>INSTEAD</literal>规则，那么这些规则条件的取反会被加到原始查询上。这可能会减少它处理的行数，从而影响报告的状态。）
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       如果该查询存在任意无条件的<literal>INSTEAD</literal>规则，那么原始查询将完全不会执行。在这种情况下，服务器会返回由<literal>INSTEAD</literal>规则（带条件或不带条件）插入的、最后一条且与原始查询具有相同命令类型（<command>INSERT</command>、<command>UPDATE</command>或<command>DELETE</command>）的查询的命令状态。如果没有任何规则添加出满足这些条件的查询，那么返回的命令状态会显示原始查询类型，并且把行计数和 OID 字段都置零。
+      </para>
+     </listitem>
+    </itemizedlist>
+</para>
+
+<para>
+    在第二种情况下，程序员可以通过为所需的<literal>INSTEAD</literal>规则指定一个在活动规则中按字母顺序排在最后的规则名，来确保由它设置命令状态，因为它会最后被应用。
+</para>
+</sect1>
+
+<sect1 id="rules-triggers">
+
+<title>规则与触发器</title>
+
+<indexterm zone="rules-triggers">
+ <primary>规则</primary>
+ <secondary sortas="Trigger">与触发器比较</secondary>
+</indexterm>
+
+<indexterm zone="rules-triggers">
+ <primary>触发器</primary>
+ <secondary sortas="Regeln">与规则比较</secondary>
+</indexterm>
+
+<para>
+    许多能够用触发器完成的事情，同样也可以用<productname>PostgreSQL</productname>规则系统实现。不能用规则实现的内容之一是某些约束，尤其是外键。你可以放置一条带条件的规则：当某列的值没有出现在另一张表中时，把命令重写成<literal>NOTHING</literal>。但那样做会悄无声息地丢弃数据，这并不是好主意。如果需要检查值的有效性，并在值无效时生成错误消息，就必须使用触发器。
+</para>
+
+<para>
+    在本章中，我们重点讨论了用规则来更新视图。本章中所有更新规则的示例，也都可以用视图上的<literal>INSTEAD OF</literal>触发器来实现。编写这类触发器通常比编写规则更容易，尤其是在需要用复杂逻辑执行更新时。
+</para>
+
+<para>
+    对于两者都能实现的事情，哪一种更好取决于数据库的使用方式。触发器会对每个受影响的行触发一次，而规则会修改查询，或生成额外的查询。因此，如果一条语句会影响很多行，那么发出一条额外命令的规则往往会比触发器更快，因为触发器必须为每一行调用一次，并反复判断该做什么。不过，触发器方法在概念上要比规则方法简单得多，也更容易让新手写对。
+</para>
+
+<para>
+    下面我们用一个例子说明在某种场景下规则和触发器的取舍。这里有两个表：
+
+<programlisting>
+CREATE TABLE computer (
+    hostname        text,    -- indexed
+    manufacturer    text     -- indexed
+);
+
+CREATE TABLE software (
+    software        text,    -- indexed
+    hostname        text     -- indexed
+);
+</programlisting>
+
+    这两个表都有数千行，并且<structfield>hostname</structfield>上的索引都是唯一的。规则或触发器应实现这样一个约束：当删除<literal>computer</literal>中的某一行时，也删除<literal>software</literal>中引用该计算机的行。触发器会使用如下命令：
+
+<programlisting>
+DELETE FROM software WHERE hostname = $1;
+</programlisting>
+
+    由于触发器会对从<literal>computer</literal>中删除的每一行各调用一次，因此它可以准备并保存这条命令的计划，并把<structfield>hostname</structfield>值作为参数传入。规则则会写成：
+
+<programlisting>
+CREATE RULE computer_del AS ON DELETE TO computer
+    DO DELETE FROM software WHERE hostname = OLD.hostname;
+</programlisting>
+   </para>
+
+   <para>
+    现在我们来看不同类型的删除。对于下面这种情况：
+
+<programlisting>
+DELETE FROM computer WHERE hostname = 'mypc.local.net';
+</programlisting>
+
+    <literal>computer</literal>表会通过索引扫描（很快），由触发器发出的命令也会使用索引扫描（同样很快）。规则产生的额外查询是：
+
+<programlisting>
+DELETE FROM software WHERE computer.hostname = 'mypc.local.net'
+                       AND software.hostname = computer.hostname;
+</programlisting>
+
+    由于已经建立了合适的索引，规划器将创建一个规划
+
+<literallayout class="monospaced">
+Nestloop
+  -&gt;  Index Scan using comp_hostidx on computer
+  -&gt;  Index Scan using soft_hostidx on software
+</literallayout>
+
+    因此，触发器实现和规则实现之间的速度差异不会太大。
+   </para>
+
+   <para>
+    在下一个删除场景中，我们想去掉全部 2000 台<structfield>hostname</structfield>以<literal>old</literal>开头的计算机。有两种命令可以做到这件事。其中一种是：
+
+<programlisting>
+DELETE FROM computer WHERE hostname &gt;= 'old'
+                       AND hostname &lt;  'ole'
+</programlisting>
+
+    规则添加出来的命令将是：
+
+<programlisting>
+DELETE FROM software WHERE computer.hostname &gt;= 'old' AND computer.hostname &lt; 'ole'
+                       AND software.hostname = computer.hostname;
+</programlisting>
+
+    其计划为：
+
+<literallayout class="monospaced">
+Hash Join
+  -&gt;  Seq Scan on software
+  -&gt;  Hash
+    -&gt;  Index Scan using comp_hostidx on computer
+</literallayout>
+
+    另一个可能的命令是：
+
+<programlisting>
+DELETE FROM computer WHERE hostname ~ '^old';
+</programlisting>
+
+    它会让规则所添加的命令得到下面这个执行计划：
+
+<literallayout class="monospaced">
+Nestloop
+  -&gt;  Index Scan using comp_hostidx on computer
+  -&gt;  Index Scan using soft_hostidx on software
+</literallayout>
+
+    这说明，当多个条件表达式通过<literal>AND</literal>组合在一起时，规划器并没有意识到，对<literal>computer</literal>中<structfield>hostname</structfield>的限制同样也可以用于<literal>software</literal>上的索引扫描，而在该命令的正则表达式版本里它却能做到。触发器会对需要删除的 2000 台旧计算机中的每一台各调用一次，这意味着对<literal>computer</literal>做一次索引扫描，并对<literal>software</literal>做 2000 次索引扫描。规则实现则用两条使用索引的命令完成这件事。不过，在顺序扫描这种情况下，规则是否仍然更快，还取决于<literal>software</literal>表的总体大小。即使所有索引块很快都会进入缓存，通过 SPI 管理器执行来自触发器的 2000 条命令仍然要耗费一些时间。
+</para>
+
+<para>
+    我们要看的最后一个命令是：
+
+<programlisting>
+DELETE FROM computer WHERE manufacturer = 'bim';
+</programlisting>
+
+    同样，这也可能导致从<literal>computer</literal>中删除很多行。因此，触发器同样会通过执行器运行很多条命令。规则生成的命令则是：
+
+<programlisting>
+DELETE FROM software WHERE computer.manufacturer = 'bim'
+                       AND software.hostname = computer.hostname;
+</programlisting>
+
+    这个命令的计划又将是在两个索引扫描上的嵌套循环，只不过使用了<literal>computer</literal>上的另一个索引：
+
+<programlisting>
+Nestloop
+  -&gt;  Index Scan using comp_manufidx on computer
+  -&gt;  Index Scan using soft_hostidx on software
+</programlisting>
+
+    在上述任何一种情况下，规则系统产生的额外命令都或多或少与该命令影响的行数无关。
+</para>
+
+<para>
+    总结来说，只有当规则动作导致了规模很大且条件很差的连接，而规划器又无能为力时，规则才会明显慢于触发器。
+</para>
+</sect1>
+
+</chapter>

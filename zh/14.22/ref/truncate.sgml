@@ -1,0 +1,208 @@
+<!--
+doc/src/sgml/ref/truncate.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-truncate">
+ <indexterm zone="sql-truncate">
+  <primary>TRUNCATE</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>TRUNCATE</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>TRUNCATE</refname>
+  <refpurpose>清空一个表或一组表</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+<synopsis>
+TRUNCATE [ TABLE ] [ ONLY ] <replaceable class="parameter">name</replaceable> [ * ] [, ... ]
+    [ RESTART IDENTITY | CONTINUE IDENTITY ] [ CASCADE | RESTRICT ]
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>描述</title>
+
+  <para>
+   <command>TRUNCATE</command>可以快速移除一组表中的所有行。
+   它的效果与对每个表执行不带条件的<command>DELETE</command>相同，
+   但由于它并不实际扫描这些表，因此速度更快。此外，它会立即回收磁盘空间，
+   而不是要求后续再执行一次<command>VACUUM</command>操作。这一点对于大表尤其有用。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>参数</title>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-truncate-varlistentry-1">
+    <term><replaceable class="parameter">name</replaceable></term>
+    <listitem>
+     <para>
+      要截断的表名（可以是模式限定的）。如果在表名前指定了
+      <literal>ONLY</literal>，则只截断该表。如果未指定<literal>ONLY</literal>，
+      则该表及其所有后代表（如果有）都会被截断。也可以在表名后指定
+      <literal>*</literal>，以显式表明包含后代表。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-truncate-varlistentry-2">
+    <term><literal>RESTART IDENTITY</literal></term>
+    <listitem>
+     <para>
+      自动重新启动由被截断表列拥有的 sequence。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-truncate-varlistentry-3">
+    <term><literal>CONTINUE IDENTITY</literal></term>
+    <listitem>
+     <para>
+      不更改 sequence 的值。这是默认值。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-truncate-varlistentry-4">
+    <term><literal>CASCADE</literal></term>
+    <listitem>
+     <para>
+      自动截断所有以外键引用任一已命名表的表，以及任何由于
+      <literal>CASCADE</literal>而被加入该组的表。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-truncate-varlistentry-5">
+    <term><literal>RESTRICT</literal></term>
+    <listitem>
+     <para>
+      如果任一表具有来自命令中未列出表的外键引用，则拒绝截断。这是默认值。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>注解</title>
+
+  <para>
+   要截断一个表，你必须拥有该表上的<literal>TRUNCATE</literal>权限。
+  </para>
+
+  <para>
+   <command>TRUNCATE</command>会在其操作的每个表上获取
+   <literal>ACCESS EXCLUSIVE</literal>锁，这会阻塞该表上的所有其他并发操作。
+   当指定<literal>RESTART IDENTITY</literal>时，任何需要重新启动的 sequence
+   也会同样被排他锁定。如果需要对某个表进行并发访问，则应改用
+   <command>DELETE</command>命令。
+  </para>
+
+  <para>
+   <command>TRUNCATE</command>不能用于被其他表通过外键引用的表，
+   除非所有这类表也在同一条命令中被截断。因为在这种情况下检查有效性将需要
+   扫描表，而该命令的意义恰恰在于避免这样做。<literal>CASCADE</literal>
+   选项可用于自动包含所有依赖表 &mdash; 但使用该选项时一定要非常小心，
+   否则你可能会丢失并非有意删除的数据！
+   特别要注意的是，当要截断的表是一个分区时，其同级分区不会受到影响，
+   但级联会无差别地扩展到所有引用它的表以及这些表的全部分区。
+  </para>
+
+  <para>
+   <command>TRUNCATE</command>不会引发这些表上可能存在的任何
+   <literal>ON DELETE</literal>触发器，但会引发
+   <literal>ON TRUNCATE</literal>触发器。如果这些表中的任何一个
+   定义了<literal>ON TRUNCATE</literal>触发器，那么所有
+   <literal>BEFORE TRUNCATE</literal>触发器都会在任何截断发生之前
+   引发，而所有<literal>AFTER TRUNCATE</literal>触发器都会在最后一次
+   截断完成且所有 sequence 被重置之后引发。触发器会按照表的处理顺序
+   引发（先是命令中列出的表，然后是由于级联而加入的表）。
+  </para>
+
+  <para>
+   <command>TRUNCATE</command>不是多版本并发控制（MVCC）安全的。截断之后，
+   如果并发事务使用的是在截断发生前取得的快照，
+   该表对这些并发事务而言将表现为空。详见<xref linkend="mvcc-caveats"/>。
+   </para>
+
+  <para>
+   就表中数据而言，<command>TRUNCATE</command>是事务安全的：
+   如果外围事务没有提交，截断将被安全地回滚。
+  </para>
+
+  <para>
+   当指定<literal>RESTART IDENTITY</literal>时，隐含的
+   <command>ALTER SEQUENCE RESTART</command>操作也会以事务方式执行；
+   也就是说，如果外围事务没有提交，它们也会被回滚。请注意，如果在
+   事务回滚前又对这些重启后的 sequence 执行了额外操作，这些操作对 sequence
+   本身的影响会被回滚，但对<function>currval()</function>的影响不会被回滚。
+   也就是说，事务结束后，<function>currval()</function>仍将反映失败事务内取得的
+   最后一个 sequence 值，即使 sequence 本身可能已经不再与之保持一致。
+   这与失败事务之后<function>currval()</function>的通常行为类似。
+  </para>
+
+  <para>
+   如果外部数据包装器支持，<command>TRUNCATE</command>也可以用于外部表，
+   例如参见<xref linkend="postgres-fdw"/>。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>示例</title>
+
+  <para>
+   截断表<literal>bigtable</literal>和
+   <literal>fattable</literal>：
+
+<programlisting>
+TRUNCATE bigtable, fattable;
+</programlisting>
+  </para>
+
+  <para>
+   同样的操作，并重置所有相关联的 sequence 生成器：
+
+<programlisting>
+TRUNCATE bigtable, fattable RESTART IDENTITY;
+</programlisting>
+  </para>
+
+  <para>
+   截断表<literal>othertable</literal>，并级联到任何通过
+   外键约束引用<literal>othertable</literal>的表：
+
+<programlisting>
+TRUNCATE othertable CASCADE;
+</programlisting></para>
+ </refsect1>
+
+ <refsect1>
+  <title>兼容性</title>
+
+  <para>
+   SQL:2008 标准包括了一个<command>TRUNCATE</command>命令，
+   语法是<literal>TRUNCATE TABLE
+   <replaceable>tablename</replaceable></literal>。子句
+   <literal>CONTINUE IDENTITY</literal>/<literal>RESTART IDENTITY</literal>
+   在该标准中也有出现，但其含义虽相关却略有不同。该命令的某些并发行为在标准中
+   被留作实现定义，因此必要时应结合上述注解并与其他实现进行比较。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>另见</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="sql-delete"/></member>
+  </simplelist>
+ </refsect1>
+</refentry>

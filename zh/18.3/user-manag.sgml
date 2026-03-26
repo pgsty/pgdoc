@@ -1,0 +1,508 @@
+<!-- doc/src/sgml/user-manag.sgml -->
+
+<chapter id="user-manag">
+ <title>数据库角色</title>
+
+ <para>
+  <productname>PostgreSQL</productname>使用<firstterm>角色</firstterm>这一概念来管理数据库访问权限。角色可以被看作数据库用户，也可以被看作一组数据库用户，这取决于该角色的设置方式。角色可以拥有数据库对象（例如表和函数），并且可以把这些对象上的权限赋予其他角色，以控制谁能访问哪些对象。此外，还可以把一个角色中的<firstterm>成员资格</firstterm>授予另一个角色，从而允许成员角色使用授予该角色的权限。
+ </para>
+
+ <para>
+  角色这一概念涵盖了<quote>用户</quote>和<quote>组</quote>这两个概念。在
+  <productname>PostgreSQL</productname> 8.1 之前的版本中，用户和组是两类不同的实体，但现在只有角色。任意角色都可以充当用户、组，或者同时充当两者。
+ </para>
+
+ <para>
+  本章描述如何创建和管理角色。有关角色权限对各种数据库对象影响的更多信息，见<xref linkend="ddl-priv"/>。
+ </para>
+
+ <sect1 id="database-roles">
+  <title>数据库角色</title>
+
+  <indexterm zone="database-roles">
+   <primary>角色</primary>
+  </indexterm>
+
+  <indexterm zone="database-roles">
+   <primary>用户</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>CREATE ROLE</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>DROP ROLE</primary>
+  </indexterm>
+
+  <para>
+   数据库角色在概念上与操作系统用户完全独立。实践中保持两者的对应关系可能比较方便，但这并非必需。数据库角色在整个数据库集簇安装范围内都是全局的（而不是每个单独数据库各自独立）。要创建一个角色，可使用<link
+   linkend="sql-createrole"><command>CREATE ROLE</command></link> SQL 命令：
+<synopsis>
+CREATE ROLE <replaceable>name</replaceable>;
+</synopsis>
+   <replaceable>name</replaceable>遵循 SQL 标识符的规则：要么是不带特殊字符的普通标识符，要么用双引号括起。（在实际使用中，你通常会给该命令增加额外选项，例如<literal>LOGIN</literal>。更多细节见后文。）要移除一个现有角色，可使用对应的<link linkend="sql-droprole"><command>DROP ROLE</command></link>命令：
+<synopsis>
+DROP ROLE <replaceable>name</replaceable>;
+</synopsis>
+  </para>
+
+  <indexterm>
+   <primary>createuser</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>dropuser</primary>
+  </indexterm>
+
+  <para>
+   为了方便，提供了<xref linkend="app-createuser"/>和<xref linkend="app-dropuser"/>程序，作为这些 SQL 命令的包装器，可以从 shell 命令行调用：
+<synopsis>
+createuser <replaceable>name</replaceable>
+dropuser <replaceable>name</replaceable>
+</synopsis>
+  </para>
+
+  <para>
+   要确定现有角色的集合，可以查看<structname>pg_roles</structname>系统目录，例如：
+<synopsis>
+SELECT rolname FROM pg_roles;
+</synopsis>
+   或者只看那些能够登录的角色：
+<synopsis>
+SELECT rolname FROM pg_roles WHERE rolcanlogin;
+</synopsis>
+   <xref linkend="app-psql"/>程序的<literal>\du</literal>元命令也很适合列出现有角色。
+  </para>
+
+  <para>
+   为了完成数据库系统的初始引导，一个刚初始化的系统总会包含一个预定义的可登录角色。该角色总是一个<quote>超级用户</quote>，并且除非另行指定了不同名称，否则它的名称与用<command>initdb</command>初始化数据库集簇的操作系统用户相同。这个角色通常命名为<literal>postgres</literal>。要创建更多角色，必须先以这个初始角色建立连接。
+  </para>
+
+  <para>
+   每个到数据库服务器的连接都是以某个特定角色名建立的，而这个角色决定在该连接中发出命令时的初始访问权限。某个数据库连接要使用的角色名，由发起连接请求的客户端以应用特定的方式指明。例如，<command>psql</command>程序使用<option>-U</option>命令行选项来指明要以哪个角色连接。很多应用默认假定使用当前操作系统用户的名字（包括<command>createuser</command>和<command>psql</command>）。因此，在角色名和操作系统用户名之间维护对应关系通常很方便。
+  </para>
+
+  <para>
+   某个客户端连接能够以哪些数据库角色进行连接，由客户端认证设置决定，如<xref linkend="client-authentication"/>中所述。（因此，客户端并不限于只能以与其操作系统用户匹配的角色连接，正如一个人的登录名不必与其真实姓名一致。）由于角色身份决定了已连接客户端可用的权限集合，所以在设置多用户环境时，仔细配置权限非常重要。
+  </para>
+ </sect1>
+
+ <sect1 id="role-attributes">
+  <title>角色属性</title>
+
+   <para>
+    数据库角色可以具有若干属性，它们定义其权限，并与客户端认证系统相互作用。
+
+    <variablelist>
+     <varlistentry>
+      <term>登录权限<indexterm><primary>登录权限</primary></indexterm></term>
+      <listitem>
+       <para>
+        只有具有<literal>LOGIN</literal>属性的角色才能用作数据库连接的初始角色名。具有<literal>LOGIN</literal>属性的角色可以被视为<quote>数据库用户</quote>。要创建具有登录权限的角色，可使用以下任一方式：
+<programlisting>
+CREATE ROLE <replaceable>name</replaceable> LOGIN;
+CREATE USER <replaceable>name</replaceable>;
+</programlisting>
+        （<command>CREATE USER</command>等价于<command>CREATE ROLE</command>，不同之处只在于<command>CREATE USER</command>默认包含<literal>LOGIN</literal>，而<command>CREATE ROLE</command>不包含。）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>超级用户状态<indexterm><primary>超级用户</primary></indexterm></term>
+      <listitem>
+       <para>
+        数据库超级用户会绕过除登录权之外的所有权限检查。这是一种危险的权限，不应草率使用；最好以非超级用户角色完成大部分工作。要创建新的数据库超级用户，使用<literal>CREATE
+        ROLE <replaceable>name</replaceable> SUPERUSER</literal>。这必须由已经是超级用户的角色来执行。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>创建数据库<indexterm><primary>数据库</primary><secondary>创建权限</secondary></indexterm></term>
+      <listitem>
+       <para>
+        角色必须被明确授予创建数据库的权限（超级用户除外，因为后者会绕过所有权限检查）。要创建这样的角色，使用<literal>CREATE ROLE
+        <replaceable>name</replaceable> CREATEDB</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term id="role-creation">创建角色<indexterm><primary>角色</primary><secondary>创建权限</secondary></indexterm></term>
+      <listitem>
+       <para>
+        角色必须被明确授予创建更多角色的权限（超级用户除外，因为后者会绕过所有权限检查）。要创建这样的角色，使用<literal>CREATE ROLE
+        <replaceable>name</replaceable> CREATEROLE</literal>。
+        具有<literal>CREATEROLE</literal>权限的角色，可以更改和删除那些以带<literal>ADMIN</literal>选项的形式授予给该<literal>CREATEROLE</literal>用户的角色。非超级用户的<literal>CREATEROLE</literal>用户在创建新角色时会自动得到这种授权，因此默认情况下，<literal>CREATEROLE</literal>用户可以更改和删除自己创建的角色。更改角色包括使用<literal>ALTER ROLE</literal>能进行的大多数修改，例如更改密码。它还包括使用<literal>COMMENT</literal>和<literal>SECURITY LABEL</literal>命令对角色进行的修改。
+       </para>
+       <para>
+        然而，<literal>CREATEROLE</literal>并不赋予创建<literal>SUPERUSER</literal>角色的能力，也不赋予对已经存在的<literal>SUPERUSER</literal>角色的任何控制权。此外，<literal>CREATEROLE</literal>也不赋予创建<literal>REPLICATION</literal>用户的能力，也不能授予或撤销<literal>REPLICATION</literal>权限，也不能修改这类用户的角色属性。不过，它允许在<literal>REPLICATION</literal>角色上使用<literal>ALTER ROLE ... SET</literal>和<literal>ALTER ROLE ... RENAME</literal>，以及使用<literal>COMMENT ON ROLE</literal>、<literal>SECURITY LABEL ON ROLE</literal>和<literal>DROP ROLE</literal>。最后，<literal>CREATEROLE</literal>也不赋予授予或撤销<literal>BYPASSRLS</literal>权限的能力。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>发起复制<indexterm><primary>角色</primary><secondary>发起复制的权限</secondary></indexterm></term>
+      <listitem>
+       <para>
+        角色必须被明确授予发起流复制的权限（超级用户除外，因为后者会绕过所有权限检查）。用于流复制的角色还必须具有<literal>LOGIN</literal>权限。要创建这样的角色，使用<literal>CREATE ROLE <replaceable>name</replaceable> REPLICATION
+        LOGIN</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>密码<indexterm><primary>密码</primary></indexterm></term>
+      <listitem>
+       <para>
+        只有在客户端认证方法要求用户连接数据库时提供密码时，密码才有意义。<option>password</option>和<option>md5</option>认证方法都会使用密码。数据库密码与操作系统密码是分离的。可在创建角色时通过<literal>CREATE ROLE
+        <replaceable>name</replaceable> PASSWORD '<replaceable>string</replaceable>'</literal>指定密码。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>权限继承<indexterm><primary>角色</primary><secondary>继承权限</secondary></indexterm></term>
+      <listitem>
+       <para>
+        默认情况下，角色会继承其所属角色的权限。不过，要创建一个默认不继承权限的角色，使用<literal>CREATE ROLE <replaceable>name</replaceable>
+        NOINHERIT</literal>。另外，也可以在单个授权时使用<literal>WITH INHERIT TRUE</literal>或<literal>WITH INHERIT FALSE</literal>来覆盖继承行为。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>绕过行级安全<indexterm><primary>角色</primary><secondary>绕过权限</secondary></indexterm></term>
+      <listitem>
+       <para>
+        角色必须被明确授予绕过每一条行级安全（RLS）策略的权限（超级用户除外，因为后者会绕过所有权限检查）。要创建这样的角色，必须以超级用户身份使用<literal>CREATE ROLE <replaceable>name</replaceable> BYPASSRLS</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>连接限制<indexterm><primary>角色</primary><secondary>连接限制</secondary></indexterm></term>
+      <listitem>
+       <para>
+        连接限制可以指定一个角色能够建立多少个并发连接。-1（默认值）表示无限制。可在创建角色时通过<literal>CREATE ROLE <replaceable>name</replaceable> CONNECTION LIMIT '<replaceable>integer</replaceable>'</literal>指定连接限制。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+
+    角色的属性可以在创建后通过<command>ALTER ROLE</command>修改。<indexterm><primary>ALTER ROLE</primary></indexterm>
+    有关细节见<xref linkend="sql-createrole"/>和<xref linkend="sql-alterrole"/>命令的参考页。
+   </para>
+
+  <para>
+   角色还可以为<xref
+   linkend="runtime-config"/>中描述的许多运行时配置设置指定角色特定默认值。例如，如果出于某种原因你希望每次连接时都禁用索引扫描（提示：这不是个好主意），你可以使用：
+<programlisting>
+ALTER ROLE myname SET enable_indexscan TO off;
+</programlisting>
+   这会保存该设置（但不会立即生效）。在该角色后续建立的连接中，它看起来就像在会话开始之前执行了<literal>SET enable_indexscan TO off</literal>一样。你仍然可以在会话期间更改该设置；它只会作为默认值。要移除角色特定默认设置，使用<literal>ALTER ROLE <replaceable>rolename</replaceable> RESET <replaceable>varname</replaceable></literal>。注意，附加到没有<literal>LOGIN</literal>权限的角色上的角色特定默认值几乎没有用，因为它们永远不会生效。
+  </para>
+
+  <para>
+   当非超级用户利用<literal>CREATEROLE</literal>权限创建角色时，所创建的角色会自动重新授予给创建用户，就像引导超级用户执行了命令<literal>GRANT created_user TO creating_user WITH ADMIN TRUE, SET FALSE,
+   INHERIT FALSE</literal>一样。由于<literal>CREATEROLE</literal>用户只有在对现有角色拥有<literal>ADMIN OPTION</literal>时，才能对该角色行使特殊权限，这项授权恰好足以让<literal>CREATEROLE</literal>用户管理自己创建的角色。不过，因为它是以<literal>INHERIT FALSE, SET
+   FALSE</literal>创建的，<literal>CREATEROLE</literal>用户不会继承所创建角色的权限，也不能通过<literal>SET ROLE</literal>访问该角色的权限。然而，由于任何对某角色拥有<literal>ADMIN OPTION</literal>的用户都可以把该角色的成员资格授予任何其他用户，<literal>CREATEROLE</literal>用户只需使用<literal>INHERIT</literal>和/或<literal>SET</literal>选项把该角色再次授予自己，就可以获得对所创建角色的访问能力。因此，默认不继承权限、也不默认授予<literal>SET ROLE</literal>，只是为了防止意外，而不是一种安全特性。还要注意，由于这项自动授权是由引导超级用户发出的，<literal>CREATEROLE</literal>用户自己不能撤销或更改它；不过，任何超级用户都可以撤销或修改它，并向其他<literal>CREATEROLE</literal>用户发出额外的此类授权。无论何时，对某角色拥有<literal>ADMIN OPTION</literal>的<literal>CREATEROLE</literal>用户都可以管理该角色。
+  </para>
+ </sect1>
+
+ <sect1 id="role-membership">
+  <title>角色成员资格</title>
+
+  <indexterm zone="role-membership">
+   <primary>角色</primary><secondary>成员资格</secondary>
+  </indexterm>
+
+  <para>
+   为了简化权限管理，把用户分组通常很方便：这样，权限就可以整体授予给一个组，或者从整个组中撤销。在<productname>PostgreSQL</productname>中，这通过创建一个表示该组的角色，然后把该组角色中的<firstterm>成员资格</firstterm>授予各个用户角色来实现。
+  </para>
+
+  <para>
+   要建立一个组角色，首先创建该角色：
+<synopsis>
+CREATE ROLE <replaceable>name</replaceable>;
+</synopsis>
+   通常，作为组使用的角色不会有<literal>LOGIN</literal>属性，不过如果你愿意，也可以设置它。
+  </para>
+
+  <para>
+   一旦组角色存在，你就可以使用<link linkend="sql-grant"><command>GRANT</command></link>和<link linkend="sql-revoke"><command>REVOKE</command></link>命令增加和移除成员：
+<synopsis>
+GRANT <replaceable>group_role</replaceable> TO <replaceable>role1</replaceable>, ... ;
+REVOKE <replaceable>group_role</replaceable> FROM <replaceable>role1</replaceable>, ... ;
+</synopsis>
+   你也可以把成员资格授予其他组角色（因为组角色和非组角色之间其实并没有真正区别）。数据库不允许你建立循环的成员资格链。另外，不允许把某个角色中的成员资格授予<literal>PUBLIC</literal>。
+  </para>
+
+  <para>
+   组角色的成员可以通过两种方式使用该角色的权限。第一，获授成员资格且带有<literal>SET</literal>选项的成员角色可以通过<link linkend="sql-set-role"><command>SET ROLE</command></link>临时<quote>成为</quote>该组角色。在这种状态下，数据库会话可以使用组角色的权限，而不是原始登录角色的权限，并且创建的任何数据库对象都被认为归组角色所有，而不是归登录角色所有。第二，获授成员资格且带有<literal>INHERIT</literal>选项的成员角色，会自动拥有其直接或间接所属角色的权限，不过一旦成员资格链上某一段缺少继承选项，这条链就会在那里终止。举例来说，假设我们执行了：
+<programlisting>
+CREATE ROLE joe LOGIN;
+CREATE ROLE admin;
+CREATE ROLE wheel;
+CREATE ROLE island;
+GRANT admin TO joe WITH INHERIT TRUE;
+GRANT wheel TO admin WITH INHERIT FALSE;
+GRANT island TO joe WITH INHERIT TRUE, SET FALSE;
+</programlisting>
+   以角色<literal>joe</literal>建立连接后，数据库会话立即可以使用直接授予<literal>joe</literal>的权限，以及授予<literal>admin</literal>和<literal>island</literal>的任何权限，因为<literal>joe</literal><quote>继承</quote>了这些权限。然而，授予<literal>wheel</literal>的权限不可用，因为尽管<literal>joe</literal>间接是<literal>wheel</literal>的成员，但这层成员资格是经由使用<literal>WITH INHERIT FALSE</literal>授予的<literal>admin</literal>得来的。执行：
+<programlisting>
+SET ROLE admin;
+</programlisting>
+   之后，会话将只能使用授予<literal>admin</literal>的权限，而不能使用授予<literal>joe</literal>或<literal>island</literal>的权限。再执行：
+<programlisting>
+SET ROLE wheel;
+</programlisting>
+   之后，会话将只能使用授予<literal>wheel</literal>的权限，而不能使用授予<literal>joe</literal>或<literal>admin</literal>的权限。原始权限状态可通过以下任一方式恢复：
+<programlisting>
+SET ROLE joe;
+SET ROLE NONE;
+RESET ROLE;
+</programlisting>
+  </para>
+
+  <note>
+   <para>
+    <command>SET ROLE</command>命令总是允许切换到原始登录角色直接或间接所属的任何角色，只要存在一条成员资格授权链，并且链上的每一段都具有<literal>SET TRUE</literal>（默认值）。因此，在上例中，没有必要先成为<literal>admin</literal>再成为<literal>wheel</literal>。另一方面，根本不可能成为<literal>island</literal>；<literal>joe</literal>只能通过继承来使用那些权限。
+   </para>
+  </note>
+
+  <note>
+   <para>
+    在 SQL 标准中，用户与角色之间有明确区别，并且用户不会自动继承权限，而角色会。这种行为可以在<productname>PostgreSQL</productname>中通过让用作 SQL 角色的角色具有<literal>INHERIT</literal>属性，而让用作 SQL 用户的角色具有<literal>NOINHERIT</literal>属性来获得。不过，出于与 8.1 之前版本向后兼容的考虑，<productname>PostgreSQL</productname>默认给所有角色都赋予<literal>INHERIT</literal>属性；在那些早期版本中，用户总能使用授予其所属组的权限。
+   </para>
+  </note>
+
+  <para>
+   角色属性<literal>LOGIN</literal>、<literal>SUPERUSER</literal>、<literal>CREATEDB</literal>和<literal>CREATEROLE</literal>可以被视为特殊权限，但它们从不会像数据库对象上的普通权限那样被继承。要使用其中之一，必须实际执行<command>SET ROLE</command>切换到拥有该属性的特定角色。继续上面的例子，我们可以选择把<literal>CREATEDB</literal>和<literal>CREATEROLE</literal>赋予<literal>admin</literal>角色。这样，一个以<literal>joe</literal>角色连接的会话并不会立即拥有这些权限，只有在执行<command>SET ROLE admin</command>之后才会拥有。
+  </para>
+
+  <para>
+  </para>
+
+  <para>
+   要销毁一个组角色，使用<link
+   linkend="sql-droprole"><command>DROP ROLE</command></link>：
+<synopsis>
+DROP ROLE <replaceable>name</replaceable>;
+</synopsis>
+   该组角色中的任何成员资格都会被自动撤销（但成员角色本身不会受到其他影响）。
+  </para>
+ </sect1>
+
+ <sect1 id="role-removal">
+  <title>删除角色</title>
+
+  <para>
+   由于角色可以拥有数据库对象，并且可以拥有访问其他对象的权限，所以删除一个角色通常不只是简单执行一次<link linkend="sql-droprole"><command>DROP ROLE</command></link>。必须先删除或重新分配该角色拥有的任何对象；并且必须撤销授予该角色的任何权限。
+  </para>
+
+  <para>
+   对象所有权可以逐个使用<command>ALTER</command>命令转移，例如：
+<programlisting>
+ALTER TABLE bobs_table OWNER TO alice;
+</programlisting>
+   或者，可以使用<link linkend="sql-reassign-owned"><command>REASSIGN OWNED</command></link>命令把待删除角色拥有的所有对象的所有权重新分配给单个其他角色。由于<command>REASSIGN OWNED</command>不能访问其他数据库中的对象，因此必须在包含该角色所拥有对象的每个数据库中运行它。（注意，第一次执行这种<command>REASSIGN OWNED</command>时，会更改该待删除角色拥有的、在多个数据库之间共享的对象，即数据库或表空间的所有权。）
+  </para>
+
+  <para>
+   一旦有价值的对象都已转移给新拥有者，被删除角色所拥有的其余对象即可使用<link linkend="sql-drop-owned"><command>DROP OWNED</command></link>命令删除。同样，由于该命令不能访问其他数据库中的对象，因此必须在包含该角色所拥有对象的每个数据库中运行它。另外，<command>DROP
+   OWNED</command>不会删除整个数据库或表空间，因此如果该角色拥有任何尚未转移给新拥有者的数据库或表空间，就必须手工删除它们。
+  </para>
+
+  <para>
+   <command>DROP OWNED</command>还会负责移除授予目标角色、但不属于它自身对象的任何权限。由于<command>REASSIGN OWNED</command>不会处理这类对象，所以通常需要同时运行<command>REASSIGN OWNED</command>和<command>DROP OWNED</command>（按这个顺序！），才能完整移除待删除角色的依赖关系。
+  </para>
+
+  <para>
+   总之，移除曾用来拥有对象的角色，最通用的做法是：
+  </para>
+<programlisting>
+REASSIGN OWNED BY doomed_role TO successor_role;
+DROP OWNED BY doomed_role;
+-- repeat the above commands in each database of the cluster
+DROP ROLE doomed_role;
+</programlisting>
+
+  <para>
+   如果并非所有拥有的对象都要转移给同一个后继拥有者，最好先手工处理这些例外情况，然后再执行上述步骤作最后清理。
+  </para>
+
+  <para>
+   如果在仍有依赖对象存在时尝试执行<command>DROP ROLE</command>，它会发出消息指出哪些对象需要被重新分配或删除。
+  </para>
+ </sect1>
+
+ <sect1 id="predefined-roles">
+  <title>预定义角色</title>
+
+  <indexterm zone="predefined-roles">
+   <primary>角色</primary>
+  </indexterm>
+
+  <para>
+   <productname>PostgreSQL</productname>提供了一组预定义角色，它们提供对某些常见且需要权限的能力和信息的访问。管理员（包括具有<literal>CREATEROLE</literal>权限的角色）可以把这些角色<command>GRANT</command>给其环境中的用户和/或其他角色，从而让这些用户获得所指定的能力和信息。例如：
+
+<programlisting>
+GRANT pg_signal_backend TO admin_user;
+</programlisting>
+  </para>
+
+  <warning>
+   <para>
+    授予这些角色时应当谨慎，确保它们只在需要时使用，并理解这些角色会授予对敏感信息的访问。
+   </para>
+  </warning>
+
+  <para>
+   下文介绍这些预定义角色。请注意，随着将来增加更多能力，各个角色的具体权限可能会发生变化。管理员应关注发行说明中的变更。
+
+   <variablelist>
+    <varlistentry id="predefined-role-pg-checkpoint" xreflabel="pg_checkpoint">
+     <term><varname>pg_checkpoint</varname></term>
+     <listitem>
+      <para>
+       <literal>pg_checkpoint</literal>允许执行<link linkend="sql-checkpoint"><command>CHECKPOINT</command></link>命令。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="predefined-role-pg-create-subscription" xreflabel="pg_create_subscription">
+     <term><varname>pg_create_subscription</varname></term>
+     <listitem>
+      <para>
+       <literal>pg_create_subscription</literal>允许在数据库上具有<literal>CREATE</literal>权限的用户执行<link linkend="sql-createsubscription"><command>CREATE SUBSCRIPTION</command></link>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="predefined-role-pg-database-owner" xreflabel="pg_database_owner">
+     <term><varname>pg_database_owner</varname></term>
+     <listitem>
+      <para>
+       <literal>pg_database_owner</literal>始终恰好有一个隐式成员：当前数据库的拥有者。它不能被授予任何角色中的成员资格，也不能有任何角色被授予<literal>pg_database_owner</literal>中的成员资格。不过，和其他角色一样，它可以拥有对象并获得访问权限授权。因此，一旦<literal>pg_database_owner</literal>在某个模板数据库中拥有权限，由该模板实例化的每个数据库的拥有者都将拥有这些权限。最初，这个角色拥有<literal>public</literal>模式，因此每个数据库拥有者都管理该模式在本数据库中的使用。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="predefined-role-pg-maintain" xreflabel="pg_maintain">
+     <term><varname>pg_maintain</varname></term>
+     <listitem>
+      <para>
+       <literal>pg_maintain</literal>允许在所有关系上执行<link linkend="sql-vacuum"><command>VACUUM</command></link>、
+       <link linkend="sql-analyze"><command>ANALYZE</command></link>、
+       <link linkend="sql-cluster"><command>CLUSTER</command></link>、
+       <link linkend="sql-refreshmaterializedview"><command>REFRESH MATERIALIZED VIEW</command></link>、
+       <link linkend="sql-reindex"><command>REINDEX</command></link>
+       以及<link linkend="sql-lock"><command>LOCK TABLE</command></link>，其效果就像对这些对象拥有<literal>MAINTAIN</literal>权限一样。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="predefined-role-pg-monitor" xreflabel="pg_monitor">
+     <term><varname>pg_monitor</varname></term>
+     <term><varname>pg_read_all_settings</varname></term>
+     <term><varname>pg_read_all_stats</varname></term>
+     <term><varname>pg_stat_scan_tables</varname></term>
+     <listitem>
+      <para>
+       这些角色旨在让管理员能够方便地为监控数据库服务器配置一个角色。它们授予一组常见权限，使该角色能够读取各种有用的配置设置、统计信息以及其他通常仅限超级用户查看的系统信息。
+      </para>
+      <para>
+       <literal>pg_monitor</literal>允许读取或执行各种监控视图和函数。该角色是<literal>pg_read_all_settings</literal>、<literal>pg_read_all_stats</literal>和<literal>pg_stat_scan_tables</literal>的成员。
+      </para>
+      <para>
+       <literal>pg_read_all_settings</literal>允许读取所有配置变量，即使是那些通常仅对超级用户可见的变量。
+      </para>
+      <para>
+       <literal>pg_read_all_stats</literal>允许读取所有 pg_stat_* 视图，并使用各种与统计信息相关的扩展，即使是那些通常仅对超级用户可见的扩展。
+      </para>
+      <para>
+       <literal>pg_stat_scan_tables</literal>允许执行可能在表上持有<literal>ACCESS SHARE</literal>锁并持续较长时间的监控函数（例如<function>pgrowlocks(text)</function>，见<xref linkend="pgrowlocks"/>扩展）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="predefined-role-pg-read-all-data" xreflabel="pg_read_all_data">
+     <term><varname>pg_read_all_data</varname></term>
+     <term><varname>pg_write_all_data</varname></term>
+     <listitem>
+      <para>
+       <literal>pg_read_all_data</literal>允许读取所有数据（表、视图、序列），其效果就像对这些对象拥有<command>SELECT</command>权限并对所有模式拥有<literal>USAGE</literal>权限一样。该角色不会绕过行级安全（RLS）策略。如果正在使用 RLS，管理员可能希望对被授予此角色的角色设置<literal>BYPASSRLS</literal>。
+      </para>
+      <para>
+       <literal>pg_write_all_data</literal>允许写入所有数据（表、视图、序列），其效果就像对这些对象拥有<command>INSERT</command>、<command>UPDATE</command>和<command>DELETE</command>权限并对所有模式拥有<literal>USAGE</literal>权限一样。该角色不会绕过行级安全（RLS）策略。如果正在使用 RLS，管理员可能希望对被授予此角色的角色设置<literal>BYPASSRLS</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="predefined-role-pg-read-server-files" xreflabel="pg_read_server_files">
+     <term><varname>pg_read_server_files</varname></term>
+     <term><varname>pg_write_server_files</varname></term>
+     <term><varname>pg_execute_server_program</varname></term>
+     <listitem>
+      <para>
+       这些角色旨在允许管理员创建受信任但非超级用户的角色，使其能够以数据库运行所用操作系统用户的身份访问文件并在数据库服务器上运行程序。它们在直接访问文件时会绕过所有数据库级权限检查，并且可被用来获得超级用户级别的访问能力。因此，向用户授予这些角色时必须极其谨慎。
+      </para>
+      <para>
+       <literal>pg_read_server_files</literal>允许使用<command>COPY</command>和其他文件访问函数，从服务器上数据库可访问的任何位置读取文件。
+      </para>
+      <para>
+       <literal>pg_write_server_files</literal>允许使用<command>COPY</command>和其他文件访问函数，向服务器上数据库可访问的任何位置写入文件。
+      </para>
+      <para>
+       <literal>pg_execute_server_program</literal>允许使用<command>COPY</command>和其他允许执行服务器端程序的函数，以数据库运行所用用户的身份在数据库服务器上执行程序。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="predefined-role-pg-signal-autovacuum-worker" xreflabel="pg_signal_autovacuum_worker">
+     <term><varname>pg_signal_autovacuum_worker</varname></term>
+     <listitem>
+      <para>
+       <literal>pg_signal_autovacuum_worker</literal>允许向自动清理工作进程发送信号，以取消当前表的清理操作或终止其会话。见<xref linkend="functions-admin-signal"/>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="predefined-role-pg-signal-backend" xreflabel="pg_signal_backend">
+     <term><varname>pg_signal_backend</varname></term>
+     <listitem>
+      <para>
+       <literal>pg_signal_backend</literal>允许向另一个后端发送信号，以取消查询或终止其会话。注意，这个角色不允许向由超级用户拥有的后端发送信号。见<xref linkend="functions-admin-signal"/>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="predefined-role-pg-use-reserved-connections" xreflabel="pg_use_reserved_connections">
+     <term><varname>pg_use_reserved_connections</varname></term>
+     <listitem>
+      <para>
+       <literal>pg_use_reserved_connections</literal>允许使用通过<xref linkend="guc-reserved-connections"/>保留的连接槽。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+ </sect1>
+
+ <sect1 id="perm-functions">
+  <title>函数安全性</title>
+
+  <para>
+   函数、触发器和行级安全策略允许用户把代码插入后端服务器，而其他用户可能会无意中执行这些代码。因此，这些机制使用户能够相对容易地对其他用户实施<quote>特洛伊木马</quote>攻击。最强的保护方式是严格控制谁能定义对象。如果这不可行，则应编写只引用拥有者可信对象的查询，并从<varname>search_path</varname>中移除任何允许不受信任用户创建对象的模式。
+  </para>
+
+  <para>
+   函数在后端服务器进程中运行，并具有数据库服务器守护进程的操作系统权限。如果函数所用的编程语言允许不受检查的内存访问，就有可能更改服务器的内部数据结构。因此，这类函数可以做很多别的事情，其中就包括绕过任何系统访问控制。允许这种访问的函数语言被认为是<quote>不受信任的</quote>，而<productname>PostgreSQL</productname>只允许超级用户创建用这类语言编写的函数。
+  </para>
+ </sect1>
+
+</chapter>

@@ -1,0 +1,149 @@
+<!--
+doc/src/sgml/ref/notify.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-notify">
+ <indexterm zone="sql-notify">
+  <primary>NOTIFY</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>NOTIFY</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>NOTIFY</refname>
+  <refpurpose>发出一个通知</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+<synopsis>
+NOTIFY <replaceable class="parameter">channel</replaceable> [ , <replaceable class="parameter">payload</replaceable> ]
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>描述</title>
+
+  <para>
+   <command>NOTIFY</command>命令向每个客户端应用发送一个通知事件，并可附带一个可选的<quote>载荷</quote>字符串；这些客户端应用此前都已在当前数据库中针对指定的通道名执行过<command>LISTEN <replaceable class="parameter">channel</replaceable></command>。通知对所有用户可见。
+  </para>
+
+  <para>
+   <command>NOTIFY</command>为访问同一个<productname>PostgreSQL</productname>数据库的一组进程提供了一种简单的进程间通信机制。通知中可以附带载荷字符串；如果需要传递结构化数据，也可以借助数据库中的表，将附加数据从通知发送者传递给一个或多个监听者，从而构建用于传递结构化数据的更高层机制。
+  </para>
+
+  <para>
+   传递给客户端的通知事件信息包括：通知通道名、发出通知的会话对应的服务器进程<acronym>PID</acronym>，以及载荷字符串。如果未指定载荷字符串，则该字符串为空串。
+  </para>
+
+  <para>
+   在某个数据库中使用哪些通道名以及各自含义，由数据库设计者自行决定。常见的做法是让通道名与数据库中的某个表同名，而通知事件基本上意味着：<quote>我改动了这张表，去看看有什么新变化</quote>。不过，<command>NOTIFY</command>和<command>LISTEN</command>命令并不会强制这种关联。例如，数据库设计者可以使用多个不同的通道名，来标识同一张表上的不同类型变更；或者也可以利用载荷字符串区分不同情况。
+  </para>
+
+  <para>
+   当<command>NOTIFY</command>用于表明某张特定表发生变化时，一种很有用的编程技巧是把<command>NOTIFY</command>放进由表更新触发的语句级触发器中。这样一来，每当表发生变化时就会自动发出通知，应用程序员也不容易忘记这么做。
+  </para>
+
+  <para>
+   <command>NOTIFY</command>会以几种重要方式与 SQL 事务交互。首先，如果在事务内部执行<command>NOTIFY</command>，那么只有在事务提交之后，通知事件才会被递送；如果事务被中止，则其中所有命令都不会生效，<command>NOTIFY</command>也不例外。这种行为是合理的，但如果你期望通知立即送达，可能会感到意外。其次，如果某个正在监听的会话在事务内部收到了通知信号，那么在该事务结束（提交或中止）之前，通知事件都不会递送给它所连接的客户端。原因同样在于：如果通知在事务内部就已递送，而该事务后来又被中止，我们会希望通知也能被撤销，但服务器一旦把通知发送给客户端，就无法再把它<quote>收回</quote>。因此，通知事件只会在事务之间递送。由此得出的结论是，使用<command>NOTIFY</command>做实时信号的应用，应尽量让事务保持短小。
+  </para>
+
+  <para>
+   如果在同一个事务中，针对同一通道名多次发送完全相同载荷字符串的通知，那么监听者只会收到其中一个通知事件。另一方面，载荷字符串不同的通知始终会作为不同通知递送。类似地，来自不同事务的通知也绝不会被折叠为一个通知。除了会丢弃重复通知中较后的那些实例之外，<command>NOTIFY</command>还保证来自同一事务的通知会按发送顺序递送；来自不同事务的消息，则会按事务提交顺序递送。
+  </para>
+
+  <para>
+   执行<command>NOTIFY</command>的客户端自己同时也在监听同一通知通道，这是很常见的情形。在这种情况下，它会像其他监听会话一样收到一个通知事件。根据应用逻辑，这可能导致无用功，例如再次读取自己刚刚写入更新的数据库表。要避免这种额外工作，可以检查通知事件消息中提供的发出通知的服务器进程<acronym>PID</acronym>，是否与当前会话自身的<acronym>PID</acronym>（可通过<application>libpq</application>获得）相同。如果二者相同，就说明这是当前会话自己发出的通知回送给自己，可以直接忽略。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>参数</title>
+
+  <variablelist>
+   <varlistentry>
+    <term><replaceable class="parameter">channel</replaceable></term>
+    <listitem>
+     <para>
+      要发信号的通知通道名称（任意标识符）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><replaceable class="parameter">payload</replaceable></term>
+    <listitem>
+     <para>
+      随通知一起传递的<quote>载荷</quote>字符串。它必须指定为简单的字符串字面值。在默认配置下，它必须短于 8000 字节。（如果需要传递二进制数据或大量信息，最好把它们放入数据库表中，并发送该记录的键。）
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>注解</title>
+
+  <para>
+   系统中有一个队列，用来保存那些已经发送但尚未被所有监听会话处理的通知。如果这个队列被塞满，那么调用<command>NOTIFY</command>的事务会在提交时失败。该队列非常大（标准安装中为 8GB），几乎足以满足所有用例。不过，如果某个会话执行了<command>LISTEN</command>后又长时间停留在一个事务里，就无法进行清理。一旦队列占用超过一半，你就会在日志文件中看到警告，指出究竟是哪个会话阻碍了清理。在这种情况下，应确保该会话结束其当前事务，以便清理能够继续进行。
+  </para>
+  <para>
+   函数<function>pg_notification_queue_usage</function>返回当前被待处理通知占用的队列比例。详见<xref linkend="functions-info"/>。
+  </para>
+  <para>
+   执行过<command>NOTIFY</command>的事务不能为两阶段提交做准备。
+  </para>
+
+  <refsect2>
+   <title>pg_notify</title>
+
+   <indexterm>
+    <primary>pg_notify</primary>
+   </indexterm>
+
+   <para>
+    要发送通知，也可以使用函数<literal><function>pg_notify</function>(<type>text</type>, <type>text</type>)</literal>。该函数的第一个参数是通道名，第二个参数是载荷。如果需要处理非常量的通道名和载荷，它会比<command>NOTIFY</command>命令更容易使用。
+   </para>
+  </refsect2>
+ </refsect1>
+
+ <refsect1>
+  <title>示例</title>
+
+  <para>
+   在<application>psql</application>中配置并执行一组 listen/notify 操作：
+
+<programlisting>
+LISTEN virtual;
+NOTIFY virtual;
+Asynchronous notification "virtual" received from server process with PID 8448.
+NOTIFY virtual, 'This is the payload';
+Asynchronous notification "virtual" with payload "This is the payload" received from server process with PID 8448.
+
+LISTEN foo;
+SELECT pg_notify('fo' || 'o', 'pay' || 'load');
+Asynchronous notification "foo" with payload "payload" received from server process with PID 14728.
+</programlisting></para>
+ </refsect1>
+
+ <refsect1>
+  <title>兼容性</title>
+
+  <para>
+   SQL 标准中没有<command>NOTIFY</command>语句。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>另见</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="sql-listen"/></member>
+   <member><xref linkend="sql-unlisten"/></member>
+   <member><xref linkend="guc-max-notify-queue-pages"/></member>
+  </simplelist>
+ </refsect1>
+</refentry>

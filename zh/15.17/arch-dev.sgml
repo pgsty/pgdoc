@@ -1,0 +1,279 @@
+<!-- doc/src/sgml/arch-dev.sgml -->
+
+ <chapter id="overview">
+  <title>PostgreSQL 内部概述</title>
+
+  <note>
+   <title>作者</title>
+   <para>
+    本章最初源自<xref linkend="sim98"/> Stefan Simkovics 在维也纳技术大学完成的硕士论文，该论文由 O.Univ.Prof.Dr. Georg Gottlob 和 Univ.Ass. Mag. Katrin Seyr 指导。
+   </para>
+  </note>
+
+  <para>
+   本章概述 <productname>PostgreSQL</productname> 后端的内部结构。阅读以下各节之后，你应该能够大致了解一个查询是如何被处理的。本章旨在帮助读者理解，从后端收到一个查询开始，到将结果返回给客户端为止，内部通常有哪些操作步骤。
+  </para>
+
+  <sect1 id="query-path">
+   <title>查询的路径</title>
+
+   <para>
+    这里将简要概述一个查询为得到结果必须经过的各个阶段。
+   </para>
+
+   <procedure>
+    <step>
+     <para>
+      必须先建立从应用程序到 <productname>PostgreSQL</productname> 服务器的连接。应用程序将查询发送给服务器，并等待接收服务器返回的结果。
+     </para>
+    </step>
+
+    <step>
+     <para>
+      <firstterm>解析器阶段</firstterm>检查应用程序传来的查询是否具有正确的语法，并创建一棵 <firstterm>查询树</firstterm>。
+     </para>
+    </step>
+
+    <step>
+     <para>
+      <firstterm>重写系统</firstterm>接收由解析器阶段创建的查询树，并查找任何可应用于该查询树的 <firstterm>规则</firstterm>（存储在 <firstterm>系统目录</firstterm> 中）。它执行这些 <firstterm>规则体</firstterm> 中给出的转换。
+     </para>
+
+     <para>
+      重写系统的一个应用是实现 <firstterm>视图</firstterm>。每当对一个视图（即 <firstterm>虚拟表</firstterm>）发出查询时，重写系统都会将用户的查询重写成一个改为访问 <firstterm>视图定义</firstterm>中给出的 <firstterm>基表</firstterm> 的查询。
+     </para>
+    </step>
+
+    <step>
+     <para>
+      <firstterm>规划器/优化器</firstterm>接收（重写后的）查询树，并创建一个<firstterm>查询计划</firstterm>，将作为 <firstterm>执行器</firstterm> 的输入。
+     </para>
+
+     <para>
+      它首先生成所有能得到同一结果的可能 <firstterm>路径</firstterm>。例如，如果待扫描的某个关系上有一个索引，那么该扫描就有两条路径：一种是简单的顺序扫描，另一种是使用该索引。接着会估算执行每条路径的代价，并选择代价最低的路径。代价最低的路径会被展开成一个完整的计划，供执行器使用。
+     </para>
+    </step>
+
+    <step>
+     <para>
+      执行器会递归地遍历 <firstterm>计划树</firstterm>，并以计划所表示的方式提取行。执行器在扫描关系时会使用 <firstterm>存储系统</firstterm>，执行 <firstterm>排序</firstterm> 和 <firstterm>连接</firstterm>，计算 <firstterm>限定条件</firstterm>，最后返回得到的行。
+     </para>
+    </step>
+   </procedure>
+
+   <para>
+    在后续各节中，我们将更详细地介绍上述各项内容，以便更好地理解 <productname>PostgreSQL</productname> 的内部控制和数据结构。
+   </para>
+  </sect1>
+
+  <sect1 id="connect-estab">
+   <title>连接是如何建立的</title>
+
+   <para>
+    <productname>PostgreSQL</productname> 实现的是一种 <quote>每用户一个进程</quote> 的客户端/服务器模型。在这种模型中，每个 <glossterm linkend="glossary-client">客户端进程</glossterm> 都只连接到一个 <glossterm linkend="glossary-backend">后端进程</glossterm>。由于我们事先并不知道会建立多少个连接，因此必须使用一个 <quote>监督进程</quote>，每当收到连接请求时就派生一个新的后端进程。这个监督进程称为 <glossterm linkend="glossary-postmaster">postmaster</glossterm>，它在指定的 TCP/IP 端口上监听传入连接。每当检测到连接请求时，它就会派生一个新的后端进程。这些后端进程彼此之间，以及与 <glossterm linkend="glossary-instance">实例</glossterm> 中的其他进程之间，使用 <firstterm>信号量</firstterm> 和 <glossterm linkend="glossary-shared-memory">共享内存</glossterm> 进行通信，以确保并发数据访问期间的数据完整性。
+   </para>
+
+   <para>
+    客户端进程可以是任何理解 <productname>PostgreSQL</productname> 协议（见 <xref linkend="protocol"/>）的程序。很多客户端基于 C 语言库 <application>libpq</application>，但该协议也有若干独立实现，例如 Java 的 <application>JDBC</application> 驱动。
+   </para>
+
+   <para>
+    一旦连接建立起来，客户端进程就可以向它所连接的后端进程发送查询。查询以纯文本方式传输，也就是说，客户端不进行解析。后端进程会解析查询，创建一个 <firstterm>执行计划</firstterm>，执行该计划，并通过已建立的连接把检索到的行返回给客户端。
+   </para>
+  </sect1>
+
+  <sect1 id="parser-stage">
+   <title>解析器阶段</title>
+
+   <para>
+    <firstterm>解析器阶段</firstterm>由两部分组成：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       <firstterm>解析器</firstterm>定义在 <filename>gram.y</filename> 和 <filename>scan.l</filename> 中，它使用 Unix 工具 <application>bison</application> 和 <application>flex</application> 构建。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <firstterm>转换过程</firstterm>，它会对解析器返回的数据结构做修改和补充。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <sect2 id="parser-stage-parser">
+    <title>解析器</title>
+
+    <para>
+     解析器必须检查查询字符串（它以纯文本形式到达）是否具有有效语法。如果语法正确，就会构造出一棵 <firstterm>语法解析树</firstterm> 并返回；否则会返回错误。解析器和词法分析器是使用著名的 Unix 工具 <application>bison</application> 和 <application>flex</application> 实现的。
+    </para>
+
+    <para>
+     <firstterm>词法分析器</firstterm>定义在文件 <filename>scan.l</filename> 中，负责识别 <firstterm>标识符</firstterm>、<firstterm>SQL 关键字</firstterm> 等。每找到一个关键字或标识符，就会生成一个 <firstterm>词元</firstterm> 并交给解析器。
+    </para>
+
+    <para>
+     解析器定义在文件 <filename>gram.y</filename> 中，由一组 <firstterm>语法规则</firstterm> 和 <firstterm>动作</firstterm> 组成，每当某条规则被触发时，对应动作就会执行。动作中的代码（实际上是 C 代码）用于构造语法解析树。
+    </para>
+
+    <para>
+     文件 <filename>scan.l</filename> 会被转换成 C 源文件 <filename>scan.c</filename>，所用程序是 <application>flex</application>；而 <filename>gram.y</filename> 则会被转换成 <filename>gram.c</filename>，所用程序是 <application>bison</application>。这些转换完成之后，就可以使用普通的 C 编译器来构建解析器。绝不要修改这些生成出来的 C 文件，因为下一次调用 <application>flex</application> 或 <application>bison</application> 时，它们都会被覆盖。
+
+     <note>
+      <para>
+       上述转换和编译通常都是借助 <firstterm>makefiles</firstterm> 自动完成的，这些文件随 <productname>PostgreSQL</productname> 源代码发行版一同提供。
+      </para>
+     </note>
+    </para>
+
+    <para>
+     对 <application>bison</application> 的详细描述，或者对 <filename>gram.y</filename> 中给出的语法规则的说明，都超出了本手册的范围。有许多书籍和文档专门讨论 <application>flex</application> 和 <application>bison</application>。在开始研究之前，你应该先熟悉 <application>bison</application>，然后再去看 <filename>gram.y</filename> 中给出的语法，否则你将无法理解其中发生了什么。
+    </para>
+
+   </sect2>
+
+   <sect2 id="parser-stage-transformation-process">
+     <title>转换过程</title>
+
+    <para>
+     解析器阶段仅依据 SQL 语法结构的固定规则创建一棵语法解析树。它不会在系统目录中做任何查找，因此不可能理解所请求操作的详细语义。解析器完成之后，<firstterm>转换过程</firstterm>会接收解析器返回的树，并进行必要的语义解释，以理解查询引用了哪些表、函数和操作符。为表示这些信息而构建的数据结构称为 <firstterm>查询树</firstterm>。
+    </para>
+
+    <para>
+     之所以将原始解析与语义分析分开，是因为系统目录查找只能在事务内部进行，而我们不希望在刚收到查询字符串时就立刻启动事务。原始解析阶段已经足以识别事务控制命令（<command>BEGIN</command>、<command>ROLLBACK</command> 等），因此这些命令可以在无需进一步分析的情况下被正确执行。一旦我们知道当前处理的是实际查询（例如 <command>SELECT</command> 或 <command>UPDATE</command>），如果尚未处于事务中，就可以启动事务。只有在那之后才能调用转换过程。
+    </para>
+
+    <para>
+     转换过程创建的查询树在大多数地方的结构都与原始语法解析树相似，但在细节上有许多不同。例如，语法解析树中的一个 <structname>FuncCall</structname> 节点表示某个在语法上看起来像函数调用的东西。它可能被转换成 <structname>FuncExpr</structname> 节点，也可能被转换成 <structname>Aggref</structname> 节点，这取决于被引用的名称最终被判定为普通函数还是聚合函数。此外，关于列和表达式结果的实际数据类型的信息也会被加入到查询树中。
+    </para>
+   </sect2>
+  </sect1>
+
+  <sect1 id="rule-system">
+   <title><productname>PostgreSQL</productname> 规则系统</title>
+
+   <para>
+    <productname>PostgreSQL</productname> 提供了一个强大的 <firstterm>规则系统</firstterm>，用于定义 <firstterm>视图</firstterm> 以及处理有歧义的 <firstterm>视图更新</firstterm>。最初，<productname>PostgreSQL</productname> 的规则系统由两种实现组成：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       第一种实现使用 <firstterm>行级</firstterm> 处理，并且深度实现于 <firstterm>执行器</firstterm> 内部。每当访问到单独一行时，规则系统就会被调用。这种实现在 1995 年被移除，当时 <productname>Berkeley Postgres</productname> 项目的最后一个官方发行版被转换成了 <productname>Postgres95</productname>。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       规则系统的第二种实现是一种称为 <firstterm>查询重写</firstterm> 的技术。<firstterm>重写系统</firstterm> 是位于 <firstterm>解析器阶段</firstterm> 与 <firstterm>规划器/优化器</firstterm> 之间的一个模块。这种技术至今仍在使用。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    关于查询重写器，<xref linkend="rules"/> 中已有相当详细的讨论，因此这里没有必要再展开。我们只指出一点：重写器的输入和输出都是查询树，也就是说，树的表示形式以及语义细节层次都不会发生变化。重写可以被看作某种形式的宏展开。
+   </para>
+
+  </sect1>
+
+  <sect1 id="planner-optimizer">
+   <title>规划器/优化器</title>
+
+   <para>
+    <firstterm>规划器/优化器</firstterm>的任务是创建一个最优的执行计划。给定的一个 SQL 查询（因此也就是一棵查询树）实际上可以用多种不同方式执行，而这些方式都会产生同样的结果集。如果在计算上可行，查询优化器将考察这些可能执行计划中的每一种，并最终选择预计运行最快的那个执行计划。
+   </para>
+
+   <note>
+    <para>
+     在某些情况下，考察查询的每一种可能执行方式会耗费过多时间和内存。尤其是在执行涉及大量连接操作的查询时更是如此。为了在合理时间内确定一个合理的（不一定最优的）查询计划，<productname>PostgreSQL</productname> 会使用 <firstterm>遗传查询优化器</firstterm>（见 <xref linkend="geqo"/>），前提是连接数量超过某个阈值（见 <xref linkend="guc-geqo-threshold"/>）。
+    </para>
+   </note>
+
+   <para>
+    规划器的搜索过程实际上使用一种称为 <firstterm>路径</firstterm> 的数据结构，它只是计划的简化表示，仅包含规划器做出决策所需的信息。在确定出代价最低的路径之后，会构建一棵完整的 <firstterm>计划树</firstterm> 传递给执行器。这棵树以足够细致的方式表示了期望的执行计划，使执行器能够运行它。在本节余下部分，我们将忽略路径与计划之间的区别。
+   </para>
+
+   <sect2 id="planner-optimizer-generating-possible-plans">
+    <title>生成可能的计划</title>
+
+    <para>
+     规划器/优化器首先为查询中使用的每个单独关系（表）生成扫描计划。可能的计划由每个关系上可用的索引决定。对一个关系总是可以执行顺序扫描，因此一定会生成顺序扫描计划。假设某个关系上定义了一个索引（例如一个 B-树索引），并且查询中包含限制条件 <literal>relation.attribute OPR constant</literal>。如果 <literal>relation.attribute</literal> 恰好匹配该 B-树索引的键，而且 <literal>OPR</literal> 是该索引 <firstterm>操作符类</firstterm> 中列出的操作符之一，那么就会生成另一个使用该 B-树索引扫描该关系的计划。如果还存在其他索引，并且查询中的限制条件恰好匹配某个索引的键，则还会考虑更多计划。对于那些排序顺序能够匹配查询 <literal>ORDER BY</literal> 子句（如果存在）或者可能有助于进行归并连接（见下文）的索引，也会生成索引扫描计划。
+    </para>
+
+    <para>
+     如果查询要求连接两个或更多关系，那么在找出扫描单个关系的所有可行计划之后，就会考虑连接关系的计划。可用的三种连接策略是：
+
+     <itemizedlist>
+      <listitem>
+       <para>
+        <firstterm>嵌套循环连接</firstterm>：左关系中找到的每一行，都会使右关系被扫描一次。这种策略实现起来很容易，但可能非常耗时。（不过，如果右关系可以通过索引扫描，那么这也可能是一种不错的策略。可以把左关系当前行中的值作为右关系索引扫描的键。）
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        <firstterm>归并连接</firstterm>：在连接开始之前，每个关系都会先按照连接属性排序。然后两个关系并行扫描，将匹配的行组合成连接结果行。这种连接方式很有吸引力，因为每个关系只需扫描一次。所需的排序既可以通过显式排序步骤完成，也可以利用连接键上的索引按适当顺序扫描关系来完成。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        <firstterm>哈希连接</firstterm>：首先扫描右关系，并使用其连接属性作为哈希键将其装入一个哈希表。接着扫描左关系，并将找到的每一行中的相应值作为哈希键，用来在该哈希表中定位匹配的行。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </para>
+
+    <para>
+     当查询涉及两个以上的关系时，最终结果必须由一棵连接步骤树构建出来，每个连接步骤都有两个输入。规划器会考察不同的可能连接顺序，以找出代价最低的那个。
+    </para>
+
+    <para>
+     如果查询使用的关系少于 <xref linkend="guc-geqo-threshold"/> 个，就会执行一次近乎穷举的搜索，以找出最佳连接顺序。对于任意两个关系，只要在 <literal>WHERE</literal> 限定条件中存在相应的连接子句（即存在类似 <literal>where rel1.attr1=rel2.attr2</literal> 这样的限制），规划器就会优先考虑它们之间的连接。没有连接子句的连接对只有在别无选择时才会被考虑，也就是说，某个关系与其他任何关系之间都没有可用的连接子句。对于规划器所考虑的每一对连接，都会生成所有可能的计划，并选择其中估计代价最低的那个。
+    </para>
+
+    <para>
+     当超过 <varname>geqo_threshold</varname> 时，被考虑的连接顺序将由启发式方法决定，如 <xref linkend="geqo"/> 中所述。除此之外，处理过程与前面相同。
+    </para>
+
+    <para>
+     最终完成的计划树由基表的顺序扫描或索引扫描，再加上所需的嵌套循环、归并或哈希连接节点，以及任何需要的辅助步骤（例如排序节点或聚合函数计算节点）组成。这些计划节点类型中的大多数还具有执行 <firstterm>选择</firstterm>（丢弃不满足指定布尔条件的行）和 <firstterm>投影</firstterm>（根据给定列值计算派生列集，也就是在需要时计算标量表达式）的额外能力。规划器的职责之一，就是把来自 <literal>WHERE</literal> 子句的选择条件以及所需输出表达式的计算附加到计划树中最合适的节点上。
+    </para>
+   </sect2>
+  </sect1>
+
+  <sect1 id="executor">
+   <title>执行器</title>
+
+   <para>
+    <firstterm>执行器</firstterm>接收由规划器/优化器创建的计划，并递归地处理它，以提取所需的行集合。这本质上是一种按需拉取的流水线机制。每当某个计划节点被调用时，它必须再交付一行，或者报告自己已经完成了行的交付。
+   </para>
+
+   <para>
+    为了给出一个具体示例，假设顶层节点是一个 <literal>MergeJoin</literal> 节点。在执行归并之前，必须先取到两行（每个子计划各一行）。因此执行器会递归调用自身去处理这些子计划（从挂接在 <literal>lefttree</literal> 上的子计划开始）。新的顶层节点，也就是左子计划的顶层节点，假设是一个 <literal>Sort</literal> 节点，那么又需要通过递归来取得一个输入行。<literal>Sort</literal> 的子节点可能是一个 <literal>SeqScan</literal> 节点，它表示真正去读取一个表。执行该节点会使执行器从表中取出一行，并把它返回给调用者节点。<literal>Sort</literal> 节点会反复调用它的子节点，以取得所有待排序的行。当输入耗尽时（子节点返回的是 NULL 而不是一行），<literal>Sort</literal> 代码就执行排序，并最终能够返回它的第一条输出行，也就是排序后的第一行。它会把其余行保存起来，以便在后续请求中按排序后的顺序交付这些行。
+   </para>
+
+   <para>
+    <literal>MergeJoin</literal> 节点同样会向它的右子计划请求第一行。然后它比较这两行，看它们是否可以连接；如果可以，就向调用者返回一条连接结果行。在下一次调用时，或者在当前这一对输入无法连接时立即，它会前进到某一个表的下一行或另一个表的下一行（取决于比较结果），并再次检查是否匹配。最终，其中一个子计划会耗尽，<literal>MergeJoin</literal> 节点就返回 NULL，以表明无法再形成更多连接结果行。
+   </para>
+
+   <para>
+    复杂查询可能涉及许多层计划节点，但总体方法是相同的：每个节点在每次被调用时，都会计算并返回它的下一条输出行。每个节点还负责应用规划器分配给它的任何选择或投影表达式。
+   </para>
+
+   <para>
+    执行器机制用于求值全部五种基本 SQL 查询类型：<command>SELECT</command>、<command>INSERT</command>、<command>UPDATE</command>、<command>DELETE</command> 和 <command>MERGE</command>。对于 <command>SELECT</command>，顶层执行器代码只需要把查询计划树返回的每一行发送给客户端。<command>INSERT ... SELECT</command>、<command>UPDATE</command>、<command>DELETE</command> 和 <command>MERGE</command> 本质上都是 <command>SELECT</command>，位于一个名为 <literal>ModifyTable</literal> 的特殊顶层计划节点之下。
+   </para>
+
+   <para>
+    <command>INSERT ... SELECT</command> 会把各行上传给 <literal>ModifyTable</literal> 以执行插入。对于 <command>UPDATE</command>，规划器会安排每个计算得到的行包含所有被更新列的值，再加上原始目标行的 <firstterm>TID</firstterm>（tuple ID，即元组 ID 或行 ID）；这些数据会被上传给 <literal>ModifyTable</literal> 节点，该节点利用这些信息创建一个新的更新后行，并将旧行标记为已删除。对于 <command>DELETE</command>，计划实际返回的唯一列就是 TID，而 <literal>ModifyTable</literal> 节点只需利用该 TID 访问每个目标行并将其标记为已删除。对于 <command>MERGE</command>，规划器会连接源关系和目标关系，并包含所有 <literal>WHEN</literal> 子句所需的列值，再加上目标行的 TID；这些数据会被上传给 <literal>ModifyTable</literal> 节点，该节点利用这些信息判断应执行哪个 <literal>WHEN</literal> 子句，然后按需要插入、更新或删除目标行。
+   </para>
+
+   <para>
+    一个简单的 <command>INSERT ... VALUES</command> 命令会创建一棵极为简单的计划树，它只包含一个 <literal>Result</literal> 节点。该节点仅计算一条结果行，并将其上传给 <literal>ModifyTable</literal> 执行插入。
+   </para>
+
+  </sect1>
+
+ </chapter>

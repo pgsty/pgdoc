@@ -1,0 +1,800 @@
+<!-- doc/src/sgml/trigger.sgml -->
+
+ <chapter id="triggers">
+  <title>触发器</title>
+
+  <indexterm zone="triggers">
+   <primary>trigger</primary>
+  </indexterm>
+
+  <para>
+   本章提供有关编写触发器函数的一般信息。触发器函数可以用大多数可用的过程语言编写，包括
+   <application>PL/pgSQL</application>（<xref linkend="plpgsql"/>）、
+   <application>PL/Tcl</application>（<xref linkend="pltcl"/>）、
+   <application>PL/Perl</application>（<xref linkend="plperl"/>）和
+   <application>PL/Python</application>（<xref linkend="plpython"/>）。读完本章后，你还应查阅所用过程语言对应的章节，了解用该语言编写触发器的语言相关细节。
+  </para>
+
+  <para>
+   也可以用 C 编写触发器函数，不过大多数人会觉得使用某种过程语言更容易。目前还不能用普通 SQL 函数语言编写触发器函数。
+  </para>
+
+  <sect1 id="trigger-definition">
+   <title>触发器行为概述</title>
+
+   <para>
+    触发器是一种规定：每当执行某种类型的操作时，数据库就自动执行某个特定函数。触发器可以附加到表（无论是否分区）、视图和外部表上。
+  </para>
+
+  <para>
+    在表和外部表上，触发器可以定义为在任何 <command>INSERT</command>、
+    <command>UPDATE</command> 或 <command>DELETE</command> 操作之前或之后执行；
+    既可以对每个被修改的行执行一次，也可以对每个 <acronym>SQL</acronym> 语句执行一次。
+    <command>UPDATE</command> 触发器还可以设置成只有在 <command>UPDATE</command>
+    语句的 <literal>SET</literal> 子句中提到特定列时才触发。触发器也可以针对
+    <command>TRUNCATE</command> 语句触发。一旦发生触发器事件，就会在适当的时机调用该触发器的函数来处理该事件。
+   </para>
+
+   <para>
+    在视图上，触发器可以定义为代替 <command>INSERT</command>、
+    <command>UPDATE</command> 或 <command>DELETE</command> 操作执行。这种
+    <literal>INSTEAD OF</literal> 触发器会对视图中每个需要修改的行触发一次。触发器函数负责对视图底层的基表执行必要的修改，并在适当时返回该修改后的行，使其在视图中呈现为应有的样子。视图上的触发器也可以定义为在
+    <command>INSERT</command>、<command>UPDATE</command> 或
+    <command>DELETE</command> 操作之前或之后，对每个 <acronym>SQL</acronym> 语句执行一次。不过，这种触发器只有在该视图上还存在一个
+    <literal>INSTEAD OF</literal> 触发器时才会触发。否则，任何以该视图为目标的语句都必须被重写成作用于其底层基表的语句，此时触发的将是附加在那些基表上的触发器。
+   </para>
+
+   <para>
+    必须先定义触发器函数，之后才能创建触发器本身。触发器函数必须声明为不接受参数并返回类型 <literal>trigger</literal> 的函数。（触发器函数通过特殊传入的
+    <structname>TriggerData</structname> 结构接收输入，而不是通过普通函数参数。）
+   </para>
+
+   <para>
+    创建出合适的触发器函数后，就可以使用 <xref linkend="sql-createtrigger"/> 创建触发器。同一个触发器函数可以供多个触发器使用。
+   </para>
+
+   <para>
+    <productname>PostgreSQL</productname> 同时提供 <firstterm>每行</firstterm> 触发器和
+    <firstterm>每语句</firstterm> 触发器。对于每行触发器，触发它的语句所影响的每一行都会调用一次触发器函数。相反，每语句触发器只会在执行相应语句时调用一次，不管该语句影响了多少行。特别是，即使某个语句一行也没有影响，仍会执行所有适用的每语句触发器。这两类触发器有时也分别称为
+    <firstterm>行级</firstterm> 触发器和 <firstterm>语句级</firstterm> 触发器。
+    <command>TRUNCATE</command> 的触发器只能定义为语句级，不能定义为每行。
+   </para>
+
+   <para>
+    触发器还可以按照它们是在操作 <firstterm>之前</firstterm>、
+    <firstterm>之后</firstterm>，还是 <firstterm>取代</firstterm> 该操作而触发来分类。这些分别称为 <literal>BEFORE</literal> 触发器、
+    <literal>AFTER</literal> 触发器和 <literal>INSTEAD OF</literal> 触发器。语句级
+    <literal>BEFORE</literal> 触发器自然会在语句开始执行任何操作之前触发，而语句级
+    <literal>AFTER</literal> 触发器则在语句末尾触发。这些类型的触发器可以定义在表、视图或外部表上。行级 <literal>BEFORE</literal> 触发器会在对某一行执行操作之前立即触发，而行级
+    <literal>AFTER</literal> 触发器会在语句结束时触发（但早于任何语句级
+    <literal>AFTER</literal> 触发器）。这些类型的触发器只能定义在表和外部表上，不能定义在视图上。<literal>INSTEAD OF</literal> 触发器只能定义在视图上，而且只能是行级；当视图中的每一行被识别为需要执行操作时，它们就会立即触发。
+   </para>
+
+   <para>
+    如果触发器被定义为 <firstterm>约束触发器</firstterm>，则
+    <literal>AFTER</literal> 触发器的执行可被推迟到事务末尾，而不是语句末尾。
+    无论哪种情况，触发器都作为触发它的语句所属同一事务的一部分执行，因此只要语句或触发器任一方发生错误，二者的效果都会回滚。此外，触发器总是以将该触发事件排入队列的角色身份运行，除非触发器函数标记为
+    <literal>SECURITY DEFINER</literal>，那样的话则以函数所有者身份运行。
+   </para>
+
+   <para>
+    若 <command>INSERT</command> 包含 <literal>ON CONFLICT DO UPDATE</literal>
+    子句，则被触发的行上可能先执行行级
+    <literal>BEFORE</literal> <command>INSERT</command> 触发器，再执行
+    <literal>BEFORE</literal> <command>UPDATE</command> 触发器。若触发器不是
+    幂等的，这种交互可能很复杂，因为 <literal>BEFORE</literal>
+    <command>INSERT</command> 触发器所做更改会被
+    <literal>BEFORE</literal> <command>UPDATE</command> 触发器看到，
+    包括对 <varname>EXCLUDED</varname> 列的更改。
+   </para>
+
+   <para>
+    注意，当指定 <literal>ON CONFLICT DO UPDATE</literal> 时，语句级
+    <command>UPDATE</command> 触发器会执行，不管
+    <command>UPDATE</command> 是否实际影响了行（也不管是否走到了
+    <command>UPDATE</command> 分支）。带有
+    <literal>ON CONFLICT DO UPDATE</literal> 的 <command>INSERT</command>
+    会先执行语句级 <literal>BEFORE</literal> <command>INSERT</command>
+    触发器，再执行语句级 <literal>BEFORE</literal> <command>UPDATE</command>
+    触发器，然后执行语句级 <literal>AFTER</literal> <command>UPDATE</command>
+    触发器，最后执行语句级 <literal>AFTER</literal> <command>INSERT</command>
+    触发器。
+   </para>
+
+   <para>
+    如果某条语句以继承层次或分区层次中的父表为目标，它不会导致受影响子表上的语句级触发器触发；只有父表上的语句级触发器会触发。不过，任何受影响子表上的行级触发器仍会触发。
+   </para>
+
+   <para>
+    如果对分区表执行 <command>UPDATE</command> 导致某行移动到另一个分区，这将表现为从原始分区执行一次 <command>DELETE</command>，然后向新分区执行一次 <command>INSERT</command>。在这种情况下，原始分区上的所有行级
+    <literal>BEFORE</literal> <command>UPDATE</command> 触发器和所有行级
+    <literal>BEFORE</literal> <command>DELETE</command> 触发器都会触发。随后，目标分区上的所有行级 <literal>BEFORE</literal> <command>INSERT</command>
+    触发器都会触发。当这些触发器都会影响被移动的那一行时，应考虑到可能出现令人意外的结果。对于 <literal>AFTER ROW</literal> 触发器，会执行
+    <literal>AFTER</literal> <command>DELETE</command> 和 <literal>AFTER</literal>
+    <command>INSERT</command> 触发器；但不会执行 <literal>AFTER</literal>
+    <command>UPDATE</command> 触发器，因为该 <command>UPDATE</command> 已被转换成一次
+    <command>DELETE</command> 和一次 <command>INSERT</command>。对于语句级触发器而言，即使发生了行移动，也不会触发任何 <command>DELETE</command> 或
+    <command>INSERT</command> 触发器；只会触发在 <command>UPDATE</command> 语句所用目标表上定义的 <command>UPDATE</command> 触发器。
+   </para>
+
+   <para>
+    不会为 <command>MERGE</command> 单独定义触发器。相反，是否触发语句级或行级的
+    <command>UPDATE</command>、<command>DELETE</command> 和
+    <command>INSERT</command> 触发器，取决于（对于语句级触发器）
+    <command>MERGE</command> 查询中指定了哪些动作，以及（对于行级触发器）实际执行了哪些动作。
+   </para>
+
+   <para>
+    在执行 <command>MERGE</command> 命令时，对于该命令动作中指定的事件，无论该动作最终是否实际执行，语句级
+    <literal>BEFORE</literal> 和 <literal>AFTER</literal> 触发器都会触发。这与更新零行的 <command>UPDATE</command> 语句相同：尽管没有行被更新，语句级触发器仍会触发。只有在某行确实被更新、插入或删除时，行级触发器才会触发。因此，完全可能出现这样的情况：某类动作的语句级触发器已经触发，而同类动作的行级触发器却一个也没有触发。
+   </para>
+
+   <para>
+    由每语句触发器调用的触发器函数应始终返回 <symbol>NULL</symbol>。由每行触发器调用的触发器函数则可以根据需要向调用它的执行器返回一个表行（即类型
+    <structname>HeapTuple</structname> 的值）。在操作之前触发的行级触发器可以作出如下选择：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       它可以返回 <symbol>NULL</symbol>，以跳过对当前行的操作。这会指示执行器不要执行引发该触发器的行级操作（即对某个具体表行的插入、修改或删除）。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       仅对于行级 <command>INSERT</command> 和 <command>UPDATE</command> 触发器，返回的行会成为将要插入的行，或替换正在更新的行。这使得触发器函数可以修改即将插入或更新的行。
+      </para>
+     </listitem>
+    </itemizedlist>
+
+    不打算产生上述任何一种行为的行级 <literal>BEFORE</literal> 触发器，必须小心地返回传入的同一行作为结果（也就是说，<command>INSERT</command> 和
+    <command>UPDATE</command> 触发器返回 <varname>NEW</varname> 行，
+    <command>DELETE</command> 触发器返回 <varname>OLD</varname> 行）。
+   </para>
+
+   <para>
+    行级 <literal>INSTEAD OF</literal> 触发器应当要么返回 <symbol>NULL</symbol>，表示它没有修改视图底层基表中的任何数据；要么返回传入的视图行（<command>INSERT</command> 和 <command>UPDATE</command> 操作返回
+    <varname>NEW</varname> 行，<command>DELETE</command> 操作返回
+    <varname>OLD</varname> 行）。非空返回值用来表明触发器已经在视图中完成了必要的数据修改。这会使该命令所影响的行数计数增加。仅对于
+    <command>INSERT</command> 和 <command>UPDATE</command> 操作，触发器在返回
+    <varname>NEW</varname> 行之前还可以修改它。这会改变
+    <command>INSERT RETURNING</command> 或 <command>UPDATE RETURNING</command>
+    返回的数据；当视图显示的数据与提供给它的数据不完全相同时，这很有用。
+   </para>
+
+   <para>
+    对于在操作之后触发的行级触发器，其返回值会被忽略，因此它们可以返回
+    <symbol>NULL</symbol>。
+   </para>
+
+   <para>
+    生成列还有一些额外注意事项。
+    <indexterm><primary>generated column</primary><secondary>in
+    triggers</secondary></indexterm>
+    存储型生成列会在 <literal>BEFORE</literal> 触发器之后、<literal>AFTER</literal>
+    触发器之前计算。因此，可以在 <literal>AFTER</literal> 触发器中检查生成值。在
+    <literal>BEFORE</literal> 触发器中，<literal>OLD</literal> 行如预期那样包含旧的
+    生成值，但 <literal>NEW</literal> 行尚未包含新的生成值，因此不应访问。对于 C
+    语言接口，此时该列内容未定义；更高层编程语言应阻止在
+    <literal>BEFORE</literal> 触发器中访问 <literal>NEW</literal> 行中的存储型
+    生成列。在 <literal>BEFORE</literal> 触发器中对生成列值所做的修改会被忽略并随后被覆盖。虚拟生成列在触发器触发时永远不会被计算。在 C 语言接口中，它们在触发器函数中的内容是未定义的；更高层编程语言应阻止在触发器中访问虚拟生成列。
+   </para>
+
+   <para>
+    如果在同一关系上的同一事件为其定义了多个触发器，它们会按触发器名称的字母顺序触发。对于 <literal>BEFORE</literal> 和 <literal>INSTEAD OF</literal>
+    触发器，每个触发器返回的、可能已经被修改过的行都会成为下一个触发器的输入。如果任何一个 <literal>BEFORE</literal> 或
+    <literal>INSTEAD OF</literal> 触发器返回 <symbol>NULL</symbol>，则会放弃对该行执行该操作，并且后续触发器（针对该行）都不会再触发。
+   </para>
+
+   <para>
+    触发器定义还可以指定一个布尔 <literal>WHEN</literal> 条件，用来测试是否应当触发该触发器。对于行级触发器，<literal>WHEN</literal> 条件可以检查该行各列的旧值和/或新值。（语句级触发器也可以有 <literal>WHEN</literal>
+    条件，不过这个特性对它们用处不大。）在 <literal>BEFORE</literal> 触发器中，
+    <literal>WHEN</literal> 条件就在函数即将执行或本会执行之前求值，因此使用
+    <literal>WHEN</literal> 与在触发器函数开头测试同样的条件并无实质差别。不过，在
+    <literal>AFTER</literal> 触发器中，<literal>WHEN</literal> 条件会在行更改发生后立即求值，并决定是否要在语句末尾将一个事件排入队列以触发该触发器。因此，当 <literal>AFTER</literal> 触发器的 <literal>WHEN</literal>
+    条件不返回真时，就不必排队该事件，也不必在语句末尾重新取出该行。如果触发器只需要针对少数几行触发，这会让修改大量行的语句显著加快。
+    <literal>INSTEAD OF</literal> 触发器不支持 <literal>WHEN</literal> 条件。
+   </para>
+
+   <para>
+    通常，行级 <literal>BEFORE</literal> 触发器用于检查或修改将要插入或更新的数据。例如，<literal>BEFORE</literal> 触发器可以用来把当前时间写入某个
+    <type>timestamp</type> 列，或者检查该行的两个元素是否一致。行级
+    <literal>AFTER</literal> 触发器最适合用于把更新传播到其他表，或对其他表执行一致性检查。之所以这样分工，是因为 <literal>AFTER</literal> 触发器可以确定自己看到的是该行的最终值，而 <literal>BEFORE</literal> 触发器不能；它之后可能还会有其他 <literal>BEFORE</literal> 触发器触发。如果没有特定理由把触发器做成
+    <literal>BEFORE</literal> 或 <literal>AFTER</literal>，那么
+    <literal>BEFORE</literal> 形式更高效，因为关于该操作的信息无需一直保存到语句末尾。
+   </para>
+
+   <para>
+    如果触发器函数执行 SQL 命令，那么这些命令可能会再次触发触发器。这就是所谓的级联触发器。对级联层数没有直接限制。级联还有可能导致同一个触发器被递归调用；例如，一个 <command>INSERT</command> 触发器可能执行一条向同一个表再插入一行的命令，从而导致该 <command>INSERT</command> 触发器再次触发。因此，在这种场景下，避免无限递归是触发器编写者自己的责任。
+   </para>
+
+   <para>
+    若外键约束指定了引用动作（即级联更新或级联删除），这些动作会通过在引用表上执行
+    普通 SQL <command>UPDATE</command> 或 <command>DELETE</command> 命令完成。
+    特别地，引用表上存在的触发器会因这些更改而触发。若此类触发器修改或阻止了这些
+    命令之一的效果，最终可能破坏引用完整性。避免这种情况是触发器编写者的责任。
+   </para>
+
+   <para>
+    <indexterm>
+     <primary>trigger</primary>
+     <secondary>arguments for trigger functions</secondary>
+    </indexterm>
+    在定义触发器时，可以为它指定参数。在触发器定义中包含参数，是为了让需求相似的不同触发器能够调用同一个函数。举例来说，可以有一个通用触发器函数，它接受两个列名作为参数，把当前用户写入其中一个列，把当前时间戳写入另一个列。只要编写得当，这个触发器函数就应独立于它所作用的具体表。因此，同一个函数可用于任何具有适当列的表上的 <command>INSERT</command> 事件，例如自动跟踪某个事务表中记录的创建。如果把它定义成
+    <command>UPDATE</command> 触发器，还可以用来跟踪最近更新事件。
+   </para>
+
+   <para>
+    每种支持触发器的编程语言都有自己的方法，使触发器输入数据可供触发器函数使用。这些输入数据包括触发器事件的类型（例如 <command>INSERT</command> 或
+    <command>UPDATE</command>），以及 <command>CREATE TRIGGER</command>
+    中列出的任何参数。对于行级触发器，输入数据还包括
+    <command>INSERT</command> 和 <command>UPDATE</command> 触发器的
+    <varname>NEW</varname> 行，以及/或者 <command>UPDATE</command> 和
+    <command>DELETE</command> 触发器的 <varname>OLD</varname> 行。
+   </para>
+
+   <para>
+    默认情况下，语句级触发器无法检查该语句修改的各个行。但是
+    <literal>AFTER STATEMENT</literal> 触发器可以请求创建 <firstterm>过渡表</firstterm>，从而使受影响的行集合可供该触发器使用。<literal>AFTER ROW</literal>
+    触发器也可以请求过渡表，这样它们既能看到表中的整体变化，也能看到当前使其触发的那一行中的变化。如何检查过渡表，同样取决于所使用的编程语言；不过典型做法是让过渡表表现得像只读临时表一样，可以在触发器函数内部发出的 SQL 命令中访问。
+   </para>
+
+  </sect1>
+
+  <sect1 id="trigger-datachanges">
+   <title>数据更改的可见性</title>
+
+   <para>
+    如果你在触发器函数中执行 SQL 命令，而这些命令又访问该触发器所属的表，就需要了解数据可见性规则，因为这些规则决定了这些 SQL 命令是否能看到引发触发器的数据更改。简而言之：
+
+    <itemizedlist>
+
+     <listitem>
+      <para>
+       语句级触发器遵循简单的可见性规则：语句所做的任何更改对语句级
+       <literal>BEFORE</literal> 触发器都不可见，而所有修改对语句级
+       <literal>AFTER</literal> 触发器都可见。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       导致触发器触发的数据更改（插入、更新或删除）对于在行级
+       <literal>BEFORE</literal> 触发器中执行的 SQL 命令自然是
+       <emphasis>不</emphasis>可见的，因为它尚未发生。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       然而，在行级 <literal>BEFORE</literal> 触发器中执行的 SQL 命令
+       <emphasis>会</emphasis> 看到同一外层命令中先前已处理各行上的数据更改结果。这里必须小心，因为这些更改事件的顺序通常不可预测；一条影响多行的 SQL 命令可能按任意顺序访问这些行。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       类似地，行级 <literal>INSTEAD OF</literal> 触发器会看到同一外层命令中此前触发的 <literal>INSTEAD OF</literal> 触发器所造成的数据更改结果。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       当行级 <literal>AFTER</literal> 触发器触发时，外层命令所做的所有数据更改都已经完成，并且对被调用的触发器函数可见。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    如果你的触发器函数是用任何一种标准过程语言编写的，那么只有在该函数被声明为 <literal>VOLATILE</literal> 时，上述说法才成立。被声明为
+    <literal>STABLE</literal> 或 <literal>IMMUTABLE</literal> 的函数在任何情况下都看不到调用命令所做的更改。
+   </para>
+
+   <para>
+    有关数据可见性规则的更多信息可见 <xref linkend="spi-visibility"/>。
+    <xref linkend="trigger-example"/> 中的示例展示了这些规则。
+   </para>
+  </sect1>
+
+  <sect1 id="trigger-interface">
+   <title>用 C 编写触发器函数</title>
+
+   <indexterm zone="trigger-interface">
+    <primary>trigger</primary>
+    <secondary>in C</secondary>
+   </indexterm>
+
+   <indexterm>
+    <primary>transition tables</primary>
+    <secondary>referencing from C trigger</secondary>
+   </indexterm>
+
+   <para>
+    本节说明触发器函数接口的底层细节。这些信息仅在用 C 编写触发器函数时才需要。如果你使用更高层语言，这些细节会由系统代为处理。在多数情况下，在用 C 编写触发器之前，应先考虑使用过程语言。每种过程语言的文档都会说明如何用该语言编写触发器。
+   </para>
+
+   <para>
+    触发器函数必须使用 <quote>版本 1</quote> 函数管理器接口。
+   </para>
+
+   <para>
+    当函数由触发器管理器调用时，不会向它传递任何普通参数，但会传递一个指向 <structname>TriggerData</structname> 结构的 <quote>context</quote> 指针。C 函数可以通过执行下列宏来检查自己是否由触发器管理器调用：
+<programlisting>
+CALLED_AS_TRIGGER(fcinfo)
+</programlisting>
+    它会展开为：
+<programlisting>
+((fcinfo)-&gt;context != NULL &amp;&amp; IsA((fcinfo)-&gt;context, TriggerData))
+</programlisting>
+    如果该宏返回真，就可以安全地把 <literal>fcinfo-&gt;context</literal>
+    转换为 <literal>TriggerData *</literal> 类型，并使用其所指向的
+    <structname>TriggerData</structname> 结构。函数
+    <emphasis>绝不能</emphasis> 修改 <structname>TriggerData</structname>
+    结构本身，也不能修改它所指向的任何数据。
+   </para>
+
+   <para>
+    <structname>struct TriggerData</structname> 定义在
+    <filename>commands/trigger.h</filename> 中：
+
+<programlisting>
+typedef struct TriggerData
+{
+    NodeTag          type;
+    TriggerEvent     tg_event;
+    Relation         tg_relation;
+    HeapTuple        tg_trigtuple;
+    HeapTuple        tg_newtuple;
+    Trigger         *tg_trigger;
+    TupleTableSlot  *tg_trigslot;
+    TupleTableSlot  *tg_newslot;
+    Tuplestorestate *tg_oldtable;
+    Tuplestorestate *tg_newtable;
+    const Bitmapset *tg_updatedcols;
+} TriggerData;
+</programlisting>
+
+    其中各成员定义如下：
+
+    <variablelist>
+     <varlistentry id="zh18-auto-trigger-varlistentry-1">
+      <term><structfield>type</structfield></term>
+      <listitem>
+       <para>
+        始终是 <literal>T_TriggerData</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-trigger-varlistentry-2">
+      <term><structfield>tg_event</structfield></term>
+      <listitem>
+       <para>
+        描述调用函数的事件。可以使用以下宏检查 <literal>tg_event</literal>：
+
+        <variablelist>
+         <varlistentry id="zh18-auto-trigger-varlistentry-3">
+          <term><literal>TRIGGER_FIRED_BEFORE(tg_event)</literal></term>
+          <listitem>
+           <para>
+            如果触发器在操作之前触发，则返回 true。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry id="zh18-auto-trigger-varlistentry-4">
+          <term><literal>TRIGGER_FIRED_AFTER(tg_event)</literal></term>
+          <listitem>
+           <para>
+            如果触发器在操作之后触发，则返回 true。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry id="zh18-auto-trigger-varlistentry-5">
+          <term><literal>TRIGGER_FIRED_INSTEAD(tg_event)</literal></term>
+          <listitem>
+           <para>
+            如果触发器是取代该操作而触发，则返回 true。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry id="zh18-auto-trigger-varlistentry-6">
+          <term><literal>TRIGGER_FIRED_FOR_ROW(tg_event)</literal></term>
+          <listitem>
+           <para>
+            如果触发器是因行级事件触发，则返回 true。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry id="zh18-auto-trigger-varlistentry-7">
+          <term><literal>TRIGGER_FIRED_FOR_STATEMENT(tg_event)</literal></term>
+          <listitem>
+           <para>
+            如果触发器是因语句级事件触发，则返回 true。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry id="zh18-auto-trigger-varlistentry-8">
+          <term><literal>TRIGGER_FIRED_BY_INSERT(tg_event)</literal></term>
+          <listitem>
+           <para>
+            如果触发器是由 <command>INSERT</command> 命令触发，则返回 true。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry id="zh18-auto-trigger-varlistentry-9">
+          <term><literal>TRIGGER_FIRED_BY_UPDATE(tg_event)</literal></term>
+          <listitem>
+           <para>
+            如果触发器是由 <command>UPDATE</command> 命令触发，则返回 true。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry id="zh18-auto-trigger-varlistentry-10">
+          <term><literal>TRIGGER_FIRED_BY_DELETE(tg_event)</literal></term>
+          <listitem>
+           <para>
+            如果触发器是由 <command>DELETE</command> 命令触发，则返回 true。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry id="zh18-auto-trigger-varlistentry-11">
+          <term><literal>TRIGGER_FIRED_BY_TRUNCATE(tg_event)</literal></term>
+          <listitem>
+           <para>
+            如果触发器是由 <command>TRUNCATE</command> 命令触发，则返回 true。
+           </para>
+          </listitem>
+         </varlistentry>
+        </variablelist>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-trigger-varlistentry-12">
+      <term><structfield>tg_relation</structfield></term>
+      <listitem>
+       <para>
+        指向一个描述该触发器所针对关系的结构。有关此结构的细节见
+        <filename>utils/rel.h</filename>。其中最值得关注的是
+        <literal>tg_relation-&gt;rd_att</literal>（关系元组的描述符）和
+        <literal>tg_relation-&gt;rd_rel-&gt;relname</literal>（关系名；其类型不是
+        <type>char*</type>，而是 <type>NameData</type>；如果需要名称的副本，请使用
+        <literal>SPI_getrelname(tg_relation)</literal> 取得一个 <type>char*</type>）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-trigger-varlistentry-13">
+      <term><structfield>tg_trigtuple</structfield></term>
+      <listitem>
+       <para>
+        指向触发该触发器的那一行。这是正在被插入、更新或删除的行。如果该触发器因 <command>INSERT</command> 或 <command>DELETE</command>
+        而触发，那么如果你不想用另一行替换该行（在 <command>INSERT</command>
+        的情形下）或跳过该操作，就应从函数中返回它。对于外部表上的触发器，此处系统列的值未指定。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-trigger-varlistentry-14">
+      <term><structfield>tg_newtuple</structfield></term>
+      <listitem>
+       <para>
+        如果触发器因 <command>UPDATE</command> 而触发，则指向该行的新版本；如果因 <command>INSERT</command> 或 <command>DELETE</command>
+        而触发，则为 <symbol>NULL</symbol>。如果事件是 <command>UPDATE</command>，而你不想用另一行替换该行或跳过该操作，就必须从函数中返回它。对于外部表上的触发器，此处系统列的值未指定。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-trigger-varlistentry-15">
+      <term><structfield>tg_trigger</structfield></term>
+      <listitem>
+       <para>
+        一个指向 <structname>Trigger</structname> 类型结构的指针，该结构定义在
+        <filename>utils/reltrigger.h</filename> 中：
+
+<programlisting>
+typedef struct Trigger
+{
+    Oid         tgoid;
+    char       *tgname;
+    Oid         tgfoid;
+    int16       tgtype;
+    char        tgenabled;
+    bool        tgisinternal;
+    bool        tgisclone;
+    Oid         tgconstrrelid;
+    Oid         tgconstrindid;
+    Oid         tgconstraint;
+    bool        tgdeferrable;
+    bool        tginitdeferred;
+    int16       tgnargs;
+    int16       tgnattr;
+    int16      *tgattr;
+    char      **tgargs;
+    char       *tgqual;
+    char       *tgoldtable;
+    char       *tgnewtable;
+} Trigger;
+</programlisting>
+
+       其中 <structfield>tgname</structfield> 是触发器名称，
+       <structfield>tgnargs</structfield> 是 <structfield>tgargs</structfield>
+       中参数的数量，而 <structfield>tgargs</structfield> 是一个指针数组，指向
+       <command>CREATE TRIGGER</command> 语句中指定的参数。其他成员仅供内部使用。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-trigger-varlistentry-16">
+      <term><structfield>tg_trigslot</structfield></term>
+      <listitem>
+       <para>
+        包含 <structfield>tg_trigtuple</structfield> 的槽；如果没有这样的元组，则为
+        <symbol>NULL</symbol> 指针。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-trigger-varlistentry-17">
+      <term><structfield>tg_newslot</structfield></term>
+      <listitem>
+       <para>
+        包含 <structfield>tg_newtuple</structfield> 的槽；如果没有这样的元组，则为
+        <symbol>NULL</symbol> 指针。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-trigger-varlistentry-18">
+      <term><structfield>tg_oldtable</structfield></term>
+      <listitem>
+       <para>
+        指向一个类型为 <structname>Tuplestorestate</structname> 的结构，其中包含零行或多行，格式由 <structfield>tg_relation</structfield> 指定；如果没有
+        <literal>OLD TABLE</literal> 过渡关系，则为 <symbol>NULL</symbol> 指针。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-trigger-varlistentry-19">
+      <term><structfield>tg_newtable</structfield></term>
+      <listitem>
+       <para>
+        指向一个类型为 <structname>Tuplestorestate</structname> 的结构，其中包含零行或多行，格式由 <structfield>tg_relation</structfield> 指定；如果没有
+        <literal>NEW TABLE</literal> 过渡关系，则为 <symbol>NULL</symbol> 指针。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-trigger-varlistentry-20">
+      <term><structfield>tg_updatedcols</structfield></term>
+      <listitem>
+       <para>
+        对于 <literal>UPDATE</literal> 触发器，它是一个位图集，指出触发命令更新了哪些列。通用触发器函数可以利用这一点优化处理，无需理会未更改的列。
+       </para>
+
+       <para>
+        例如，要确定属性编号为 <varname>attnum</varname>（从 1 开始）的列是否属于该位图集，可调用 <literal>bms_is_member(attnum -
+        FirstLowInvalidHeapAttributeNumber,
+        trigdata->tg_updatedcols))</literal>。
+       </para>
+
+       <para>
+        对于 <literal>UPDATE</literal> 之外的触发器，它将是 <symbol>NULL</symbol>。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    若要允许通过 SPI 发起的查询引用过渡表，请参见
+    <xref linkend="spi-spi-register-trigger-data"/>。
+   </para>
+
+   <para>
+    触发器函数必须返回一个 <structname>HeapTuple</structname> 指针或一个
+    <symbol>NULL</symbol> 指针（<emphasis>不是</emphasis> SQL 空值，也就是说不要把
+    <parameter>isNull</parameter> 设为真）。如果你不想修改正在处理的行，就要小心地根据情况返回适当的 <structfield>tg_trigtuple</structfield> 或
+    <structfield>tg_newtuple</structfield>。
+   </para>
+  </sect1>
+
+  <sect1 id="trigger-example">
+   <title>一个完整的触发器实例</title>
+
+   <para>
+    这里给出一个非常简单的、用 C 编写的触发器函数示例。（用过程语言编写的触发器示例可见各过程语言的文档。）
+   </para>
+
+   <para>
+    如果某条命令试图向列 <structfield>x</structfield> 中插入空值，函数
+    <function>trigf</function> 就会报告表 <structname>ttest</structname>
+    中的行数，并跳过实际操作。（这样，这个触发器就起到了非空约束的作用，但不会中止事务。）
+   </para>
+
+   <para>
+    首先，表定义：
+<programlisting>
+CREATE TABLE ttest (
+    x integer
+);
+</programlisting>
+   </para>
+
+   <para>
+    下面是触发器函数的源代码：
+<programlisting><![CDATA[
+#include "postgres.h"
+#include "fmgr.h"
+#include "executor/spi.h"       /* this is what you need to work with SPI */
+#include "commands/trigger.h"   /* ... triggers ... */
+#include "utils/rel.h"          /* ... and relations */
+
+PG_MODULE_MAGIC;
+
+PG_FUNCTION_INFO_V1(trigf);
+
+Datum
+trigf(PG_FUNCTION_ARGS)
+{
+    TriggerData *trigdata = (TriggerData *) fcinfo->context;
+    TupleDesc   tupdesc;
+    HeapTuple   rettuple;
+    char       *when;
+    bool        checknull = false;
+    bool        isnull;
+    int         ret, i;
+
+    /* make sure it's called as a trigger at all */
+    if (!CALLED_AS_TRIGGER(fcinfo))
+        elog(ERROR, "trigf: not called by trigger manager");
+
+    /* tuple to return to executor */
+    if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
+        rettuple = trigdata->tg_newtuple;
+    else
+        rettuple = trigdata->tg_trigtuple;
+
+    /* check for null values */
+    if (!TRIGGER_FIRED_BY_DELETE(trigdata->tg_event)
+        && TRIGGER_FIRED_BEFORE(trigdata->tg_event))
+        checknull = true;
+
+    if (TRIGGER_FIRED_BEFORE(trigdata->tg_event))
+        when = "before";
+    else
+        when = "after ";
+
+    tupdesc = trigdata->tg_relation->rd_att;
+
+    /* connect to SPI manager */
+    SPI_connect();
+
+    /* get number of rows in table */
+    ret = SPI_exec("SELECT count(*) FROM ttest", 0);
+
+    if (ret < 0)
+        elog(ERROR, "trigf (fired %s): SPI_exec returned %d", when, ret);
+
+    /* count(*) returns int8, so be careful to convert */
+    i = DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[0],
+                                    SPI_tuptable->tupdesc,
+                                    1,
+                                    &isnull));
+
+    elog (INFO, "trigf (fired %s): there are %d rows in ttest", when, i);
+
+    SPI_finish();
+
+    if (checknull)
+    {
+        SPI_getbinval(rettuple, tupdesc, 1, &isnull);
+        if (isnull)
+            rettuple = NULL;
+    }
+
+    return PointerGetDatum(rettuple);
+}
+]]>
+</programlisting>
+   </para>
+
+   <para>
+    编译完这段源代码之后（见 <xref linkend="dfunc"/>），声明该函数和这些触发器：
+<programlisting>
+CREATE FUNCTION trigf() RETURNS trigger
+    AS '<replaceable>filename</replaceable>'
+    LANGUAGE C;
+
+CREATE TRIGGER tbefore BEFORE INSERT OR UPDATE OR DELETE ON ttest
+    FOR EACH ROW EXECUTE FUNCTION trigf();
+
+CREATE TRIGGER tafter AFTER INSERT OR UPDATE OR DELETE ON ttest
+    FOR EACH ROW EXECUTE FUNCTION trigf();
+</programlisting>
+   </para>
+
+   <para>
+    现在可以测试该触发器的行为：
+<screen>
+=&gt; INSERT INTO ttest VALUES (NULL);
+INFO:  trigf (fired before): there are 0 rows in ttest
+INSERT 0 0
+
+-- Insertion skipped and AFTER trigger is not fired
+
+=&gt; SELECT * FROM ttest;
+ x
+---
+(0 rows)
+
+=&gt; INSERT INTO ttest VALUES (1);
+INFO:  trigf (fired before): there are 0 rows in ttest
+INFO:  trigf (fired after ): there are 1 rows in ttest
+                                       ^^^^^^^^
+                             remember what we said about visibility.
+INSERT 167793 1
+vac=&gt; SELECT * FROM ttest;
+ x
+---
+ 1
+(1 row)
+
+=&gt; INSERT INTO ttest SELECT x * 2 FROM ttest;
+INFO:  trigf (fired before): there are 1 rows in ttest
+INFO:  trigf (fired after ): there are 2 rows in ttest
+                                       ^^^^^^
+                             remember what we said about visibility.
+INSERT 167794 1
+=&gt; SELECT * FROM ttest;
+ x
+---
+ 1
+ 2
+(2 rows)
+
+=&gt; UPDATE ttest SET x = NULL WHERE x = 2;
+INFO:  trigf (fired before): there are 2 rows in ttest
+UPDATE 0
+=&gt; UPDATE ttest SET x = 4 WHERE x = 2;
+INFO:  trigf (fired before): there are 2 rows in ttest
+INFO:  trigf (fired after ): there are 2 rows in ttest
+UPDATE 1
+vac=&gt; SELECT * FROM ttest;
+ x
+---
+ 1
+ 4
+(2 rows)
+
+=&gt; DELETE FROM ttest;
+INFO:  trigf (fired before): there are 2 rows in ttest
+INFO:  trigf (fired before): there are 1 rows in ttest
+INFO:  trigf (fired after ): there are 0 rows in ttest
+INFO:  trigf (fired after ): there are 0 rows in ttest
+                                       ^^^^^^
+                             remember what we said about visibility.
+DELETE 2
+=&gt; SELECT * FROM ttest;
+ x
+---
+(0 rows)
+</screen>
+
+   </para>
+
+   <para>
+    更复杂的示例可见 <filename>src/test/regress/regress.c</filename> 和
+    <xref linkend="contrib-spi"/>。
+   </para>
+  </sect1>
+ </chapter>

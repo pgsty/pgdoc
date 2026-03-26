@@ -1,0 +1,263 @@
+<!-- doc/src/sgml/citext.sgml -->
+
+<sect1 id="citext" xreflabel="citext">
+ <title>citext &mdash; 大小写不敏感的字符串类型</title>
+
+ <indexterm zone="citext">
+  <primary>citext</primary>
+ </indexterm>
+
+ <para>
+  <filename>citext</filename>模块提供一种大小写不敏感的字符串类型
+  <type>citext</type>。本质上，它在比较值时会在内部调用
+  <function>lower</function>。除此之外，它的行为几乎与
+  <type>text</type>完全相同。
+ </para>
+
+ <tip>
+  <para>
+   可以考虑使用<firstterm>非确定性排序规则</firstterm>（见
+   <xref linkend="collation-nondeterministic"/>）来代替这个模块。
+   它们既可用于大小写不敏感比较，也可用于重音不敏感比较以及其他组合，
+   并且能更正确地处理更多 Unicode 特殊情形。
+  </para>
+ </tip>
+
+ <para>
+  这个模块被认为是<quote>受信任的</quote>，也就是说，它可以由在当前数据库上具有
+  <literal>CREATE</literal>权限的非超级用户安装。
+ </para>
+
+ <sect2 id="citext-rationale">
+  <title>原理</title>
+
+  <para>
+   在<productname>PostgreSQL</productname>中进行大小写不敏感匹配的标准方法，
+   一直是在比较值时使用<function>lower</function>函数，例如：
+
+<programlisting>
+SELECT * FROM tab WHERE lower(col) = LOWER(?);
+</programlisting>
+  </para>
+
+  <para>
+   这种做法效果尚可，但有几个缺点：
+  </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      它会让 SQL 语句变得冗长，而且你必须时刻记得同时对列和查询值调用
+      <function>lower</function>。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      除非你创建一个使用<function>lower</function>的函数索引，否则它不会使用索引。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      如果把列声明为<literal>UNIQUE</literal>或<literal>PRIMARY
+      KEY</literal>，隐式生成的索引仍然是大小写敏感的。因此，它既无法用于大小写不敏感搜索，也不能以大小写不敏感的方式强制唯一性。
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    <type>citext</type>数据类型允许你在 SQL 查询中省去对
+    <function>lower</function>的调用，并允许主键不区分大小写。
+    与<type>text</type>一样，<type>citext</type>也与区域设置相关，这意味着大写字符和小写字符如何匹配取决于数据库
+    <literal>LC_CTYPE</literal>设置的规则。同样，这种行为与在查询中使用
+    <function>lower</function>完全一致。但由于这是由数据类型透明地完成的，
+    因此你不必在查询中额外记住任何特殊处理。
+   </para>
+
+ </sect2>
+
+ <sect2 id="citext-how-to-use-it">
+  <title>如何使用</title>
+
+  <para>
+   下面是一个简单的使用示例：
+
+<programlisting>
+CREATE TABLE users (
+    nick CITEXT PRIMARY KEY,
+    pass TEXT   NOT NULL
+);
+
+INSERT INTO users VALUES ( 'larry',  sha256(random()::text::bytea) );
+INSERT INTO users VALUES ( 'Tom',    sha256(random()::text::bytea) );
+INSERT INTO users VALUES ( 'Damian', sha256(random()::text::bytea) );
+INSERT INTO users VALUES ( 'NEAL',   sha256(random()::text::bytea) );
+INSERT INTO users VALUES ( 'Bj&oslash;rn',  sha256(random()::text::bytea) );
+
+SELECT * FROM users WHERE nick = 'Larry';
+</programlisting>
+
+   即使<structfield>nick</structfield>列中存的是<literal>larry</literal>，
+   而查询条件写的是<literal>Larry</literal>，这个<command>SELECT</command>语句仍会返回一行。
+  </para>
+ </sect2>
+
+ <sect2 id="citext-string-comparison-behavior">
+  <title>字符串比较行为</title>
+
+  <para>
+   <type>citext</type>在比较时会先把每个字符串转换为小写
+   （就像调用了<function>lower</function>一样），然后再按常规方式比较结果。
+   因此，举例来说，如果两个字符串经过<function>lower</function>后得到的结果相同，
+   它们就会被视为相等。
+  </para>
+
+  <para>
+   为了尽可能贴近大小写不敏感排序规则的行为，一些字符串处理操作符和函数都提供了
+   <type>citext</type>专用版本。例如，当应用于<type>citext</type>时，
+   正则表达式操作符<literal>~</literal>和<literal>~*</literal>表现相同：
+   它们都会以大小写不敏感的方式匹配。<literal>!~</literal>和
+   <literal>!~*</literal>也是如此，<literal>LIKE</literal>操作符
+   <literal>~~</literal>和<literal>~~*</literal>、以及
+   <literal>!~~</literal>和<literal>!~~*</literal>也一样。如果你希望进行大小写敏感匹配，可以把这些操作符的参数转换为<type>text</type>。
+  </para>
+
+  <para>
+   同样地，如果这些函数的参数是<type>citext</type>，它们也会以大小写不敏感方式进行匹配：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+      <function>regexp_match()</function>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+      <function>regexp_matches()</function>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+      <function>regexp_replace()</function>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+      <function>regexp_split_to_array()</function>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+      <function>regexp_split_to_table()</function>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+      <function>replace()</function>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+      <function>split_part()</function>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+      <function>strpos()</function>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+      <function>translate()</function>
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   对于正则表达式函数，如果你想按大小写敏感方式匹配，可以指定
+   <quote>c</quote>标志来强制大小写敏感匹配。否则，若要获得大小写敏感行为，
+   就必须在调用这些函数之前先把值转换为<type>text</type>。
+  </para>
+
+ </sect2>
+
+ <sect2 id="citext-limitations">
+  <title>限制</title>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <type>citext</type>的大小写折叠行为依赖于数据库的
+      <literal>LC_CTYPE</literal>设置，因此它如何比较值是在创建数据库时确定的。
+      按照 Unicode 标准中的定义，它并不是真正意义上的大小写不敏感。
+      实际上，这意味着只要你对当前排序规则满意，通常也会对
+      <type>citext</type>的比较结果满意。但是，如果数据库中存有多种语言的数据，
+      而排序规则只适用于其中某一种语言，那么其他语言的用户可能会发现查询结果并不符合预期。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      从<productname>PostgreSQL</productname> 9.1 起，你可以为
+      <type>citext</type>列或数据值附加<literal>COLLATE</literal>说明。
+      当前，<type>citext</type>操作符在比较已完成大小写折叠的字符串时，会遵从非默认的
+      <literal>COLLATE</literal>说明；但最初转换为小写这一步，始终仍按数据库的
+      <literal>LC_CTYPE</literal>设置执行（也就是说，等同于给出了
+      <literal>COLLATE "default"</literal>）。未来的发行版中，这一点可能会改变，从而使这两步都遵循输入的<literal>COLLATE</literal>说明。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+       <type>citext</type>不如<type>text</type>高效，因为操作符函数和
+       B-树比较函数必须复制数据并将其转换为小写后才能比较。此外，只有
+       <type>text</type>能够支持 B-树去重。不过，在需要大小写不敏感匹配时，
+       <type>citext</type>仍然比手工使用<function>lower</function>略高效一些。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      如果你在某些场景下需要大小写敏感比较，而在另一些场景下又需要大小写不敏感比较，
+      那么<type>citext</type>并不会帮上太多忙。标准做法是使用
+      <type>text</type>类型，并在需要大小写不敏感比较时手工调用
+      <function>lower</function>；如果这类比较只是不常见地出现，这种做法是完全可行的。
+      如果你大多数时候都需要大小写不敏感行为，而只是在少数场景下需要大小写敏感比较，
+      那么可以考虑把数据存储为<type>citext</type>，并在需要大小写敏感比较时显式地把列转换为
+      <type>text</type>。无论哪种情况，如果你希望这两类搜索都足够快，就都需要建立两个索引。
+    </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      包含<type>citext</type>操作符的模式必须位于当前
+      <varname>search_path</varname>中（通常是<literal>public</literal>）；
+      如果不在，调用的将是普通的、大小写敏感的<type>text</type>操作符。
+    </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      通过先把字符串转为小写再比较的方法，不能正确处理某些 Unicode 特殊情形，
+      例如某个大写字母对应两个小写字母等价形式的情况。因此，Unicode 区分了
+      <firstterm>大小写映射</firstterm>和<firstterm>大小写折叠</firstterm>。
+      若要正确处理这些情况，应当使用非确定性排序规则而不是<type>citext</type>。
+     </para>
+    </listitem>
+   </itemizedlist>
+ </sect2>
+
+ <sect2 id="citext-author">
+  <title>作者</title>
+
+  <para>
+   David E. Wheeler <email>david@kineticode.com</email>
+  </para>
+
+  <para>
+   灵感来自 Donald Fraser 最初编写的<type>citext</type>模块。
+  </para>
+
+ </sect2>
+
+</sect1>

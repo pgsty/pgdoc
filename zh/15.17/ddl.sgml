@@ -1,0 +1,4076 @@
+<!-- doc/src/sgml/ddl.sgml -->
+
+<chapter id="ddl">
+
+ <title>数据定义</title>
+
+ <para>
+  本章介绍如何创建用于保存数据的数据库结构。在关系数据库中，原始数据存储在表中，因此本章的大部分内容都在说明如何创建和修改表，以及有哪些特性可用于控制表中存储的数据。随后，我们将讨论如何把表组织到模式中，以及如何向表分配权限。最后，我们会简要介绍一些同样会影响数据存储的特性，例如继承、表分区、视图、函数和触发器。
+ </para>
+
+ <sect1 id="ddl-basics">
+
+  <title>表基础</title>
+
+  <indexterm zone="ddl-basics">
+   <primary>table</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>row</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>column</primary>
+  </indexterm>
+
+ <para>
+   关系数据库中的表很像纸面上的表格：它由行和列组成。列的数量和顺序是固定的，每一列都有名称。行的数量则是可变的，它反映了某一时刻存储了多少数据。SQL 不对表中行的顺序作任何保证。读取表时，除非显式要求排序，否则行会以未指定的顺序出现，参见<xref linkend="queries"/>。此外，SQL 不会为行分配唯一标识符，因此一个表中可能出现多行完全相同的记录。这是 SQL 所依据的数学模型带来的结果，但通常并不理想。本章稍后将看到如何处理这个问题。
+ </para>
+
+ <para>
+   每一列都有一种数据类型。数据类型限制了可以赋给该列的可能值集合，并为列中存储的数据赋予语义，从而使其能够用于计算。例如，声明为数值类型的列不能接受任意文本字符串，存储在这类列中的数据可以参与数学运算。相比之下，声明为字符串类型的列几乎能接受任何种类的数据，但并不适合用于数学计算，尽管仍可进行字符串拼接等其他操作。
+ </para>
+
+ <para>
+   <productname>PostgreSQL</productname>提供了相当丰富的一组内置数据类型，适用于许多应用场景。用户也可以定义自己的数据类型。大多数内置数据类型的名称和语义都很直观，因此我们把详细说明留到<xref linkend="datatype"/>。一些常用的数据类型包括：表示整数的<type>integer</type>、表示可能带小数部分数值的<type>numeric</type>、表示字符串的<type>text</type>、表示日期的<type>date</type>、表示一天中时间值的<type>time</type>，以及同时包含日期和时间的<type>timestamp</type>。
+ </para>
+
+  <indexterm>
+   <primary>table</primary>
+   <secondary>creating</secondary>
+  </indexterm>
+
+ <para>
+   要创建一个表，可使用名副其实的<xref linkend="sql-createtable"/>命令。在该命令中，至少要指定新表的名称、各列的名称以及每列的数据类型。例如：
+<programlisting>
+CREATE TABLE my_first_table (
+    first_column text,
+    second_column integer
+);
+</programlisting>
+   这会创建一个名为<literal>my_first_table</literal>的表，它有两列。第一列名为<literal>first_column</literal>，数据类型为<type>text</type>；第二列名为<literal>second_column</literal>，类型为<type>integer</type>。表名和列名遵循<xref linkend="sql-syntax-identifiers"/>中解释的标识符语法。类型名通常也是标识符，但也有少数例外。注意，列列表以逗号分隔，并用圆括号括起来。
+ </para>
+
+ <para>
+   当然，前面的例子相当刻意。通常，你会为表和列起能体现其所存储数据含义的名称。下面看一个更实际的例子：
+<programlisting>
+CREATE TABLE products (
+    product_no integer,
+    name text,
+    price numeric
+);
+</programlisting>
+   （<type>numeric</type>类型可以存储小数部分，这对金额很常见。）
+ </para>
+
+  <tip>
+
+   <para>
+    在创建许多相互关联的表时，最好为表和列选择一致的命名模式。例如，表名可以使用单数名词或复数名词，两种做法都各有支持者。
+   </para>
+  </tip>
+
+ <para>
+   一个表能包含的列数是有限的。根据列类型不同，这个上限在 250 到 1600 之间。不过，定义一个接近这个数量的表极不常见，而且其设计往往值得商榷。
+ </para>
+
+  <indexterm>
+   <primary>table</primary>
+   <secondary>removing</secondary>
+  </indexterm>
+
+ <para>
+   如果不再需要某个表，可以使用<xref
+   linkend="sql-droptable"/>命令删除它。例如：
+<programlisting>
+DROP TABLE my_first_table;
+DROP TABLE products;
+</programlisting>
+   尝试删除不存在的表会报错。不过，在 SQL 脚本文件中，人们常常在创建每个表之前无条件地尝试删除它，并忽略可能出现的错误消息，这样脚本无论表是否存在都能工作。（如果愿意，也可以使用<literal>DROP TABLE IF EXISTS</literal>变体来避免错误消息，但这不是标准 SQL。）
+ </para>
+
+  <para>
+   如果我们需要修改一个已经存在的表，请参考本章稍后的<xref
+   linkend="ddl-alter"/>。
+  </para>
+
+ <para>
+   利用到目前为止所讨论的工具，我们已经可以创建功能完备的表。本章其余内容关注如何向表定义添加特性，以确保数据完整性、安全性或使用便利。如果你现在就急着向表中填充数据，可以先跳到<xref linkend="dml"/>，稍后再回来阅读本章其余内容。
+ </para>
+ </sect1>
+
+ <sect1 id="ddl-default">
+
+  <title>默认值</title>
+
+  <indexterm zone="ddl-default">
+   <primary>default value</primary>
+  </indexterm>
+
+ <para>
+   列可以被赋予默认值。当创建新行时，如果没有为某些列指定值，这些列就会填入各自的默认值。数据操作命令也可以显式要求把某列设为其默认值，而不必知道默认值究竟是什么。（数据操作命令详见<xref linkend="dml"/>。）
+ </para>
+
+  <para>
+   <indexterm><primary>null value</primary><secondary>default value</secondary></indexterm>
+   如果没有显式指定默认值，则默认值是空值。这是合理的，因为空值表示未知数据。
+  </para>
+
+ <para>
+   在表定义中，默认值写在列的数据类型之后。例如：
+<programlisting>
+CREATE TABLE products (
+    product_no integer,
+    name text,
+    price numeric <emphasis>DEFAULT 9.99</emphasis>
+);
+</programlisting>
+  </para>
+
+ <para>
+   默认值也可以是表达式。每次需要插入默认值时都会对其求值（<emphasis>不是</emphasis>在创建表时）。一个常见例子是让<type>timestamp</type>列的默认值为<literal>CURRENT_TIMESTAMP</literal>，这样它会被设为插入该行时的时间。另一个常见例子是为每一行生成一个<quote>序列号</quote>。在<productname>PostgreSQL</productname>中，这通常可以这样实现：
+<programlisting>
+CREATE TABLE products (
+    product_no integer <emphasis>DEFAULT nextval('products_product_no_seq')</emphasis>,
+    ...
+);
+</programlisting>
+   其中<literal>nextval()</literal>函数从<firstterm>序列对象</firstterm>（见<xref linkend="functions-sequence"/>）中依次取值。这种写法非常常见，因此还有一种专门的简写形式：
+<programlisting>
+CREATE TABLE products (
+    product_no <emphasis>SERIAL</emphasis>,
+    ...
+);
+</programlisting>
+   <literal>SERIAL</literal>简写会在<xref
+   linkend="datatype-serial"/>进一步讨论。
+ </para>
+ </sect1>
+
+ <sect1 id="ddl-identity-columns">
+  <title>标识列</title>
+
+  <indexterm zone="ddl-identity-columns">
+   <primary>identity column</primary>
+  </indexterm>
+
+  <para>
+   标识列是一种特殊列，其值由隐式序列自动生成。它可用于生成键值。
+  </para>
+
+  <para>
+   要创建标识列，可在<command>CREATE TABLE</command>中使用<literal>GENERATED ...
+   AS IDENTITY</literal>子句，例如：
+<programlisting>
+CREATE TABLE people (
+    id bigint <emphasis>GENERATED ALWAYS AS IDENTITY</emphasis>,
+    ...,
+);
+</programlisting>
+   或者：
+<programlisting>
+CREATE TABLE people (
+    id bigint <emphasis>GENERATED BY DEFAULT AS IDENTITY</emphasis>,
+    ...,
+);
+</programlisting>
+   更多细节见<xref linkend="sql-createtable"/>。
+  </para>
+
+  <para>
+   如果对带有标识列的表执行<command>INSERT</command>命令，并且没有显式为标识列指定值，则会插入由隐式序列生成的值。例如，在上面的定义下，并假设还有其他合适的列，写成
+<programlisting>
+INSERT INTO people (name, address) VALUES ('A', 'foo');
+INSERT INTO people (name, address) VALUES ('B', 'bar');
+</programlisting>
+   将会为<literal>id</literal>列生成从 1 开始的值，并得到如下表数据：
+<screen>
+ id | name | address
+----+------+---------
+  1 | A    | foo
+  2 | B    | bar
+</screen>
+   也可以在相应位置写<literal>DEFAULT</literal>，显式请求使用序列生成的值，例如：
+<programlisting>
+INSERT INTO people (id, name, address) VALUES (<emphasis>DEFAULT</emphasis>, 'C', 'baz');
+</programlisting>
+   同样，<literal>DEFAULT</literal>关键字也可以用于<command>UPDATE</command>命令。
+  </para>
+
+  <para>
+   因此，在很多方面，标识列的行为都像带有默认值的列。
+  </para>
+
+  <para>
+   列定义中的<literal>ALWAYS</literal>和<literal>BY DEFAULT</literal>子句决定了在<command>INSERT</command>和<command>UPDATE</command>命令中如何处理用户显式指定的值。在<command>INSERT</command>命令中，如果选择了<literal>ALWAYS</literal>，只有当<command>INSERT</command>语句指定了<literal>OVERRIDING SYSTEM VALUE</literal>时，才接受用户指定的值。如果选择了<literal>BY DEFAULT</literal>，则用户指定的值优先生效。因此，使用<literal>BY DEFAULT</literal>的行为更接近默认值，即默认值可以被显式值覆盖；而<literal>ALWAYS</literal>则能更好地防止意外插入显式值。
+  </para>
+
+  <para>
+   标识列的数据类型必须是序列支持的数据类型之一。（见<xref linkend="sql-createsequence"/>。）关联序列的属性可以在创建标识列时指定（见<xref linkend="sql-createtable"/>），也可以之后再修改（见<xref linkend="sql-altertable"/>）。
+  </para>
+
+  <para>
+   标识列会自动标记为<literal>NOT NULL</literal>。不过，标识列并不保证唯一性。（序列通常返回唯一值，但序列可能被重置，或者如上所述，也可能手工向标识列插入值。）如果需要唯一性，必须通过<literal>PRIMARY KEY</literal>或<literal>UNIQUE</literal>约束来保证。
+  </para>
+
+  <para>
+   在表继承层次中，子表中的标识列及其属性与父表中的对应列相互独立。子表不会自动从父表继承标识列或其属性。在<command>INSERT</command>或<command>UPDATE</command>期间，只要语句中指定的那个表里该列是标识列，该列就会被当作标识列处理，并应用相应的标识属性。
+  </para>
+
+  <para>
+   分区会从分区表继承标识列。它们不能拥有自己的标识列。某个标识列的属性在整个分区层次中的所有分区上都保持一致。
+  </para>
+ </sect1>
+
+ <sect1 id="ddl-generated-columns">
+  <title>生成列</title>
+
+  <indexterm zone="ddl-generated-columns">
+   <primary>generated column</primary>
+  </indexterm>
+
+  <para>
+   生成列是一种特殊列，其值总是根据其他列计算得出。因此，对列而言，它就像视图对表一样。生成列有两种：存储型和虚拟型。存储型生成列在写入时（插入或更新时）计算，并像普通列一样占用存储空间。虚拟生成列不占用存储空间，而是在读取时计算。因此，虚拟生成列类似于视图，存储型生成列类似于物化视图（只是它总会自动更新）。
+  </para>
+
+  <para>
+   要创建生成列，可在<command>CREATE TABLE</command>中使用<literal>GENERATED ALWAYS AS</literal>子句，例如：
+<programlisting>
+CREATE TABLE people (
+    ...,
+    height_cm numeric,
+    height_in numeric <emphasis>GENERATED ALWAYS AS (height_cm / 2.54)</emphasis>
+);
+</programlisting>
+   生成列默认是虚拟型。使用关键字<literal>VIRTUAL</literal>或<literal>STORED</literal>可以显式指定类型。更多细节见<xref linkend="sql-createtable"/>。
+  </para>
+
+  <para>
+   生成列不能直接写入。在<command>INSERT</command>或<command>UPDATE</command>命令中，不能为生成列指定值，但可以指定关键字<literal>DEFAULT</literal>。
+  </para>
+
+  <para>
+   带默认值的列和生成列之间存在一些差异。如果没有提供其他值，列默认值只在行首次插入时计算一次；生成列则会在行每次变化时更新，并且不能被覆盖。列默认值不能引用同一表中的其他列，而生成表达式通常会这样做。列默认值可以使用易失性函数，例如<literal>random()</literal>或引用当前时间的函数；生成列则不允许这样做。
+  </para>
+
+  <para>
+   生成列以及包含生成列的表在定义时有若干限制：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      生成表达式只能使用不可变函数，并且不能使用子查询，也不能以任何方式引用当前行之外的任何内容。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      生成表达式不能引用另一个生成列。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      生成表达式不能引用系统列，<varname>tableoid</varname> 除外。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      虚拟生成列不能使用用户定义类型，并且其生成表达式不得引用用户定义函数或类型，也就是说，它只能使用内置函数或类型。该限制也包括间接使用的情况，例如操作符或类型转换背后的函数或类型。（这一限制不适用于存储型生成列。）
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      生成列不能具有列默认值或标识定义。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      生成列不能是分区键的一部分。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      外部表可以有生成列。详情见<xref linkend="sql-createforeigntable"/>。
+     </para>
+    </listitem>
+    <listitem>
+     <para>对于继承和分区：</para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        如果父列是生成列，其子列也必须是同种类（存储型或虚拟型）的生成列；不过，子列可以使用不同的生成表达式。
+       </para>
+
+       <para>
+        对于存储型生成列，在插入或更新一行时，实际应用的是该行所在物理表关联的生成表达式。（这与列默认值不同：默认值使用的是查询中所指名表关联的默认值。）对于虚拟生成列，在读取表时，应用的是查询中所指名表的生成表达式。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        如果父列不是生成列，其子列也不能是生成列。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        对于继承表，如果在<command>CREATE TABLE ... INHERITS</command>中编写子列定义时未写任何<literal>GENERATED</literal>子句，则会自动从父列复制该<literal>GENERATED</literal>子句。<command>ALTER TABLE ... INHERIT</command>要求父列和子列在是否为生成列这一点上已经匹配，但不要求它们的生成表达式相同。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        类似地，对于分区表，如果在<command>CREATE TABLE ... PARTITION OF</command>中编写子列定义时未写任何<literal>GENERATED</literal>子句，则会自动从父列复制该子句。<command>ALTER TABLE ... ATTACH PARTITION</command>要求父列和子列在生成状态上已经匹配，但不要求它们的生成表达式相同。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        在多重继承的情况下，如果某个父列是生成列，则所有父列都必须是生成列。如果它们的生成表达式并不完全相同，则必须为子列显式指定所需的表达式。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </listitem>
+   </itemizedlist>
+  </para>
+
+  <para>
+   生成列的使用还有以下注意事项。
+   <itemizedlist>
+    <listitem>
+     <para>
+      生成列与其底层基础列分别维护访问权限。因此，可以安排成某个角色能够读取生成列，但不能读取底层基础列。
+     </para>
+
+     <para>
+      对于虚拟生成列，只有在生成表达式只使用防泄漏函数时，这种安排才完全安全（见<xref linkend="sql-createfunction"/>），但系统不会强制检查这一点。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      生成表达式中所用函数的权限，会在表达式实际执行时分别在写入或读取时检查，就像生成表达式是由使用生成列的查询直接调用的一样。生成列的用户必须拥有调用生成表达式中所有函数的权限。生成表达式中的函数是以执行查询的用户的权限还是函数所有者的权限来执行，取决于这些函数被定义为<literal>SECURITY INVOKER</literal>还是<literal>SECURITY DEFINER</literal>。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      从概念上说，生成列会在<literal>BEFORE</literal>触发器运行之后更新。因此，<literal>BEFORE</literal>触发器中对基础列所做的修改会反映到生成列中。反过来，在<literal>BEFORE</literal>触发器中访问生成列是不允许的。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      生成列可以根据<command>CREATE PUBLICATION</command>参数<link linkend="sql-createpublication-params-with-publish-generated-columns"><literal>publish_generated_columns</literal></link>，或者通过把它们包含在<command>CREATE PUBLICATION</command>命令的列列表中，在逻辑复制期间被复制。目前这只支持存储型生成列。详情见<xref linkend="logical-replication-gencols"/>。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+ </sect1>
+
+ <sect1 id="ddl-constraints">
+
+  <title>约束</title>
+
+  <indexterm zone="ddl-constraints">
+   <primary>constraint</primary>
+  </indexterm>
+
+  <para>
+   数据类型是一种限制能够存储在表中数据类别的方法。但是对于很多应用来说，它们提供的约束太粗糙。例如，一个包含产品价格的列应该只接受正值。但是没有任何一种标准数据类型只接受正值。另一个问题是我们可能需要根据其他列或行来约束一个列中的数据。例如，在一个包含产品信息的表中，对于每个产品编号应该只有一行。
+  </para>
+
+  <para>
+   为此，SQL 允许我们在列和表上定义约束。约束让我们能够按照需要控制表中的数据。如果用户试图在列中存储违反约束的数据，就会报错。即使该值来自默认值定义，这条规则也同样适用。
+  </para>
+
+  <sect2 id="ddl-constraints-check-constraints">
+
+   <title>检查约束</title>
+
+   <indexterm>
+    <primary>check constraint</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>constraint</primary>
+    <secondary>check</secondary>
+   </indexterm>
+
+  <para>
+    检查约束是最通用的约束类型。它允许我们指定某一列中的值必须满足一个布尔（真值）表达式。例如，要要求产品价格为正值，可以使用：
+<programlisting>
+CREATE TABLE products (
+    product_no integer,
+    name text,
+    price numeric <emphasis>CHECK (price &gt; 0)</emphasis>
+);
+</programlisting>
+   </para>
+
+  <para>
+    如你所见，约束定义和默认值定义一样都写在数据类型之后。默认值和约束的先后顺序没有影响。检查约束由关键字<literal>CHECK</literal>以及其后放在圆括号中的表达式组成。检查约束表达式应当涉及被约束的列，否则这个约束就没有太大意义。
+   </para>
+
+   <indexterm>
+    <primary>constraint</primary>
+    <secondary>name</secondary>
+   </indexterm>
+
+  <para>
+    我们也可以为约束单独指定一个名称。这样可以让错误消息更清晰，也便于在需要修改约束时引用它。语法如下：
+<programlisting>
+CREATE TABLE products (
+    product_no integer,
+    name text,
+    price numeric <emphasis>CONSTRAINT positive_price</emphasis> CHECK (price &gt; 0)
+);
+</programlisting>
+    要指定一个命名约束，在约束名标识符前写关键字<literal>CONSTRAINT</literal>，再在其后写约束定义即可。（如果没有用这种方式指定约束名，系统会为你选择一个。）
+   </para>
+
+   <para>
+    一个检查约束也可以引用多个列。例如我们存储一个普通价格和一个打折后的价格，而我们希望保证打折后的价格低于普通价格：
+<programlisting>
+CREATE TABLE products (
+    product_no integer,
+    name text,
+    price numeric CHECK (price &gt; 0),
+    discounted_price numeric CHECK (discounted_price &gt; 0),
+    <emphasis>CHECK (price &gt; discounted_price)</emphasis>
+);
+</programlisting>
+   </para>
+
+   <para>
+    前两个约束看起来很相似。第三个则使用了一种新语法。它并没有依附在一个特定的列，而是作为一个独立的项出现在逗号分隔的列列表中。列定义和这种约束定义可以以混合的顺序出现在列表中。
+   </para>
+
+   <para>
+    我们将前两个约束称为列约束，而第三个约束为表约束，因为它独立于任何一个列定义。列约束也可以写成表约束，但反过来不行，因为一个列约束只能引用它所依附的那一个列（<productname>PostgreSQL</productname>并不强制要求这个规则，但是如果我们希望表定义能够在其他数据库系统中工作，那就应该遵循它）。上述示例也可以写成：
+<programlisting>
+CREATE TABLE products (
+    product_no integer,
+    name text,
+    price numeric,
+    CHECK (price &gt; 0),
+    discounted_price numeric,
+    CHECK (discounted_price &gt; 0),
+    CHECK (price &gt; discounted_price)
+);
+</programlisting>
+    甚至是：
+<programlisting>
+CREATE TABLE products (
+    product_no integer,
+    name text,
+    price numeric CHECK (price &gt; 0),
+    discounted_price numeric,
+    CHECK (discounted_price &gt; 0 AND price &gt; discounted_price)
+);
+</programlisting>
+    这只是口味的问题。
+   </para>
+
+   <para>
+    表约束也可以用列约束相同的方法来指定名称：
+<programlisting>
+CREATE TABLE products (
+    product_no integer,
+    name text,
+    price numeric,
+    CHECK (price &gt; 0),
+    discounted_price numeric,
+    CHECK (discounted_price &gt; 0),
+    <emphasis>CONSTRAINT valid_discount</emphasis> CHECK (price &gt; discounted_price)
+);
+</programlisting>
+   </para>
+
+   <indexterm>
+    <primary>null value</primary>
+    <secondary sortas="check constraints">with check constraints</secondary>
+   </indexterm>
+
+  <para>
+    需要注意的是，当检查表达式的值为真或空值时，检查约束就被视为满足。由于当任一操作数为空时，大多数表达式都会计算为空值，所以检查约束不会阻止受约束列中出现空值。要确保某列不包含空值，可以使用下一节介绍的非空约束。
+   </para>
+
+   <note>
+
+    <para>
+     <productname>PostgreSQL</productname>不支持引用除了正在检查的新行或更新行之外的表数据的<literal>CHECK</literal>约束。
+     虽然违反此规则的<literal>CHECK</literal>约束在简单测试中可能有效，但无法保证数据库不会达到约束条件为假的状态
+     （由于其他行的后续更改）。这将导致数据库转储和恢复失败。即使完整的数据库状态与约束一致，恢复也可能失败，
+     因为行未按满足约束的顺序加载。如果可能的话，使用<literal>UNIQUE</literal>、<literal>EXCLUDE</literal>或
+     <literal>FOREIGN KEY</literal>约束来表示跨行和跨表的限制。
+</para>
+
+    <para>
+     如果你需要的是在插入行时针对其他行做一次性检查，而不是持续维护一致性保证，
+     可以使用自定义<link linkend="triggers">触发器</link>来实现。（这种方法避免了
+     转储/恢复问题，因为<application>pg_dump</application>在恢复数据之后才重新安装触发器，
+     因此在转储/恢复期间不会强制执行检查。）
+    </para>
+   </note>
+
+   <note>
+
+    <para>
+     <productname>PostgreSQL</productname>假定<literal>CHECK</literal>约束的条件是不可变的，也就是说，对于同一输入行它们始终会给出相同的结果。
+     正是这个假设，才使得只需要在插入或更新行时检查<literal>CHECK</literal>约束，而不必在其他时间检查。
+     （上面关于不引用其他表数据的警告实际上是此限制的特殊情况。）
+    </para>
+
+    <para>
+     一种常见的破坏这种假设的方式，是在<literal>CHECK</literal>表达式中引用用户定义函数，
+     然后改变该函数的行为。<productname>PostgreSQL</productname>不会禁止这样做，
+     但它不会注意到表中是否有行现在违反了<literal>CHECK</literal>约束。
+     这将导致后续的数据库转储和恢复操作失败。
+     处理这种变化的推荐方法是删除约束（使用<command>ALTER TABLE</command>），
+     调整函数定义，然后重新添加约束，从而重新检查所有表行。
+</para>
+   </note>
+  </sect2>
+
+  <sect2 id="ddl-constraints-not-null">
+   <title>非空约束</title>
+
+   <indexterm>
+    <primary>not-null constraint</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>constraint</primary>
+    <secondary>NOT NULL</secondary>
+   </indexterm>
+
+   <para>
+    非空约束只是简单地规定某列不能取空值。语法示例如下：
+<programlisting>
+CREATE TABLE products (
+    product_no integer <emphasis>NOT NULL</emphasis>,
+    name text <emphasis>NOT NULL</emphasis>,
+    price numeric
+);
+</programlisting>
+    也可以显式指定约束名，例如：
+<programlisting>
+CREATE TABLE products (
+    product_no integer NOT NULL,
+    name text <emphasis>CONSTRAINT products_name_not_null</emphasis> NOT NULL,
+    price numeric
+);
+</programlisting>
+   </para>
+
+   <para>
+    非空约束通常写成列约束。将它写成表约束的语法是：
+<programlisting>
+CREATE TABLE products (
+    product_no integer,
+    name text,
+    price numeric,
+    <emphasis>NOT NULL product_no</emphasis>,
+    <emphasis>NOT NULL name</emphasis>
+);
+</programlisting>
+    但这种语法不是标准写法，主要供<application>pg_dump</application>使用。
+   </para>
+
+   <para>
+    非空约束在功能上等价于创建检查约束<literal>CHECK (<replaceable>column_name</replaceable> IS NOT NULL)</literal>，但在<productname>PostgreSQL</productname>中，显式创建非空约束效率更高。
+   </para>
+
+   <para>
+    当然，一个列可以同时拥有多个约束；只要把它们依次写出来即可：
+<programlisting>
+CREATE TABLE products (
+    product_no integer NOT NULL,
+    name text NOT NULL,
+    price numeric NOT NULL CHECK (price &gt; 0)
+);
+</programlisting>
+    约束的书写顺序无关紧要，它并不一定决定约束的检查顺序。
+   </para>
+
+   <para>
+    不过，一个列最多只能有一个显式的非空约束。
+   </para>
+
+   <para>
+    <literal>NOT NULL</literal>约束有一个反面形式：<literal>NULL</literal>约束。这并不表示该列必须为空值，那显然毫无用处。它只是显式选择列可以为空的默认行为。<literal>NULL</literal>约束不属于 SQL 标准，因此不应在需要可移植性的应用中使用。（它之所以被加入<productname>PostgreSQL</productname>，只是为了兼容某些其他数据库系统。）不过，有些用户喜欢它，因为它让在脚本文件中切换该约束变得比较容易。例如，可以从下面的定义开始：
+<programlisting>
+CREATE TABLE products (
+    product_no integer NULL,
+    name text NULL,
+    price numeric NULL
+);
+</programlisting>
+    然后在需要的地方插入<literal>NOT</literal>关键字。
+   </para>
+
+   <tip>
+    <para>
+     在大多数数据库设计中，多数列都应标记为非空。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 id="ddl-constraints-unique-constraints">
+
+   <title>唯一约束</title>
+
+   <indexterm>
+    <primary>unique constraint</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>constraint</primary>
+    <secondary>unique</secondary>
+   </indexterm>
+
+   <para>
+    唯一约束保证某一列或某一组列中保存的数据在整个表的所有行之间都是唯一的。写成列约束时的语法是：
+<programlisting>
+CREATE TABLE products (
+    product_no integer <emphasis>UNIQUE</emphasis>,
+    name text,
+    price numeric
+);
+</programlisting>
+    写成表约束时则是：
+<programlisting>
+CREATE TABLE products (
+    product_no integer,
+    name text,
+    price numeric,
+    <emphasis>UNIQUE (product_no)</emphasis>
+);
+</programlisting>
+   </para>
+
+   <para>
+    要为一组列定义一个唯一约束，把它写作一个表级约束，列名用逗号分隔：
+<programlisting>
+CREATE TABLE example (
+    a integer,
+    b integer,
+    c integer,
+    <emphasis>UNIQUE (a, c)</emphasis>
+);
+</programlisting>
+    这指定这些列的组合值在整个表的范围内是唯一的，但其中任意一列的值并不需要是（一般也不是）唯一的。
+   </para>
+
+  <para>
+    我们可以按通常的方式为唯一约束指定名称：
+<programlisting>
+CREATE TABLE products (
+    product_no integer <emphasis>CONSTRAINT must_be_different</emphasis> UNIQUE,
+    name text,
+    price numeric
+);
+</programlisting>
+   </para>
+
+   <para>
+    增加一个唯一约束会在约束中列出的列或列组上自动创建一个唯一 B-树索引。只覆盖某些行的唯一性限制不能写成唯一约束，但可以通过创建唯一的<link linkend="indexes-partial">部分索引</link>来强制这种限制。
+   </para>
+
+   <indexterm>
+    <primary>null value</primary>
+    <secondary sortas="unique constraints">with unique constraints</secondary>
+   </indexterm>
+
+   <para>
+    通常情况下，如果表中有多行，其中包含约束中包含的所有列的值相等，则违反了唯一约束。
+    默认情况下，在此比较中，两个空值不被视为相等。这意味着即使存在唯一约束，也可以存储包含至少一个受约束列中的空值的重复行。
+    可以通过添加子句<literal>NULLS NOT DISTINCT</literal>来更改此行为，例如
+<programlisting>
+CREATE TABLE products (
+    product_no integer UNIQUE <emphasis>NULLS NOT DISTINCT</emphasis>,
+    name text,
+    price numeric
+);
+</programlisting>
+    或者
+<programlisting>
+CREATE TABLE products (
+    product_no integer,
+    name text,
+    price numeric,
+    UNIQUE <emphasis>NULLS NOT DISTINCT</emphasis> (product_no)
+);
+</programlisting>
+    可以使用<literal>NULLS DISTINCT</literal>显式指定默认行为。根据 SQL 标准，唯一约束中的默认空值处理属于实现定义的行为，而其他实现可能有不同的行为。因此，在开发需要可移植性的应用时要小心。
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-constraints-primary-keys">
+
+   <title>主键</title>
+
+   <indexterm>
+    <primary>primary key</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>constraint</primary>
+    <secondary>primary key</secondary>
+   </indexterm>
+
+   <para>
+    一个主键约束表示可以用作表中行的唯一标识符的一个列或者一组列。这要求那些值都是唯一的并且非空。因此，下面的两个表定义接受相同的数据：
+<programlisting>
+CREATE TABLE products (
+    product_no integer UNIQUE NOT NULL,
+    name text,
+    price numeric
+);
+</programlisting>
+
+<programlisting>
+CREATE TABLE products (
+    product_no integer <emphasis>PRIMARY KEY</emphasis>,
+    name text,
+    price numeric
+);
+</programlisting>
+   </para>
+
+   <para>
+    主键也可以包含多于一个列，其语法和唯一约束相似：
+<programlisting>
+CREATE TABLE example (
+    a integer,
+    b integer,
+    c integer,
+    <emphasis>PRIMARY KEY (a, c)</emphasis>
+);
+</programlisting>
+   </para>
+
+   <para>
+    增加一个主键会自动在主键中列出的列或列组上创建一个唯一 B-树索引，并强制这些列被标记为<literal>NOT NULL</literal>。
+   </para>
+
+   <para>
+    一个表最多只能有一个主键（可以有任意数量的唯一和非空约束，它们可以达到和主键几乎一样的功能，但只能有一个被标识为主键）。关系数据库理论要求每一个表都要有一个主键。但<productname>PostgreSQL</productname>中并未强制要求这一点，但是最好能够遵循它。
+   </para>
+
+   <para>
+    主键对于文档和客户端应用都是有用的。例如，一个允许修改行值的 GUI 应用可能需要知道一个表的主键，以便能唯一地标识行。如果定义了主键，数据库系统也有多种方法来利用主键。例如，主键定义了外键要引用的默认目标列。
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-constraints-fk">
+
+   <title>外键</title>
+
+   <indexterm>
+    <primary>foreign key</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>constraint</primary>
+    <secondary>foreign key</secondary>
+   </indexterm>
+
+   <indexterm>
+    <primary>referential integrity</primary>
+   </indexterm>
+
+   <para>
+    一个外键约束指定一列（或一组列）中的值必须匹配出现在另一个表中某些行的值。我们说这维持了两个关联表之间的<firstterm>引用完整性</firstterm>。
+   </para>
+
+   <para>
+    例如我们有一个使用过多次的产品表：
+<programlisting>
+CREATE TABLE products (
+    product_no integer PRIMARY KEY,
+    name text,
+    price numeric
+);
+</programlisting>
+    让我们假设我们还有一个存储这些产品订单的表。我们希望保证订单表中只包含真正存在的产品的订单。因此我们在订单表中定义一个引用产品表的外键约束：
+<programlisting>
+CREATE TABLE orders (
+    order_id integer PRIMARY KEY,
+    product_no integer <emphasis>REFERENCES products (product_no)</emphasis>,
+    quantity integer
+);
+</programlisting>
+    现在就不可能创建包含不存在于产品表中的<structfield>product_no</structfield>值（非空）的订单。
+   </para>
+
+   <para>
+    我们说在这种情况下，订单表是<firstterm>引用</firstterm>表而产品表是<firstterm>被引用</firstterm>表。相应地，也有引用和被引用列的说法。
+   </para>
+
+   <para>
+    我们也可以把上述命令简写为：
+<programlisting>
+CREATE TABLE orders (
+    order_id integer PRIMARY KEY,
+    product_no integer <emphasis>REFERENCES products</emphasis>,
+    quantity integer
+);
+</programlisting>
+    因为如果缺少列的列表，则被引用表的主键将被用作被引用列。
+   </para>
+
+   <para>
+    你可以按常规方式为外键约束指定自己的名称。
+   </para>
+
+   <para>
+    一个外键也可以约束和引用一组列。照例，它需要被写成表约束的形式。下面是一个示例：
+<programlisting>
+CREATE TABLE t1 (
+  a integer PRIMARY KEY,
+  b integer,
+  c integer,
+  <emphasis>FOREIGN KEY (b, c) REFERENCES other_table (c1, c2)</emphasis>
+);
+</programlisting>
+    当然，被约束列的数量和类型应该匹配被引用列的数量和类型。
+   </para>
+
+   <indexterm>
+    <primary>外键</primary>
+    <secondary>自引用</secondary>
+   </indexterm>
+
+   <para>
+    有时，外键约束的<quote>其它表</quote>是同一个表也是有用的；这称为<firstterm>自引用</firstterm> 外键。例如，如果希望表中的行表示树结构的节点，可以编写
+<programlisting>
+CREATE TABLE tree (
+    node_id integer PRIMARY KEY,
+    parent_id integer REFERENCES tree,
+    name text,
+    ...
+);
+</programlisting>
+    顶级节点的<structfield>parent_id</structfield>可以为NULL，而非NULL的<structfield>parent_id</structfield>条目将被约束为引用表中的有效行。
+   </para>
+
+   <para>
+    一个表可以有多个外键约束。这可用于实现表之间的多对多关系。例如，我们已经有了关于产品和订单的表，但现在希望一个订单可以包含多种产品（上面的结构并不允许这样做）。我们可以使用下面这种表结构：
+<programlisting>
+CREATE TABLE products (
+    product_no integer PRIMARY KEY,
+    name text,
+    price numeric
+);
+
+CREATE TABLE orders (
+    order_id integer PRIMARY KEY,
+    shipping_address text,
+    ...
+);
+
+CREATE TABLE order_items (
+    product_no integer REFERENCES products,
+    order_id integer REFERENCES orders,
+    quantity integer,
+    PRIMARY KEY (product_no, order_id)
+);
+</programlisting>
+    注意在最后一个表中主键和外键之间有重叠。
+   </para>
+
+   <indexterm>
+    <primary>CASCADE</primary>
+    <secondary>foreign key action</secondary>
+   </indexterm>
+
+   <indexterm>
+    <primary>RESTRICT</primary>
+    <secondary>foreign key action</secondary>
+   </indexterm>
+
+   <para>
+    我们知道外键不允许创建与任何产品都不相关的订单。但如果一个产品在一个引用它的订单创建之后被移除会发生什么？SQL允许我们处理这种情况。直观上，我们有几种选项：
+    <itemizedlist spacing="compact">
+     <listitem><para>不允许删除一个被引用的产品</para></listitem>
+     <listitem><para>同时也删除引用产品的订单</para></listitem>
+     <listitem><para>其他？</para></listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    为了说明这些，让我们在上面的多对多关系示例中实现下面的策略：当某人希望移除一个仍然被一个订单引用（通过<literal>order_items</literal>）的产品时 ，我们阻止它。如果某人移除一个订单，订单项也同时被移除：
+<programlisting>
+CREATE TABLE products (
+    product_no integer PRIMARY KEY,
+    name text,
+    price numeric
+);
+
+CREATE TABLE orders (
+    order_id integer PRIMARY KEY,
+    shipping_address text,
+    ...
+);
+
+CREATE TABLE order_items (
+    product_no integer REFERENCES products <emphasis>ON DELETE RESTRICT</emphasis>,
+    order_id integer REFERENCES orders <emphasis>ON DELETE CASCADE</emphasis>,
+    quantity integer,
+    PRIMARY KEY (product_no, order_id)
+);
+</programlisting>
+   </para>
+
+   <para>
+    默认的<literal>ON DELETE</literal>动作是<literal>ON DELETE NO ACTION</literal>，因此通常无需显式写出。这表示允许删除被引用表中的行，但外键约束仍然必须满足，所以这种操作通常会导致错误。不过，外键约束的检查也可以延迟到事务稍后的阶段（本章不讨论这一点）。在那种情况下，<literal>NO ACTION</literal>允许在约束检查之前由其他命令来<quote>修复</quote>这种情况，例如向被引用表插入另一行合适的数据，或者从引用表中删除此时已经悬空的那些行。
+   </para>
+
+   <para>
+    <literal>RESTRICT</literal>比<literal>NO ACTION</literal>更严格。它会阻止删除被引用的行，并且不允许把检查延迟到事务稍后执行。
+   </para>
+
+   <para>
+    <literal>CASCADE</literal>指定当被引用行被删除时，引用它的行也应自动删除。
+   </para>
+
+   <para>
+    另有两个选项：<literal>SET NULL</literal>和<literal>SET DEFAULT</literal>。它们会在被引用行删除时，分别把引用行中的引用列设为空值或其默认值。注意，这并不能让你免于遵守其他约束。例如，如果某个动作指定了<literal>SET DEFAULT</literal>，但默认值本身不满足外键约束，则该操作仍会失败。
+   </para>
+
+   <para>
+    适当选择<literal>ON DELETE</literal>操作取决于相关表所代表的对象类型。当引用表代表被引用表所代表的组件，并且不能独立存在时，<literal>CASCADE</literal>可能是合适的选择。
+    如果这两个表代表独立的对象，则<literal>RESTRICT</literal>或<literal>NO ACTION</literal>更合适；实际上想要删除这两个对象的应用程序必须明确这一点，并运行两个删除命令。
+    在上面的示例中，订单项目是订单的一部分，如果删除订单，则自动删除它们是方便的。但产品和订单是不同的东西，因此使产品的删除自动导致某些订单项目的删除可能被认为是有问题的。
+    当外键关系表示可选信息时，<literal>SET NULL</literal>或<literal>SET DEFAULT</literal>操作可能是合适的。例如，如果产品表包含对产品经理的引用，而产品经理条目被删除，那么把产品的产品经理设置为空值或默认值可能是有用的。
+</para>
+
+   <para>
+    操作<literal>SET NULL</literal>和<literal>SET DEFAULT</literal>可以接受一个列列表来指定要设置的列。
+    通常，外键约束的所有列都会被设置；仅设置子集在某些特殊情况下很有用。考虑以下示例：
+<programlisting>
+CREATE TABLE tenants (
+    tenant_id integer PRIMARY KEY
+);
+
+CREATE TABLE users (
+    tenant_id integer REFERENCES tenants ON DELETE CASCADE,
+    user_id integer NOT NULL,
+    PRIMARY KEY (tenant_id, user_id)
+);
+
+CREATE TABLE posts (
+    tenant_id integer REFERENCES tenants ON DELETE CASCADE,
+    post_id integer NOT NULL,
+    author_id integer,
+    PRIMARY KEY (tenant_id, post_id),
+    FOREIGN KEY (tenant_id, author_id) REFERENCES users ON DELETE SET NULL <emphasis>(author_id)</emphasis>
+);
+</programlisting>
+    如果没有指定列，外键还会把<literal>tenant_id</literal>列设为空值，但该列仍然是主键的一部分。
+   </para>
+
+   <para>
+    与<literal>ON DELETE</literal>类似，还有<literal>ON UPDATE</literal>，当被引用列发生变化（更新）时就会触发。可用动作与<literal>ON DELETE</literal>相同，只是<literal>SET NULL</literal>和<literal>SET DEFAULT</literal>不能指定列列表。在这种情况下，<literal>CASCADE</literal>表示应把被引用列更新后的值复制到引用行中。<literal>ON UPDATE NO ACTION</literal>（默认值）与<literal>ON UPDATE RESTRICT</literal>之间也有一个明显差异：前者允许更新继续进行，并在更新后的状态上检查外键约束；后者则会直接阻止该更新，即使更新后的状态本来仍能满足约束也是如此。这可以防止把被引用行更新为一个不同但比较结果相等的值，例如在使用大小写不敏感排序规则的字符串类型上仅改变字母大小写。
+   </para>
+
+   <para>
+    正常情况下，如果一个引用行的任意一个引用列都为空，则它不需要满足外键约束。如果在外键定义中加入了<literal>MATCH FULL</literal>，一个引用行只有在它的所有引用列为空时才不需要满足外键约束（因此空和非空值的混合肯定会导致<literal>MATCH FULL</literal>约束失败）。如果不希望引用行能够避开外键约束，将引用行声明为<literal>NOT NULL</literal>。
+   </para>
+
+   <para>
+    外键必须引用这样的列：这些列要么是主键，要么形成唯一约束，要么来自一个非部分唯一索引。这意味着被引用列总是有索引，从而能高效地查找引用行是否存在匹配项。由于从被引用表中删除行或更新被引用列时，需要扫描引用表以查找匹配旧值的行，因此通常也建议为引用列建立索引。由于这并不总是必需，而且索引方式也有很多种，因此声明外键约束时不会自动在引用列上创建索引。
+   </para>
+
+   <para>
+    更多关于更新和删除数据的信息请见<xref linkend="dml"/>。外键约束的语法描述请参考<xref linkend="sql-createtable"/>。
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-constraints-exclusion">
+
+   <title>排他约束</title>
+
+   <indexterm>
+    <primary>exclusion constraint</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>constraint</primary>
+    <secondary>exclusion</secondary>
+   </indexterm>
+
+   <para>
+    排他约束保证：对任意两行，若对指定列或表达式使用指定操作符进行比较，则这些操作符比较中至少有一个会返回假或空值。语法如下：
+<programlisting>
+CREATE TABLE circles (
+    c circle,
+    EXCLUDE USING gist (c WITH &amp;&amp;)
+);
+</programlisting>
+   </para>
+
+   <para>
+    详见<link linkend="sql-createtable-exclude"><command>CREATE
+    TABLE ... CONSTRAINT ... EXCLUDE</command></link>。
+   </para>
+
+   <para>
+    增加一个排他约束会自动创建约束声明中指定类型的索引。
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="ddl-system-columns">
+
+  <title>系统列</title>
+
+  <para>
+   每个表都有几个由系统隐式定义的<firstterm>系统列</firstterm>。因此，这些名称不能用作用户定义列的名称。（注意，这些限制与名称是否为关键字无关；给名称加引号也不能绕过这些限制。）你其实不必关心这些列的细节，只需要知道它们存在即可。
+  </para>
+
+  <indexterm>
+   <primary>column</primary>
+   <secondary>system column</secondary>
+  </indexterm>
+
+  <variablelist>
+   <varlistentry id="ddl-system-columns-tableoid">
+
+    <term><structfield>tableoid</structfield></term>
+    <listitem>
+
+     <indexterm>
+      <primary>tableoid</primary>
+     </indexterm>
+
+     <para>
+      包含该行的表的 OID。对于从分区表（见<xref linkend="ddl-partitioning"/>）或继承层次（见<xref linkend="ddl-inherit"/>）中查询数据的场景，这一列尤其方便，因为如果没有它，就很难判断一行究竟来自哪个具体表。<structfield>tableoid</structfield>可以与<structname>pg_class</structname>的<structfield>oid</structfield>列连接，以取得表名。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="ddl-system-columns-xmin">
+
+    <term><structfield>xmin</structfield></term>
+    <listitem>
+
+     <indexterm>
+      <primary>xmin</primary>
+     </indexterm>
+
+     <para>
+      插入该行版本的事务标识（事务 ID）。（行版本是某一行的一个具体状态；对同一逻辑行的每次更新都会创建一个新的行版本。）
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="ddl-system-columns-cmin">
+
+    <term><structfield>cmin</structfield></term>
+    <listitem>
+
+     <indexterm>
+      <primary>cmin</primary>
+     </indexterm>
+
+     <para>
+      插入事务中的命令标识符（从0开始）。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="ddl-system-columns-xmax">
+
+    <term><structfield>xmax</structfield></term>
+    <listitem>
+
+     <indexterm>
+      <primary>xmax</primary>
+     </indexterm>
+
+     <para>
+      删除事务的标识（事务 ID）；对于未删除的行版本则为 0。对于一个可见的行版本，该列也可能是非零值。这通常表示删除事务尚未提交，或者一次删除尝试被回滚了。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="ddl-system-columns-cmax">
+
+    <term><structfield>cmax</structfield></term>
+    <listitem>
+
+     <indexterm>
+      <primary>cmax</primary>
+     </indexterm>
+
+     <para>
+      删除事务中的命令标识符，或者为0。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="ddl-system-columns-ctid">
+
+    <term><structfield>ctid</structfield></term>
+    <listitem>
+
+     <indexterm>
+      <primary>ctid</primary>
+     </indexterm>
+
+     <para>
+      行版本在其表中的物理位置。注意尽管<structfield>ctid</structfield>可以被用来非常快速地定位行版本，但是一个行的<structfield>ctid</structfield>会在被更新或者被<command>VACUUM FULL</command>移动时改变。因此，不应将<structfield>ctid</structfield>用作行标识符。应使用主键来标识逻辑行。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+   <para>
+    事务标识符也是 32 位的量。在一个长期运行的数据库中，事务 ID 可能会回卷。只要采取适当的维护措施，这并不是致命问题，详见<xref linkend="maintenance"/>。不过，从长期来看（超过十亿个事务）依赖事务 ID 的唯一性是不明智的。
+   </para>
+
+   <para>
+    命令标识符也是 32 位的量。这为单个事务中的<acronym>SQL</acronym>命令数设置了一个硬上限：
+    2<superscript>32</superscript>（40 亿）。在实践中，这个限制并不是问题 &mdash; 注意，这里限制的是<acronym>SQL</acronym>命令的数量，而不是处理的行数。另外，只有真正修改数据库内容的命令才会消耗命令标识符。
+   </para>
+ </sect1>
+
+ <sect1 id="ddl-alter">
+
+  <title>修改表</title>
+
+  <indexterm zone="ddl-alter">
+   <primary>table</primary>
+   <secondary>modifying</secondary>
+  </indexterm>
+
+  <para>
+   创建表之后，如果你意识到自己犯了错误，或者应用需求发生了变化，可以删掉表再重新创建。但如果表中已经有数据，或者该表已被其他数据库对象引用（例如被外键约束引用），这样做就不方便了。因此，<productname>PostgreSQL</productname>提供了一组命令来修改现有表。注意，这在概念上不同于修改表中保存的数据：这里关注的是修改表的定义，也就是表的结构。
+  </para>
+
+  <para>
+   利用这些命令，我们可以：
+   <itemizedlist spacing="compact">
+    <listitem>
+     <para>增加列</para>
+    </listitem>
+    <listitem>
+     <para>移除列</para>
+    </listitem>
+    <listitem>
+     <para>增加约束</para>
+    </listitem>
+    <listitem>
+     <para>移除约束</para>
+    </listitem>
+    <listitem>
+     <para>修改默认值</para>
+    </listitem>
+    <listitem>
+     <para>修改列数据类型</para>
+    </listitem>
+    <listitem>
+     <para>重命名列</para>
+    </listitem>
+    <listitem>
+     <para>重命名表</para>
+    </listitem>
+   </itemizedlist>
+
+   所有这些动作都由<xref linkend="sql-altertable"/>命令执行，其参考页面中包含更详细的信息。
+  </para>
+
+  <sect2 id="ddl-alter-adding-a-column">
+
+   <title>增加列</title>
+
+   <indexterm>
+    <primary>column</primary>
+    <secondary>adding</secondary>
+   </indexterm>
+
+   <para>
+    要添加一列，可以使用这样的命令：
+<programlisting>
+ALTER TABLE products ADD COLUMN description text;
+</programlisting>
+    新列最初会填入给定的默认值（如果没有指定<literal>DEFAULT</literal>子句，则为填入空值）。
+   </para>
+
+   <tip>
+
+    <para>
+     添加带有常量默认值的列时，在执行<command>ALTER TABLE</command>语句时并不需要更新表中的每一行。相反，该默认值会在下一次访问该行时返回，并在表被重写时应用，因此即使面对大表，<command>ALTER TABLE</command>也会非常快。
+    </para>
+
+    <para>
+     如果默认值是易变的（例如<function>clock_timestamp()</function>），则每一行都需要更新为执行<command>ALTER TABLE</command>时计算出的值。为避免潜在的长时间更新操作，特别是在你本来就打算用大多数非默认值填充该列时，更好的做法可能是先添加一个没有默认值的列，用<command>UPDATE</command>填入正确的值，然后再按下文所述添加所需的默认值。
+    </para>
+   </tip>
+
+   <para>
+    也可以同时为该列定义约束，使用常规语法：
+<programlisting>
+ALTER TABLE products ADD COLUMN description text CHECK (description &lt;&gt; '');
+</programlisting>
+    实际上，凡是在<command>CREATE TABLE</command>中可用于列描述的选项，在这里都可以使用。不过要记住，默认值必须满足给定约束，否则<literal>ADD</literal>就会失败。另一种做法是先把新列正确填好，再在之后添加约束（见下文）。
+   </para>
+
+  </sect2>
+
+  <sect2 id="ddl-alter-removing-a-column">
+
+   <title>移除列</title>
+
+   <indexterm>
+    <primary>column</primary>
+    <secondary>removing</secondary>
+   </indexterm>
+
+   <para>
+    要删除一列，使用如下命令：
+<programlisting>
+ALTER TABLE products DROP COLUMN description;
+</programlisting>
+    该列中的数据会消失，涉及该列的表约束也会被删除。不过，如果该列被其他表的外键约束引用，<productname>PostgreSQL</productname>不会静默删除该约束。你可以通过添加<literal>CASCADE</literal>来授权删除所有依赖该列的对象：
+<programlisting>
+ALTER TABLE products DROP COLUMN description CASCADE;
+</programlisting>
+    关于这个操作背后的一般性机制请见<xref linkend="ddl-depend"/>。
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-alter-adding-a-constraint">
+
+   <title>增加约束</title>
+
+   <indexterm>
+    <primary>constraint</primary>
+    <secondary>adding</secondary>
+   </indexterm>
+
+   <para>
+    要添加约束，可以使用表约束语法，例如：
+<programlisting>
+ALTER TABLE products ADD CHECK (name &lt;&gt; '');
+ALTER TABLE products ADD CONSTRAINT some_name UNIQUE (product_no);
+ALTER TABLE products ADD FOREIGN KEY (product_group_id) REFERENCES product_groups;
+</programlisting>
+    要添加一个通常不会写成表约束形式的非空约束，可以使用这个特殊语法：
+<programlisting>
+ALTER TABLE products ALTER COLUMN product_no SET NOT NULL;
+</programlisting>
+   </para>
+
+   <para>
+    该命令在列已经具有非空约束时会静默地不做任何事。
+   </para>
+
+   <para>
+    约束会立即被检查，因此必须先保证表中的数据满足约束，然后才能添加该约束。
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-alter-removing-a-constraint">
+
+   <title>移除约束</title>
+
+   <indexterm>
+    <primary>constraint</primary>
+    <secondary>removing</secondary>
+   </indexterm>
+
+   <para>
+    要删除约束，首先需要知道它的名称。如果你在创建时给它指定了名称，这很容易；否则就需要先查出系统生成的名称。<application>psql</application>命令<literal>\d
+    <replaceable>tablename</replaceable></literal>在这里会很有帮助，其他接口也可能提供查看表详细信息的方法。然后命令是：
+<programlisting>
+ALTER TABLE products DROP CONSTRAINT some_name;
+</programlisting>
+   </para>
+
+   <para>
+    和删除列一样，如果要删除某些其他对象所依赖的约束，也需要加上<literal>CASCADE</literal>。例如，外键约束就依赖于被引用列上的唯一约束或主键约束。
+   </para>
+
+   <para>
+    对于删除非空约束，则有简化语法可用：
+<programlisting>
+ALTER TABLE products ALTER COLUMN product_no DROP NOT NULL;
+</programlisting>
+    这与添加非空约束时的<literal>SET NOT NULL</literal>语法相对应。如果该列没有非空约束，这条命令会静默地不做任何事。（记住，一列最多只能有一个非空约束，因此这条命令作用于哪个约束并不存在歧义。）
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-alter-column-default">
+
+   <title>更改列的默认值</title>
+
+   <indexterm>
+    <primary>default value</primary>
+    <secondary>changing</secondary>
+   </indexterm>
+
+   <para>
+    要为一个列设置一个新默认值，使用命令：
+<programlisting>
+ALTER TABLE products ALTER COLUMN price SET DEFAULT 7.77;
+</programlisting>
+    注意这不会影响任何表中已经存在的行，它只是为未来的<command>INSERT</command>命令改变了默认值。
+   </para>
+
+   <para>
+    要移除任何默认值，使用：
+<programlisting>
+ALTER TABLE products ALTER COLUMN price DROP DEFAULT;
+</programlisting>
+    这等同于将默认值设置为空值。相应的，试图删除一个未被定义的默认值并不会引发错误，因为默认值已经被隐式地设置为空值。
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-alter-column-type">
+
+   <title>修改列的数据类型</title>
+
+   <indexterm>
+    <primary>column data type</primary>
+    <secondary>changing</secondary>
+   </indexterm>
+
+   <para>
+    为了将一个列转换为一种不同的数据类型，使用如下命令：
+<programlisting>
+ALTER TABLE products ALTER COLUMN price TYPE numeric(10,2);
+</programlisting>
+    只有当列中的每一个项都能通过一个隐式类型转换为新的类型时该操作才能成功。如果需要一种更复杂的转换，应该加上一个<literal>USING</literal>子句来指定应该如何把旧值转换为新值。
+   </para>
+
+   <para>
+    <productname>PostgreSQL</productname>将尝试把列的默认值转换为新类型，其他涉及到该列的任何约束也是一样。但是这些转换可能失败或者产生奇特的结果。因此最好在修改类型之前先删除该列上所有的约束，然后在修改完类型后重新加上相应修改过的约束。
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-alter-renaming-column">
+
+   <title>重命名列</title>
+
+   <indexterm>
+    <primary>column</primary>
+    <secondary>renaming</secondary>
+   </indexterm>
+
+   <para>
+    要重命名一个列：
+<programlisting>
+ALTER TABLE products RENAME COLUMN product_no TO product_number;
+</programlisting>
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-alter-renaming-table">
+
+   <title>重命名表</title>
+
+   <indexterm>
+    <primary>table</primary>
+    <secondary>renaming</secondary>
+   </indexterm>
+
+   <para>
+    要重命名一个表：
+<programlisting>
+ALTER TABLE products RENAME TO items;
+</programlisting>
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="ddl-priv">
+
+  <title>权限</title>
+
+  <indexterm zone="ddl-priv">
+   <primary>privilege</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>permission</primary>
+   <see>privilege</see>
+  </indexterm>
+
+  <indexterm zone="ddl-priv">
+   <primary>owner</primary>
+  </indexterm>
+
+  <indexterm zone="ddl-priv">
+   <primary>GRANT</primary>
+  </indexterm>
+
+  <indexterm zone="ddl-priv">
+   <primary>REVOKE</primary>
+  </indexterm>
+
+  <indexterm zone="ddl-priv">
+   <primary>ACL</primary>
+  </indexterm>
+
+  <para>
+   一旦一个对象被创建，它会被分配一个所有者。所有者通常是执行创建语句的角色。对于大部分类型的对象，初始状态下只有所有者（或者超级用户）能够对该对象做任何事情。为了允许其他角色使用它，必须分配<firstterm>权限</firstterm>。
+  </para>
+
+  <para>
+   有不同种类的权限：<literal>SELECT</literal>、<literal>INSERT</literal>、<literal>UPDATE</literal>、
+   <literal>DELETE</literal>、<literal>TRUNCATE</literal>、<literal>REFERENCES</literal>、
+   <literal>TRIGGER</literal>、<literal>CREATE</literal>、<literal>CONNECT</literal>、
+   <literal>TEMPORARY</literal>、<literal>EXECUTE</literal>、<literal>USAGE</literal>、
+   <literal>SET</literal>、<literal>ALTER SYSTEM</literal>以及<literal>MAINTAIN</literal>。
+   适用于特定对象的权限取决于对象的类型（表、函数等）。
+   有关这些权限含义的更多详细信息如下所示。
+   后续的各节和各章还将展示这些权限是如何使用的。
+  </para>
+
+  <para>
+   修改或销毁一个对象的权利是作为该对象的所有者所固有的，不能授予或撤销其本身。
+   （但是，与所有权限一样，该权利可以由拥有角色的成员继承；请参阅<xref linkend="role-membership"/>。）
+  </para>
+
+  <para>
+   一个对象可以通过该对象类型相应的<command>ALTER</command>命令来重新分配所有者，例如
+<programlisting>
+ALTER TABLE <replaceable>table_name</replaceable> OWNER TO <replaceable>new_owner</replaceable>;
+</programlisting>
+   超级用户总是可以做到这点，普通角色只有在同时是对象的当前所有者（或者继承拥有角色的权限）并且能够对新的拥有角色执行<literal>SET ROLE</literal>时，才能做同样的事。旧所有者的所有对象权限会随所有权一起转移给新所有者。
+  </para>
+
+  <para>
+   要分配权限，可以使用<xref linkend="sql-grant"/>命令。例如，如果<literal>joe</literal>是一个已有角色，而<literal>accounts</literal>是一个已有表，更新该表的权限可以按如下方式授权：
+<programlisting>
+GRANT UPDATE ON accounts TO joe;
+</programlisting>
+   用<literal>ALL</literal>取代特定权限会把与对象类型相关的所有权限全部授权。
+  </para>
+
+  <para>
+   一个特殊的名为<literal>PUBLIC</literal>的<quote>角色</quote>可以用来向系统中的每一个角色授予一个权限。同时，在数据库中有很多用户时可以设置<quote>组</quote>角色来帮助管理权限。详见<xref linkend="user-manag"/>。
+  </para>
+
+  <para>
+   要撤销以前授予的权限，请使用恰当命名的<xref linkend="sql-revoke"/>命令：
+<programlisting>
+REVOKE ALL ON accounts FROM PUBLIC;
+</programlisting>
+  </para>
+
+  <para>
+   一般情况下，只有对象拥有者（或者超级用户）可以授予或撤销一个对象上的权限。但是可以在授予权限时使用<quote>with grant option</quote>来允许接收人将权限转授给其他人。如果后来授予选项被撤销，则所有从接收人那里获得的权限（直接或者通过授权链获得）都将被撤销。更多详情请见<xref linkend="sql-grant"/>和<xref linkend="sql-revoke"/>参考页。
+  </para>
+
+  <para>
+   对象的所有者可以选择撤销自己的普通权限，例如，令表对于自己和其他人只读。
+   但是所有者总是被视为拥有所有的授予选项，所以他们总是可以重新授予自己的权限。
+  </para>
+
+  <para>
+   可用的权限包括：
+
+   <variablelist>
+    <varlistentry id="ddl-priv-select">
+     <term><literal>SELECT</literal></term>
+     <listitem>
+
+      <para>
+       允许从表、视图、物化视图或其他类似表的对象的任何列或特定列进行<command>SELECT</command>。
+       还允许使用<command>COPY TO</command>。
+       这个权限还需要用于引用<command>UPDATE</command>、<command>DELETE</command>或<command>MERGE</command>中的现有列值。
+       对于序列，这个权限还允许使用<function>currval</function>函数。
+       对于大对象，这个权限允许读取对象。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-insert">
+     <term><literal>INSERT</literal></term>
+     <listitem>
+
+      <para>
+       允许在表、视图等中插入新行，可以授予对特定列的权限，这样只有这些列可以在<command>INSERT</command>命令中赋值（其他列将接收默认值）。
+       还允许使用<command>COPY FROM</command>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-update">
+     <term><literal>UPDATE</literal></term>
+     <listitem>
+
+      <para>
+       允许对表、视图等的任何列或特定列进行<command>UPDATE</command>操作。
+       （实际上，任何非平凡的<command>UPDATE</command>命令都需要<literal>SELECT</literal>权限，
+       因为它必须引用表列来确定要更新的行，和/或为列计算新值。）
+       <literal>SELECT ... FOR UPDATE</literal>
+       和<literal>SELECT ... FOR SHARE</literal>
+       还需要在至少一个列上具有此权限，除了<literal>SELECT</literal>权限之外。
+       对于序列，此权限允许使用<function>nextval</function>和
+       <function>setval</function>函数。
+       对于大对象，此权限允许写入或截断该对象。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-delete">
+     <term><literal>DELETE</literal></term>
+     <listitem>
+
+      <para>
+       允许从表、视图等中<command>DELETE</command>一行。（实际上，任何非平凡的<command>DELETE</command>命令都需要<literal>SELECT</literal>权限，
+        因为它必须引用表列来确定要删除哪些行。）
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-truncate">
+     <term><literal>TRUNCATE</literal></term>
+     <listitem>
+
+      <para>
+       允许在表上使用<command>TRUNCATE</command>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-references">
+     <term><literal>REFERENCES</literal></term>
+     <listitem>
+
+      <para>
+       允许创建引用表或表的特定列的外键约束。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-trigger">
+     <term><literal>TRIGGER</literal></term>
+     <listitem>
+
+      <para>
+       允许在表、视图等上创建触发器。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-create">
+     <term><literal>CREATE</literal></term>
+     <listitem>
+
+      <para>
+       对于数据库，允许在数据库中创建新的模式和发布，并允许在数据库中安装受信任的扩展。
+      </para>
+
+      <para>
+       对于模式，允许在该模式内创建新对象。要重命名现有对象，你必须拥有该对象的所有权<emphasis>并且</emphasis>对其所在模式具有此权限。
+      </para>
+
+      <para>
+       对于表空间，允许在表空间内创建表、索引和临时文件，并允许创建将该表空间作为默认表空间的数据库。
+      </para>
+
+      <para>
+       请注意，撤销此权限不会改变现有对象的存在或位置。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-connect">
+     <term><literal>CONNECT</literal></term>
+     <listitem>
+
+      <para>
+       允许受让人连接到数据库。此权限在连接启动时进行检查（除了检查<filename>pg_hba.conf</filename>强加的任何限制）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-temporary">
+     <term><literal>TEMPORARY</literal></term>
+     <listitem>
+
+      <para>
+       允许在使用数据库时创建临时表。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-execute">
+     <term><literal>EXECUTE</literal></term>
+     <listitem>
+
+      <para>
+       允许调用函数或过程，包括使用在函数之上实现的任何操作符。这是唯一适用于函数和过程的权限类型。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-usage">
+     <term><literal>USAGE</literal></term>
+     <listitem>
+
+      <para>
+       对于过程性语言，允许在该语言中创建函数。这是唯一适用于过程性语言的权限类型。
+      </para>
+
+      <para>
+       对于模式，允许访问包含在模式中的对象（假设对象自身的权限要求也得到满足）。
+       本质上，这允许受让人<quote>查找</quote>模式中的对象。
+       没有这个权限，仍然可以看到对象名称，例如，通过查询系统目录。
+       此外，在撤销此权限后，现有会话可能有先前执行此查找的语句，因此这不是
+       完全安全的防止对象访问的方式。
+      </para>
+
+      <para>
+       对于序列，允许使用<function>currval</function>和<function>nextval</function>函数。
+      </para>
+
+      <para>
+       对于类型和域，允许在表格、函数和其他模式对象的创建中使用该类型或域。
+       （请注意，此权限并不控制类型的所有<quote>使用</quote>，比如类型值出现在查询中。
+       它只是防止依赖于该类型的对象被创建。此权限的主要目的是控制哪些用户可以创建
+       对类型的依赖，这可以防止所有者以后更改类型。）
+      </para>
+
+      <para>
+       对于外部数据包装器，允许使用外部数据包装器创建新的服务器。
+      </para>
+
+      <para>
+       对于外部服务器，允许使用该服务器创建外部表。受让人还可以创建、修改或删除与该服务器关联的自己的用户映射。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-set">
+     <term><literal>SET</literal></term>
+     <listitem>
+
+      <para>
+       允许在当前会话中将服务器配置参数设置为新值。
+       （虽然可以授予此权限在任何参数上，但除了通常需要超级用户权限设置的参数外，这是没有意义的。）
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-alter-system">
+     <term><literal>ALTER SYSTEM</literal></term>
+     <listitem>
+
+      <para>
+       允许使用<xref linkend="sql-altersystem"/>命令将服务器配置参数配置为新值。
+      </para>
+
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="ddl-priv-maintain">
+     <term><literal>MAINTAIN</literal></term>
+     <listitem>
+      <para>
+       允许在关系上执行<command>VACUUM</command>、<command>ANALYZE</command>、
+       <command>CLUSTER</command>、<command>REFRESH MATERIALIZED VIEW</command>、
+       <command>REINDEX</command>、<command>LOCK TABLE</command>，以及数据库对象统计信息操作函数（见<xref linkend="functions-admin-statsmod"/>）。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+
+   其他命令所需的权限列在各自命令的参考页面上。
+  </para>
+
+  <indexterm zone="ddl-priv-default">
+   <primary>privilege</primary>
+   <secondary>default</secondary>
+  </indexterm>
+
+  <para id="ddl-priv-default">
+   PostgreSQL在创建对象时，默认情况下将某些类型的对象的权限授予<literal>PUBLIC</literal>。
+   默认情况下，表、表列、序列、外部数据包装器、外部服务器、大对象、模式、表空间或配置参数不授予<literal>PUBLIC</literal>任何权限。
+   对于其他类型的对象，默认授予<literal>PUBLIC</literal>的权限如下：
+   数据库的<literal>CONNECT</literal>和<literal>TEMPORARY</literal>（创建临时表）权限；
+   函数和存储过程的<literal>EXECUTE</literal>权限；以及
+   语言和数据类型（包括域）的<literal>USAGE</literal>权限。
+   对象所有者当然可以<command>REVOKE</command>默认和明确授予的权限。（为了最大安全性，在创建对象的同时发出<command>REVOKE</command>；
+   这样就没有其他用户可以在其中使用对象的窗口。）
+   此外，可以使用<xref linkend="sql-alterdefaultprivileges"/>命令覆盖这些默认权限设置。
+</para>
+
+  <para>
+   <xref linkend="privilege-abbrevs-table"/>显示了<firstterm>ACL</firstterm>（访问控制列表）值中用于这些权限类型的单字母缩写。
+   你将在下面列出的 <xref linkend="app-psql"/> 命令的输出中，或者在查看系统目录的 ACL 列时看到这些字母。
+  </para>
+
+  <table id="privilege-abbrevs-table">
+
+   <title>ACL 权限缩写</title>
+   <tgroup cols="3">
+    <colspec colname="col1" colwidth="1*"/>
+    <colspec colname="col2" colwidth="1*"/>
+    <colspec colname="col3" colwidth="2*"/>
+    <thead>
+
+     <row>
+      <entry>权限</entry>
+      <entry>缩写</entry>
+      <entry>适用对象类型</entry>
+     </row>
+    </thead>
+    <tbody>
+
+     <row>
+      <entry><literal>SELECT</literal></entry>
+      <entry><literal>r</literal> (<quote>读</quote>)</entry>
+     <entry>
+       <literal>LARGE OBJECT</literal>,
+       <literal>SEQUENCE</literal>,
+       <literal>TABLE</literal>（和类似表的对象）,
+       表列
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal>INSERT</literal></entry>
+      <entry><literal>a</literal> (<quote>增补</quote>)</entry>
+      <entry><literal>TABLE</literal>, 表列</entry>
+     </row>
+
+     <row>
+      <entry><literal>UPDATE</literal></entry>
+      <entry><literal>w</literal> (<quote>写</quote>)</entry>
+      <entry>
+       <literal>LARGE OBJECT</literal>,
+       <literal>SEQUENCE</literal>,
+       <literal>TABLE</literal>,
+       表列
+      </entry>
+     </row>
+     <row>
+      <entry><literal>DELETE</literal></entry>
+      <entry><literal>d</literal></entry>
+      <entry><literal>TABLE</literal></entry>
+     </row>
+     <row>
+      <entry><literal>TRUNCATE</literal></entry>
+      <entry><literal>D</literal></entry>
+      <entry><literal>TABLE</literal></entry>
+     </row>
+
+     <row>
+      <entry><literal>REFERENCES</literal></entry>
+      <entry><literal>x</literal></entry>
+      <entry><literal>TABLE</literal>, 表列</entry>
+     </row>
+     <row>
+      <entry><literal>TRIGGER</literal></entry>
+      <entry><literal>t</literal></entry>
+      <entry><literal>TABLE</literal></entry>
+     </row>
+
+     <row>
+      <entry><literal>CREATE</literal></entry>
+      <entry><literal>C</literal></entry>
+      <entry>
+       <literal>DATABASE</literal>,
+       <literal>SCHEMA</literal>,
+       <literal>TABLESPACE</literal>
+      </entry>
+     </row>
+     <row>
+      <entry><literal>CONNECT</literal></entry>
+      <entry><literal>c</literal></entry>
+      <entry><literal>DATABASE</literal></entry>
+     </row>
+     <row>
+      <entry><literal>TEMPORARY</literal></entry>
+      <entry><literal>T</literal></entry>
+      <entry><literal>DATABASE</literal></entry>
+     </row>
+
+     <row>
+      <entry><literal>EXECUTE</literal></entry>
+      <entry><literal>X</literal></entry>
+      <entry><literal>FUNCTION</literal>, <literal>PROCEDURE</literal></entry>
+     </row>
+
+     <row>
+      <entry><literal>USAGE</literal></entry>
+      <entry><literal>U</literal></entry>
+      <entry>
+       <literal>DOMAIN</literal>,
+       <literal>FOREIGN DATA WRAPPER</literal>,
+       <literal>FOREIGN SERVER</literal>,
+       <literal>LANGUAGE</literal>,
+       <literal>SCHEMA</literal>,
+       <literal>SEQUENCE</literal>,
+       <literal>TYPE</literal>
+      </entry>
+     </row>
+     <row>
+      <entry><literal>SET</literal></entry>
+      <entry><literal>s</literal></entry>
+      <entry><literal>PARAMETER</literal></entry>
+     </row>
+     <row>
+     <entry><literal>ALTER SYSTEM</literal></entry>
+     <entry><literal>A</literal></entry>
+     <entry><literal>PARAMETER</literal></entry>
+     </row>
+     <row>
+      <entry><literal>MAINTAIN</literal></entry>
+      <entry><literal>m</literal></entry>
+      <entry><literal>TABLE</literal></entry>
+     </row>
+     </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   <xref linkend="privileges-summary-table"/>使用上面所示的缩写总结了每种类型 SQL 对象可用的权限。
+   它还显示了可用于检查每种对象类型权限设置的<application>psql</application>命令。
+  </para>
+
+  <table id="privileges-summary-table">
+
+   <title>访问权限摘要</title>
+   <tgroup cols="4">
+    <colspec colname="col1" colwidth="2*"/>
+    <colspec colname="col2" colwidth="1*"/>
+    <colspec colname="col3" colwidth="1*"/>
+    <colspec colname="col4" colwidth="1*"/>
+    <thead>
+
+     <row>
+      <entry>对象类型</entry>
+      <entry>所有权限</entry>
+      <entry>默认 <literal>PUBLIC</literal> 权限</entry>
+      <entry><application>psql</application> 命令</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry><literal>DATABASE</literal></entry>
+      <entry><literal>CTc</literal></entry>
+      <entry><literal>Tc</literal></entry>
+      <entry><literal>\l</literal></entry>
+     </row>
+     <row>
+      <entry><literal>DOMAIN</literal></entry>
+      <entry><literal>U</literal></entry>
+      <entry><literal>U</literal></entry>
+      <entry><literal>\dD+</literal></entry>
+     </row>
+
+     <row>
+      <entry><literal>FUNCTION</literal> 或 <literal>PROCEDURE</literal></entry>
+      <entry><literal>X</literal></entry>
+      <entry><literal>X</literal></entry>
+      <entry><literal>\df+</literal></entry>
+     </row>
+
+     <row>
+      <entry><literal>FOREIGN DATA WRAPPER</literal></entry>
+      <entry><literal>U</literal></entry>
+      <entry>无</entry>
+      <entry><literal>\dew+</literal></entry>
+     </row>
+
+     <row>
+      <entry><literal>FOREIGN SERVER</literal></entry>
+      <entry><literal>U</literal></entry>
+      <entry>无</entry>
+      <entry><literal>\des+</literal></entry>
+     </row>
+     <row>
+      <entry><literal>LANGUAGE</literal></entry>
+      <entry><literal>U</literal></entry>
+      <entry><literal>U</literal></entry>
+      <entry><literal>\dL+</literal></entry>
+     </row>
+
+     <row>
+      <entry><literal>LARGE OBJECT</literal></entry>
+      <entry><literal>rw</literal></entry>
+      <entry>无</entry>
+      <entry><literal>\dl+</literal></entry>
+     </row>
+
+     <row>
+      <entry><literal>PARAMETER</literal></entry>
+      <entry><literal>sA</literal></entry>
+      <entry>无</entry>
+      <entry><literal>\dconfig+</literal></entry>
+</row>
+
+     <row>
+      <entry><literal>SCHEMA</literal></entry>
+      <entry><literal>UC</literal></entry>
+      <entry>无</entry>
+      <entry><literal>\dn+</literal></entry>
+     </row>
+
+     <row>
+      <entry><literal>SEQUENCE</literal></entry>
+      <entry><literal>rwU</literal></entry>
+      <entry>无</entry>
+      <entry><literal>\dp</literal></entry>
+     </row>
+
+     <row>
+      <entry><literal>TABLE</literal>（以及类似表的对象）</entry>
+      <entry><literal>arwdDxtm</literal></entry>
+      <entry>无</entry>
+      <entry><literal>\dp</literal></entry>
+     </row>
+
+     <row>
+      <entry>表列</entry>
+      <entry><literal>arwx</literal></entry>
+      <entry>无</entry>
+      <entry><literal>\dp</literal></entry>
+     </row>
+
+     <row>
+     <entry><literal>TABLESPACE</literal></entry>
+     <entry><literal>C</literal></entry>
+      <entry>无</entry>
+      <entry><literal>\db+</literal></entry>
+     </row>
+     <row>
+      <entry><literal>TYPE</literal></entry>
+      <entry><literal>U</literal></entry>
+      <entry><literal>U</literal></entry>
+      <entry><literal>\dT+</literal></entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   <indexterm>
+    <primary><type>aclitem</type></primary>
+   </indexterm>
+   已授予特定对象的权限显示为<type>aclitem</type>条目列表，每个条目的格式如下：
+<synopsis>
+<replaceable>grantee</replaceable><literal>=</literal><replaceable>privilege-abbreviation</replaceable><optional><literal>*</literal></optional>...<literal>/</literal><replaceable>grantor</replaceable>
+</synopsis>
+   每个<type>aclitem</type>列出了由特定授权者授予某个受让人的全部权限。具体权限由<xref linkend="privilege-abbrevs-table"/>中的单字母缩写表示；如果该权限带有授予选项，则会附加<literal>*</literal>。例如，<literal>calvin=r*w/hobbes</literal>表示角色<literal>calvin</literal>具有<literal>SELECT</literal>权限（<literal>r</literal>）并带有授予选项（<literal>*</literal>），同时还具有不可转授的<literal>UPDATE</literal>权限（<literal>w</literal>），这两项权限都由角色<literal>hobbes</literal>授予。如果<literal>calvin</literal>还拥有由其他授权者授予的同一对象上的某些权限，这些权限会显示为单独的<type>aclitem</type>条目。<type>aclitem</type>中空的受让人字段代表<literal>PUBLIC</literal>。
+  </para>
+
+  <para>
+   例如，假设用户<literal>miriam</literal>创建了表<literal>mytable</literal>并执行了：
+<programlisting>
+GRANT SELECT ON mytable TO PUBLIC;
+GRANT SELECT, UPDATE, INSERT ON mytable TO admin;
+GRANT SELECT (col1), UPDATE (col1) ON mytable TO miriam_rw;
+</programlisting>
+   则<application>psql</application>的<literal>\dp</literal>命令将显示：
+<programlisting>
+=&gt; \dp mytable
+                                  Access privileges
+ Schema |  Name   | Type  |   Access privileges    |   Column privileges   | Policies
+--------+---------+-------+------------------------+-----------------------+----------
+ public | mytable | table | miriam=arwdDxtm/miriam+| col1:                +|
+        |         |       | =r/miriam             +|   miriam_rw=rw/miriam |
+        |         |       | admin=arw/miriam      |                       |
+(1 row)
+</programlisting>
+  </para>
+
+  <para>
+   如果某个对象的<quote>Access privileges</quote>列为空，表示该对象具有默认权限
+   （也就是说，它在相关系统目录中的权限条目为 null）。
+   默认权限始终包括所有者的全部权限，并且根据对象类型的不同，还可能包括授予<literal>PUBLIC</literal>的一些权限，如上所述。
+   对象上的第一个<command>GRANT</command>或<command>REVOKE</command>将实例化默认权限
+   （例如生成<literal>miriam=arwdDxt/miriam</literal>），然后再根据指定的请求修改它们。
+   类似地，只有具有非默认权限的列才会在<quote>Column privileges</quote>中显示条目。
+   （注意：这里的<quote>default privileges</quote>始终是指该对象类型的内置默认权限。
+   受<command>ALTER DEFAULT PRIVILEGES</command>命令影响的对象，总会显示一个显式权限条目，其中包含<command>ALTER</command>的影响。）
+  </para>
+
+  <para>
+   注意所有者的隐式授予选项没有在访问权限显示中标记。仅当授予选项被显式授予给某人时才会出现<literal>*</literal>。
+  </para>
+
+  <para>
+   当对象的权限条目非空但为空集合时，<quote>Access privileges</quote>列会显示<literal>(none)</literal>。
+   这意味着根本没有授予任何权限，甚至连对象所有者也没有，这是一种很少见的情况。
+   （在这种情况下，所有者仍然拥有隐式的授予选项，因此仍然可以重新授予自己的权限；只是当前并不持有这些权限。）
+  </para>
+ </sect1>
+
+ <sect1 id="ddl-rowsecurity">
+
+  <title>行安全性策略</title>
+
+  <indexterm zone="ddl-rowsecurity">
+   <primary>row-level security</primary>
+  </indexterm>
+
+  <indexterm zone="ddl-rowsecurity">
+   <primary>policy</primary>
+  </indexterm>
+
+  <para>
+   除了可通过<xref linkend="sql-grant"/>使用的 SQL 标准<link linkend="ddl-priv">权限系统</link>之外，表还可以拥有<firstterm>行安全性策略</firstterm>，用来按用户限制普通查询可以返回哪些行，以及数据修改命令可以插入、更新或删除哪些行。这一特性也称为<firstterm>行级安全性</firstterm>。默认情况下，表没有任何策略，因此如果某个用户按照 SQL 权限系统拥有访问该表的权限，那么表中的所有行对查询或更新来说都是同等可用的。
+  </para>
+
+  <para>
+   当在表上启用行安全性时（使用<link linkend="sql-altertable">ALTER TABLE ... ENABLE ROW LEVEL SECURITY</link>），所有针对该表选择行或修改行的普通访问都必须得到某条行安全性策略的允许。（不过，表拥有者通常不受行安全性策略约束。）如果该表没有任何策略，则会采用一条默认拒绝策略，也就是说所有行都不可见，也不能被修改。作用于整张表的操作，例如<command>TRUNCATE</command>和<literal>REFERENCES</literal>，不受行安全性约束。
+  </para>
+
+  <para>
+   行安全性策略可以针对特定命令、特定角色，或者同时针对两者。策略可以指定适用于<literal>ALL</literal>命令，或者适用于<literal>SELECT</literal>、<literal>INSERT</literal>、<literal>UPDATE</literal>或<literal>DELETE</literal>。一条策略也可以分配给多个角色，并且正常的角色成员关系与继承规则同样适用。
+  </para>
+
+  <para>
+   要指定根据某条策略哪些行可见或可修改，需要提供一个返回布尔结果的表达式。对每一行来说，在计算来自用户查询的任何条件或函数之前，都会先计算这个表达式。（这条规则的唯一例外是<literal>leakproof</literal>函数，它们被保证不会泄露信息；优化器可能会选择在行安全性检查之前应用这类函数。）表达式结果不是<literal>true</literal>的行不会被处理。你还可以分别指定独立的表达式，以便独立控制哪些行可见，以及哪些行允许被修改。策略表达式作为查询的一部分运行，并使用执行该查询的用户的权限；不过，可以借助安全性定义者函数访问调用用户本来无权访问的数据。
+  </para>
+
+  <para>
+   超级用户以及带有<literal>BYPASSRLS</literal>属性的角色在访问表时总是会绕过行安全性系统。表拥有者通常也会绕过行安全性，不过表拥有者可以通过<link linkend="sql-altertable">ALTER TABLE ... FORCE ROW LEVEL SECURITY</link>选择让自己也受行安全性约束。
+  </para>
+
+  <para>
+   启用或禁用行安全性，以及向表添加策略，始终都只属于表拥有者的权限。
+  </para>
+
+  <para>
+   策略的创建可以使用<xref linkend="sql-createpolicy"/>命令，策略的修改
+   可以使用<xref linkend="sql-alterpolicy"/>命令，而策略的删除可以使用
+   <xref linkend="sql-droppolicy"/>命令。要为一个给定表启用或者禁用行
+   安全性，可以使用<xref linkend="sql-altertable"/>命令。
+  </para>
+
+  <para>
+   每条策略都有一个名称，而且同一张表可以定义多条策略。由于策略是表级对象，因此同一张表上的每条策略都必须具有唯一名称。不同的表则可以拥有同名策略。
+  </para>
+
+  <para>
+   当多条策略适用于某个给定查询时，它们会通过<literal>OR</literal>（对宽松策略，默认类型）或<literal>AND</literal>（对限制性策略）组合在一起。这里的<literal>OR</literal>行为，类似于某个角色拥有其所属全部角色权限的规则。下文还会进一步讨论宽松策略与限制性策略。
+  </para>
+
+  <para>
+   作为一个简单的示例，这里是如何在<literal>account</literal>关系上
+   创建一条策略以允许只有<literal>managers</literal>角色的成员能访问行，
+   并且只能访问它们账户的行：
+  </para>
+
+<programlisting>
+CREATE TABLE accounts (manager text, company text, contact_email text);
+
+ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY account_managers ON accounts TO managers
+    USING (manager = current_user);
+</programlisting>
+
+  <para>
+   上面的策略会隐式提供一个与其<literal>USING</literal>子句相同的<literal>WITH CHECK</literal>子句，因此该约束既作用于命令选中的行（也就是说，经理不能<command>SELECT</command>、<command>UPDATE</command>或<command>DELETE</command>属于其他经理的现有行），也作用于命令修改的行（也就是说，不能通过<command>INSERT</command>或<command>UPDATE</command>创建属于其他经理的行）。
+  </para>
+
+  <para>
+   如果没有指定角色或者使用了特殊的用户名<literal>PUBLIC</literal>，
+   则该策略适用于系统上所有的用户。要允许所有用户访问<literal>users</literal>
+   表中属于他们自己的行，可以使用一条简单的策略：
+  </para>
+
+<programlisting>
+CREATE POLICY user_policy ON users
+    USING (user_name = current_user);
+</programlisting>
+
+  <para>
+   这个示例的效果和前一个类似。
+  </para>
+
+  <para>
+   为了对增加到表中的行使用与可见行不同的策略，可以组合多条策略。这一对策略将允许所有用户查看<literal>users</literal>表中的所有行，但只能修改他们自己的行：
+  </para>
+
+<programlisting>
+CREATE POLICY user_sel_policy ON users
+    FOR SELECT
+    USING (true);
+CREATE POLICY user_mod_policy ON users
+    USING (user_name = current_user);
+</programlisting>
+
+  <para>
+   在<command>SELECT</command>命令中，这两条策略会使用<literal>OR</literal>组合，最终效果就是可以选中所有行。在其他命令类型中，只有第二条策略适用，因此效果和之前相同。
+  </para>
+
+  <para>
+   也可以用<command>ALTER TABLE</command>命令禁用行安全性。禁用行安全性
+   不会移除定义在表上的任何策略，它们只是被简单地忽略。然后该表中的所有
+   行都是可见的并且可修改，服从于标准的 SQL 权限系统。
+  </para>
+
+  <para>
+   下面是一个更大的示例，展示这项特性如何用于生产环境。表
+   <literal>passwd</literal>模拟了一个 Unix 密码文件：
+  </para>
+
+<programlisting>
+-- Simple passwd-file based example
+CREATE TABLE passwd (
+  user_name             text UNIQUE NOT NULL,
+  pwhash                text,
+  uid                   int  PRIMARY KEY,
+  gid                   int  NOT NULL,
+  real_name             text NOT NULL,
+  home_phone            text,
+  extra_info            text,
+  home_dir              text NOT NULL,
+  shell                 text NOT NULL
+);
+
+CREATE ROLE admin;  -- Administrator
+CREATE ROLE bob;    -- Normal user
+CREATE ROLE alice;  -- Normal user
+
+-- Populate the table
+INSERT INTO passwd VALUES
+  ('admin','xxx',0,0,'Admin','111-222-3333',null,'/root','/bin/dash');
+INSERT INTO passwd VALUES
+  ('bob','xxx',1,1,'Bob','123-456-7890',null,'/home/bob','/bin/zsh');
+INSERT INTO passwd VALUES
+  ('alice','xxx',2,1,'Alice','098-765-4321',null,'/home/alice','/bin/zsh');
+
+-- Be sure to enable row-level security on the table
+ALTER TABLE passwd ENABLE ROW LEVEL SECURITY;
+
+-- Create policies
+-- Administrator can see all rows and add any rows
+CREATE POLICY admin_all ON passwd TO admin USING (true) WITH CHECK (true);
+-- Normal users can view all rows
+CREATE POLICY all_view ON passwd FOR SELECT USING (true);
+-- Normal users can update their own records, but
+-- limit which shells a normal user is allowed to set
+CREATE POLICY user_mod ON passwd FOR UPDATE
+  USING (current_user = user_name)
+  WITH CHECK (
+    current_user = user_name AND
+    shell IN ('/bin/bash','/bin/sh','/bin/dash','/bin/zsh','/bin/tcsh')
+  );
+
+-- Allow admin all normal rights
+GRANT SELECT, INSERT, UPDATE, DELETE ON passwd TO admin;
+-- Users only get select access on public columns
+GRANT SELECT
+  (user_name, uid, gid, real_name, home_phone, extra_info, home_dir, shell)
+  ON passwd TO public;
+-- Allow users to update certain columns
+GRANT UPDATE
+  (pwhash, real_name, home_phone, extra_info, shell)
+  ON passwd TO public;
+</programlisting>
+
+  <para>
+   对于任意安全性设置来说，重要的是测试并确保系统的行为符合预期。
+   使用上述的示例，下面展示了权限系统工作正确：
+  </para>
+
+<programlisting>
+-- admin can view all rows and fields
+postgres=&gt; set role admin;
+SET
+postgres=&gt; table passwd;
+ user_name | pwhash | uid | gid | real_name |  home_phone  | extra_info | home_dir    |   shell
+-----------+--------+-----+-----+-----------+--------------+------------+-------------+-----------
+ admin     | xxx    |   0 |   0 | Admin     | 111-222-3333 |            | /root       | /bin/dash
+ bob       | xxx    |   1 |   1 | Bob       | 123-456-7890 |            | /home/bob   | /bin/zsh
+ alice     | xxx    |   2 |   1 | Alice     | 098-765-4321 |            | /home/alice | /bin/zsh
+(3 rows)
+
+-- Test what Alice is able to do
+postgres=&gt; set role alice;
+SET
+postgres=&gt; table passwd;
+ERROR:  permission denied for table passwd
+postgres=&gt; select user_name,real_name,home_phone,extra_info,home_dir,shell from passwd;
+ user_name | real_name |  home_phone  | extra_info | home_dir    |   shell
+-----------+-----------+--------------+------------+-------------+-----------
+ admin     | Admin     | 111-222-3333 |            | /root       | /bin/dash
+ bob       | Bob       | 123-456-7890 |            | /home/bob   | /bin/zsh
+ alice     | Alice     | 098-765-4321 |            | /home/alice | /bin/zsh
+(3 rows)
+
+postgres=&gt; update passwd set user_name = 'joe';
+ERROR:  permission denied for table passwd
+-- Alice is allowed to change her own real_name, but no others
+postgres=&gt; update passwd set real_name = 'Alice Doe';
+UPDATE 1
+postgres=&gt; update passwd set real_name = 'John Doe' where user_name = 'admin';
+UPDATE 0
+postgres=&gt; update passwd set shell = '/bin/xx';
+ERROR:  new row violates WITH CHECK OPTION for "passwd"
+postgres=&gt; delete from passwd;
+ERROR:  permission denied for table passwd
+postgres=&gt; insert into passwd (user_name) values ('xxx');
+ERROR:  permission denied for table passwd
+-- Alice can change her own password; RLS silently prevents updating other rows
+postgres=&gt; update passwd set pwhash = 'abc';
+UPDATE 1
+</programlisting>
+
+  <para>
+   到目前为止，我们构造的所有策略都是宽松策略，也就是说，当多条策略都适用时，它们会通过<quote>OR</quote>布尔操作符组合起来。虽然宽松策略也可以构造得只在预期情况下允许访问行，但有时把宽松策略与限制性策略组合起来会更简单；后者是记录必须通过的策略，并且它们会通过<quote>AND</quote>布尔操作符组合。在上面的示例基础上，我们再增加一条限制性策略，要求管理员必须通过本地 Unix 套接字连接，才能访问<literal>passwd</literal>表中的记录：
+  </para>
+
+<programlisting>
+CREATE POLICY admin_local_only ON passwd AS RESTRICTIVE TO admin
+    USING (pg_catalog.inet_client_addr() IS NULL);
+</programlisting>
+
+  <para>
+   然后，由于这条限制性规则的存在，我们可以看到从网络连接进来的管理员将无法看到任何记录：
+  </para>
+
+<programlisting>
+=&gt; SELECT current_user;
+ current_user
+--------------
+ admin
+(1 row)
+
+=&gt; select inet_client_addr();
+ inet_client_addr
+------------------
+ 127.0.0.1
+(1 row)
+
+=&gt; TABLE passwd;
+ user_name | pwhash | uid | gid | real_name | home_phone | extra_info | home_dir | shell
+-----------+--------+-----+-----+-----------+------------+------------+----------+-------
+(0 rows)
+
+=&gt; UPDATE passwd set pwhash = NULL;
+UPDATE 0
+</programlisting>
+
+  <para>
+   参照完整性检查，例如唯一约束或主键约束以及外键引用，总是会绕过行级安全性，
+   以确保数据完整性得到维护。在设计模式和行级策略时必须小心，
+   避免通过这类参照完整性检查形成<quote>隐蔽通道</quote>并泄露信息。
+  </para>
+
+  <para>
+   在某些场景下，确保没有应用行安全性很重要。例如在做备份时，如果行安全性静默地导致某些行被从备份中省略，那将是灾难性的。在这种情况下，可以把<xref linkend="guc-row-security"/>配置参数设置为<literal>off</literal>。这本身并不会绕过行安全性；它的作用是，只要某个查询结果本会被策略过滤，就直接抛出错误。这样就可以调查并修复出错原因。
+  </para>
+
+  <para>
+   在上面的示例中，策略表达式只考虑了要被访问的行中的当前值。这是最简
+   单并且表现最好的情况。如果可能，最好设计行安全性应用以这种方式工作。
+   如果需要参考其他行或者其他表来做出策略决定，可以在策略表达式中通过
+   使用子<command>SELECT</command>或包含<command>SELECT</command>的函数
+   来实现。不过要注意这类访问可能会导致竞争条件，在不小心的情况下这可能
+   会导致信息泄露。作为一个示例，考虑下面的表设计：
+  </para>
+
+<programlisting>
+-- definition of privilege groups
+CREATE TABLE groups (group_id int PRIMARY KEY,
+                     group_name text NOT NULL);
+
+INSERT INTO groups VALUES
+  (1, 'low'),
+  (2, 'medium'),
+  (5, 'high');
+
+GRANT ALL ON groups TO alice;  -- alice is the administrator
+GRANT SELECT ON groups TO public;
+
+-- definition of users' privilege levels
+CREATE TABLE users (user_name text PRIMARY KEY,
+                    group_id int NOT NULL REFERENCES groups);
+
+INSERT INTO users VALUES
+  ('alice', 5),
+  ('bob', 2),
+  ('mallory', 2);
+
+GRANT ALL ON users TO alice;
+GRANT SELECT ON users TO public;
+
+-- table holding the information to be protected
+CREATE TABLE information (info text,
+                          group_id int NOT NULL REFERENCES groups);
+
+INSERT INTO information VALUES
+  ('barely secret', 1),
+  ('slightly secret', 2),
+  ('very secret', 5);
+
+ALTER TABLE information ENABLE ROW LEVEL SECURITY;
+
+-- a row should be visible to/updatable by users whose security group_id is
+-- greater than or equal to the row's group_id
+CREATE POLICY fp_s ON information FOR SELECT
+  USING (group_id &lt;= (SELECT group_id FROM users WHERE user_name = current_user));
+CREATE POLICY fp_u ON information FOR UPDATE
+  USING (group_id &lt;= (SELECT group_id FROM users WHERE user_name = current_user));
+
+-- we rely only on RLS to protect the information table
+GRANT ALL ON information TO public;
+</programlisting>
+
+  <para>
+   现在假设<literal>alice</literal>想修改<quote>slightly secret</quote>这条信息，但认为<literal>mallory</literal>不应该看到这一行的新内容，因此她这样做：
+  </para>
+
+<programlisting>
+BEGIN;
+UPDATE users SET group_id = 1 WHERE user_name = 'mallory';
+UPDATE information SET info = 'secret from mallory' WHERE group_id = 2;
+COMMIT;
+</programlisting>
+
+  <para>
+   这看起来是安全的；似乎不存在<literal>mallory</literal>能够看到<quote>secret from mallory</quote>这个字符串的窗口。不过，这里存在一个竞争条件。如果<literal>mallory</literal>正在并发执行例如：
+<programlisting>
+SELECT * FROM information WHERE group_id = 2 FOR UPDATE;
+</programlisting>
+   并且她的事务处于<literal>READ COMMITTED</literal>模式，那么她就有可能看到
+   <quote>secret from mallory</quote>。这种情况会在她的事务恰好在<literal>alice</literal>之后到达
+   <structname>information</structname>中的那一行时发生。它会阻塞并等待
+   <literal>alice</literal>的事务提交，然后由于<literal>FOR UPDATE</literal>子句而取到更新后的行内容。
+   但是，对于来自<structname>users</structname>的隐式<command>SELECT</command>，
+   它<emphasis>不会</emphasis>取到更新后的行，因为该子<command>SELECT</command>没有
+   <literal>FOR UPDATE</literal>；相反，<structname>users</structname>中的那一行是用查询开始时取得的快照读取的。
+   因此，策略表达式测试的是<literal>mallory</literal>权限级别的旧值，并允许她看到更新后的行。
+  </para>
+
+  <para>
+   有多种方法能解决这个问题。一种简单的答案是在行安全性策略中的
+   子<command>SELECT</command>里使用<literal>SELECT ... FOR SHARE</literal>。
+   不过，这要求在被引用表（这里是<structname>users</structname>）上授予
+   <literal>UPDATE</literal>权限给受影响的用户，这可能不是我们想要的（
+   但是另一条行安全性策略可能被应用来阻止它们实际使用这个权限，或者
+   子<command>SELECT</command>可能被嵌入到一个安全性定义者函数中）。
+   还有，在被引用的表上过多并发地使用行共享锁可能会导致性能问题，
+   特别是表更新比较频繁时。另一种解决方案（如果被引用表上的更新
+   不频繁就可行）是在更新被引用表时对它取一个<literal>ACCESS EXCLUSIVE</literal>锁，
+   这样就没有并发事务能够检查旧的行值了。或者我们可以在提交对被引用表的更新
+   之后、在做依赖于新安全性情况的更改之前等待所有并发事务结束。
+  </para>
+
+  <para>
+   更多细节请见<xref linkend="sql-createpolicy"/>
+   和<xref linkend="sql-altertable"/>。
+  </para>
+
+ </sect1>
+
+ <sect1 id="ddl-schemas">
+
+  <title>模式</title>
+
+  <indexterm zone="ddl-schemas">
+   <primary>schema</primary>
+  </indexterm>
+
+  <para>
+   一个<productname>PostgreSQL</productname>数据库集簇中包含一个或更多命名的数据库。
+   角色和一些其他对象类型被整个集簇共享，连接到服务器的客户端只能访问单个数据库中的数据，在连接请求中指定的那一个。
+  </para>
+
+  <note>
+
+   <para>
+    一个集簇的用户并不必拥有访问集簇中每一个数据库的权限。
+    角色名的共享意味着不可能在同一个集簇中出现重名的不同角色，例如两个数据库中都有叫<literal>joe</literal>的用户。
+    但系统可以被配置为只允许<literal>joe</literal>访问某些数据库。
+   </para>
+  </note>
+
+  <para>
+   一个数据库包含一个或多个命名的<firstterm>模式</firstterm>，模式中又包含表。
+   模式还包含其他类型的命名对象，包括数据类型、函数和操作符。
+   在同一个模式中，同一类型的两个对象不能有相同的名称。
+   此外，表、序列、索引、视图、物化视图和外部表共享同一个名字空间，
+   因此例如当它们位于同一模式中时，索引和表就必须具有不同的名称。
+   相同的对象名可以在不同模式中重复使用而不发生冲突；例如，
+   <literal>schema1</literal>和<literal>myschema</literal>都可以包含名为<literal>mytable</literal>的表。
+   与数据库不同，模式并不是被严格隔离的：只要拥有相应权限，用户就可以访问其所连接数据库中任意模式里的对象。
+  </para>
+
+  <para>
+   下面是一些使用模式的原因：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      允许多个用户使用一个数据库并且不会互相干扰。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      将数据库对象组织成逻辑组以便更容易管理。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      第三方应用的对象可以放在独立的模式中，这样它们就不会与其他对象的名称发生冲突。     </para>
+    </listitem>
+   </itemizedlist>
+
+   模式类似于操作系统层的目录，但是模式不能嵌套。
+  </para>
+
+  <sect2 id="ddl-schemas-create">
+
+   <title>创建模式</title>
+
+   <indexterm zone="ddl-schemas-create">
+    <primary>schema</primary>
+    <secondary>creating</secondary>
+   </indexterm>
+
+   <para>
+    要创建一个模式，可使用<xref linkend="sql-createschema"/>命令，并且给出选择的模式名称。例如：
+<programlisting>
+CREATE SCHEMA myschema;
+</programlisting>
+   </para>
+
+   <indexterm>
+    <primary>qualified name</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>name</primary>
+    <secondary>qualified</secondary>
+   </indexterm>
+
+   <para>
+    在一个模式中创建或访问对象，需要使用由模式名和表名构成的<firstterm>限定名</firstterm>，模式名和表名之间以点号分隔：
+<synopsis>
+<replaceable>schema</replaceable><literal>.</literal><replaceable>table</replaceable>
+</synopsis>
+    在任何需要一个表名的地方都可以这样用，包括表修改命令和后续章节要讨论的数据访问命令（为了简洁我们在这里只谈到表，但是这种方式对其他类型的命名对象同样有效，例如类型和函数）。
+   </para>
+
+   <para>
+    事实上，还有更加通用的语法：
+<synopsis>
+<replaceable>database</replaceable><literal>.</literal><replaceable>schema</replaceable><literal>.</literal><replaceable>table</replaceable>
+</synopsis>
+    也可以使用，但是目前它只是在形式上与SQL标准兼容。如果我们写一个数据库名称，它必须是我们正在连接的数据库。
+   </para>
+
+   <para>
+    因此，如果要在一个新模式中创建一个表，可用：
+<programlisting>
+CREATE TABLE myschema.mytable (
+ ...
+);
+</programlisting>
+   </para>
+
+   <indexterm>
+    <primary>schema</primary>
+    <secondary>removing</secondary>
+   </indexterm>
+
+   <para>
+    要删除一个为空的模式（其中的所有对象已经被删除），可用：
+<programlisting>
+DROP SCHEMA myschema;
+</programlisting>
+    要删除一个模式以及其中包含的所有对象，可用：
+<programlisting>
+DROP SCHEMA myschema CASCADE;
+</programlisting>
+    有关于此的更一般的机制请参见<xref linkend="ddl-depend"/>。
+   </para>
+
+   <para>
+    我们常常希望创建一个由其他人所拥有的模式（因为这是将用户动作限制在良定义的名字空间中的方法之一）。其语法是：
+<programlisting>
+CREATE SCHEMA <replaceable>schema_name</replaceable> AUTHORIZATION <replaceable>user_name</replaceable>;
+</programlisting>
+    我们甚至可以省略模式名称，在此种情况下模式名称将会使用用户名，参见<xref linkend="ddl-schemas-patterns"/>。
+   </para>
+
+   <para>
+    以<literal>pg_</literal>开头的模式名被保留用于系统目的，所以不能被用户所创建。
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-schemas-public">
+
+   <title>公共模式</title>
+
+   <indexterm zone="ddl-schemas-public">
+    <primary>schema</primary>
+    <secondary>public</secondary>
+   </indexterm>
+
+   <para>
+    在前面的小节中，我们创建表时都没有指定模式名。默认情况下，这些表（以及其他对象）会自动放入名为<quote>public</quote>的模式中。每个新数据库都包含这样一个模式。因此，下面两条命令是等效的：
+<programlisting>
+CREATE TABLE products ( ... );
+</programlisting>
+    以及：
+<programlisting>
+CREATE TABLE public.products ( ... );
+</programlisting>
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-schemas-path">
+
+   <title>模式搜索路径</title>
+
+   <indexterm>
+    <primary>search path</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>unqualified name</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>name</primary>
+    <secondary>unqualified</secondary>
+   </indexterm>
+
+   <para>
+    限定名写起来很繁琐，而且通常最好不要把某个特定模式名硬编码到应用中。因此，表通常通过<firstterm>非限定名</firstterm>来引用，也就是只写表名。系统会沿着一条<firstterm>搜索路径</firstterm>来决定该名称指的是哪个表；搜索路径就是要查找的一组模式列表。搜索路径中第一个匹配的表会被视为目标表。如果搜索路径中没有任何匹配，就会报错，即使数据库的其他模式中存在同名表也是如此。
+   </para>
+
+  <para>
+    在不同模式中创建命名相同的对象的能力使得编写每次都准确引用相同对象的查询变得复杂。这也使得用户有可能更改其他用户查询的行为，不管是出于恶意还是无意。由于未经限定的名称在查询中以及在<productname>PostgreSQL</productname>内部的广泛使用，在<varname>search_path</varname>中增加一个模式实际上是信任所有在该模式中具有<literal>CREATE</literal>权限的用户。在你运行一个普通查询时，如果恶意用户可以在搜索路径的模式中创建对象，那么他们将能够控制并执行任意SQL函数的对象，而这些事情就像是你在执行一样。
+   </para>
+
+   <indexterm>
+    <primary>schema</primary>
+    <secondary>current</secondary>
+   </indexterm>
+
+   <para>
+    搜索路径中的第一个模式被称为当前模式。除了是第一个被搜索的模式外，如果<command>CREATE TABLE</command>命令没有指定模式名，它将是新创建表所在的模式。
+   </para>
+
+   <indexterm>
+    <primary><varname>search_path</varname>配置参数</primary>
+   </indexterm>
+
+   <para>
+    要显示当前搜索路径，可使用下面的命令：
+<programlisting>
+SHOW search_path;
+</programlisting>
+    在默认设置下这将返回：
+<screen>
+ search_path
+--------------
+ "$user", public
+</screen>
+    第一个元素说明一个和当前用户同名的模式会被搜索。如果不存在这个模式，该项将被忽略。第二个元素指向我们已经见过的公共模式。
+   </para>
+
+   <para>
+    搜索路径中第一个存在的模式，是创建新对象时的默认位置。这就是默认情况下对象会被创建在公共模式中的原因。当对象在其他任何未限定模式的上下文中被引用时（表修改、数据修改或查询命令），系统会沿搜索路径查找，直到找到匹配对象为止。因此，在默认配置中，任何非限定访问仍然只能指向公共模式。
+   </para>
+
+   <para>
+    要把新模式放在搜索路径中，我们可以使用：
+<programlisting>
+SET search_path TO myschema,public;
+</programlisting>
+    （我们在这里省略了<literal>$user</literal>，因为我们并不立即需要它）。然后我们可以删除该表而无需使用模式进行限定：
+<programlisting>
+DROP TABLE mytable;
+</programlisting>
+    同样，由于<literal>myschema</literal>是路径中的第一个元素，新对象默认也会创建在其中。
+   </para>
+
+   <para>
+    我们也可以这样写：
+<programlisting>
+SET search_path TO myschema;
+</programlisting>
+    这样一来，在没有显式限定时，我们就不再能访问公共模式了。公共模式本身并无特殊之处，只是默认存在而已；它同样可以被删除。
+   </para>
+
+   <para>
+    其他操作模式搜索路径的方法请见<xref linkend="functions-info"/>。
+   </para>
+
+   <para>
+    搜索路径对于数据类型名称、函数名称和操作符名称的作用与表名一样。数据类型和函数名称可以使用和表名完全相同的限定方式。如果我们需要在一个表达式中写一个限定的操作符名称，我们必须写成一种特殊的形式：
+<synopsis>
+<literal>OPERATOR(</literal><replaceable>schema</replaceable><literal>.</literal><replaceable>operator</replaceable><literal>)</literal>
+</synopsis>
+    这是为了避免句法歧义。例如：
+<programlisting>
+SELECT 3 OPERATOR(pg_catalog.+) 4;
+</programlisting>
+    实际上我们通常都会依赖于搜索路径来查找操作符，因此没有必要去写如此“丑陋”的东西。
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-schemas-priv">
+
+   <title>模式和权限</title>
+
+   <indexterm zone="ddl-schemas-priv">
+    <primary>privilege</primary>
+    <secondary sortas="schemas">for schemas</secondary>
+   </indexterm>
+
+   <para>
+    默认情况下，用户无法访问他们不拥有的模式中的任何对象。要允许这样做，模式的所有者必须授予该模式上的<literal>USAGE</literal>权限。
+    默认情况下，每个人在模式<literal>public</literal>上都有该权限。要允许用户使用模式中的对象，可能需要授予其他权限，适用于该对象。
+</para>
+
+   <para>
+    用户还可以被允许在别人的模式中创建对象。为了允许这样做，需要授予模式上的<literal>CREATE</literal>权限。
+    在从<productname>PostgreSQL</productname> 14 或更早版本升级而来的数据库中，每个人都拥有模式<literal>public</literal>上的该权限。
+    某些<link linkend="ddl-schemas-patterns">使用模式</link>要求撤销该权限：
+<programlisting>
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+</programlisting>
+    （第一个<quote>public</quote>是模式，第二个<quote>public</quote>表示<quote>每个用户</quote>。
+    在第一个意义上，它是一个标识符，在第二个意义上，它是一个关键字，因此使用了不同的大写形式；
+    请回顾<xref linkend="sql-syntax-identifiers"/>中的指南。）
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-schemas-catalog">
+
+   <title>系统目录模式</title>
+
+   <indexterm zone="ddl-schemas-catalog">
+    <primary>system catalog</primary>
+    <secondary>schema</secondary>
+   </indexterm>
+
+   <para>
+    除<literal>public</literal>和用户创建的模式之外，每一个数据库还包括一个<literal>pg_catalog</literal>模式，它包含了系统表和所有内置的数据类型、函数以及操作符。<literal>pg_catalog</literal>总是搜索路径的一个有效部分。如果没有在路径中显式地包括该模式，它将在路径中的模式<emphasis>之前</emphasis>被搜索。这保证了内置的名称总是能被找到。然而，如果我们希望用用户定义的名称重载内置的名称，可以显式的将<literal>pg_catalog</literal>放在搜索路径的末尾。
+   </para>
+
+   <para>
+    由于系统表名以<literal>pg_</literal>开头，因此最好避免使用这样的名称，以免将来某个版本定义出与你的表同名的系统表。系统表会继续遵循以<literal>pg_</literal>开头的约定，因此只要用户避免使用<literal>pg_</literal>前缀，它们就不会与未经限定的用户表名发生冲突。
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-schemas-patterns">
+
+   <title>使用模式</title>
+
+   <para>
+    模式可以用多种方式来组织数据。
+    <firstterm>安全的模式使用模式</firstterm>可以防止不受信任的用户改变其他用户查询的行为。
+    当数据库没有采用安全的模式使用模式时，希望安全地查询该数据库的用户就必须在每个会话开始时先采取保护措施。
+    具体来说，他们会在每个会话开始时把<varname>search_path</varname>设为空字符串，或者以其他方式从<varname>search_path</varname>中移除那些允许非超级用户写入的模式。
+    下面有几种在默认配置下容易支持的使用模式：
+    <itemizedlist>
+     <listitem>
+
+      <para>
+       将普通用户限制在各自私有的模式中。
+       要实现这种模式，首先要确保没有任何模式向<literal>PUBLIC</literal>授予<literal>CREATE</literal>权限。
+       然后，对每个需要创建非临时对象的用户，创建一个与该用户同名的模式，例如
+       <literal>CREATE SCHEMA alice AUTHORIZATION alice</literal>。
+       （请记住，默认搜索路径以<literal>$user</literal>开头，它会解析为用户名。
+       因此，如果每个用户都有一个单独的模式，那么他们默认访问的就是自己的模式。）
+       这种模式属于安全的模式使用模式，除非某个不受信任的用户是数据库所有者，
+       或者在相关角色上拥有<literal>ADMIN OPTION</literal>；一旦出现这种情况，就不存在安全的模式使用模式了。
+      </para>
+      <!-- A database owner can attack the database's users via "CREATE SCHEMA
+           trojan; ALTER DATABASE $mydb SET search_path = trojan, public;".  A
+           CREATEROLE user can issue "GRANT $dbowner TO $me" and then use the
+           database owner attack. -->
+
+      <para>
+       在<productname>PostgreSQL</productname> 15 及更高版本中，默认配置支持这种使用模式。
+       在更早版本中，或者数据库是从更早版本升级而来时，你需要从<literal>public</literal>模式撤销面向<literal>PUBLIC</literal>的<literal>CREATE</literal>权限（执行<literal>REVOKE CREATE ON SCHEMA public FROM PUBLIC</literal>）。
+       然后还应考虑审查<literal>public</literal>模式中那些与<literal>pg_catalog</literal>模式内对象同名的对象。
+      </para>
+      <!-- "DROP SCHEMA public" is inferior to this REVOKE, because pg_dump
+           doesn't preserve that DROP. -->
+     </listitem>
+
+     <listitem>
+
+      <para>
+       通过修改<link linkend="config-setting-configuration-file"><filename>postgresql.conf</filename></link>，
+       或执行<literal>ALTER ROLE ALL SET search_path = "$user"</literal>，
+       将<literal>public</literal>模式从默认搜索路径中移除。然后，再授予在<literal>public</literal>模式中创建对象的权限。
+       这样，只有使用限定名时才会选中<literal>public</literal>模式中的对象。虽然限定表引用没有问题，但调用<literal>public</literal>模式中的函数
+       <link linkend="typeconv-func">可能不安全或不可靠</link>。
+       如果你要在<literal>public</literal>模式中创建函数或扩展，请改用第一种模式。
+       除此之外，它和第一种模式一样，除非某个不受信任的用户是数据库所有者，
+       或者在相关角色上拥有<literal>ADMIN OPTION</literal>，否则这种模式就是安全的。
+      </para>
+     </listitem>
+
+     <listitem>
+
+      <para>
+       保持默认搜索路径，并授予在<literal>public</literal>模式中创建对象的权限。所有用户都会隐式访问<literal>public</literal>模式。
+       这模拟了根本没有模式可用的情况，使从不支持模式的环境迁移过来时更加平滑。
+       不过，这绝不是一种安全的方式。它只适用于数据库只有单个用户，或只有少数彼此信任的用户的场景。
+       对于从<productname>PostgreSQL</productname> 14 或更早版本升级而来的数据库，这就是默认设置。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    对于任何一种模式，如果要安装共享应用
+    （所有人都要使用的表、第三方提供的附加函数等），可以把它们放进单独的模式中。
+    记得授予适当的权限，以便其他用户能够访问它们。这样，用户既可以通过带模式名的限定名来引用这些附加对象，
+    也可以按自己的需要把这些附加模式加入搜索路径。
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-schemas-portability">
+
+   <title>可移植性</title>
+
+   <para>
+    在 SQL 标准中，不存在同一模式中的对象由不同用户拥有这一概念。
+    此外，有些实现不允许创建与其所有者名称不同的模式。
+    事实上，在那些只实现了标准中基本模式支持的数据库系统中，模式和用户这两个概念几乎是等价的。
+    因此，很多用户认为限定名实际上就是
+    <literal><replaceable>user_name</replaceable>.<replaceable>table_name</replaceable></literal>。
+    如果你为每个用户都创建一个独立模式，<productname>PostgreSQL</productname>的行为实际上也会是这样。
+   </para>
+
+   <para>
+    同样，SQL 标准中也没有<literal>public</literal>模式这一概念。为了尽可能符合标准，你不应使用<literal>public</literal>模式。
+   </para>
+
+   <para>
+    当然，某些SQL数据库系统可能根本没有实现模式，或者提供（很可能是有限制地）允许跨数据库访问的命名空间。如果需要使用这样的系统，为了获得最好的可移植性，最好不要使用模式。
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="ddl-inherit">
+
+  <title>继承</title>
+
+  <indexterm>
+   <primary>inheritance</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>table</primary>
+   <secondary>inheritance</secondary>
+  </indexterm>
+
+  <para>
+   <productname>PostgreSQL</productname>实现了表继承，这对数据库设计者来说是一种有用的工具（SQL:1999及其后的版本定义了一种类型继承特性，但和这里介绍的继承有很大的不同）。
+  </para>
+
+  <para>
+   让我们从一个示例开始：假设我们要为城市建立一个数据模型。每个州有很多城市，但只有一个首府。我们希望能够快速检索任意特定州的首府城市。这可以通过创建两个表来实现：一个用于州首府，另一个用于非首府城市。然而，当我们想要查询某个城市的数据，而不关心它是不是首府时，会发生什么？继承特性将有助于解决这个问题。我们可以将<structname>capitals</structname>表定义为继承自<structname>cities</structname>表：
+
+<programlisting>
+CREATE TABLE cities (
+    name            text,
+    population      float,
+    elevation       int     -- in feet
+);
+
+CREATE TABLE capitals (
+    state           char(2)
+) INHERITS (cities);
+</programlisting>
+
+   在这种情况下，<structname>capitals</structname>表<firstterm>继承</firstterm>了它的父表<structname>cities</structname>的所有列。州首府还有一个额外的列<structfield>state</structfield>用来表示它所属的州。
+  </para>
+
+  <para>
+   在<productname>PostgreSQL</productname>中，一个表可以从0个或者多个其他表继承，而对一个表的查询则可以引用一个表的所有行或者该表的所有行加上它所有的后代表。
+   默认情况是后一种行为。例如，下面的查询将查找所有高度高于500尺的城市的名称，包括州首府：
+
+<programlisting>
+SELECT name, elevation
+    FROM cities
+    WHERE elevation &gt; 500;
+</programlisting>
+
+   对于来自<productname>PostgreSQL</productname>教程（见<xref linkend="tutorial-sql-intro"/>）的示例数据，它将返回：
+
+<programlisting>
+   name    | elevation
+-----------+-----------
+ Las Vegas |      2174
+ Mariposa  |      1953
+ Madison   |       845
+</programlisting>
+  </para>
+
+  <para>
+   另一方面，下面的查询将找到所有高度超过 500 尺且不是州首府的城市：
+
+<programlisting>
+SELECT name, elevation
+    FROM ONLY cities
+    WHERE elevation &gt; 500;
+
+   name    | elevation
+-----------+-----------
+ Las Vegas |      2174
+ Mariposa  |      1953
+</programlisting>
+  </para>
+
+  <para>
+   这里的<literal>ONLY</literal>关键词指示查询只被应用于<structname>cities</structname>上，而其他在继承层次中位于<structname>cities</structname>之下的其他表都不会被该查询涉及。很多我们已经讨论过的命令（如<command>SELECT</command>、<command>UPDATE</command>和<command>DELETE</command>）都支持<literal>ONLY</literal>关键词。
+  </para>
+
+  <para>
+   我们也可以在表名后写上一个<literal>*</literal>来显式地将后代表包括在查询范围内：
+
+<programlisting>
+SELECT name, elevation
+    FROM cities*
+    WHERE elevation &gt; 500;
+</programlisting>
+
+   写<literal>*</literal>并非必需，因为这种行为始终是默认的。不过，为了兼容那些允许修改默认行为的较旧版本，现在仍然支持这种语法。
+  </para>
+
+  <para>
+   在某些情况下，我们可能希望知道一个特定行来自于哪个表。每个表中的系统列<structfield>tableoid</structfield>可以告诉我们行来自于哪个表：
+
+<programlisting>
+SELECT c.tableoid, c.name, c.elevation
+FROM cities c
+WHERE c.elevation &gt; 500;
+</programlisting>
+
+   将会返回：
+
+<programlisting>
+ tableoid |   name    | elevation
+----------+-----------+-----------
+   139793 | Las Vegas |      2174
+   139793 | Mariposa  |      1953
+   139798 | Madison   |       845
+</programlisting>
+
+   （如果重新生成这个结果，可能会得到不同的OID数字。）通过与<structname>pg_class</structname>进行连接可以看到实际的表名：
+
+<programlisting>
+SELECT p.relname, c.name, c.elevation
+FROM cities c, pg_class p
+WHERE c.elevation &gt; 500 AND c.tableoid = p.oid;
+</programlisting>
+
+   将会返回：
+
+<programlisting>
+ relname  |   name    | elevation
+----------+-----------+-----------
+ cities   | Las Vegas |      2174
+ cities   | Mariposa  |      1953
+ capitals | Madison   |       845
+</programlisting>
+  </para>
+
+  <para>
+   得到同样效果的另一种方法，是使用<type>regclass</type>别名类型，
+   它会以符号形式打印表的 OID：
+
+<programlisting>
+SELECT c.tableoid::regclass, c.name, c.elevation
+FROM cities c
+WHERE c.elevation &gt; 500;
+</programlisting>
+  </para>
+
+  <para>
+   继承不会自动地将来自<command>INSERT</command>或<command>COPY</command>命令的数据传播到继承层次中的其他表中。在我们的示例中，下面的<command>INSERT</command>语句将会失败：
+<programlisting>
+INSERT INTO cities (name, population, elevation, state)
+VALUES ('Albany', NULL, NULL, 'NY');
+</programlisting>
+   我们也许会希望数据能以某种方式被路由到<structname>capitals</structname>表中，但这不会发生：<command>INSERT</command>总是向指定的表中插入。在某些情况下，可以通过使用一个规则（见<xref linkend="rules"/>）将插入动作重定向。但是这对上面的情况并没有帮助，因为<structname>cities</structname>表根本就不包含<structfield>state</structfield>列，因而这个命令会在触发规则之前就被拒绝。
+  </para>
+
+  <para>
+   父表上的所有检查约束和非空约束都将自动被它的后代所继承，除非显式地指定了<literal>NO INHERIT</literal>子句。其他类型的约束（唯一、主键和外键约束）则不会被继承。
+  </para>
+
+  <para>
+   一个表可以从超过一个的父表继承，在这种情况下它拥有父表们所定义的列的并集。任何定义在子表上的列也会被加入到其中。如果在这个集合中出现重名列，那么这些列将被<quote>合并</quote>，这样在子表中只会有一个这样的列。重名列能被合并的前提是这些列必须具有相同的数据类型，否则会导致错误。可继承的检查约束和非空约束会以类似的方式被合并。例如，如果合并成一个合并列的任一列定义被标记为非空，则该合并列会被标记为非空。如果检查约束的名称相同，则他们会被合并，但如果它们的条件不同则合并会失败。
+  </para>
+
+  <para>
+   表继承通常在创建子表时建立，即通过<link linkend="sql-createtable"><command>CREATE TABLE</command></link>语句中的<literal>INHERITS</literal>子句。已经创建好的表也可以通过<link linkend="sql-altertable"><command>ALTER TABLE</command></link>的<literal>INHERIT</literal>变体再增加一个新的父表关系。要这么做，新子表必须已经包含与父表同名且数据类型相同的列。子表还必须包含与父表相同的检查约束和检查表达式。类似地，也可以使用<command>ALTER TABLE</command>的<literal>NO INHERIT</literal>变体，从子表中移除一条继承链接。动态添加和移除继承链接可用于实现表分区（见<xref linkend="ddl-partitioning"/>）。
+  </para>
+
+  <para>
+   一种创建将来要用作子表的新表的方法，是在<command>CREATE
+   TABLE</command>中使用<literal>LIKE</literal>子句。这样会创建一个与源表具有相同列的新表。如果源表上定义了任何<literal>CHECK</literal>约束，可以使用<literal>LIKE</literal>的<literal>INCLUDING CONSTRAINTS</literal>选项，让新表也包含与父表相同的约束。
+  </para>
+
+  <para>
+   当有任何一个子表存在时，父表不能被删除。当子表的列或者检查约束继承于父表时，它们也不能被删除或修改。如果希望移除一个表和它的所有后代，一种简单的方法是使用<literal>CASCADE</literal>选项删除父表（见<xref linkend="ddl-depend"/>）。
+  </para>
+
+  <para>
+   <command>ALTER TABLE</command>会把列的数据定义或检查约束上的任何变化沿着继承层次向下传播。同样，删除被其他表依赖的列只能使用<literal>CASCADE</literal>选项。对于同名列的合并与拒绝，<command>ALTER TABLE</command>遵循与<command>CREATE TABLE</command>相同的规则。
+  </para>
+
+  <para>
+   继承的查询仅在父表上执行访问权限检查。例如，在<structname>cities</structname>表上授予<literal>UPDATE</literal>权限也隐含着通过<structname>cities</structname>访问时在<structname>capitals</structname>表中更新行的权限。
+   这保留了数据（也）在父表中的样子。但是如果没有额外的授权，则不能直接更新<structname>capitals</structname>表。
+   以类似的方式，父表的行安全性策略（见<xref linkend="ddl-rowsecurity"/>）适用于继承查询期间来自于子表的行。
+   只有当子表在查询中被明确提到时，其策略（如果有）才会被应用，在那种情况下，附着在其父表上的任何策略都会被忽略。
+  </para>
+
+  <para>
+   外部表（见<xref linkend="ddl-foreign-data"/>）也可以是继承层次
+   中的一部分，即可以作为父表也可以作为子表，就像常规表一样。如果
+   一个外部表是继承层次的一部分，那么任何不被该外部表支持的操作也
+   不被整个层次所支持。
+  </para>
+
+ <sect2 id="ddl-inherit-caveats">
+
+  <title>注意事项</title>
+
+  <para>
+   注意，并非所有 SQL 命令都能作用于继承层次。用于数据查询、数据修改或模式修改的命令（例如<literal>SELECT</literal>、<literal>UPDATE</literal>、<literal>DELETE</literal>、大多数<literal>ALTER TABLE</literal>变体，但不包括<literal>INSERT</literal>或<literal>ALTER TABLE ... RENAME</literal>）通常默认包含子表，并支持使用<literal>ONLY</literal>记法将其排除。大多数用于数据库维护和调优的命令（例如<literal>REINDEX</literal>）只作用于独立的物理表，不支持沿继承层次递归。不过，<literal>VACUUM</literal>和<literal>ANALYZE</literal>默认会包含子表，并支持使用<literal>ONLY</literal>记法将其排除。各条命令的具体行为都记录在相应参考页中（<xref linkend="sql-commands"/>）。
+  </para>
+
+  <para>
+   继承特性的一个严重限制是，索引（包括唯一约束）和外键约束只作用于单个表，而不作用于其继承子表。对于外键约束的引用端和被引用端，这一点都成立。因此，沿用上面的示例：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      如果我们把<structname>cities</structname>.<structfield>name</structfield>声明为<literal>UNIQUE</literal>或<literal>PRIMARY KEY</literal>，这并不能阻止<structname>capitals</structname>表中出现与<structname>cities</structname>中城市同名的行。而且这些重复行默认还会出现在针对<structname>cities</structname>的查询结果中。事实上，默认情况下<structname>capitals</structname>根本没有唯一约束，因此它可以包含多行同名记录。你当然可以给<structname>capitals</structname>添加唯一约束，但这仍无法阻止相对于<structname>cities</structname>的重复。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      相似地，如果我们指定<structname>cities</structname>.<structfield>name</structfield> <literal>REFERENCES</literal>某个其他表，该约束不会自动地传播到<structname>capitals</structname>。在此种情况下，我们可以变通地在<structname>capitals</structname>上手工创建一个相同的<literal>REFERENCES</literal>约束。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      如果让另一个表的某列<literal>REFERENCES cities(name)</literal>，那么该表可以包含城市名称，但不能包含首府名称。对于这种情况，并没有什么好的变通办法。
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   某些未为继承层次实现的功能，却已经为声明式分区实现了。因此，在决定使用旧式继承分区是否适合你的应用时，需要非常小心。
+  </para>
+
+   </sect2>
+  </sect1>
+
+  <sect1 id="ddl-partitioning">
+
+   <title>表分区</title>
+
+   <indexterm>
+    <primary>partitioning</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>table</primary>
+    <secondary>partitioning</secondary>
+   </indexterm>
+
+   <indexterm>
+    <primary>partitioned table</primary>
+   </indexterm>
+
+   <para>
+    <productname>PostgreSQL</productname>支持基本的表分区。本节介绍为什么以及如何把分区作为数据库设计的一部分来实现。
+   </para>
+
+   <sect2 id="ddl-partitioning-overview">
+
+     <title>概述</title>
+
+    <para>
+    分区是指把逻辑上的一个大表拆分成一些较小的物理片段。分区可以带来若干好处：
+    <itemizedlist>
+     <listitem>
+      <para>
+      在某些情况下查询性能能够显著提升，特别是当那些访问压力大的行在一个分区或者少数几个分区时。分区有效地替代了索引的上层树级别，使得索引中被大量使用的部分更有可能适合内存。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       当查询或更新访问单个分区的很大一部分时，可以通过使用该分区的顺序扫描来提高性能，而不是使用索引，这将需要分散在整个表中的随机访问读取。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       如果在分区设计中考虑到了这种使用模式，就可以通过添加或移除分区来完成批量加载和删除。使用<command>DROP TABLE</command>删除单个分区，或执行<command>ALTER TABLE     DETACH PARTITION</command>操作，都比批量操作快得多。这些命令还完全避免了批量<command>DELETE</command>所导致的<command>VACUUM</command>开销。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+      很少使用的数据可以被迁移到便宜且较慢的存储介质上。
+      </para>
+     </listitem>
+    </itemizedlist>
+
+    当一个表非常大时，分区带来的收益可能非常可观。一个表在什么情况下会从分区中受益取决于具体应用；一条经验法则是，当表的大小超过数据库服务器的物理内存时，分区通常会带来好处。
+    </para>
+
+    <para>
+     <productname>PostgreSQL</productname>对下列分区形式提供了内置支持：
+
+     <variablelist>
+      <varlistentry id="ddl-partitioning-overview-range">
+       <term>范围分区</term>
+
+       <listitem>
+        <para>
+        表按照某个键列或一组键列划分为若干<quote>范围</quote>，不同分区的范围彼此不重叠。例如，可以按日期范围进行分区，或者按某个特定业务对象的标识符范围进行分区。
+        每个范围的边界都被理解为左端包含、右端不包含。例如，如果一个分区的范围是从<literal>1</literal>到<literal>10</literal>，而下一个分区是从<literal>10</literal>到<literal>20</literal>，那么值<literal>10</literal>属于第二个分区，而不是第一个分区。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="ddl-partitioning-overview-list">
+       <term>列表分区</term>
+
+       <listitem>
+        <para>
+        通过显式列出每个分区中出现的键值来对表进行分区。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="ddl-partitioning-overview-hash">
+       <term>哈希分区</term>
+
+       <listitem>
+        <para>
+         通过为每个分区指定模数和余数来对表进行分区。每个分区保存的都是这样一些行：这些行的分区键哈希值除以指定模数后，会得到该分区指定的余数。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+    如果你的应用需要使用上面所列之外的分区形式，可以使用诸如继承和<literal>UNION ALL</literal>视图之类的替代方法。这些方法很灵活，但是却缺少内置声明式分区的一些性能优势。
+    </para>
+   </sect2>
+
+  <sect2 id="ddl-partitioning-declarative">
+
+   <title>声明式分区</title>
+
+   <para>
+    <productname>PostgreSQL</productname>允许你声明一个表为分区表。该声明包括前文所述的<firstterm>分区方法</firstterm>，以及用作<firstterm>分区键</firstterm>的列或表达式列表。
+   </para>
+
+   <para>
+    分区表本身是一个<quote>虚拟</quote>表，没有自己的存储空间。相反，存储属于<firstterm>分区</firstterm>，这些分区是与分区表关联的普通表。每个分区存储由其<firstterm>分区边界</firstterm>定义的数据子集。插入到分区表中的所有行都将根据分区键列的值路由到适当的一个分区。如果一行不再满足其原始分区的分区边界，则更新该行的分区键将导致该行移动到另一个分区中。
+   </para>
+
+   <para>
+    分区本身可能被定义为分区表，从而导致<firstterm>子分区</firstterm>。尽管所有分区必须具有与其分区父级相同的列，但分区可能具有自己的与其他分区不同的索引、约束以及默认值。创建分区表及分区的更多细节请见<xref linkend="sql-createtable"/>。
+   </para>
+
+   <para>
+     不可能将常规表转换为分区表，反之亦然。但是，可以把现有的常规表或分区表加入某个分区表作为分区，或者从分区表中移除分区并将其转换为独立表；这可以简化并加快许多维护过程。有关<command>ATTACH PARTITION</command>和<command>DETACH PARTITION</command>子命令的详细信息，请参见<xref linkend="sql-altertable"/>。
+   </para>
+
+   <para>
+    分区也可以是<link linkend="ddl-foreign-data">外部表</link>，但是需要非常小心，因为这时用户需要确保外部表的内容符合分区规则。还有一些其他限制。更多信息请参见<xref linkend="sql-createforeigntable"/>。
+   </para>
+
+   <sect3 id="ddl-partitioning-declarative-example">
+
+    <title>示例</title>
+
+   <para>
+    假定我们正在为一个大型的冰激凌公司构建数据库。该公司每天测量最高温度以及每个区域的冰激凌销售情况。概念上，我们想要一个这样的表：
+
+<programlisting>
+CREATE TABLE measurement (
+    city_id         int not null,
+    logdate         date not null,
+    peaktemp        int,
+    unitsales       int
+);
+</programlisting>
+
+    我们知道大部分查询只会访问上周的、上月的或者上季度的数据，因为这个表的主要用途是为管理层准备在线报告。为了减少需要被存放的旧数据量，我们决定只保留最近3年的数据。在每个月的开始我们将去除掉最早的那个月的数据。在这种情况下我们可以使用分区技术来帮助我们满足对measurement表的所有不同需求。
+   </para>
+
+   <para>
+    要在这种情况下使用声明式分区，可采用下面的步骤：
+
+    <orderedlist spacing="compact">
+     <listitem>
+      <para>
+       通过指定<literal>PARTITION BY</literal>子句把<structname>measurement</structname>表创建为分区表，该子句包括分区方法（这个示例中是<literal>RANGE</literal>）以及用作分区键的列列表。
+
+<programlisting>
+CREATE TABLE measurement (
+    city_id         int not null,
+    logdate         date not null,
+    peaktemp        int,
+    unitsales       int
+) PARTITION BY RANGE (logdate);
+</programlisting>
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       创建分区。每个分区的定义必须指定与父分区的分区方法和分区键对应的边界。请注意，指定边界如果使得新分区的值与一个或多个现有分区中的值重叠将导致错误。
+      </para>
+
+      <para>
+       分区以普通<productname>PostgreSQL</productname>表（或者可能是外部表）的方式创建。可以为每个分区单独指定表空间和存储参数。
+      </para>
+
+      <para>
+       在我们的示例中，每个分区应该保存一个月的数据，以满足一次删除一个月数据的要求。因此，这些命令可能看起来像：
+
+<programlisting>
+CREATE TABLE measurement_y2006m02 PARTITION OF measurement
+    FOR VALUES FROM ('2006-02-01') TO ('2006-03-01');
+
+CREATE TABLE measurement_y2006m03 PARTITION OF measurement
+    FOR VALUES FROM ('2006-03-01') TO ('2006-04-01');
+
+...
+CREATE TABLE measurement_y2007m11 PARTITION OF measurement
+    FOR VALUES FROM ('2007-11-01') TO ('2007-12-01');
+
+CREATE TABLE measurement_y2007m12 PARTITION OF measurement
+    FOR VALUES FROM ('2007-12-01') TO ('2008-01-01')
+    TABLESPACE fasttablespace;
+
+CREATE TABLE measurement_y2008m01 PARTITION OF measurement
+    FOR VALUES FROM ('2008-01-01') TO ('2008-02-01')
+    WITH (parallel_workers = 4)
+    TABLESPACE fasttablespace;
+</programlisting>
+
+       （回想一下，相邻分区可以共享一个边界值，因为范围上限被视为不包含的边界。）
+      </para>
+
+      <para>
+       如果你打算实现子分区，再次在创建分区的命令中指定<literal>PARTITION BY</literal>子句，例如：
+
+<programlisting>
+CREATE TABLE measurement_y2006m02 PARTITION OF measurement
+    FOR VALUES FROM ('2006-02-01') TO ('2006-03-01')
+    PARTITION BY RANGE (peaktemp);
+</programlisting>
+
+       在创建出<structname>measurement_y2006m02</structname>这个分区之后，任何插入到<structname>measurement</structname>并被路由到<structname>measurement_y2006m02</structname>的数据（或者直接插入到<structname>measurement_y2006m02</structname>、且满足该分区约束的数据）都会再根据<structfield>peaktemp</structfield>列进一步路由到<structname>measurement_y2006m02</structname>的某个分区。指定的分区键可以与父分区的分区键重叠，不过在指定子分区边界时要注意，它所接受的数据集合必须是该分区自身边界所允许数据集合的一个子集；系统不会尝试检查这一点。
+
+      </para>
+
+      <para>
+       将没有映射到任何现有分区的数据插入父表将导致错误；必须手动添加适当的分区。
+      </para>
+
+      <para>
+       不需要手动创建描述分区边界条件的表约束。此类约束将自动创建。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       在分区表的键列以及任何其它索引上创建索引。（键索引不是严格必需的，但在大多数情况下它是有用的。）会自动在每个分区上创建一个匹配的索引，你稍后创建或附加的任何分区也会有这样的索引。在分区表上声明的索引或唯一约束与分区表的方式相同：实际数据位于各个分区表的子索引中。
+
+<programlisting>
+CREATE INDEX ON measurement (logdate);
+</programlisting>
+      </para>
+     </listitem>
+
+      <listitem>
+       <para>
+        确保<xref linkend="guc-enable-partition-pruning"/>配置参数在<filename>postgresql.conf</filename>中没有被禁用。如果被禁用，查询将不会按照想要的方式被优化。
+       </para>
+      </listitem>
+    </orderedlist>
+   </para>
+
+   <para>
+    在上面的示例中，我们会每个月创建一个新分区，因此写一个脚本来自动生成所需的DDL会更好。
+   </para>
+   </sect3>
+
+   <sect3 id="ddl-partitioning-declarative-maintenance">
+
+    <title>分区维护</title>
+
+    <para>
+      通常在初始定义分区表时建立的分区并非保持静态不变。移除分区持有的旧数据并且为新数据周期性地增加新分区的需求比比皆是。分区的最大好处之一就是可以通过操纵分区结构来近乎瞬时地执行这类让人头痛的任务，而不是物理地去除大量数据。
+    </para>
+
+    <para>
+     移除旧数据最简单的选择是删除掉不再需要的分区：
+<programlisting>
+DROP TABLE measurement_y2006m02;
+</programlisting>
+     这可以非常快速地删除数百万行记录，因为它不需要逐行删除。不过要注意，上面的命令需要在父表上获取<literal>ACCESS EXCLUSIVE</literal>锁。
+    </para>
+
+   <para>
+     另一种通常更好的选项是把分区从分区表中移除，但是保留它作为一个表的访问权。有两种形式：
+
+<programlisting>
+ALTER TABLE measurement DETACH PARTITION measurement_y2006m02;
+ALTER TABLE measurement DETACH PARTITION measurement_y2006m02 CONCURRENTLY;
+</programlisting>
+
+     这允许我们在最终丢弃数据之前，先对其执行进一步操作。例如，这通常是使用<command>COPY</command>、<application>pg_dump</application>或类似工具备份数据的好时机；也可能适合先把数据汇总成更小的格式、执行其他数据处理，或运行报表。命令的第一种形式需要在父表上持有<literal>ACCESS EXCLUSIVE</literal>锁。第二种形式额外添加了<literal>CONCURRENTLY</literal>限定符，使分离分区操作只需要在父表上持有<literal>SHARE UPDATE EXCLUSIVE</literal>锁；有关限制的详细信息，请参见<link linkend="sql-altertable-detach-partition"><literal>ALTER TABLE ... DETACH PARTITION</literal></link>。
+   </para>
+
+   <para>
+     类似地，我们可以添加一个新的分区来处理新数据。我们可以在分区表中创建一个空分区，就像上面创建原始分区一样：
+
+<programlisting>
+CREATE TABLE measurement_y2008m02 PARTITION OF measurement
+    FOR VALUES FROM ('2008-02-01') TO ('2008-03-01')
+    TABLESPACE fasttablespace;
+</programlisting>
+
+     作为一种替代方案，有时更方便的是在分区结构之外创建新表，并稍后将其附加为分区。这允许在新数据出现在分区表中之前加载、检查和转换新数据。
+     此外，<literal>ATTACH PARTITION</literal>操作只需要在分区表上持有<literal>SHARE UPDATE EXCLUSIVE</literal>锁，而不像<command>CREATE TABLE ... PARTITION OF</command>那样需要<literal>ACCESS EXCLUSIVE</literal>锁，因此对分区表上的并发操作更友好。
+     <literal>CREATE TABLE ... LIKE</literal>选项有助于避免繁琐地重复父表定义：
+
+<programlisting>
+CREATE TABLE measurement_y2008m02
+  (LIKE measurement INCLUDING DEFAULTS INCLUDING CONSTRAINTS)
+  TABLESPACE fasttablespace;
+
+ALTER TABLE measurement_y2008m02 ADD CONSTRAINT y2008m02
+   CHECK ( logdate &gt;= DATE '2008-02-01' AND logdate &lt; DATE '2008-03-01' );
+
+\copy measurement_y2008m02 from 'measurement_y2008m02'
+-- possibly some other data preparation work
+
+ALTER TABLE measurement ATTACH PARTITION measurement_y2008m02
+    FOR VALUES FROM ('2008-02-01') TO ('2008-03-01' );
+</programlisting>
+    </para>
+
+    <para>
+     在运行<command>ATTACH PARTITION</command>命令之前，建议在要附加的表上创建一个匹配预期分区约束的<literal>CHECK</literal>约束，如上所示。
+     这样，系统就能够跳过验证隐式分区约束所需的扫描。没有<literal>CHECK</literal>约束，表将在持有该分区的<literal>ACCESS EXCLUSIVE</literal>锁的情况下进行扫描以验证分区约束。
+     建议在<command>ATTACH PARTITION</command>完成后删除现在多余的<literal>CHECK</literal>约束。如果要附加的表本身是一个分区表，则将递归锁定和扫描其每个子分区，直到遇到合适的<literal>CHECK</literal>约束或到达叶子分区为止。
+    </para>
+
+    <para>
+     类似地，如果分区表有一个<literal>DEFAULT</literal>分区，建议创建一个<literal>CHECK</literal>约束，
+     排除要附加分区的约束。如果没有这样做，那么将扫描<literal>DEFAULT</literal>分区，
+     以验证它不包含应该位于要附加分区中的记录。此操作将在持有<literal>ACCESS EXCLUSIVE</literal>锁的情况下执行，
+     该锁位于<literal>DEFAULT</literal>分区上。如果<literal>DEFAULT</literal>分区本身是一个分区表，
+     那么将以与附加表相同的方式递归检查其各个分区，如上所述。
+    </para>
+
+    <para>
+     如上所述，可以在分区表上创建索引，以便自动应用于整个层次结构。
+     这非常方便，因为不仅现有分区将被索引，而且将来创建的任何分区也将被索引。
+     一个限制是在创建这样的分区索引时无法使用<literal>CONCURRENTLY</literal>修饰符。
+     为了避免长时间锁定，可以在分区表上使用<command>CREATE INDEX ON ONLY</command>；
+     这样的索引被标记为无效，并且分区不会自动应用索引。
+     可以分别使用<literal>CONCURRENTLY</literal>在分区上创建索引，然后使用
+     <command>ALTER INDEX ... ATTACH PARTITION</command>将其<firstterm>附加</firstterm>到父索引上。
+     一旦所有分区的索引都附加到父索引上，父索引将自动标记为有效。示例：
+<programlisting>
+CREATE INDEX measurement_usls_idx ON ONLY measurement (unitsales);
+
+CREATE INDEX CONCURRENTLY measurement_usls_200602_idx
+    ON measurement_y2006m02 (unitsales);
+ALTER INDEX measurement_usls_idx
+    ATTACH PARTITION measurement_usls_200602_idx;
+...
+</programlisting>
+
+     这种技术也可以用于<literal>UNIQUE</literal>和<literal>PRIMARY KEY</literal>约束；
+     当约束创建时，索引会隐式创建。示例：
+<programlisting>
+ALTER TABLE ONLY measurement ADD UNIQUE (city_id, logdate);
+
+ALTER TABLE measurement_y2006m02 ADD UNIQUE (city_id, logdate);
+ALTER INDEX measurement_city_id_logdate_key
+    ATTACH PARTITION measurement_y2006m02_city_id_logdate_key;
+...
+</programlisting>
+    </para>
+   </sect3>
+
+   <sect3 id="ddl-partitioning-declarative-limitations">
+
+    <title>限制</title>
+
+   <para>
+    对分区表应用以下限制：
+    <itemizedlist>
+     <listitem>
+      <para>
+       要在分区表上创建唯一或主键约束，分区键不能包含任何表达式或函数调用，
+       约束的列必须包括所有分区键列。存在此限制是因为构成约束的各个索引只能
+       直接在各自的分区内强制唯一性；因此，分区结构本身必须保证不同分区中没有
+       重复数据。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       类似地，排他约束也必须包含所有分区键列。此外，该约束必须按相等性比较这些列（而不能例如使用<literal>&amp;&amp;</literal>）。同样，这一限制源于无法强制执行跨分区的约束。不过，该约束可以包含不属于分区键的其他列，并且你可以按自己喜欢的方式使用任意操作符来比较这些列。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       在<literal>INSERT</literal>上的<literal>BEFORE ROW</literal>触发器
+       不能更改哪个分区是新行的最终目的地。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       在同一分区树中不允许混合临时和永久关系。因此，如果分区表是永久的，
+       那么它的分区也必须是永久的；同样，如果分区表是临时的，那么它的分区
+       也必须是临时的。在使用临时关系时，分区树的所有成员必须来自同一个会话。
+      </para>
+     </listitem>
+    </itemizedlist>
+    </para>
+
+    <para>
+     各个分区在内部通过继承链接到其分区表。不过，继承的所有通用特性都不能用于声明式分区表及其分区，如下所述。值得注意的是，一个分区除了其所属的分区表之外不能再有其他父表，也不能同时从分区表和普通表继承。这意味着分区表及其分区永远不会与普通表共享继承层次。
+    </para>
+
+    <para>
+     由于由分区表和其分区组成的分区层次仍然是一个继承层次结构，
+     <structfield>tableoid</structfield>和所有继承规则都适用，如在<xref linkend="ddl-inherit"/>中描述的那样，但有一些例外：
+
+     <itemizedlist>
+      <listitem>
+       <para>
+        分区不能具有父级中不存在的列。在使用<command>CREATE TABLE</command>创建分区时无法指定列，也无法使用<command>ALTER TABLE</command>在事后添加列到分区。
+        只有当表的列与父级完全匹配时，才能使用<command>ALTER TABLE ... ATTACH PARTITION</command>将表添加为分区。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        分区表的<literal>CHECK</literal>和<literal>NOT NULL</literal>约束始终被所有分区继承。在标记为<literal>NO INHERIT</literal>的<literal>CHECK</literal>约束上不允许在分区表上创建。
+        如果分区的列上存在与父表中相同的<literal>NOT NULL</literal>约束，则无法删除该约束。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        只有在没有分区存在时，才支持在分区表上使用<literal>ONLY</literal>添加或删除约束。一旦存在分区，使用<literal>ONLY</literal>将导致除<literal>UNIQUE</literal>和<literal>PRIMARY KEY</literal>之外的任何约束都会报错。
+        可以在分区上添加约束，并且（如果这些约束在父表中不存在）可以删除它们。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        由于分区表本身没有任何数据，因此尝试在分区表上使用<command>TRUNCATE</command> <literal>ONLY</literal>将始终返回错误。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </para>
+    </sect3>
+   </sect2>
+
+   <sect2 id="ddl-partitioning-using-inheritance">
+
+    <title>使用继承的分区</title>
+
+    <para>
+     虽然内置的声明式分区适合于大部分常见的用例，但还是有一些场景需要更加灵活的方法。分区可以使用表继承来实现，这能够带来一些声明式分区不支持的特性，例如：
+
+     <itemizedlist>
+      <listitem>
+       <para>
+        对声明式分区来说，分区必须具有和分区表正好相同的列集合，而在表继承中，子表可以有父表中没有出现过的额外列。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        表继承允许多继承。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        声明式分区只支持范围、列表和哈希分区，而表继承允许按用户选择的方式对数据进行分区。（不过注意，如果约束排除无法有效剪枝子表，查询性能可能会很差。）
+
+       </para>
+      </listitem>
+     </itemizedlist>
+    </para>
+
+    <sect3 id="ddl-partitioning-inheritance-example">
+
+     <title>示例</title>
+
+     <para>
+      这个示例构建了一个与上面的声明式分区示例等效的分区结构。使用以下步骤：
+
+      <orderedlist spacing="compact">
+       <listitem>
+        <para>
+         创建<quote>根</quote>表，所有的<quote>子</quote>表都将从它继承。这个表将不包含数据。不要在这个表上定义任何检查约束，除非想让它们应用到所有的子表上。同样，在这个表上定义索引或者唯一约束也没有意义。对于我们的示例来说，根表是最初定义的<structname>measurement</structname>表。
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         创建若干<quote>子</quote>表，每个都从根表继承。通常，这些表不会在从根表继承的列集合之外增加任何列。和声明式分区一样，这些表就是普通的<productname>PostgreSQL</productname>表（或者外部表）。
+        </para>
+
+        <para>
+<programlisting>
+CREATE TABLE measurement_y2006m02 () INHERITS (measurement);
+CREATE TABLE measurement_y2006m03 () INHERITS (measurement);
+...
+CREATE TABLE measurement_y2007m11 () INHERITS (measurement);
+CREATE TABLE measurement_y2007m12 () INHERITS (measurement);
+CREATE TABLE measurement_y2008m01 () INHERITS (measurement);
+</programlisting>
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         为子表增加不重叠的表约束来定义每个分区允许的键值。
+        </para>
+
+        <para>
+         典型的示例是：
+<programlisting>
+CHECK ( x = 1 )
+CHECK ( county IN ( 'Oxfordshire', 'Buckinghamshire', 'Warwickshire' ))
+CHECK ( outletID &gt;= 100 AND outletID &lt; 200 )
+</programlisting>
+         确保约束能保证不同子表允许的键值之间没有重叠。设置范围约束的常见错误：
+<programlisting>
+CHECK ( outletID BETWEEN 100 AND 200 )
+CHECK ( outletID BETWEEN 200 AND 300 )
+</programlisting>
+         这是错误的，因为不清楚键值200属于哪一个子表。
+         相反，范围应该以如下样式定义：
+
+<programlisting>
+CREATE TABLE measurement_y2006m02 (
+    CHECK ( logdate &gt;= DATE '2006-02-01' AND logdate &lt; DATE '2006-03-01' )
+) INHERITS (measurement);
+
+CREATE TABLE measurement_y2006m03 (
+    CHECK ( logdate &gt;= DATE '2006-03-01' AND logdate &lt; DATE '2006-04-01' )
+) INHERITS (measurement);
+
+...
+CREATE TABLE measurement_y2007m11 (
+    CHECK ( logdate &gt;= DATE '2007-11-01' AND logdate &lt; DATE '2007-12-01' )
+) INHERITS (measurement);
+
+CREATE TABLE measurement_y2007m12 (
+    CHECK ( logdate &gt;= DATE '2007-12-01' AND logdate &lt; DATE '2008-01-01' )
+) INHERITS (measurement);
+
+CREATE TABLE measurement_y2008m01 (
+    CHECK ( logdate &gt;= DATE '2008-01-01' AND logdate &lt; DATE '2008-02-01' )
+) INHERITS (measurement);
+</programlisting>
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         对于每个子表，在键列上创建一个索引，以及任何想要的其他索引。
+<programlisting>
+CREATE INDEX measurement_y2006m02_logdate ON measurement_y2006m02 (logdate);
+CREATE INDEX measurement_y2006m03_logdate ON measurement_y2006m03 (logdate);
+CREATE INDEX measurement_y2007m11_logdate ON measurement_y2007m11 (logdate);
+CREATE INDEX measurement_y2007m12_logdate ON measurement_y2007m12 (logdate);
+CREATE INDEX measurement_y2008m01_logdate ON measurement_y2008m01 (logdate);
+</programlisting>
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         我们希望我们的应用能够使用<literal>INSERT INTO measurement ...</literal>并且数据将被重定向到合适的分区表。我们可以通过为根表附加一个合适的触发器函数来实现这一点。如果数据将只被增加到最后一个分区，我们可以使用一个非常简单的触发器函数：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION measurement_insert_trigger()
+RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO measurement_y2008m01 VALUES (NEW.*);
+    RETURN NULL;
+END;
+$$
+LANGUAGE plpgsql;
+</programlisting>
+        </para>
+
+        <para>
+         完成函数创建后，我们创建一个调用该触发器函数的触发器：
+
+<programlisting>
+CREATE TRIGGER insert_measurement_trigger
+    BEFORE INSERT ON measurement
+    FOR EACH ROW EXECUTE FUNCTION measurement_insert_trigger();
+</programlisting>
+
+         我们必须在每个月重新定义触发器函数，这样它才会总是插入到当前的子表。而触发器的定义则不需要被更新。
+        </para>
+
+        <para>
+         我们也可能希望在插入数据时由服务器自动定位应写入的子表。我们可以通过一个更复杂的触发器函数来实现，例如：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION measurement_insert_trigger()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF ( NEW.logdate &gt;= DATE '2006-02-01' AND
+         NEW.logdate &lt; DATE '2006-03-01' ) THEN
+        INSERT INTO measurement_y2006m02 VALUES (NEW.*);
+    ELSIF ( NEW.logdate &gt;= DATE '2006-03-01' AND
+            NEW.logdate &lt; DATE '2006-04-01' ) THEN
+        INSERT INTO measurement_y2006m03 VALUES (NEW.*);
+    ...
+    ELSIF ( NEW.logdate &gt;= DATE '2008-01-01' AND
+            NEW.logdate &lt; DATE '2008-02-01' ) THEN
+        INSERT INTO measurement_y2008m01 VALUES (NEW.*);
+    ELSE
+        RAISE EXCEPTION 'Date out of range.  Fix the measurement_insert_trigger() function!';
+    END IF;
+    RETURN NULL;
+END;
+$$
+LANGUAGE plpgsql;
+</programlisting>
+
+         触发器的定义和以前一样。注意每一个<literal>IF</literal>测试必须准确地匹配它的子表的<literal>CHECK</literal>约束。
+        </para>
+
+        <para>
+         当该函数比单月形式更加复杂时，并不需要频繁地更新它，因为可以在需要的时候提前加入分支。
+        </para>
+
+        <note>
+         <para>
+         在实践中，如果大部分插入都会进入最新的子表，最好先检查它。为了简洁，我们为触发器的检查采用了和本例中其他部分一致的顺序。
+         </para>
+        </note>
+
+        <para>
+         把插入重定向到一个合适的子表中的另一种不同方法是在根表上设置规则而不是触发器。例如：
+
+<programlisting>
+CREATE RULE measurement_insert_y2006m02 AS
+ON INSERT TO measurement WHERE
+    ( logdate &gt;= DATE '2006-02-01' AND logdate &lt; DATE '2006-03-01' )
+DO INSTEAD
+    INSERT INTO measurement_y2006m02 VALUES (NEW.*);
+...
+CREATE RULE measurement_insert_y2008m01 AS
+ON INSERT TO measurement WHERE
+    ( logdate &gt;= DATE '2008-01-01' AND logdate &lt; DATE '2008-02-01' )
+DO INSTEAD
+    INSERT INTO measurement_y2008m01 VALUES (NEW.*);
+</programlisting>
+
+         规则的开销比触发器大很多，但是这种开销是每个查询只有一次，而不是每行一次，因此这种方法可能对批量插入的情况有优势。不过，在大部分情况下，触发器方法将提供更好的性能。
+        </para>
+
+        <para>
+         注意<command>COPY</command>会忽略规则。如果想要使用<command>COPY</command>插入数据，则需要拷贝到正确的子表而不是直接放在根表中。<command>COPY</command>会引发触发器，因此在使用触发器方法时可以正常使用它。
+        </para>
+
+        <para>
+         规则方法的另一个缺点是，如果规则集合无法覆盖插入日期，则没有简单的方法能够强制产生错误，数据将会无声无息地进入到根表中。
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         确认<xref linkend="guc-constraint-exclusion"/>配置参数在<filename>postgresql.conf</filename>中没有被禁用，否则将会不必要地访问子表。
+        </para>
+       </listitem>
+      </orderedlist>
+     </para>
+
+     <para>
+      如我们所见，一个复杂的表层次可能需要大量的DDL。在上面的示例中，我们可能为每个月创建一个新的子表，因此编写一个脚本来自动生成所需要的DDL可能会更好。
+     </para>
+    </sect3>
+
+    <sect3 id="ddl-partitioning-inheritance-maintenance">
+
+     <title>继承分区的维护</title>
+
+     <para>
+      要快速移除旧数据，只需要简单地去掉不再需要的子表：
+<programlisting>
+DROP TABLE measurement_y2006m02;
+</programlisting>
+     </para>
+
+    <para>
+     要从继承层次表中去掉子表，但还是把它当做一个表保留：
+
+<programlisting>
+ALTER TABLE measurement_y2006m02 NO INHERIT measurement;
+</programlisting>
+    </para>
+
+    <para>
+     要增加一个新子表来处理新数据，可以像上面创建的原始子表那样创建一个空的子表：
+
+<programlisting>
+CREATE TABLE measurement_y2008m02 (
+    CHECK ( logdate &gt;= DATE '2008-02-01' AND logdate &lt; DATE '2008-03-01' )
+) INHERITS (measurement);
+</programlisting>
+
+     或者，用户可能想要创建新子表并且在将它加入到表层次之前填充它。这可以允许数据在被父表上的查询可见之前对数据进行装载、检查以及转换。
+
+<programlisting>
+CREATE TABLE measurement_y2008m02
+  (LIKE measurement INCLUDING DEFAULTS INCLUDING CONSTRAINTS);
+ALTER TABLE measurement_y2008m02 ADD CONSTRAINT y2008m02
+   CHECK ( logdate &gt;= DATE '2008-02-01' AND logdate &lt; DATE '2008-03-01' );
+\copy measurement_y2008m02 from 'measurement_y2008m02'
+-- possibly some other data preparation work
+ALTER TABLE measurement_y2008m02 INHERIT measurement;
+</programlisting>
+    </para>
+   </sect3>
+
+   <sect3 id="ddl-partitioning-inheritance-caveats">
+
+    <title>注意事项</title>
+
+    <para>
+     下面的注意事项适用于使用继承实现的分区：
+     <itemizedlist>
+      <listitem>
+       <para>
+        没有自动的方法验证所有的<literal>CHECK</literal>约束之间是否互斥。编写代码来产生子表以及创建和修改相关对象比手写命令要更加安全。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        索引和外键约束适用于单个表而不是其继承子表，因此它们有一些<link linkend="ddl-inherit-caveats">注意事项</link>需要留意。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        这里展示的方案假定行的键列值永不改变，或者至少不会改变到必须把该行移入另一个分区的程度。由于<literal>CHECK</literal>约束的存在，试图那样做的<command>UPDATE</command>将会失败。如果需要处理这种情况，可以在子表上放置合适的更新触发器，但这会让整个结构的管理复杂得多。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        手工执行<command>VACUUM</command>和<command>ANALYZE</command>命令时，会自动处理所有继承子表。
+        如果不希望这样做，可以使用<literal>ONLY</literal>关键字。像下面这样的命令：
+<programlisting>
+ANALYZE ONLY measurement;
+</programlisting>
+        将只处理根表。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        带有<literal>ON CONFLICT</literal>子句的<command>INSERT</command>语句不太可能按照预期工作，因为只有在指定的目标关系而不是其子关系上发生唯一违背时才会采取<literal>ON CONFLICT</literal>动作。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        将会需要触发器或者规则将行路由到想要的子表中，除非应用明确地知道分区的模式。编写触发器可能会很复杂，并且会比声明式分区在内部执行的元组路由慢很多。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 id="ddl-partition-pruning">
+
+   <title>分区剪枝</title>
+
+   <indexterm>
+    <primary>partition pruning</primary>
+   </indexterm>
+
+   <para>
+    <firstterm>分区剪枝</firstterm>是一种提升声明式分区表性能的查询优化技术。例如：
+
+<programlisting>
+SET enable_partition_pruning = on;                 -- the default
+SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
+</programlisting>
+
+    如果没有分区剪枝，上面的查询将会扫描<structname>measurement</structname>表的每一个分区。如果启用了分区剪枝，规划器会检查每个分区的定义，并证明某个分区不需要扫描，因为它不可能包含满足查询<literal>WHERE</literal>子句的任何行。当规划器能够证明这一点时，就会把该分区从查询计划中排除（<firstterm>剪枝</firstterm>）。
+   </para>
+
+   <para>
+    通过使用EXPLAIN命令和<xref linkend="guc-enable-partition-pruning"/>配置参数，可以展示剪枝掉分区的计划与没有剪枝的计划之间的差别。对这种类型的表设置，一种典型的未优化计划是：
+<programlisting>
+SET enable_partition_pruning = off;
+EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
+                                    QUERY PLAN
+-------------------------------------------------------------------&zwsp;----------------
+ Aggregate  (cost=188.76..188.77 rows=1 width=8)
+   -&gt;  Append  (cost=0.00..181.05 rows=3085 width=0)
+         -&gt;  Seq Scan on measurement_y2006m02  (cost=0.00..33.12 rows=617 width=0)
+               Filter: (logdate &gt;= '2008-01-01'::date)
+         -&gt;  Seq Scan on measurement_y2006m03  (cost=0.00..33.12 rows=617 width=0)
+               Filter: (logdate &gt;= '2008-01-01'::date)
+...
+         -&gt;  Seq Scan on measurement_y2007m11  (cost=0.00..33.12 rows=617 width=0)
+               Filter: (logdate &gt;= '2008-01-01'::date)
+         -&gt;  Seq Scan on measurement_y2007m12  (cost=0.00..33.12 rows=617 width=0)
+               Filter: (logdate &gt;= '2008-01-01'::date)
+         -&gt;  Seq Scan on measurement_y2008m01  (cost=0.00..33.12 rows=617 width=0)
+               Filter: (logdate &gt;= '2008-01-01'::date)
+</programlisting>
+
+    某些或者全部的分区可能会使用索引扫描取代全表顺序扫描，但是这里的重点是根本不需要扫描较老的分区来回答这个查询。当我们启用分区剪枝时，我们会得到一个便宜很多的计划，而它能给出相同的答案：
+<programlisting>
+SET enable_partition_pruning = on;
+EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
+                                    QUERY PLAN
+-------------------------------------------------------------------&zwsp;----------------
+ Aggregate  (cost=37.75..37.76 rows=1 width=8)
+   -&gt;  Seq Scan on measurement_y2008m01  (cost=0.00..33.12 rows=617 width=0)
+         Filter: (logdate &gt;= '2008-01-01'::date)
+</programlisting>
+   </para>
+
+   <para>
+    注意，分区剪枝仅由分区键隐式定义的约束所驱动，而不是由索引的存在驱动。因此，没有必要在键列上定义索引。是否需要为一个给定分区创建索引取决于预期的查询扫描该分区时会扫描大部分还是小部分。后一种情况下索引的帮助会比前者大。
+   </para>
+
+   <para>
+    分区剪枝不仅可以在给定查询的规划期间执行，也可以在执行期间执行。
+    这一点很有用，因为当子句中包含查询规划时其值尚未知晓的表达式时，就可以剪掉更多分区；
+    例如<command>PREPARE</command>语句中的参数、从子查询取得的值，或参数化嵌套循环连接内侧使用的参数值。
+    执行期间的分区剪枝可能在下列任何时刻执行：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       在查询计划的初始化阶段。对于在执行初始化阶段就已知的参数值，可以在这里执行分区剪枝。这个阶段被剪掉的分区不会出现在查询的<command>EXPLAIN</command>或<command>EXPLAIN ANALYZE</command>结果中。通过观察<command>EXPLAIN</command>输出中的<quote>Subplans Removed</quote>属性，可以确定这个阶段被移除的分区数。查询规划器会为计划中的所有分区获取锁。不过，当执行器使用缓存计划时，只会为执行初始化阶段分区剪枝后仍保留下来的分区获取锁，也就是那些显示在<command>EXPLAIN</command>输出中、而不是由<quote>Subplans Removed</quote>属性表示的分区。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       在查询计划的实际执行期间。这里可以使用只有在实际查询执行时才能知道的值执行分区剪枝。这包括来自子查询的值以及来自执行时参数的值（例如来自于参数化嵌套循环连接的参数）。由于在查询执行期间这些参数的值可能会改变多次，所以只要分区剪枝使用到的执行参数发生改变，就会执行一次分区剪枝。要判断分区是否在这个阶段被剪枝，需要仔细地观察<command>EXPLAIN ANALYZE</command>输出中的<literal>loops</literal>属性。
+      对应于不同分区的子计划可以具有不同的值，这取决于在执行期间每个分区被剪枝的次数。
+      如果每次都被剪枝，有些分区可能会显示为<literal>(never executed)</literal>。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    可以使用<xref linkend="guc-enable-partition-pruning"/>设置禁用分区剪枝。
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-partitioning-constraint-exclusion">
+
+   <title>分区和约束排除</title>
+
+   <indexterm>
+    <primary>constraint exclusion</primary>
+   </indexterm>
+
+   <para>
+    <firstterm>约束排除</firstterm>是一种与分区剪枝类似的查询优化技术。虽然它主要用于采用传统继承方法实现的分区，但也可以用于其他用途，包括声明式分区。
+   </para>
+
+   <para>
+    约束排除以非常类似于分区剪枝的方式工作，不过它使用每个表的<literal>CHECK</literal>约束 &mdash; 这也是它得名的原因 &mdash; 而分区剪枝使用表的分区边界，分区边界仅存在于声明式分区的情况中。另一点不同之处是约束排除仅在规划时应用，在执行时不会尝试移除分区。
+   </para>
+
+   <para>
+    由于约束排除使用<literal>CHECK</literal>约束，这导致它比分区剪枝要慢，但有时候可以被当作一种优点加以利用：因为甚至可以在声明式分区的表上（在分区边界之外）定义约束，约束排除可能可以从查询计划中消去额外的分区。
+   </para>
+
+   <para>
+    <xref linkend="guc-constraint-exclusion"/>的默认（也是推荐的）设置不是<literal>on</literal>也不是<literal>off</literal>，而是一种被称为<literal>partition</literal>的中间设置，这会导致该技术仅被应用于可能工作在继承分区表上的查询。<literal>on</literal>设置导致规划器检查所有查询中的<literal>CHECK</literal>约束，甚至是那些不太可能受益的简单查询。
+   </para>
+
+   <para>
+    下列提醒适用于约束排除：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      约束排除只在查询规划期间应用；不像分区剪枝那样，它不会在查询执行期间应用。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      只有查询的<literal>WHERE</literal>子句包含常量（或者外部提供的参数）时，约束排除才能有效果。例如，针对一个非不变函数（如<function>CURRENT_TIMESTAMP</function>）的比较不能被优化，因为规划器不知道该函数的值在运行时会落到哪个子表中。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      保持分区约束尽量简单，否则规划器可能无法证明哪些子表不需要访问。如前面的示例所示，对列表分区使用简单的等值条件，对范围分区使用简单的范围测试。一条很好的经验法则是：分区约束应只包含分区列与常量之间使用 B-树可索引操作符的比较，因为只有 B-树可索引列才允许出现在分区键中。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      约束排除期间会检查父表的所有子表上的所有约束，因此大量的子表很可能明显地增加查询规划时间。因此，传统的基于继承的分区可以很好地处理上百个子表，不要尝试使用上千个子表。
+     </para>
+    </listitem>
+
+   </itemizedlist>
+   </para>
+  </sect2>
+
+  <sect2 id="ddl-partitioning-declarative-best-practices">
+
+   <title>声明式分区最佳实践</title>
+
+   <para>
+    应当谨慎选择如何对表进行分区，因为糟糕的设计会对查询规划和执行性能产生负面影响。
+   </para>
+
+   <para>
+    最重要的设计决策之一是选择对数据进行分区的列或者列的组合。
+    通常最佳选择是按最常出现在分区表上执行的查询的 <literal>WHERE</literal>子句中的列或列集合进行分区。
+    与分区边界约束兼容的<literal>WHERE</literal>子句可用于剪枝不需要的分区。
+    但是，你可能会被迫根据<literal>PRIMARY KEY</literal>或<literal>UNIQUE</literal>约束的要求做出其他决策。 
+    在规划分区策略时，删除不需要的数据也是需要考虑的一个因素。
+    整个分区可以相当快地分离出去，因此把分区策略设计成让一次需要删除的所有数据都位于单个分区中，往往是有益的。
+   </para>
+
+   <para>
+    选择表应划分成多少个分区，也是一个关键决策。
+    没有足够的分区可能意味着索引仍然太大，数据位置仍然较差，这可能导致缓存命中率很低。
+    但是，把表分成过多分区也会带来问题。在查询规划和执行期间，分区过多可能意味着规划时间更长、内存消耗更高，下面还会进一步说明。
+    在选择如何分区时，也必须考虑将来可能发生的变化。
+    例如，如果你选择为每个客户建立一个分区，而当前只有少量大客户，那么就应考虑几年后可能变成拥有大量小客户的情形。
+    在这种情况下，最好选择按<literal>HASH</literal>分区并且选择合理数量的分区，而不是尝试按 <literal>LIST</literal> 进行分区，并希望客户数量的增长不会超出按数据分区的实际范围。
+   </para>
+
+   <para>
+    子分区有助于进一步拆分那些预计会比其他分区更大的分区。另一种选择是在分区键中使用多列范围分区。这两种做法都很容易导致分区数量过多，因此应当克制使用。
+   </para>
+
+   <para>
+    考虑查询计划和执行期间的分区开销也很重要。
+    查询规划器通常能够较好地处理多达几千个分区的层次结构，前提是典型查询能让规划器剪枝掉除少量分区之外的所有分区。
+    规划器执行分区剪枝后保留更多分区时，规划时间会变长，内存消耗会更高。
+    担心拥有大量分区的另一个原因是，服务器的内存消耗可能会随着时间的推移而显著增加，特别是如果许多会话接触大量分区。
+    这是因为每个分区都需要将其元数据加载到接触它的每个会话的本地内存中。
+   </para>
+
+   <para>
+    对于数据仓库类型工作负载，使用比 <acronym>OLTP</acronym> 类型工作负载更多的分区数量很有意义。
+    通常，在数据仓库中，查询计划时间不太值得关注，因为大多数处理时间都花在查询执行期间。
+    对于这两种类型的工作负载，尽早做出正确的决策非常重要，因为重新分区大量数据可能会非常缓慢。
+    模拟预期工作负载通常有利于优化分区策略。永远不要只是假设更多的分区比更少的分区更好，反之亦然。
+   </para>
+  </sect2>
+
+ </sect1>
+
+ <sect1 id="ddl-foreign-data">
+
+  <title>外部数据</title>
+
+   <indexterm>
+    <primary>foreign data</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>foreign table</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>user mapping</primary>
+   </indexterm>
+
+   <para>
+    <productname>PostgreSQL</productname>实现了部分的SQL/MED规定，允许我们使用普通SQL查询来访问位于PostgreSQL之外的数据。这种数据被称为<firstterm>外部数据</firstterm>（注意这种用法不要和外键混淆，后者是数据库中的一种约束）。
+   </para>
+
+   <para>
+    外部数据可以借助<firstterm>外部数据包装器</firstterm>来访问。外部数据包装器是一个库，它可以与外部数据源通信，并隐藏连接数据源以及从中获取数据的细节。在<filename>contrib</filename>模块中有一些外部数据包装器，参见<xref linkend="contrib"/>。其他类型的外部数据包装器可以在第三方产品中找到。如果这些现有的外部数据包装器都不能满足需要，也可以自行编写，参见<xref linkend="fdwhandler"/>。
+   </para>
+
+   <para>
+    要访问外部数据，我们需要创建一个<firstterm>外部服务器</firstterm>对象，它根据其支持的外部数据包装器所使用的一组选项定义如何连接到某个特定的外部数据源。然后还需要创建一个或多个<firstterm>外部表</firstterm>，用于定义远程数据的结构。外部表在查询中可以像普通表一样使用，但它在 PostgreSQL 服务器中并不存储数据。每次使用外部表时，<productname>PostgreSQL</productname>都会要求外部数据包装器从外部数据源获取数据；而在更新命令的场景下，则要求其把数据发送到外部数据源。
+   </para>
+
+   <para>
+    访问远程数据可能需要向外部数据源进行认证。这些信息可以通过一个<firstterm>用户映射</firstterm>提供，它会基于当前的<productname>PostgreSQL</productname>角色提供附加数据，例如用户名和密码。
+   </para>
+
+   <para>
+    更多信息请见
+    <xref linkend="sql-createforeigndatawrapper"/>、
+    <xref linkend="sql-createserver"/>、
+    <xref linkend="sql-createusermapping"/>、
+    <xref linkend="sql-createforeigntable"/>、以及
+    <xref linkend="sql-importforeignschema"/>。
+   </para>
+ </sect1>
+
+ <sect1 id="ddl-others">
+
+  <title>其他数据库对象</title>
+
+  <para>
+   表是关系数据库结构中的核心对象，因为它们承载着数据。
+   但它们并不是数据库中唯一存在的对象。还可以创建许多其他种类的对象，
+   以便让数据的使用和管理更加高效或方便。本章不会讨论这些对象，
+   但这里给出一个列表，让你了解有哪些可能性：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+
+    <para>
+     视图
+    </para>
+   </listitem>
+
+   <listitem>
+
+    <para>
+     函数、过程和操作符
+    </para>
+   </listitem>
+
+   <listitem>
+
+    <para>
+     数据类型和域
+    </para>
+   </listitem>
+
+   <listitem>
+
+    <para>
+     触发器和重写规则
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   这些主题的详细信息请见<xref linkend="server-programming"/>。
+  </para>
+ </sect1>
+
+ <sect1 id="ddl-depend">
+
+  <title>依赖跟踪</title>
+
+  <indexterm zone="ddl-depend">
+   <primary>CASCADE</primary>
+   <secondary sortas="DROP">with DROP</secondary>
+  </indexterm>
+
+  <indexterm zone="ddl-depend">
+   <primary>RESTRICT</primary>
+   <secondary sortas="DROP">with DROP</secondary>
+  </indexterm>
+
+  <para>
+   当我们创建一个涉及到很多具有外键约束、视图、触发器、函数等的表的复杂数据库结构时，我们隐式地创建了一张对象之间的依赖关系网。例如，具有一个外键约束的表依赖于它所引用的表。
+  </para>
+
+  <para>
+   为了保证整个数据库结构的完整性，<productname>PostgreSQL</productname>确保我们无法删除仍然被其他对象依赖的对象。例如，尝试删除<xref linkend="ddl-constraints-fk"/>中的产品表会导致一个如下的错误消息，因为有订单表依赖于产品表：
+<screen>
+DROP TABLE products;
+
+ERROR:  cannot drop table products because other objects depend on it
+DETAIL:  constraint orders_product_no_fkey on table orders depends on table products
+HINT:  Use DROP ... CASCADE to drop the dependent objects too.
+</screen>
+   该错误消息包含了一个有用的提示：如果我们不想一个一个去删除所有的依赖对象，我们可以执行：
+<screen>
+DROP TABLE products CASCADE;
+</screen>
+   这样所有的依赖对象将被移除，同样依赖于它们的任何对象也会被递归删除。在这种情况下，订单表不会被移除，但是它的外键约束会被移除。之所以在这里会停下，是因为没有什么依赖着外键约束（如果希望检查<command>DROP ... CASCADE</command>会干什么，运行不带<literal>CASCADE</literal>的<command>DROP</command>并阅读<literal>DETAIL</literal>输出）。
+  </para>
+
+  <para>
+   <productname>PostgreSQL</productname>中几乎所有<command>DROP</command>命令都支持指定<literal>CASCADE</literal>。当然，可能出现的依赖关系形态会随着对象类型不同而变化。你也可以写<literal>RESTRICT</literal>来代替<literal>CASCADE</literal>，从而得到默认行为，也就是阻止删除任何仍被其他对象依赖的对象。
+  </para>
+
+  <note>
+
+   <para>
+    根据SQL标准，在<command>DROP</command>命令中指定<literal>RESTRICT</literal>或<literal>CASCADE</literal>是被要求的。但没有哪个数据库系统真正强制了这个规则，但是不同的系统中两种默认行为都是可能的。
+   </para>
+  </note>
+
+  <para>
+   如果一个<command>DROP</command>命令列出了多个对象，只有在存在指定对象构成的组之外的依赖关系时才需要<literal>CASCADE</literal>。例如，如果发出命令<literal>DROP TABLE tab1, tab2</literal>且存在从<literal>tab2</literal>到<literal>tab1</literal>的外键引用，那么就不需要<literal>CASCADE</literal>即可成功执行。
+  </para>
+
+  <para>
+   对于一个将其主体定义为字符串文字的用户定义函数或过程，<productname>PostgreSQL</productname>会跟踪与函数的外部可见属性相关的依赖关系，例如其参数和结果类型，但<emphasis>不会</emphasis>跟踪只有通过检查函数主体才能知道的依赖关系。例如，考虑以下情况：
+
+<programlisting>
+CREATE TYPE rainbow AS ENUM ('red', 'orange', 'yellow',
+                             'green', 'blue', 'purple');
+
+CREATE TABLE my_colors (color rainbow, note text);
+
+CREATE FUNCTION get_color_note (rainbow) RETURNS text AS
+  'SELECT note FROM my_colors WHERE color = $1'
+  LANGUAGE SQL;
+</programlisting>
+
+   （请参阅<xref linkend="xfunc-sql"/>以了解SQL语言函数的解释。）<productname>PostgreSQL</productname>将意识到<function>get_color_note</function>函数依赖于<type>rainbow</type>类型：删除该类型将导致删除该函数，因为其参数类型将不再被定义。但<productname>PostgreSQL</productname>不会认为<function>get_color_note</function>依赖于<structname>my_colors</structname>表，因此如果删除表，将不会删除该函数。虽然这种方法有缺点，但也有好处。如果表丢失，该函数在某种意义上仍然有效，尽管执行它会导致错误；创建一个同名的新表将使函数再次正常工作。
+  </para>
+
+  <para>
+   另一方面，对于一个使用SQL标准风格编写的SQL语言函数或过程，其主体在函数定义时被解析，解析器识别的所有依赖关系都被存储。
+   因此，如果我们将上面的函数编写为
+
+<programlisting>
+CREATE FUNCTION get_color_note (rainbow) RETURNS text
+BEGIN ATOMIC
+  SELECT note FROM my_colors WHERE color = $1;
+END;
+</programlisting>
+
+   那么函数对<structname>my_colors</structname>表的依赖关系将被知晓，并由<command>DROP</command>强制执行。
+</para>
+ </sect1>
+
+</chapter>

@@ -1,0 +1,822 @@
+<!--
+doc/src/sgml/ref/insert.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-insert">
+
+ <indexterm zone="sql-insert">
+  <primary>INSERT</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>INSERT</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>INSERT</refname>
+  <refpurpose>在表中插入新行</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+
+<synopsis>
+[ WITH [ RECURSIVE ] <replaceable class="parameter">with_query</replaceable> [, ...] ]
+INSERT INTO <replaceable class="parameter">table_name</replaceable> [ AS <replaceable class="parameter">alias</replaceable> ] [ ( <replaceable class="parameter">column_name</replaceable> [, ...] ) ]
+    [ OVERRIDING { SYSTEM | USER } VALUE ]
+    { DEFAULT VALUES | VALUES ( { <replaceable class="parameter">expression</replaceable> | DEFAULT } [, ...] ) [, ...] | <replaceable class="parameter">query</replaceable> }
+    [ ON CONFLICT [ <replaceable class="parameter">conflict_target</replaceable> ] <replaceable class="parameter">conflict_action</replaceable> ]
+    [ RETURNING [ WITH ( { OLD | NEW } AS <replaceable class="parameter">output_alias</replaceable> [, ...] ) ]
+                { * | <replaceable class="parameter">output_expression</replaceable> [ [ AS ] <replaceable class="parameter">output_name</replaceable> ] } [, ...] ]
+
+<phrase>其中 <replaceable class="parameter">conflict_target</replaceable> 可以是以下之一：</phrase>
+
+    ( { <replaceable class="parameter">index_column_name</replaceable> | ( <replaceable class="parameter">index_expression</replaceable> ) } [ COLLATE <replaceable class="parameter">collation</replaceable> ] [ <replaceable class="parameter">opclass</replaceable> ] [, ...] ) [ WHERE <replaceable class="parameter">index_predicate</replaceable> ]
+    ON CONSTRAINT <replaceable class="parameter">constraint_name</replaceable>
+
+<phrase>其中 <replaceable class="parameter">conflict_action</replaceable> 是以下之一：</phrase>
+
+    DO NOTHING
+    DO UPDATE SET { <replaceable class="parameter">column_name</replaceable> = { <replaceable class="parameter">expression</replaceable> | DEFAULT } |
+                    ( <replaceable class="parameter">column_name</replaceable> [, ...] ) = [ ROW ] ( { <replaceable class="parameter">expression</replaceable> | DEFAULT } [, ...] ) |
+                    ( <replaceable class="parameter">column_name</replaceable> [, ...] ) = ( <replaceable class="parameter">sub-SELECT</replaceable> )
+                  } [, ...]
+              [ WHERE <replaceable class="parameter">condition</replaceable> ]
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+
+  <title>描述</title>
+
+  <para>
+   <command>INSERT</command>将新行插入表中。可以插入由值表达式指定的
+   一行或多行，也可以插入由查询产生的零行或多行。
+  </para>
+
+  <para>
+   目标列名可以按任意顺序列出。如果根本未给出列名列表，则默认使用按
+   声明顺序排列的全部列；或者如果<literal>VALUES</literal>子句或
+   <replaceable>query</replaceable>只提供了<replaceable>N</replaceable>列，
+   则默认使用按声明顺序排列的前<replaceable>N</replaceable>个列名。
+   <literal>VALUES</literal>子句或<replaceable>query</replaceable>
+   提供的值，会按从左到右的顺序与显式或隐式列列表对应起来。
+  </para>
+
+  <para>
+   任何未出现在显式或隐式列列表中的列都会填入默认值；如果没有声明默认
+   值，则填入空值。
+  </para>
+
+  <para>
+   如果任何列的表达式数据类型不正确，将尝试自动进行类型转换。
+  </para>
+
+  <para>
+   对没有唯一索引的表执行<command>INSERT</command>不会被并发活动阻塞。
+   若并发会话执行的操作会锁定或修改与待插入唯一索引值匹配的行，则带有
+   唯一索引的表可能发生阻塞；详见<xref linkend="index-unique-checks"/>。
+   <literal>ON CONFLICT</literal>可用于指定一种替代动作，而不是报出
+   违反唯一约束或排他约束的错误。（见下文<xref linkend="sql-on-conflict"/>。）
+  </para>
+
+  <para>
+   可选的<literal>RETURNING</literal>子句使<command>INSERT</command>
+   基于每个实际插入的行（若使用了<literal>ON CONFLICT DO UPDATE</literal>
+   子句，则也可能是更新后的行）计算并返回一个或多个值。这主要用于获取
+   由默认值提供的值，例如 serial 序列号。不过，也允许使用任何引用该表列
+   的表达式。<literal>RETURNING</literal>列表的语法与
+   <command>SELECT</command>的输出列表相同。只有成功插入或更新的行才
+   会被返回。例如，如果某一行被锁定，但由于不满足
+   <literal>ON CONFLICT DO UPDATE ... WHERE</literal>子句中的
+   <replaceable class="parameter">condition</replaceable>而未被更新，
+   则该行不会被返回。
+  </para>
+
+  <para>
+   要向表中插入行，必须具有该表上的<literal>INSERT</literal>权限。
+   如果存在<literal>ON CONFLICT DO UPDATE</literal>子句，还要求具有该
+   表上的<literal>UPDATE</literal>权限。
+  </para>
+
+  <para>
+   如果指定了列列表，你只需要对所列列具有<literal>INSERT</literal>特
+   权。类似地，在指定<literal>ON CONFLICT DO UPDATE</literal>时，你只
+   需要对列出要更新的列具有<literal>UPDATE</literal>权限。不过，所有
+   形式的<literal>ON CONFLICT</literal>还要求对任何值会被读取的列
+   具有<literal>SELECT</literal>权限。这包括
+   <replaceable>conflict_target</replaceable>中提到的任何列（包括仲裁
+   约束引用的列），以及<literal>ON CONFLICT DO UPDATE</literal>的
+   <replaceable>expression</replaceable>或<literal>WHERE</literal>子句
+   <replaceable>condition</replaceable>中提到的任何列。
+  </para>
+
+  <para>
+   使用<literal>RETURNING</literal>子句要求对
+   <literal>RETURNING</literal>中提到的所有列具有
+   <literal>SELECT</literal>权限。如果使用<replaceable
+   class="parameter">query</replaceable>子句将查询结果中的行插入表中，
+   那么当然还需要对查询中用到的任何表或列具有<literal>SELECT</literal>
+   权限。
+  </para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>参数</title>
+
+  <refsect2>
+
+   <title>插入</title>
+
+   <para>
+    本节介绍仅在插入新行时可用的参数。<emphasis>专门用于</emphasis>
+    <literal>ON CONFLICT</literal>子句的参数将单独说明。
+   </para>
+
+    <variablelist>
+     <varlistentry id="zh18-auto-insert-varlistentry-1">
+      <term><replaceable class="parameter">with_query</replaceable></term>
+      <listitem>
+
+       <para>
+        <literal>WITH</literal>子句允许指定一个或多个子查询，这些子查
+        询可以在<command>INSERT</command>查询中按名称引用。详见
+        <xref linkend="queries-with"/>和<xref linkend="sql-select"/>。
+       </para>
+
+       <para>
+        <replaceable class="parameter">query</replaceable>
+        （<command>SELECT</command>语句）本身也可以包含
+        <literal>WITH</literal>子句。在这种情况下，
+        <replaceable class="parameter">query</replaceable>中可以引用两组
+        <replaceable>with_query</replaceable>，但由于第二组嵌套得更近，
+        它具有更高的优先级。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-2">
+      <term><replaceable class="parameter">table_name</replaceable></term>
+      <listitem>
+
+       <para>
+        现有表的名称（可选地使用模式限定）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-3">
+      <term><replaceable class="parameter">alias</replaceable></term>
+      <listitem>
+
+       <para>
+        <replaceable class="parameter">table_name</replaceable>的替代名
+        称。提供别名后，它会完全隐藏表的实际名称。当
+        <literal>ON CONFLICT DO UPDATE</literal>的目标是一个名为
+        <varname>excluded</varname>的表时，这一点特别有用，因为否则
+        该名称会被当作表示拟插入行的那个特殊表名。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-4">
+      <term><replaceable class="parameter">column_name</replaceable></term>
+      <listitem>
+
+       <para>
+        名为<replaceable class="parameter">table_name</replaceable>的表
+        中某一列的名称。如有需要，列名可以附带子字段名或数组下标。
+        （只向组合列的部分字段插入值时，其余字段将为空值。）在
+        <literal>ON CONFLICT DO UPDATE</literal>中引用列时，不要在目
+        标列的指定中包含表名。例如，<literal>INSERT INTO table_name ...
+        ON CONFLICT DO UPDATE SET table_name.col = 1</literal>是无效的
+        （这与<command>UPDATE</command>的一般行为一致）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-5">
+      <term><literal>OVERRIDING SYSTEM VALUE</literal></term>
+      <listitem>
+
+       <para>
+        如果指定了此子句，那么为标识列提供的任何值都将覆盖默认的序列
+        生成值。
+       </para>
+
+       <para>
+        对于定义为<literal>GENERATED ALWAYS</literal>的标识列，如果
+        插入显式值（<literal>DEFAULT</literal>除外）而未指定
+        <literal>OVERRIDING SYSTEM VALUE</literal>或
+        <literal>OVERRIDING USER VALUE</literal>，则会报错。（对于定
+        义为<literal>GENERATED BY DEFAULT</literal>的标识列，
+        <literal>OVERRIDING SYSTEM VALUE</literal>本来就是默认行为，
+        因而显式指定它不会产生任何效果，但
+        <productname>PostgreSQL</productname>仍将其作为扩展允许使用。）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-6">
+      <term><literal>OVERRIDING USER VALUE</literal></term>
+      <listitem>
+
+       <para>
+        如果指定了此子句，则会忽略为标识列提供的任何值，并应用默认的
+        序列生成值。
+       </para>
+
+       <para>
+        例如，在表之间复制值时，这个子句很有用。写成
+        <literal>INSERT INTO tbl2 OVERRIDING USER VALUE SELECT * FROM
+        tbl1</literal>将从<literal>tbl1</literal>复制所有在
+        <literal>tbl2</literal>中不是标识列的列，而
+        <literal>tbl2</literal>中标识列的值将由与
+        <literal>tbl2</literal>关联的序列生成。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-7">
+      <term><literal>DEFAULT VALUES</literal></term>
+      <listitem>
+
+       <para>
+        所有列都会填入各自的默认值，就像为每一列都显式指定了
+        <literal>DEFAULT</literal>一样。（这种形式不允许出现
+        <literal>OVERRIDING</literal>子句。）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-8">
+      <term><replaceable class="parameter">expression</replaceable></term>
+      <listitem>
+
+       <para>
+        赋给相应列的表达式或值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-9">
+      <term><literal>DEFAULT</literal></term>
+      <listitem>
+
+       <para>
+        相应列将填入其默认值。标识列将填入由关联序列生成的新值。对于
+        生成列，允许指定该关键字，但这只是表明采用根据其生成表达式计
+        算该列这一正常行为。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-10">
+      <term><replaceable class="parameter">query</replaceable></term>
+      <listitem>
+
+       <para>
+        提供要插入行的查询（<command>SELECT</command>语句）。其语法
+        说明请参见<xref linkend="sql-select"/>。
+       </para>
+     </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-11">
+      <term><replaceable class="parameter">output_alias</replaceable></term>
+      <listitem>
+       <para>
+        在<literal>RETURNING</literal>列表中为<literal>OLD</literal>
+        或<literal>NEW</literal>行指定的可选替代名称。
+       </para>
+
+       <para>
+        默认情况下，可通过
+        <literal>OLD.<replaceable class="parameter">column_name</replaceable></literal>
+        或<literal>OLD.*</literal>返回目标表旧值，通过
+        <literal>NEW.<replaceable class="parameter">column_name</replaceable></literal>
+        或<literal>NEW.*</literal>返回新值。提供别名后，这些名称会
+        被隐藏，必须使用别名来引用旧行或新行。例如
+        <literal>RETURNING WITH (OLD AS o, NEW AS n) o.*, n.*</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-12">
+      <term><replaceable class="parameter">output_expression</replaceable></term>
+      <listitem>
+
+       <para>
+        在每一行插入或更新后由<command>INSERT</command>命令计算并返
+        回的表达式。该表达式可以使用由<replaceable
+        class="parameter">table_name</replaceable>指定的表中的任何列。
+        写成<literal>*</literal>可返回插入或更新后行的全部列。
+       </para>
+
+       <para>
+        列名或<literal>*</literal>可以用<literal>OLD</literal>或
+        <literal>NEW</literal>进行限定，也可以用
+        <literal>OLD</literal>或<literal>NEW</literal>对应的
+        <replaceable class="parameter">output_alias</replaceable>进行
+        限定，以返回旧值或新值。未限定的列名或<literal>*</literal>，
+        以及使用目标表名或别名限定的列名或<literal>*</literal>，都会
+        返回新值。
+       </para>
+
+       <para>
+        对于普通<command>INSERT</command>，所有旧值都为
+        <literal>NULL</literal>。但对于带
+        <literal>ON CONFLICT DO UPDATE</literal>子句的
+        <command>INSERT</command>，旧值可能为非<literal>NULL</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-13">
+      <term><replaceable class="parameter">output_name</replaceable></term>
+      <listitem>
+
+       <para>
+        用于返回列的名称。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+  </refsect2>
+
+  <refsect2 id="sql-on-conflict" xreflabel="ON CONFLICT Clause">
+
+   <title><literal>ON CONFLICT</literal> 子句</title>
+
+   <indexterm zone="sql-insert">
+    <primary>UPSERT</primary>
+   </indexterm>
+
+   <indexterm zone="sql-insert">
+    <primary>ON CONFLICT</primary>
+   </indexterm>
+
+   <para>
+    可选的<literal>ON CONFLICT</literal>子句指定一种替代动作，用来
+    替代抛出唯一约束或排他约束违背错误。对于每一条拟插入的行，要么插入
+    继续进行；要么如果违反了由<parameter>conflict_target</parameter>
+    指定的某个作为仲裁的约束或索引，就执行替代的
+    <parameter>conflict_action</parameter>。<literal>ON CONFLICT DO
+    NOTHING</literal>的替代动作只是跳过该行的插入。
+    <literal>ON CONFLICT DO UPDATE</literal>的替代动作则是更新与拟插
+    入行冲突的现有行。
+   </para>
+
+   <para>
+    <parameter>conflict_target</parameter>可以进行<emphasis>唯一索
+    引推断</emphasis>。执行推断时，它由一个或多个
+    <replaceable class="parameter">index_column_name</replaceable>列
+    和/或<replaceable class="parameter">index_expression</replaceable>
+    表达式，以及可选的<replaceable class="parameter">index_predicate</replaceable>
+    组成。所有在不考虑顺序的情况下恰好包含
+    <parameter>conflict_target</parameter>指定列/表达式的
+    <replaceable class="parameter">table_name</replaceable>唯一索引，
+    都会被推断（选中）为仲裁索引。如果指定了
+    <replaceable class="parameter">index_predicate</replaceable>，则作
+    为推断的进一步要求，候选仲裁索引还必须满足该谓词。注意，这意味着如
+    果存在某个满足其他所有条件的非部分唯一索引（即没有谓词的唯一索
+    引），
+    那么该索引也会被推断出来（从而被<literal>ON CONFLICT</literal>
+    使用）。如果推断尝试失败，则会报错。
+   </para>
+
+   <para>
+    <literal>ON CONFLICT DO UPDATE</literal>保证得到原子的
+    <command>INSERT</command>或<command>UPDATE</command>结果；只要
+    没有其他独立错误，即使在高并发下，也能保证结果是这两者之一。这也称
+    为<firstterm>UPSERT</firstterm> &mdash; <quote>UPDATE or
+    INSERT</quote>。
+   </para>
+
+    <variablelist>
+     <varlistentry id="zh18-auto-insert-varlistentry-14">
+      <term><replaceable class="parameter">conflict_target</replaceable></term>
+      <listitem>
+
+       <para>
+        通过选择<firstterm>仲裁索引</firstterm>来指定
+        <literal>ON CONFLICT</literal>对哪些冲突采取替代动作。它要么
+        执行<emphasis>唯一索引推断</emphasis>，要么显式命名一个约
+        束。对于<literal>ON CONFLICT DO NOTHING</literal>，是否指定
+        <parameter>conflict_target</parameter>是可选的；省略时，将处
+        理与所有可用约束（以及唯一索引）的冲突。对于
+        <literal>ON CONFLICT DO UPDATE</literal>，则<emphasis>必须</emphasis>
+        提供<parameter>conflict_target</parameter>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-15">
+      <term><replaceable class="parameter">conflict_action</replaceable></term>
+      <listitem>
+
+       <para>
+        <parameter>conflict_action</parameter>指定一个替代的
+        <literal>ON CONFLICT</literal>动作。它可以是
+        <literal>DO NOTHING</literal>，也可以是
+        <literal>DO UPDATE</literal>子句，用以精确指定发生冲突时要执
+        行的<literal>UPDATE</literal>动作细节。在
+        <literal>ON CONFLICT DO UPDATE</literal>中，
+        <literal>SET</literal>和<literal>WHERE</literal>子句既可以通
+        过表名（或别名）访问现有行，也可以通过特殊表
+        <varname>excluded</varname>访问拟插入的行。如果会读取目标表中
+        与<varname>excluded</varname>对应的列，则要求对这些列具有
+        <literal>SELECT</literal>权限。
+       </para>
+
+       <para>
+        注意，所有行级<literal>BEFORE INSERT</literal>触发器的效果都
+        会反映在<varname>excluded</varname>值中，因为这些效果可能促
+        成该行被排除在插入之外。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-16">
+      <term><replaceable class="parameter">index_column_name</replaceable></term>
+      <listitem>
+
+       <para>
+        <replaceable class="parameter">table_name</replaceable>中某一列
+        的名称。用于推断仲裁索引。遵循<command>CREATE INDEX</command>
+        的格式。要求对<replaceable class="parameter">index_column_name</replaceable>
+        具有<literal>SELECT</literal>权限。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-17">
+      <term><replaceable class="parameter">index_expression</replaceable></term>
+      <listitem>
+
+       <para>
+        与<replaceable class="parameter">index_column_name</replaceable>
+        类似，但用于推断出现在索引定义中的、基于<replaceable
+        class="parameter">table_name</replaceable>列的表达式（而非简
+        单列）。遵循<command>CREATE INDEX</command>的格式。要求对
+        出现在<replaceable class="parameter">index_expression</replaceable>
+        中的任何列具有<literal>SELECT</literal>权限。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-18">
+      <term><replaceable class="parameter">collation</replaceable></term>
+      <listitem>
+
+       <para>
+        指定时，要求相应的<replaceable
+        class="parameter">index_column_name</replaceable>或
+        <replaceable class="parameter">index_expression</replaceable>
+        必须使用特定的排序规则，才能在推断时匹配。通常会省略，因为
+        排序规则通常不会影响是否发生约束违背。遵循
+        <command>CREATE INDEX</command>格式。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-19">
+      <term><replaceable class="parameter">opclass</replaceable></term>
+      <listitem>
+
+       <para>
+        指定时，要求相应的<replaceable
+        class="parameter">index_column_name</replaceable>或
+        <replaceable class="parameter">index_expression</replaceable>
+        必须使用特定的操作符类，才能在推断时匹配。通常会省略，因为一
+        种类型的各个操作符类在<emphasis>相等性</emphasis>语义上往往
+        是等价的，或者只需相信已定义的唯一索引具有所需的相等性定义即
+        可。遵循<command>CREATE INDEX</command>格式。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-20">
+      <term><replaceable class="parameter">index_predicate</replaceable></term>
+      <listitem>
+
+       <para>
+        用于允许推断部分唯一索引。任何满足该谓词的索引（实际上不一定
+        是部分索引）都可以被推断。遵循<command>CREATE INDEX</command>
+        格式。要求对出现在<replaceable class="parameter">index_predicate</replaceable>
+        中的任何列具有<literal>SELECT</literal>权限。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-21">
+      <term><replaceable class="parameter">constraint_name</replaceable></term>
+      <listitem>
+
+       <para>
+        显式按名称指定一个作为仲裁的<emphasis>约束</emphasis>，而不
+        是通过推断约束或索引。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-insert-varlistentry-22">
+      <term><replaceable class="parameter">condition</replaceable></term>
+      <listitem>
+
+       <para>
+        返回<type>boolean</type>值的表达式。只有使该表达式返回
+        <literal>true</literal>的行才会被更新，不过一旦采取
+        <literal>ON CONFLICT DO UPDATE</literal>动作，所有行都会被
+        锁定。请注意，只有在某个冲突已被识别为更新候选后，才会最后计
+        算<replaceable>condition</replaceable>。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+
+   <para>
+    请注意，排他约束不支持在<literal>ON CONFLICT DO UPDATE</literal>
+    中充当仲裁对象。在所有情况下，只有<literal>NOT DEFERRABLE</literal>
+    约束和唯一索引可作为仲裁对象。
+   </para>
+
+   <para>
+    带有<literal>ON CONFLICT DO UPDATE</literal>子句的
+    <command>INSERT</command>是一种<quote>确定性</quote>语句。这意
+    味着不允许该命令对任何单个现有行产生多于一次的影响；一旦出现这种
+    情况，就会报出基数违背错误。拟插入的行在受仲裁索引或约束限制的属
+    性上不应彼此重复。
+   </para>
+
+   <para>
+    请注意，目前尚不支持在针对分区表的<command>INSERT</command>的
+    <literal>ON CONFLICT DO UPDATE</literal>子句中更新冲突行的分区
+    键，从而需要将该行移动到一个新分区。
+   </para>
+   <tip>
+
+    <para>
+     通常更推荐使用唯一索引推断，而不是通过
+     <literal>ON CONFLICT ON CONSTRAINT</literal>
+     <replaceable class="parameter">constraint_name</replaceable>直接命
+     名约束。当底层索引以重叠方式被另一个大致等价的索引替换时，推断仍
+     能继续正确工作，例如在删除待替换索引之前先使用
+     <literal>CREATE UNIQUE INDEX ... CONCURRENTLY</literal>。
+    </para>
+   </tip>
+
+   <warning>
+    <para>
+     当某个唯一索引上正在执行
+     <command>CREATE INDEX CONCURRENTLY</command>或
+     <command>REINDEX CONCURRENTLY</command>时，同一张表上的
+     <command>INSERT ... ON CONFLICT</command>语句可能会意外地因
+     唯一性违反而失败。
+    </para>
+   </warning>
+
+  </refsect2>
+ </refsect1>
+
+ <refsect1>
+
+  <title>输出</title>
+
+  <para>
+   成功完成时，<command>INSERT</command>命令会返回如下形式的命令标签：
+<screen>
+INSERT <replaceable>oid</replaceable> <replaceable class="parameter">count</replaceable>
+</screen>
+   <replaceable class="parameter">count</replaceable>是插入或更新的行
+   数。<replaceable>oid</replaceable>始终为 0（过去，如果
+   <replaceable>count</replaceable>恰好为 1 且目标表声明为
+   <literal>WITH OIDS</literal>，则它是分配给插入行的
+   <acronym>OID</acronym>，否则为 0；但现在已经不再支持创建
+   <literal>WITH OIDS</literal>表）。
+  </para>
+
+  <para>
+   如果<command>INSERT</command>命令包含<literal>RETURNING</literal>
+   子句，则结果将类似于一个<command>SELECT</command>语句，其中包含
+   <literal>RETURNING</literal>列表定义的列和值，它们是基于该命令插
+   入或更新的行计算出来的。
+  </para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>注解</title>
+
+  <para>
+   如果指定的表是分区表，则每一行都会被路由到适当的分区并插入其中。
+   如果指定的表本身就是一个分区，则只要输入行中有任意一行违反该分区
+   约束，就会报错。
+  </para>
+
+  <para>
+   也可以考虑使用<command>MERGE</command>，因为它允许在单条语句中混
+   合<command>INSERT</command>、<command>UPDATE</command>和
+   <command>DELETE</command>。参见<xref linkend="sql-merge"/>。
+  </para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>示例</title>
+
+  <para>
+   向表<literal>films</literal>插入一行：
+
+<programlisting>
+INSERT INTO films VALUES
+    ('UA502', 'Bananas', 105, '1971-07-13', 'Comedy', '82 minutes');
+</programlisting>
+  </para>
+
+  <para>
+   在这个示例中，省略了<literal>len</literal>列，因此它将取默认值：
+
+<programlisting>
+INSERT INTO films (code, title, did, date_prod, kind)
+    VALUES ('T_601', 'Yojimbo', 106, '1961-06-16', 'Drama');
+</programlisting>
+  </para>
+
+  <para>
+   这个示例对日期列使用<literal>DEFAULT</literal>子句，而不是显式
+   指定值：
+
+<programlisting>
+INSERT INTO films VALUES
+    ('UA502', 'Bananas', 105, DEFAULT, 'Comedy', '82 minutes');
+INSERT INTO films (code, title, did, date_prod, kind)
+    VALUES ('T_601', 'Yojimbo', 106, DEFAULT, 'Drama');
+</programlisting>
+  </para>
+
+  <para>
+   要插入一行，其所有列都由默认值构成：
+
+<programlisting>
+INSERT INTO films DEFAULT VALUES;
+</programlisting>
+  </para>
+
+  <para>
+   使用多行<command>VALUES</command>语法插入多行：
+
+<programlisting>
+INSERT INTO films (code, title, did, date_prod, kind) VALUES
+    ('B6717', 'Tampopo', 110, '1985-02-10', 'Comedy'),
+    ('HG120', 'The Dinner Game', 140, DEFAULT, 'Comedy');
+</programlisting>
+  </para>
+
+  <para>
+   这个示例从与<literal>films</literal>列布局相同的
+   <literal>tmp_films</literal>表中选出一些行并插入到
+   <literal>films</literal>表：
+
+<programlisting>
+INSERT INTO films SELECT * FROM tmp_films WHERE date_prod &lt; '2004-05-07';
+</programlisting>
+  </para>
+
+  <para>
+   这个示例向数组列插入值：
+
+<programlisting>
+-- Create an empty 3x3 gameboard for noughts-and-crosses
+INSERT INTO tictactoe (game, board[1:3][1:3])
+    VALUES (1, '{{" "," "," "},{" "," "," "},{" "," "," "}}');
+-- The subscripts in the above example aren't really needed
+INSERT INTO tictactoe (game, board)
+    VALUES (2, '{{X," "," "},{" ",O," "},{" ",X," "}}');
+</programlisting>
+  </para>
+
+  <para>
+   向表<literal>distributors</literal>插入一行，并返回由
+   <literal>DEFAULT</literal>子句生成的序号：
+
+<programlisting>
+INSERT INTO distributors (did, dname) VALUES (DEFAULT, 'XYZ Widgets')
+   RETURNING did;
+</programlisting>
+  </para>
+
+  <para>
+   为负责 Acme Corporation 账户的销售人员增加销量计数，并把整个更
+   新后的行连同当前时间记录到日志表中：
+<programlisting>
+WITH upd AS (
+  UPDATE employees SET sales_count = sales_count + 1 WHERE id =
+    (SELECT sales_person FROM accounts WHERE name = 'Acme Corporation')
+    RETURNING *
+)
+INSERT INTO employees_log SELECT *, current_timestamp FROM upd;
+</programlisting>
+  </para>
+
+  <para>
+   视情况插入或更新新的分销商。假设已经定义了一个唯一索引，用于约束
+   出现在<literal>did</literal>列中的值。请注意，特殊的
+   <varname>excluded</varname>表用于引用最初拟插入的值：
+<programlisting>
+INSERT INTO distributors (did, dname)
+    VALUES (5, 'Gizmo Transglobal'), (6, 'Associated Computing, Inc')
+    ON CONFLICT (did) DO UPDATE SET dname = EXCLUDED.dname;
+</programlisting>
+  </para>
+  <para>
+   按照上例插入或更新新的分销商，并返回任何被更新的既有值以及插入的
+   新数据。请注意，对于没有冲突的行，返回的<literal>old_did</literal>
+   和<literal>old_dname</literal>值将为<literal>NULL</literal>：
+<programlisting>
+INSERT INTO distributors (did, dname)
+    VALUES (5, 'Gizmo Transglobal'), (6, 'Associated Computing, Inc')
+    ON CONFLICT (did) DO UPDATE SET dname = EXCLUDED.dname
+    RETURNING old.did AS old_did, old.dname AS old_dname,
+              new.did AS new_did, new.dname AS new_dname;
+</programlisting>
+  </para>
+
+  <para>
+   插入一个分销商；如果已存在一条会导致待插入行被排除的现有行
+   （即在行级<literal>BEFORE INSERT</literal>触发器触发后，其受约
+   束列与待插入行匹配的行），则对该待插入行不做任何操作。示例假设已
+   经定义了一个唯一索引，用于约束出现在<literal>did</literal>列中的
+   值：
+<programlisting>
+INSERT INTO distributors (did, dname) VALUES (7, 'Redline GmbH')
+    ON CONFLICT (did) DO NOTHING;
+</programlisting>
+  </para>
+
+  <para>
+   视情况插入或更新新的分销商。示例假设已经定义了一个唯一索引，用于
+   约束出现在<literal>did</literal>列中的值。这里使用
+   <literal>WHERE</literal>子句来限制实际会被更新的行（不过，任何未
+   更新的现有行仍会被锁定）：
+<programlisting>
+-- Don't update existing distributors based in a certain ZIP code
+INSERT INTO distributors AS d (did, dname) VALUES (8, 'Anvil Distribution')
+    ON CONFLICT (did) DO UPDATE
+    SET dname = EXCLUDED.dname || ' (formerly ' || d.dname || ')'
+    WHERE d.zipcode &lt;&gt; '21201';
+
+-- Name a constraint directly in the statement (uses associated
+-- index to arbitrate taking the DO NOTHING action)
+INSERT INTO distributors (did, dname) VALUES (9, 'Antwerp Design')
+    ON CONFLICT ON CONSTRAINT distributors_pkey DO NOTHING;
+</programlisting>
+  </para>
+
+  <para>
+   如果可能就插入新的分销商；否则执行
+   <literal>DO NOTHING</literal>。示例假设已经定义了一个唯一索引，
+   用于约束这样一个行子集上的<literal>did</literal>列值：其中
+   <literal>is_active</literal>布尔列计算结果为<literal>true</literal>：
+<programlisting>
+-- This statement could infer a partial unique index on "did"
+-- with a predicate of "WHERE is_active", but it could also
+-- just use a regular unique constraint on "did"
+INSERT INTO distributors (did, dname) VALUES (10, 'Conrad International')
+    ON CONFLICT (did) WHERE is_active DO NOTHING;
+</programlisting>
+  </para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>兼容性</title>
+
+  <para>
+   <command>INSERT</command>符合 SQL 标准，但
+   <literal>RETURNING</literal>子句是
+   <productname>PostgreSQL</productname>扩展，在
+   <command>INSERT</command>中使用<literal>WITH</literal>的能力以及
+   使用<literal>ON CONFLICT</literal>指定替代动作的能力也都是扩展。
+   此外，标准不允许省略列名列表却又不是所有列都由<literal>VALUES</literal>
+   子句或<replaceable>query</replaceable>填充的情况。如果你希望使用
+   比<literal>ON CONFLICT</literal>更符合 SQL 标准的语句，请参见
+   <xref linkend="sql-merge"/>。
+  </para>
+
+  <para>
+   SQL 标准规定，只有当存在一个定义为总是生成值的标识列时，才能指定
+   <literal>OVERRIDING SYSTEM VALUE</literal>。而
+   <productname>PostgreSQL</productname>在任何情况下都允许该子句，
+   并在它不适用时忽略它。
+  </para>
+
+  <para>
+   <replaceable class="parameter">query</replaceable>子句可能存在的限
+   制见<xref linkend="sql-select"/>。
+  </para>
+ </refsect1>
+</refentry>

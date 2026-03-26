@@ -1,0 +1,264 @@
+<!-- doc/src/sgml/tablesample-method.sgml -->
+
+<chapter id="tablesample-method">
+
+ <title>编写一种表采样方法</title>
+
+ <indexterm zone="tablesample-method">
+  <primary>表采样方法</primary>
+ </indexterm>
+
+ <indexterm zone="tablesample-method">
+  <primary><literal>TABLESAMPLE</literal> 方法</primary>
+ </indexterm>
+
+ <para>
+  <productname>PostgreSQL</productname> 对 <literal>TABLESAMPLE</literal> 子句的实现，
+  除了支持 SQL 标准要求的 <literal>BERNOULLI</literal> 和
+  <literal>SYSTEM</literal> 方法之外，还支持自定义表采样方法。采样方法决定了
+  在使用 <literal>TABLESAMPLE</literal> 子句时会选取表中的哪些行。
+ </para>
+
+ <para>
+  在 SQL 层面，表采样方法由一个 SQL 函数表示，通常用 C 实现，其签名如下：
+<programlisting>
+method_name(internal) RETURNS tsm_handler
+</programlisting>
+  函数名与出现在 <literal>TABLESAMPLE</literal> 子句中的方法名相同。
+  <type>internal</type> 参数只是一个占位值（其值始终为零），用来防止该函数被
+  SQL 命令直接调用。该函数的结果必须是一个通过 palloc 分配的
+  <type>TsmRoutine</type> 结构体，其中包含该采样方法支持函数的指针。
+  这些支持函数是普通的 C 函数，在 SQL 层面既不可见也不可调用。支持函数见
+  <xref linkend="tablesample-support-functions"/>。
+ </para>
+
+ <para>
+  除了函数指针之外，<type>TsmRoutine</type> 结构体还必须提供以下额外字段：
+ </para>
+
+ <variablelist>
+  <varlistentry id="zh18-auto-tablesample-method-varlistentry-1">
+   <term><literal>List *parameterTypes</literal></term>
+   <listitem>
+
+    <para>
+     这是一个 OID 列表，包含该采样方法在 <literal>TABLESAMPLE</literal>
+     子句中可接受参数的数据类型 OID。例如，对于内置方法，该列表只包含一个值为
+     <literal>FLOAT4OID</literal> 的项，它表示采样百分比。自定义采样方法可以
+     有更多参数，也可以有不同的参数。
+    </para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-tablesample-method-varlistentry-2">
+   <term><literal>bool repeatable_across_queries</literal></term>
+   <listitem>
+
+    <para>
+     如果为 <literal>true</literal>，只要每次都提供相同的参数和
+     <literal>REPEATABLE</literal> 种子值，并且表内容未发生变化，该采样方法就
+     能在连续查询之间返回相同的样本。如果该字段为 <literal>false</literal>，
+     则该采样方法不接受 <literal>REPEATABLE</literal> 子句。
+    </para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-tablesample-method-varlistentry-3">
+   <term><literal>bool repeatable_across_scans</literal></term>
+   <listitem>
+
+    <para>
+     如果为 <literal>true</literal>，该采样方法就能在同一查询中的连续扫描之间
+     返回相同的样本（假定参数、种子值和快照都保持不变）。如果该字段为
+     <literal>false</literal>，规划器将不会选择那些需要对被采样表扫描多次的
+     计划，因为那可能导致查询输出不一致。
+    </para>
+   </listitem>
+  </varlistentry>
+ </variablelist>
+
+ <para>
+  <type>TsmRoutine</type> 结构类型声明在
+  <filename>src/include/access/tsmapi.h</filename> 中，更多细节见该文件。
+ </para>
+
+ <para>
+  标准发行版中包含的表采样方法，是尝试自行编写方法时的良好参考。内置
+  采样方法位于源代码树的 <filename>src/backend/access/tablesample</filename>
+  子目录中，附加方法位于 <filename>contrib</filename> 子目录中。
+ </para>
+
+ <sect1 id="tablesample-support-functions">
+
+  <title>采样方法支持函数</title>
+
+  <para>
+   TSM 处理器函数返回一个通过 palloc 分配的 <type>TsmRoutine</type> 结构体，
+   其中包含下文所述支持函数的指针。大多数函数是必需的，但有些是可选的，
+   对应指针可以为 NULL。
+  </para>
+
+  <para>
+<programlisting>
+void
+SampleScanGetSampleSize (PlannerInfo *root,
+                         RelOptInfo *baserel,
+                         List *paramexprs,
+                         BlockNumber *pages,
+                         double *tuples);
+</programlisting>
+
+   该函数在规划阶段调用。它必须估计采样扫描期间将读取的关系页数，以及
+   该扫描将选出的元组数。（例如，可以先估计采样比例，再将
+   <literal>baserel-&gt;pages</literal> 和 <literal>baserel-&gt;tuples</literal>
+   的值乘以该比例，并确保结果舍入为整数值。）
+   <literal>paramexprs</literal> 列表保存 <literal>TABLESAMPLE</literal>
+   子句参数对应的表达式。如果出于估算目的需要这些值，建议使用
+   <function>estimate_expression_value()</function> 尝试将这些表达式化简为
+   常量；但即使无法化简，该函数也必须给出大小估计，而且即便这些值看起来无效
+   也不应失败（别忘了，它们只是对运行时取值的估计）。
+   <literal>pages</literal> 和 <literal>tuples</literal> 参数是输出参数。
+  </para>
+
+  <para>
+<programlisting>
+void
+InitSampleScan (SampleScanState *node,
+                int eflags);
+</programlisting>
+
+   为 SampleScan 计划节点的执行进行初始化。该函数在执行器启动期间调用。
+   它应执行开始处理前所需的任何初始化工作。
+   <structname>SampleScanState</structname> 节点已经创建，但其
+   <structfield>tsm_state</structfield> 字段为 NULL。
+   <function>InitSampleScan</function> 函数可以通过 palloc 分配采样方法所需的
+   任何内部状态数据，并将其指针存入 <literal>node-&gt;tsm_state</literal>。
+   待扫描表的信息可通过 <structname>SampleScanState</structname> 节点的其他
+   字段访问（但注意 <literal>node-&gt;ss.ss_currentScanDesc</literal> 扫描
+   描述符尚未设置）。
+   <literal>eflags</literal> 包含描述执行器对此计划节点工作模式的标志位。
+  </para>
+
+  <para>
+   当 <literal>(eflags &amp; EXEC_FLAG_EXPLAIN_ONLY)</literal> 为真时，不会
+   实际执行该扫描，因此这个函数只应做使节点状态对 <command>EXPLAIN</command>
+   和 <function>EndSampleScan</function> 有效所需的最少工作。
+  </para>
+
+  <para>
+   该函数可以省略（将指针设为 NULL），此时
+   <function>BeginSampleScan</function> 必须执行采样方法所需的全部初始化工作。
+  </para>
+
+  <para>
+<programlisting>
+void
+BeginSampleScan (SampleScanState *node,
+                 Datum *params,
+                 int nparams,
+                 uint32 seed);
+</programlisting>
+
+   开始执行一次采样扫描。它会在第一次尝试提取一个元组之前调用；如果该扫描需要
+   重启，也可能再次调用。待扫描表的信息可通过
+   <structname>SampleScanState</structname> 节点的字段访问（但注意
+   <literal>node-&gt;ss.ss_currentScanDesc</literal> 扫描描述符尚未设置）。
+   长度为 <literal>nparams</literal> 的 <literal>params</literal> 数组包含
+   <literal>TABLESAMPLE</literal> 子句中提供的参数值。这些参数的个数和类型
+   与该采样方法的 <literal>parameterTypes</literal> 列表中指定的一致，并且
+   已确认不为 NULL。<literal>seed</literal> 包含采样方法内部生成随机数时
+   要使用的种子；
+   如果给定了 <literal>REPEATABLE</literal> 值，它就是从该值派生出的哈希值，
+   否则就是 <literal>random()</literal> 的结果。
+  </para>
+
+  <para>
+   该函数可以调整 <literal>node-&gt;use_bulkread</literal> 和
+   <literal>node-&gt;use_pagemode</literal> 字段。
+   如果 <literal>node-&gt;use_bulkread</literal> 为 <literal>true</literal>
+   （默认如此），扫描将使用一种鼓励在使用后回收缓冲区的缓冲区访问策略。
+   如果该扫描只会访问该表页的一小部分，把它设为 <literal>false</literal>
+   可能更合理。
+   如果 <literal>node-&gt;use_pagemode</literal> 为 <literal>true</literal>
+   （默认如此），扫描将对每个访问页上的所有元组以单遍方式执行可见性检查。
+   如果该扫描只会从每个访问页中选出一小部分元组，把它设为
+   <literal>false</literal> 可能更合理。这样执行的元组可见性检查会更少，
+   但每次检查的代价会更高，因为需要更多加锁。
+  </para>
+
+  <para>
+   如果采样方法被标记为 <literal>repeatable_across_scans</literal>，那么在
+   重扫描期间它必须能够像最初那样选出相同的一组元组；也就是说，重新调用
+   <function>BeginSampleScan</function> 必须像之前一样选出相同的元组
+   （如果 <literal>TABLESAMPLE</literal> 参数和种子没有变化）。
+  </para>
+
+  <para>
+<programlisting>
+BlockNumber
+NextSampleBlock (SampleScanState *node, BlockNumber nblocks);
+</programlisting>
+
+   返回下一页要扫描的块号；如果没有剩余页可扫描，则返回
+   <literal>InvalidBlockNumber</literal>。
+  </para>
+
+  <para>
+   该函数可以省略（将指针设为 NULL），此时核心代码将对整个关系执行顺序
+   扫描。这样的扫描可能使用同步扫描，因此采样方法不能假定每次扫描都会按
+   相同顺序访问关系页。
+  </para>
+
+  <para>
+<programlisting>
+OffsetNumber
+NextSampleTuple (SampleScanState *node,
+                 BlockNumber blockno,
+                 OffsetNumber maxoffset);
+</programlisting>
+
+   返回指定页上下一个要采样的元组的偏移号；如果没有剩余元组可采样，则返回
+   <literal>InvalidOffsetNumber</literal>。<literal>maxoffset</literal> 是该页上
+   正在使用的最大偏移号。
+  </para>
+
+  <note>
+
+   <para>
+    <function>NextSampleTuple</function> 不会被显式告知在
+    <literal>1 .. maxoffset</literal> 范围内哪些偏移号实际上包含有效元组。
+    通常这不是问题，因为核心代码会忽略对缺失或不可见元组的采样请求；这不应
+    在样本中引入任何偏差。不过，如有需要，该函数可以使用
+    <literal>node-&gt;donetuples</literal> 来检查它返回的元组中有多少是有效且
+    可见的。
+   </para>
+  </note>
+
+  <note>
+
+   <para>
+    <function>NextSampleTuple</function> <emphasis>绝不能</emphasis>假定
+    <literal>blockno</literal> 与最近一次 <function>NextSampleBlock</function>
+    调用返回的页号相同。它是由之前某次
+    <function>NextSampleBlock</function> 调用返回的，但核心代码可以在真正
+    扫描页之前就调用 <function>NextSampleBlock</function>，以支持预取。
+    可以假定的是，一旦开始对某个给定页进行采样，后续连续的
+    <function>NextSampleTuple</function> 调用在返回
+    <literal>InvalidOffsetNumber</literal> 之前都指向同一页。
+   </para>
+  </note>
+
+  <para>
+<programlisting>
+void
+EndSampleScan (SampleScanState *node);
+</programlisting>
+
+   结束扫描并释放资源。通常不必专门释放通过 palloc 分配的内存，但任何对外
+   可见的资源都应清理掉。如果通常不存在此类资源，则这个函数可以省略（将
+   指针设为 NULL）。
+  </para>
+
+ </sect1>
+
+</chapter>

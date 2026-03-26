@@ -1,0 +1,993 @@
+<!--
+doc/src/sgml/ref/pgupgrade.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="pgupgrade">
+ <indexterm zone="pgupgrade">
+  <primary>pg_upgrade</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle><application>pg_upgrade</application></refentrytitle>
+  <manvolnum>1</manvolnum>
+  <refmiscinfo>Application</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>pg_upgrade</refname>
+  <refpurpose>升级一个<productname>PostgreSQL</productname>服务器实例</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+  <cmdsynopsis>
+   <command>pg_upgrade</command>
+   <arg choice="plain"><option>-b</option></arg>
+   <arg choice="plain"><replaceable>oldbindir</replaceable></arg>
+   <arg choice="opt"><option>-B</option> <replaceable>newbindir</replaceable></arg>
+   <arg choice="plain"><option>-d</option></arg>
+   <arg choice="plain"><replaceable>oldconfigdir</replaceable></arg>
+   <arg choice="plain"><option>-D</option></arg>
+   <arg choice="plain"><replaceable>newconfigdir</replaceable></arg>
+   <arg rep="repeat"><replaceable>option</replaceable></arg>
+  </cmdsynopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>描述</title>
+
+ <para>
+  <application>pg_upgrade</application>（以前称为 <application>pg_migrator</application>）允许将存储在
+  <productname>PostgreSQL</productname> 数据文件中的数据升级到更新的
+  <productname>PostgreSQL</productname>主版本，而无需执行主版本升级通常所需的数据转储/恢复，
+  例如从 12.14 升级到 13.10，或从 14.9 升级到 15.5。它不用于次版本升级，
+  例如从 12.7 升级到 12.8 或从 14.1 升级到 14.5。
+ </para>
+
+ <para>
+  PostgreSQL 主版本会定期增加新特性，这些特性常常会改变系统表的布局，
+  但内部数据存储格式很少改变。<application>pg_upgrade</application>利用这一点，
+  通过创建新的系统表并直接重用旧的用户数据文件来快速完成升级。如果未来某个
+  主版本改变了数据存储格式，致使旧数据格式无法读取，那么
+  <application>pg_upgrade</application>就不能用于这类升级。（社区会尽量避免这种情况。）
+ </para>
+
+ <para>
+  <application>pg_upgrade</application>会尽最大努力确保新旧集簇在二进制上兼容，
+  例如会检查兼容的编译时设置，包括 32/64 位二进制程序。任何外部模块也同样必须
+  二进制兼容，这一点很重要，但 <application>pg_upgrade</application> 无法检查。
+ </para>
+
+  <para>
+   <application>pg_upgrade</application> 支持从 9.2.X 及更高版本升级到当前
+   <productname>PostgreSQL</productname>主版本，包括快照版和 beta 版。
+  </para>
+
+  <warning>
+   <para>
+    升级集簇会使目标集簇执行由源集簇超级用户所选择的任意代码。升级前，
+    务必确认源集簇超级用户是受信任的。
+   </para>
+  </warning>
+ </refsect1>
+
+ <refsect1>
+  <title>选项</title>
+
+   <para>
+    <application>pg_upgrade</application> 接受下列命令行参数：
+
+    <variablelist>
+
+     <varlistentry>
+      <term><option>-b</option> <replaceable>bindir</replaceable></term>
+      <term><option>--old-bindir=</option><replaceable>bindir</replaceable></term>
+      <listitem><para>旧 PostgreSQL 可执行文件目录；环境变量 <envar>PGBINOLD</envar></para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-B</option> <replaceable>bindir</replaceable></term>
+      <term><option>--new-bindir=</option><replaceable>bindir</replaceable></term>
+      <listitem><para>新 PostgreSQL 可执行文件目录；默认是 <application>pg_upgrade</application> 所在目录；环境变量 <envar>PGBINNEW</envar></para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-c</option></term>
+      <term><option>--check</option></term>
+      <listitem><para>仅检查集簇，不更改任何数据</para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-d</option> <replaceable>configdir</replaceable></term>
+      <term><option>--old-datadir=</option><replaceable>configdir</replaceable></term>
+      <listitem><para>旧数据库集簇配置目录；环境变量 <envar>PGDATAOLD</envar></para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-D</option> <replaceable>configdir</replaceable></term>
+      <term><option>--new-datadir=</option><replaceable>configdir</replaceable></term>
+      <listitem><para>新数据库集簇配置目录；环境变量 <envar>PGDATANEW</envar></para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-j <replaceable class="parameter">njobs</replaceable></option></term>
+      <term><option>--jobs=<replaceable class="parameter">njobs</replaceable></option></term>
+      <listitem><para>要使用的并发连接和进程/线程数
+      </para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-k</option></term>
+      <term><option>--link</option></term>
+      <listitem><para>使用硬链接而不是把文件复制到新集簇</para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-N</option></term>
+      <term><option>--no-sync</option></term>
+      <listitem>
+       <para>
+        默认情况下，<command>pg_upgrade</command> 会等待升级后集簇的所有文件都被安全地写入磁盘。
+        该选项会使 <command>pg_upgrade</command> 不等待即返回，这样更快，但也意味着后续若发生
+        操作系统崩溃，数据目录可能会损坏。通常来说，这个选项适用于测试，但不应在生产安装中使用。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-o</option> <replaceable class="parameter">options</replaceable></term>
+      <term><option>--old-options</option> <replaceable class="parameter">options</replaceable></term>
+      <listitem><para>将直接传递给旧 <command>postgres</command> 命令的选项；多次指定会追加</para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-O</option> <replaceable class="parameter">options</replaceable></term>
+      <term><option>--new-options</option> <replaceable class="parameter">options</replaceable></term>
+      <listitem><para>将直接传递给新 <command>postgres</command> 命令的选项；多次指定会追加</para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-p</option> <replaceable>port</replaceable></term>
+      <term><option>--old-port=</option><replaceable>port</replaceable></term>
+      <listitem><para>旧集簇端口号；环境变量 <envar>PGPORTOLD</envar></para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-P</option> <replaceable>port</replaceable></term>
+      <term><option>--new-port=</option><replaceable>port</replaceable></term>
+      <listitem><para>新集簇端口号；环境变量 <envar>PGPORTNEW</envar></para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-r</option></term>
+      <term><option>--retain</option></term>
+      <listitem><para>即使成功完成后也保留 SQL 和日志文件
+      </para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-s</option> <replaceable>dir</replaceable></term>
+      <term><option>--socketdir=</option><replaceable>dir</replaceable></term>
+      <listitem><para>升级期间用于 postmaster 套接字的目录；默认值为当前工作目录；环境变量 <envar>PGSOCKETDIR</envar></para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-U</option> <replaceable>username</replaceable></term>
+      <term><option>--username=</option><replaceable>username</replaceable></term>
+      <listitem><para>集簇安装用户名称；环境变量 <envar>PGUSER</envar></para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-v</option></term>
+      <term><option>--verbose</option></term>
+      <listitem><para>启用详细的内部日志记录</para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-V</option></term>
+      <term><option>--version</option></term>
+      <listitem><para>显示版本信息，然后退出</para></listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--clone</option></term>
+      <listitem>
+       <para>
+        使用高效的文件克隆（在某些系统中也称为<quote>reflinks</quote>）代替将文件复制到新集簇。
+        这可以几乎瞬间复制数据文件，从而在保持旧集簇不变的同时，获得
+        <option>-k</option>/<option>--link</option> 的速度优势。
+       </para>
+
+       <para>
+        文件克隆只在某些操作系统和文件系统上受支持。如果选择了该选项但系统不支持，
+        <application>pg_upgrade</application> 就会报错。目前，它在 Linux（内核 4.5 或更高版本）
+        上的 Btrfs 和 XFS（文件系统需在创建时启用 reflink 支持）以及 macOS 上的 APFS 中受支持。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--copy</option></term>
+      <listitem>
+       <para>
+        将文件复制到新集簇。这是默认行为。（另见
+        <option>--link</option>、<option>--clone</option>、
+        <option>--copy-file-range</option> 和 <option>--swap</option>。）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--copy-file-range</option></term>
+      <listitem>
+       <para>
+        使用 <function>copy_file_range</function> 系统调用进行高效复制。在某些文件系统上，
+        这会产生与 <option>--clone</option> 类似的结果，即共享物理磁盘块；在另一些文件系统上，
+        它仍然会复制块，但会通过优化路径完成。目前，它在 Linux 和 FreeBSD 上受支持。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--no-statistics</option></term>
+      <listitem>
+       <para>
+        不要把旧集簇中的统计信息恢复到新集簇中。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--set-char-signedness=</option><replaceable>option</replaceable></term>
+      <listitem>
+       <para>
+        手工设置新集簇默认的 char 有符号性。可选值为
+        <literal>signed</literal> 和 <literal>unsigned</literal>。
+       </para>
+       <para>
+        在 C 语言中，<type>char</type> 类型在未显式指定时的默认有符号性因平台而异。
+        例如，在 x86 CPU 上 <type>char</type> 默认是 <type>signed char</type>，
+        而在 ARM CPU 上默认是 <type>unsigned char</type>。
+       </para>
+       <para>
+        从 <productname>PostgreSQL</productname> 18 开始，数据库集簇会维护自身默认的
+        char 有符号性设置，可用于确保在默认 char 有符号性不同的平台之间保持一致行为。
+        默认情况下，<application>pg_upgrade</application> 在从现有集簇升级时会保留该有符号性设置。
+        然而，从 <productname>PostgreSQL</productname> 17 或更早版本升级时，
+        <application>pg_upgrade</application> 会采用其构建所在平台的 char 有符号性。
+       </para>
+       <para>
+        该选项允许你显式设置新集簇默认的 char 有符号性，以覆盖任何继承值。
+        该选项主要适用于以下两种场景：
+        <itemizedlist>
+         <listitem>
+          <para>
+           如果你计划在升级后迁移到不同平台，则不应使用该选项。在这种情况下，默认行为才是正确的。
+           应当先在原平台上不带此选项完成升级，然后再迁移集簇。这是推荐且最安全的方法。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           如果你已经将集簇迁移到了默认 char 有符号性不同的平台上
+           （例如从基于 x86 的系统迁移到基于 ARM 的系统），则应使用该选项来指定与原平台
+           默认 char 有符号性相匹配的值。此外，从迁移数据文件到运行
+           <command>pg_upgrade</command> 之间，切勿修改任何数据文件。
+           <command>pg_upgrade</command> 应当是新平台上首次启动该集簇的操作。
+          </para>
+         </listitem>
+        </itemizedlist>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--swap</option></term>
+      <listitem>
+       <para>
+        将数据目录从旧集簇移动到新集簇，然后用为新集簇生成的系统目录文件替换原有目录文件。
+        该模式的性能可能优于 <option>--link</option>、<option>--clone</option>、
+        <option>--copy</option> 和 <option>--copy-file-range</option>，尤其是在关系很多的集簇上。
+       </para>
+       <para>
+        但是，这种模式会在旧集簇中产生大量垃圾文件，如果使用
+        <option>--sync-method=syncfs</option>，可能会延长文件同步步骤。因此，
+        建议在 <option>--swap</option> 模式下使用 <option>--sync-method=fsync</option>。
+       </para>
+       <para>
+        此外，一旦文件传输步骤开始，旧集簇就会被破坏性修改，因此不再能安全启动。
+        详见 <xref linkend="pgupgrade-step-revert"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--sync-method=</option><replaceable>method</replaceable></term>
+      <listitem>
+       <para>
+        设置为 <literal>fsync</literal>（默认）时，<command>pg_upgrade</command> 会递归打开并同步
+        升级后集簇数据目录中的所有文件。查找文件时会跟随 WAL 目录和各个已配置表空间的符号链接。
+       </para>
+       <para>
+        在 Linux 上，也可以使用 <literal>syncfs</literal>，让操作系统同步包含升级后集簇数据目录、
+        其 WAL 文件以及各个表空间的整个文件系统。见
+        <xref linkend="guc-recovery-init-sync-method"/> 了解使用 <literal>syncfs</literal>
+        时需要注意的事项。
+       </para>
+       <para>
+        当使用 <option>--no-sync</option> 时，此选项无效。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-?</option></term>
+      <term><option>--help</option></term>
+      <listitem><para>显示帮助，然后退出</para></listitem>
+     </varlistentry>
+
+    </variablelist>
+   </para>
+
+ </refsect1>
+
+ <refsect1>
+  <title>使用</title>
+
+  <para>
+   使用 <application>pg_upgrade</application> 执行升级的步骤如下：
+  </para>
+
+   <note>
+    <para>
+     这里不介绍升级
+     <glossterm linkend="glossary-logical-replication-cluster">逻辑复制集簇</glossterm>
+     的步骤；详见 <xref linkend="logical-replication-upgrade"/>。
+    </para>
+   </note>
+
+  <procedure>
+   <step performance="optional">
+    <title>移动旧集簇（可选）</title>
+
+    <para>
+     如果你使用的是带版本号的安装目录，例如
+     <filename>/opt/PostgreSQL/&majorversion;</filename>，则不必移动旧集簇。
+     图形化安装程序都使用带版本号的安装目录。
+    </para>
+
+    <para>
+     如果你的安装目录不是带版本号的，例如 <filename>/usr/local/pgsql</filename>，
+     就必须移动当前的 PostgreSQL 安装目录，以免它干扰新的
+     <productname>PostgreSQL</productname> 安装。当前的
+     <productname>PostgreSQL</productname> 服务器关闭后，就可以安全地重命名
+     PostgreSQL 安装目录。假设旧目录是 <filename>/usr/local/pgsql</filename>，
+     你可以这样做：
+
+<programlisting>
+mv /usr/local/pgsql /usr/local/pgsql.old
+</programlisting>
+     以上命令会重命名该目录。
+    </para>
+   </step>
+
+   <step>
+    <title>对于源码安装，编译新版本</title>
+
+    <para>
+     使用与旧集簇兼容的 <command>configure</command> 标志编译新的 PostgreSQL 源码。
+     <application>pg_upgrade</application> 会在开始升级前检查 <command>pg_controldata</command>，
+     以确保所有设置都兼容。
+    </para>
+   </step>
+
+   <step>
+    <title>安装新的 PostgreSQL 二进制文件</title>
+
+    <para>
+     安装新服务器的二进制文件和支持文件。默认安装中包含
+     <application>pg_upgrade</application>。
+    </para>
+
+    <para>
+     对于源码安装，如果你希望把新服务器安装到自定义位置，可以使用
+     <literal>prefix</literal> 变量：
+
+<programlisting>
+make prefix=/usr/local/pgsql.new install
+</programlisting></para>
+   </step>
+
+   <step>
+    <title>初始化新的 PostgreSQL 集簇</title>
+
+    <para>
+     使用 <command>initdb</command> 初始化新集簇。这里同样要使用与旧集簇匹配的兼容
+     <command>initdb</command> 标志。许多预构建的安装程序会自动执行该步骤。
+     无需启动新集簇。
+    </para>
+   </step>
+
+   <step>
+    <title>安装扩展共享对象文件</title>
+
+    <para>
+     许多来自 <filename>contrib</filename> 或其他来源的扩展和自定义模块都会使用
+     共享对象文件（或 DLL），例如 <filename>pgcrypto.so</filename>。如果旧集簇使用了这些模块，
+     则必须在新集簇中安装与新服务器二进制相匹配的共享对象文件，这通常通过操作系统命令完成。
+     不要装载模式定义，例如 <command>CREATE EXTENSION pgcrypto</command>，
+     因为这些会从旧集簇复制过来。如果有可用的扩展更新，
+     <application>pg_upgrade</application> 会报告这一点，并创建一个稍后可运行的脚本来更新它们。
+    </para>
+   </step>
+
+   <step>
+    <title>复制自定义全文检索文件</title>
+
+    <para>
+     将所有自定义全文检索文件（词典、同义词、词库、停用词）从旧集簇复制到新集簇。
+    </para>
+   </step>
+
+   <step>
+    <title>调整认证</title>
+
+    <para>
+     <command>pg_upgrade</command> 会多次连接旧服务器和新服务器，因此你可能希望将认证设置为
+     <literal>peer</literal>（在 <filename>pg_hba.conf</filename> 中），或者使用
+     <filename>~/.pgpass</filename> 文件（见 <xref linkend="libpq-pgpass"/>）。
+    </para>
+   </step>
+
+   <step>
+    <title>停止两个服务器</title>
+
+    <para>
+     确保两个数据库服务器都已停止，在 Unix 上例如：
+
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/12 stop
+pg_ctl -D /opt/PostgreSQL/&majorversion; stop
+</programlisting>
+
+     或者在 Windows 上使用合适的服务名：
+
+<programlisting>
+NET STOP postgresql-12
+NET STOP postgresql-&majorversion;
+</programlisting>
+    </para>
+
+    <para>
+     在此次关闭期间，流复制和日志传送备库必须保持运行，以便接收所有更改。
+    </para>
+   </step>
+
+   <step>
+    <title>为备库升级做准备</title>
+
+    <para>
+     如果你要使用<xref linkend="pgupgrade-step-replicas"/>节概述的方法升级备库，
+     请通过对旧主库集簇和备库集簇运行 <application>pg_controldata</application> 来确认旧备库已追上主库。
+     确认所有集簇中的 <quote>Latest checkpoint location</quote> 值一致。另外，
+     请确保 <varname>wal_level</varname> 没有被设置为 <literal>minimal</literal>，
+     这一点可在新主库集簇的 <filename>postgresql.conf</filename> 文件中检查。
+    </para>
+   </step>
+
+   <step>
+    <title>运行 <application>pg_upgrade</application></title>
+
+    <para>
+     始终运行新服务器的 <application>pg_upgrade</application> 二进制，而不是旧服务器的。
+     <application>pg_upgrade</application> 需要指定新旧集簇的数据目录和可执行文件
+     （<filename>bin</filename>）目录。你还可以指定用户和端口值，以及是否希望将数据文件
+     链接、克隆或交换，而不是采用默认的复制行为。
+    </para>
+
+    <para>
+     如果使用链接模式，升级将快得多（无需复制文件）且占用更少磁盘空间，但一旦在升级后启动
+     新集簇，就无法再访问旧集簇。链接模式还要求新旧集簇的数据目录位于同一文件系统中。
+     （表空间和 <filename>pg_wal</filename> 可以位于不同文件系统中。）克隆模式具有相同的
+     速度和磁盘空间优势，但在启动新集簇后不会使旧集簇不可用。克隆模式同样要求新旧数据目录
+     位于同一文件系统中。该模式只在某些操作系统和文件系统上可用。如果关系很多，交换模式
+     可能最快，但一旦文件传输步骤开始，你将无法再访问旧集簇。交换模式也要求新旧集簇的数据
+     目录位于同一文件系统中。
+    </para>
+
+    <para>
+     将 <option>--jobs</option> 设置为 2 或更高可以让 pg_upgrade 并行处理多个数据库和表空间。
+     一个不错的起始值是机器上的 CPU 核心数。对于多数据库、多表空间的服务器，此选项可以显著
+     减少升级时间。
+    </para>
+
+    <para>
+     对于 Windows 用户，必须登录到管理员账户，然后以带引号的目录运行
+     <application>pg_upgrade</application>，例如：
+
+<programlisting>
+pg_upgrade.exe
+        --old-datadir "C:/Program Files/PostgreSQL/12/data"
+        --new-datadir "C:/Program Files/PostgreSQL/&majorversion;/data"
+        --old-bindir "C:/Program Files/PostgreSQL/12/bin"
+        --new-bindir "C:/Program Files/PostgreSQL/&majorversion;/bin"
+</programlisting>
+
+     启动后，<command>pg_upgrade</command> 会验证两个集簇是否兼容，然后执行升级。
+     即使旧服务器仍在运行，也可以使用 <command>pg_upgrade --check</command> 仅执行检查。
+     <command>pg_upgrade --check</command> 还会概述升级后需要手工进行的调整。如果你打算
+     使用链接、克隆、copy-file-range 或交换模式，则应将 <option>--link</option>、
+     <option>--clone</option>、<option>--copy-file-range</option> 或
+     <option>--swap</option> 与 <option>--check</option> 一起使用，以启用对应模式的专用检查。
+     <command>pg_upgrade</command> 需要对当前目录具有写权限。
+    </para>
+
+    <para>
+     显然，在升级期间不应有人访问这些集簇。<application>pg_upgrade</application>
+     默认会在 50432 端口上运行服务器，以避免意外的客户端连接。升级时可以让两个集簇使用相同
+     的端口号，因为新旧集簇不会同时运行。不过，在检查仍在运行的旧服务器时，新旧端口号必须不同。
+    </para>
+
+    <para>
+     如果在恢复数据库模式时发生错误，<command>pg_upgrade</command> 将退出，你必须按照下文
+     <xref linkend="pgupgrade-step-revert"/> 所述回退到旧集簇。若要再次尝试
+     <command>pg_upgrade</command>，你需要修改旧集簇，使 pg_upgrade 的模式恢复步骤能够成功完成。
+     如果问题出在某个 <filename>contrib</filename> 模块，而该模块并未用于存储用户数据，
+     则你可能需要先从旧集簇卸载这个 <filename>contrib</filename> 模块，并在升级后将其安装到新集簇。
+    </para>
+   </step>
+
+   <step id="pgupgrade-step-replicas">
+    <title>升级流复制和日志传送备库</title>
+
+    <para>
+     如果你使用了链接模式，并且有流复制（见 <xref linkend="streaming-replication"/>）
+     或日志传送（见 <xref linkend="warm-standby"/>）备库，可以按照下列步骤快速升级它们。
+     你无需在备库上运行 <application>pg_upgrade</application>，而是要在主库上运行
+     <application>rsync</application>。现在先不要启动任何服务器。
+    </para>
+
+    <para>
+     如果你<emphasis>没有</emphasis>使用链接模式、没有或不想使用 <application>rsync</application>，
+     或者想要更简单的方案，请跳过本节说明；待 <application>pg_upgrade</application> 完成且
+     新主库集簇启动后，直接重建备库即可。
+    </para>
+
+    <procedure>
+
+     <step>
+      <title>在备库上安装新的 PostgreSQL 二进制文件</title>
+
+      <para>
+       确保所有备库都已安装新的二进制文件和支持文件。
+      </para>
+     </step>
+
+     <step>
+      <title>确保新的备库数据目录<emphasis>不</emphasis>存在</title>
+
+      <para>
+       确保新的备库数据目录<emphasis>不</emphasis>存在，或者为空。如果运行过
+       <application>initdb</application>，请删除备库的新数据目录。
+      </para>
+     </step>
+
+     <step>
+      <title>安装扩展共享对象文件</title>
+
+      <para>
+       在新备库上安装与新主库集簇中相同的扩展共享对象文件。
+      </para>
+     </step>
+
+     <step>
+      <title>停止备库</title>
+
+      <para>
+       如果备库仍在运行，请按上述说明立即停止它们。
+      </para>
+     </step>
+
+     <step>
+      <title>保存配置文件</title>
+
+      <para>
+       保存旧备库配置目录中需要保留的配置文件，例如 <filename>postgresql.conf</filename>
+       （以及其包含的所有文件）、<filename>postgresql.auto.conf</filename>、
+       <literal>pg_hba.conf</literal>，因为在下一步中它们会被覆盖或删除。
+      </para>
+     </step>
+
+     <step>
+      <title>运行 <application>rsync</application></title>
+
+      <para>
+       在使用链接模式时，可以通过 <application>rsync</application> 快速升级备库。
+       为此，在主库上选择一个位于新旧数据库集簇目录之上的目录，并在
+       <emphasis>主库</emphasis>上针对每个备库运行：
+
+<programlisting>
+rsync --archive --delete --hard-links --size-only --no-inc-recursive old_cluster new_cluster remote_dir
+</programlisting>
+
+       其中，<option>old_cluster</option> 和 <option>new_cluster</option> 是相对于
+       主库当前目录的路径，<option>remote_dir</option> 则是备库上位于新旧集簇目录
+       <emphasis>上层</emphasis>的目录。主库和备库在指定目录下的目录结构必须一致。
+       关于如何指定远程目录的细节，请参阅 <application>rsync</application> 手册页，例如：
+
+<programlisting>
+rsync --archive --delete --hard-links --size-only --no-inc-recursive /opt/PostgreSQL/12 \
+      /opt/PostgreSQL/&majorversion; standby.example.com:/opt/PostgreSQL
+</programlisting>
+
+       你可以使用 <application>rsync</application> 的 <option>--dry-run</option> 选项来验证
+       命令将执行什么操作。尽管至少要在主库上为一个备库运行
+       <application>rsync</application>，但只要某个已升级的备库尚未启动，也可以在该备库上
+       运行 <application>rsync</application> 来升级其他备库。
+      </para>
+
+      <para>
+       其原理是记录主库上新旧集簇文件之间由 <application>pg_upgrade</application>
+       链接模式创建的硬链接，然后在备库的旧集簇中找到匹配文件，并在其新集簇中为这些文件
+       创建链接。主库上未被链接的文件会从主库复制到备库（通常都很小）。这使得
+       备库能够快速升级。不幸的是，<application>rsync</application> 会无谓地复制与
+       临时表和不记录日志表相关的文件，因为这些文件通常不存在于备库上。
+      </para>
+
+      <para>
+       如果你有表空间，则需要对每个表空间目录运行类似的
+       <application>rsync</application> 命令，例如：
+
+<programlisting>
+rsync --archive --delete --hard-links --size-only --no-inc-recursive /vol1/pg_tblsp/PG_12_201909212 \
+      /vol1/pg_tblsp/PG_&majorversion;_202307071 standby.example.com:/vol1/pg_tblsp
+</programlisting>
+
+       如果你把 <filename>pg_wal</filename> 迁移到了数据目录之外，也必须对这些目录运行
+       <application>rsync</application>。
+      </para>
+     </step>
+
+     <step>
+      <title>配置流复制和日志传送备库</title>
+
+      <para>
+       为服务器配置日志传送。（由于备库仍与主库保持同步，因此无需运行
+       <function>pg_backup_start()</function> 和 <function>pg_backup_stop()</function>，
+       也无需进行文件系统备份。）如果旧主库早于 17.0，则主库上的任何槽都不会复制到新备库，
+       因此旧备库上的所有槽都必须手工重建。如果旧主库为 17.0 或更高版本，
+       则只有主库上的逻辑槽会复制到新备库，而旧备库上的其他槽不会复制，
+       因此也必须手工重建。
+      </para>
+     </step>
+
+    </procedure>
+
+   </step>
+
+   <step>
+    <title>恢复 <filename>pg_hba.conf</filename></title>
+
+    <para>
+     如果你修改了 <filename>pg_hba.conf</filename>，请恢复其原始设置。
+     也可能需要调整新集簇中的其他配置文件以匹配旧集簇，例如
+     <filename>postgresql.conf</filename>（以及其包含的所有文件）和
+     <filename>postgresql.auto.conf</filename>。
+    </para>
+   </step>
+
+   <step>
+    <title>启动新服务器</title>
+
+    <para>
+     现在可以安全地启动新服务器，然后启动所有经 <application>rsync</application> 同步的备库。
+    </para>
+   </step>
+
+   <step>
+    <title>升级后处理</title>
+
+    <para>
+     如果需要任何升级后处理，pg_upgrade 在完成时会发出警告。它还会生成必须由管理员运行的
+     脚本文件。这些脚本会连接到每个需要升级后处理的数据库。每个脚本应通过以下方式运行：
+
+<programlisting>
+psql --username=postgres --file=script.sql postgres
+</programlisting>
+
+     这些脚本可以按任意顺序运行，运行完毕后即可删除。
+    </para>
+
+    <caution>
+    <para>
+     一般来说，在重建脚本运行完成之前访问其中引用的表是不安全的；这样做可能产生错误结果
+     或较差的性能。未在重建脚本中引用的表则可以立即访问。
+    </para>
+    </caution>
+   </step>
+
+   <step>
+    <title>统计信息</title>
+
+    <para>
+     除非指定 <option>--no-statistics</option>，<command>pg_upgrade</command> 会将大多数
+     优化器统计信息从旧集簇传输到新集簇。但这不会传输所有统计信息，例如通过
+     <xref linkend="sql-createstatistics"/> 显式创建的统计信息、扩展添加的自定义统计信息，
+     或由累积统计系统收集的统计信息。
+    </para>
+
+    <para>
+     由于并非所有统计信息都会由 <command>pg_upgrade</command> 传输，升级结束时你会被要求
+     运行命令来重新生成这些信息。你可能需要设置连接参数以匹配新集簇。
+    </para>
+
+    <para>
+     首先，使用
+     <command>vacuumdb --all --analyze-in-stages --missing-stats-only</command>
+     为尚无统计信息的关系快速生成最基本的优化器统计信息。然后，使用
+     <command>vacuumdb --all --analyze-only</command> 以确保所有关系都拥有最新的累积统计信息，
+     用于触发 vacuum 和 analyze。对于这两个命令，使用 <option>--jobs</option> 都可以加快速度。
+     如果 <varname>vacuum_cost_delay</varname> 被设置为非零值，可以通过
+     <envar>PGOPTIONS</envar> 覆盖它来加快统计信息生成，例如 <literal>PGOPTIONS='-c
+     vacuum_cost_delay=0' vacuumdb ...</literal>。
+    </para>
+   </step>
+
+   <step>
+    <title>删除旧集簇</title>
+
+    <para>
+     一旦你确认升级结果令人满意，就可以运行 <command>pg_upgrade</command> 完成时提到的脚本，
+     删除旧集簇的数据目录。（如果旧数据目录中包含用户定义的表空间，则无法自动删除。）
+     你也可以删除旧的安装目录（例如 <filename>bin</filename>、<filename>share</filename>）。
+    </para>
+   </step>
+
+   <step id="pgupgrade-step-revert" performance="optional">
+    <title>恢复到旧集簇</title>
+
+    <para>
+     如果在运行 <command>pg_upgrade</command> 之后，你想恢复到旧集簇，可以选择以下几种方法：
+
+     <itemizedlist>
+      <listitem>
+       <para>
+        如果使用了 <option>--check</option> 选项，旧集簇不会被修改；可以重新启动。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        如果既没有使用 <option>--link</option>，也没有使用 <option>--swap</option>，
+        旧集簇不会被修改；可以重新启动。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        如果使用了 <option>--link</option> 选项，数据文件可能会在新旧集簇之间共享：
+
+        <itemizedlist>
+         <listitem>
+          <para>
+           如果 <command>pg_upgrade</command> 在开始建立链接之前就已中止，
+           旧集簇不会被修改；可以重新启动。
+          </para>
+         </listitem>
+
+         <listitem>
+          <para>
+           如果你<emphasis>没有</emphasis>启动新集簇，则旧集簇没有被修改，只是在开始建立链接时，
+           会把一个 <literal>.old</literal> 后缀附加到
+           <filename>$PGDATA/global/pg_control</filename>。要重新使用旧集簇，请移除
+           <filename>.old</filename> 这个附加在
+           <filename>$PGDATA/global/pg_control</filename> 上的后缀；随后即可重新启动旧集簇。
+          </para>
+         </listitem>
+
+         <listitem>
+          <para>
+           如果你启动了新集簇，它就已经写入了共享文件，此时再使用旧集簇是不安全的。
+           在这种情况下，旧集簇必须从备份恢复。
+          </para>
+         </listitem>
+
+        </itemizedlist></para>
+      </listitem>
+
+      <listitem>
+       <para>
+        如果使用了 <option>--swap</option> 选项，旧集簇可能已经被破坏性修改：
+
+        <itemizedlist>
+         <listitem>
+          <para>
+           如果 <command>pg_upgrade</command> 在报告旧集簇不再能安全启动之前中止，
+           则旧集簇没有被修改；可以重新启动。
+          </para>
+         </listitem>
+
+         <listitem>
+          <para>
+           如果 <command>pg_upgrade</command> 已报告旧集簇不再能安全启动，
+           则旧集簇已经被破坏性修改。在这种情况下，旧集簇必须从备份恢复。
+          </para>
+         </listitem>
+        </itemizedlist>
+       </para>
+      </listitem>
+     </itemizedlist></para>
+   </step>
+  </procedure>
+
+ </refsect1>
+
+ <refsect1>
+  <title>环境</title>
+
+  <para>
+   一些环境变量可以为命令行选项提供默认值：
+
+   <variablelist>
+    <varlistentry>
+     <term><envar>PGBINOLD</envar></term>
+
+     <listitem>
+      <para>
+       旧 PostgreSQL 可执行文件目录；选项
+       <option>-b</option>/<option>--old-bindir</option>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><envar>PGBINNEW</envar></term>
+
+     <listitem>
+      <para>
+       新 PostgreSQL 可执行文件目录；选项
+       <option>-B</option>/<option>--new-bindir</option>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><envar>PGDATAOLD</envar></term>
+
+     <listitem>
+      <para>
+       旧数据库集簇配置目录；选项
+       <option>-d</option>/<option>--old-datadir</option>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><envar>PGDATANEW</envar></term>
+
+     <listitem>
+      <para>
+       新数据库集簇配置目录；选项
+       <option>-D</option>/<option>--new-datadir</option>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><envar>PGPORTOLD</envar></term>
+
+     <listitem>
+      <para>
+       旧集簇端口号；选项
+       <option>-p</option>/<option>--old-port</option>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><envar>PGPORTNEW</envar></term>
+
+     <listitem>
+      <para>
+       新集簇端口号；选项
+       <option>-P</option>/<option>--new-port</option>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><envar>PGSOCKETDIR</envar></term>
+
+     <listitem>
+      <para>
+       升级期间用于 postmaster 套接字的目录；选项
+       <option>-s</option>/<option>--socketdir</option>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><envar>PGUSER</envar></term>
+
+     <listitem>
+      <para>
+       集簇安装用户名称；选项
+       <option>-U</option>/<option>--username</option>。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>注解</title>
+
+  <para>
+   <application>pg_upgrade</application> 会创建各种工作文件，例如模式转储，并将它们存放在
+   新集簇目录下的 <filename>pg_upgrade_output.d</filename> 中。每次运行都会新建一个
+   以 ISO 8601 格式时间戳（<literal>%Y%m%dT%H%M%S</literal>）命名的子目录，其中保存
+   该次运行生成的全部文件。<filename>pg_upgrade_output.d</filename> 及其中的文件会在
+   <application>pg_upgrade</application> 成功完成后被自动删除；但如果出现问题，
+   那里的文件可能提供有用的调试信息。
+  </para>
+
+  <para>
+   <application>pg_upgrade</application> 会在新旧数据目录中启动短生命周期的 postmaster。
+   默认情况下，与这些 postmaster 通信所需的临时 Unix 套接字文件会创建在当前工作目录中。
+   在某些情况下，当前目录的路径名可能太长，无法作为有效的套接字名。此时可以使用
+   <option>-s</option> 选项，将套接字文件放到路径较短的目录中。出于安全考虑，务必确保
+   该目录对其他任何用户都不可读也不可写。（Windows 不支持此功能。）
+  </para>
+
+  <para>
+   凡是会影响你安装环境的失败、重建和重新索引情况，<application>pg_upgrade</application>
+   都会报告；用于重建表和索引的升级后脚本也会自动生成。如果你试图自动化升级很多集簇，
+   你会发现具有相同数据库模式的集簇在所有升级中需要相同的升级后步骤；这是因为升级后步骤
+   依据的是数据库模式，而不是用户数据。
+  </para>
+
+  <para>
+   为了测试部署，请创建旧集簇的纯模式副本，插入虚拟数据，然后对其升级。
+  </para>
+
+  <para>
+   <application>pg_upgrade</application> 不支持升级包含使用下列
+   <type>reg*</type> OID 引用系统数据类型的表列的数据库：
+   <simplelist>
+    <member><type>regcollation</type></member>
+    <member><type>regconfig</type></member>
+    <member><type>regdictionary</type></member>
+    <member><type>regnamespace</type></member>
+    <member><type>regoper</type></member>
+    <member><type>regoperator</type></member>
+    <member><type>regproc</type></member>
+    <member><type>regprocedure</type></member>
+   </simplelist>
+   （<type>regclass</type>、<type>regrole</type> 和 <type>regtype</type> 可以升级。）
+  </para>
+
+  <para>
+   如果你想使用链接模式，又不希望在启动新集簇时修改旧集簇，可以考虑使用克隆模式。
+   如果不可用，可以先复制旧集簇，再对该副本使用链接模式升级。要创建旧集簇的有效副本，
+   可在服务器运行时使用 <command>rsync</command> 创建旧集簇的脏拷贝，然后关闭旧服务器，
+   再运行 <command>rsync --checksum</command>，把所有变更同步到该副本，使其达到一致状态。
+   （之所以需要 <option>--checksum</option>，是因为 <command>rsync</command>
+   对文件修改时间的粒度只有一秒。）你可能还想排除某些文件，例如
+   <filename>postmaster.pid</filename>，如 <xref linkend="backup-lowlevel-base-backup"/> 所述。
+   如果你的文件系统支持文件系统快照或写时复制文件副本，
+   也可以用这些方式备份旧集簇和表空间，不过快照和副本必须同时创建，或者在数据库服务器关闭时创建。
+  </para>
+
+ </refsect1>
+
+ <refsect1>
+  <title>另见</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="app-initdb"/></member>
+   <member><xref linkend="app-pg-ctl"/></member>
+   <member><xref linkend="app-pgdump"/></member>
+   <member><xref linkend="app-postgres"/></member>
+  </simplelist>
+ </refsect1>
+</refentry>

@@ -1,0 +1,222 @@
+<!--
+doc/src/sgml/ref/lock.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-lock">
+ <indexterm zone="sql-lock">
+  <primary>LOCK</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>LOCK</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>LOCK</refname>
+  <refpurpose>锁定表</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+<synopsis>
+LOCK [ TABLE ] [ ONLY ] <replaceable class="parameter">name</replaceable> [ * ] [, ...] [ IN <replaceable class="parameter">lockmode</replaceable> MODE ] [ NOWAIT ]
+
+<phrase>其中 <replaceable class="parameter">lockmode</replaceable> 可以是以下之一：</phrase>
+
+    ACCESS SHARE | ROW SHARE | ROW EXCLUSIVE | SHARE UPDATE EXCLUSIVE
+    | SHARE | SHARE ROW EXCLUSIVE | EXCLUSIVE | ACCESS EXCLUSIVE
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>描述</title>
+
+  <para>
+   <command>LOCK TABLE</command>获取一个表级锁；如有必要，会等待任何冲突锁被释放。
+   如果指定了<literal>NOWAIT</literal>，<command>LOCK TABLE</command>就不会等待获取所需的锁：
+   如果无法立即获得，命令将被中止并报错。锁一旦获得，就会一直持有到当前事务结束。
+   （没有<command>UNLOCK TABLE</command>命令；锁总是在事务结束时释放。）
+  </para>
+
+  <para>
+   锁定一个视图时，出现在该视图定义查询中的所有关系也会以相同的锁模式递归地被锁定。
+  </para>
+
+  <para>
+   在为引用表的命令自动获取锁时，
+   <productname>PostgreSQL</productname>总是尽可能使用限制最少的锁模式。
+   <command>LOCK TABLE</command>适用于可能需要更严格锁定的场景。
+   例如，假设某个应用在<literal>READ COMMITTED</literal>隔离级别下运行事务，
+   并且需要确保某个表中的数据在整个事务期间保持稳定。要做到这一点，
+   可以在查询之前先对该表获取<literal>SHARE</literal>锁模式。
+   这样可以阻止并发的数据更改，并确保后续对该表的读取看到已提交数据的稳定视图，
+   因为<literal>SHARE</literal>锁模式与写入者获取的<literal>ROW EXCLUSIVE</literal>锁冲突，
+   而<command>LOCK TABLE <replaceable
+   class="parameter">name</replaceable> IN SHARE MODE</command>
+   语句会一直等待，直到任何并发持有<literal>ROW EXCLUSIVE</literal>模式锁的事务提交或回滚。
+   因此，一旦获得该锁，就不存在尚未提交的写入；而且在释放该锁之前，也不会有新的写入开始。
+  </para>
+
+  <para>
+   若要在<literal>REPEATABLE READ</literal>或<literal>SERIALIZABLE</literal>
+   隔离级别的事务中达到类似效果，你必须在执行任何<command>SELECT</command>
+   或数据修改语句之前执行<command>LOCK TABLE</command>语句。
+   <literal>REPEATABLE READ</literal>或<literal>SERIALIZABLE</literal>事务的数据视图，
+   会在其第一条<command>SELECT</command>或数据修改语句开始时冻结。
+   在事务稍后再执行<command>LOCK TABLE</command>仍然可以阻止并发写入
+   &mdash; 但它不能保证该事务读取到的是最新已提交的值。
+  </para>
+
+  <para>
+   如果这类事务还要修改表中的数据，那么它应使用<literal>SHARE ROW EXCLUSIVE</literal>锁模式，
+   而不是<literal>SHARE</literal>模式。这样可以确保同一时间只有一个这类事务在运行。
+   否则就可能发生死锁：两个事务都可能先获得<literal>SHARE</literal>模式，
+   然后都无法再获得实际执行更新所需的<literal>ROW EXCLUSIVE</literal>模式。
+   （注意，事务自己的锁永远不会互相冲突，因此事务在持有<literal>SHARE</literal>模式时仍可获得
+   <literal>ROW EXCLUSIVE</literal>模式，但前提是没有其他人持有<literal>SHARE</literal>模式。）
+   为避免死锁，要确保所有事务都按相同顺序对相同对象获取锁；如果同一对象需要多种锁模式，
+   则事务应始终先获取限制最严格的模式。
+  </para>
+
+  <para>
+   关于锁模式和锁策略的更多信息，请参见<xref linkend="explicit-locking"/>。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>参数</title>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-lock-varlistentry-1">
+    <term><replaceable class="parameter">name</replaceable></term>
+    <listitem>
+     <para>
+      要锁定的现有表的名称（可选模式限定）。如果在表名前指定了
+      <literal>ONLY</literal>，则只有该表会被锁定。如果未指定<literal>ONLY</literal>，
+      则该表及其所有后代表（如果有）都会被锁定。也可以在表名后指定<literal>*</literal>，
+      以显式表明包含后代表。
+     </para>
+
+     <para>
+      命令<literal>LOCK TABLE a, b;</literal>等效于
+      <literal>LOCK TABLE a; LOCK TABLE b;</literal>。这些表会按
+      <command>LOCK TABLE</command>命令中指定的顺序逐个锁定。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-lock-varlistentry-2">
+    <term><replaceable class="parameter">lockmode</replaceable></term>
+    <listitem>
+     <para>
+      锁模式指定该锁会与哪些锁冲突。锁模式见<xref linkend="explicit-locking"/>。
+     </para>
+
+     <para>
+      如果未指定锁模式，则使用限制最严格的<literal>ACCESS EXCLUSIVE</literal>模式。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-lock-varlistentry-3">
+    <term><literal>NOWAIT</literal></term>
+    <listitem>
+     <para>
+      指定<command>LOCK TABLE</command>不等待任何冲突锁被释放：
+      如果指定的锁无法在不等待的情况下立即获得，事务就会中止。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>注解</title>
+
+  <para>
+   要锁定一个表，用户必须拥有与所指定<replaceable class="parameter">lockmode</replaceable>对应的权限。
+   如果用户在该表上拥有<literal>MAINTAIN</literal>、<literal>UPDATE</literal>、
+   <literal>DELETE</literal>或<literal>TRUNCATE</literal>权限，则允许使用任意
+   <replaceable class="parameter">lockmode</replaceable>。
+   如果用户在该表上拥有<literal>INSERT</literal>权限，则允许使用<literal>ROW EXCLUSIVE MODE</literal>
+   （或冲突更少的锁模式，见<xref linkend="explicit-locking"/>）。
+   如果用户在该表上拥有<literal>SELECT</literal>权限，则允许使用<literal>ACCESS SHARE MODE</literal>。
+  </para>
+
+   <para>
+    在视图上执行锁定操作的用户必须对该视图拥有相应权限。此外，默认情况下，
+    视图所有者必须对底层基关系拥有相关权限，而执行锁定操作的用户不需要对底层基关系拥有任何权限。
+    但是，如果视图的<literal>security_invoker</literal>设置为<literal>true</literal>
+    （参见<link linkend="sql-createview"><command>CREATE VIEW</command></link>），
+    那么必须由执行锁定操作的用户而不是视图所有者，对底层基关系拥有相关权限。
+   </para>
+
+   <para>
+    <command>LOCK TABLE</command>在事务块外毫无用处：锁只会一直持有到该语句结束。
+    因此，如果在事务块外使用<command>LOCK</command>，<productname>PostgreSQL</productname>会报告错误。
+    请使用<link linkend="sql-begin"><command>BEGIN</command></link>和
+    <link linkend="sql-commit"><command>COMMIT</command></link>
+    （或<link linkend="sql-rollback"><command>ROLLBACK</command></link>）来定义事务块。
+   </para>
+
+  <para>
+   <command>LOCK TABLE</command>只处理表级锁，因此名称中带有<literal>ROW</literal>的模式其实都不准确。
+   这些模式名称通常应理解为：用户打算在被锁定的表中获取行级锁。
+   此外，<literal>ROW EXCLUSIVE</literal>模式本身也是一种可共享的表锁。
+   请记住，就<command>LOCK TABLE</command>而言，所有锁模式的语义完全相同，
+   差别只在于哪些模式彼此冲突。关于如何获取真正的行级锁，请参阅
+   <xref linkend="sql-select"/>文档中的<xref linkend="locking-rows"/>和
+   <xref linkend="sql-for-update-share"/>。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>示例</title>
+
+  <para>
+   在准备向外键表执行插入时，在主键表上获取一个<literal>SHARE</literal>锁：
+
+<programlisting>
+BEGIN WORK;
+LOCK TABLE films IN SHARE MODE;
+SELECT id FROM films
+    WHERE name = 'Star Wars: Episode I - The Phantom Menace';
+-- 如果未返回记录则执行 ROLLBACK
+INSERT INTO films_user_comments VALUES
+    (_id_, 'GREAT! I was waiting for it for so long!');
+COMMIT WORK;
+</programlisting>
+  </para>
+
+  <para>
+   在准备执行删除操作时，在主键表上获取一个<literal>SHARE ROW EXCLUSIVE</literal>锁：
+
+<programlisting>
+BEGIN WORK;
+LOCK TABLE films IN SHARE ROW EXCLUSIVE MODE;
+DELETE FROM films_user_comments WHERE id IN
+    (SELECT id FROM films WHERE rating &lt; 5);
+DELETE FROM films WHERE rating &lt; 5;
+COMMIT WORK;
+</programlisting></para>
+ </refsect1>
+
+ <refsect1>
+  <title>兼容性</title>
+
+  <para>
+   SQL 标准中没有<command>LOCK TABLE</command>，而是使用<command>SET TRANSACTION</command>
+   来指定事务的并发级别。<productname>PostgreSQL</productname>也支持这一点；详见
+   <xref linkend="sql-set-transaction"/>。
+  </para>
+
+  <para>
+   除<literal>ACCESS SHARE</literal>、<literal>ACCESS EXCLUSIVE</literal>和
+   <literal>SHARE UPDATE EXCLUSIVE</literal>锁模式外，
+   <productname>PostgreSQL</productname>的锁模式和<command>LOCK TABLE</command>语法
+   与<productname>Oracle</productname>中的对应语法兼容。
+  </para>
+ </refsect1>
+</refentry>

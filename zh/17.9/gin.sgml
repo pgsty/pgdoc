@@ -1,0 +1,576 @@
+<!-- doc/src/sgml/gin.sgml -->
+
+<sect1 id="gin">
+<title>GIN 索引</title>
+
+   <indexterm>
+    <primary>索引</primary>
+    <secondary>GIN</secondary>
+   </indexterm>
+
+<sect2 id="gin-intro">
+ <title>简介</title>
+
+ <para>
+  <acronym>GIN</acronym> 是 Generalized Inverted Index（通用倒排索引）的缩写。
+  <acronym>GIN</acronym> 被设计用于处理这样一类情况：要建立索引的项是组合值，
+  而索引需要处理的查询则要搜索出现在这些组合项内部的元素值。例如，这些项可以是文档，
+  而查询可以是搜索包含特定词语的文档。
+ </para>
+
+ <para>
+  我们用<firstterm>项</firstterm>来指代要被索引的组合值，用<firstterm>键</firstterm>来指代其中的元素值。
+  <acronym>GIN</acronym> 总是存储并搜索键，而不是项值本身。
+ </para>
+
+ <para>
+  <acronym>GIN</acronym> 索引存储一组（键，倒排列表）对，其中一个<firstterm>倒排列表</firstterm>（posting list）
+  是一个包含出现该键的行 ID 的集合。由于一个项可以包含多个键，同一个行 ID 可以出现在多个倒排列表中。
+  每个键值只会被存储一次，因此在同一个键大量重复出现的场景下，
+  <acronym>GIN</acronym> 索引会非常紧凑。
+ </para>
+
+ <para>
+  <acronym>GIN</acronym> 之所以是通用的，是因为 <acronym>GIN</acronym> 访问方法的代码
+  不需要知道它所加速的具体操作。相反，它使用为特定数据类型定义的自定义策略。
+  该策略定义了如何从被索引项和查询条件中提取键，以及如何判断一个包含查询中某些键值的行
+  是否真正满足该查询。
+ </para>
+
+ <para>
+  <acronym>GIN</acronym> 的一个优点在于，它允许由数据类型所属领域的专家来开发带有合适访问方法的自定义数据类型，
+  而不必依赖数据库专家。这一点与使用 <acronym>GiST</acronym> 的优势非常相似。
+ </para>
+
+ <para>
+  <productname>PostgreSQL</productname> 中的 <acronym>GIN</acronym> 实现主要由
+  Teodor Sigaev 和 Oleg Bartunov 维护。关于 <acronym>GIN</acronym> 的更多信息，
+  可在他们的 <ulink url="http://www.sai.msu.su/~megera/wiki/Gin">网站</ulink> 上找到。
+ </para>
+</sect2>
+
+<sect2 id="gin-builtin-opclasses">
+ <title>内置操作符类</title>
+
+ <para>
+  <productname>PostgreSQL</productname> 核心发布包含
+  <xref linkend="gin-builtin-opclasses-table"/> 所示的 <acronym>GIN</acronym> 操作符类。
+  （在 <xref linkend="contrib"/> 中描述的一些可选模块还提供额外的 <acronym>GIN</acronym> 操作符类。）
+ </para>
+
+  <table id="gin-builtin-opclasses-table">
+   <title>内置 <acronym>GIN</acronym> 操作符类</title>
+   <tgroup cols="2">
+    <thead>
+     <row>
+      <entry>名称</entry>
+      <entry>可索引操作符</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry morerows="3" valign="middle"><literal>array_ops</literal></entry>
+      <entry><literal>&amp;&amp; (anyarray,anyarray)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>@&gt; (anyarray,anyarray)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>&lt;@ (anyarray,anyarray)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>= (anyarray,anyarray)</literal></entry>
+     </row>
+     <row>
+      <entry morerows="5" valign="middle"><literal>jsonb_ops</literal></entry>
+      <entry><literal>@&gt; (jsonb,jsonb)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>@? (jsonb,jsonpath)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>@@ (jsonb,jsonpath)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>? (jsonb,text)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>?| (jsonb,text[])</literal></entry>
+     </row>
+     <row>
+      <entry><literal>?&amp; (jsonb,text[])</literal></entry>
+     </row>
+     <row>
+      <entry morerows="2" valign="middle"><literal>jsonb_path_ops</literal></entry>
+      <entry><literal>@&gt; (jsonb,jsonb)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>@? (jsonb,jsonpath)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>@@ (jsonb,jsonpath)</literal></entry>
+     </row>
+     <row>
+      <entry valign="middle"><literal>tsvector_ops</literal></entry>
+      <entry><literal>@@ (tsvector,tsquery)</literal></entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+ <para>
+  在用于类型 <type>jsonb</type> 的两个操作符类中，<literal>jsonb_ops</literal>
+  是默认项。<literal>jsonb_path_ops</literal> 支持的操作符较少，但对这些操作符提供更好的性能。
+  详见 <xref linkend="json-indexing"/>。
+ </para>
+
+</sect2>
+
+<sect2 id="gin-extensibility">
+ <title>可扩展性</title>
+
+ <para>
+   <acronym>GIN</acronym> 接口具有很高的抽象层次，访问方法实现者只需实现所访问数据类型的语义。
+   <acronym>GIN</acronym> 层本身会处理并发、日志记录以及树结构的搜索。
+ </para>
+
+ <para>
+   要让一个 <acronym>GIN</acronym> 访问方法工作起来，只需实现少数几个用户定义的方法，
+   它们定义了树中键的行为，以及键、被索引项和可索引查询之间的关系。简言之，
+   <acronym>GIN</acronym> 将可扩展性与通用性、代码重用以及清晰的接口结合在一起。
+ </para>
+
+ <para>
+   <acronym>GIN</acronym> 操作符类必须提供两个方法：
+
+  <variablelist>
+    <varlistentry id="zh18-auto-gin-varlistentry-1">
+     <term><function>Datum *extractValue(Datum itemValue, int32 *nkeys,
+        bool **nullFlags)</function></term>
+     <listitem>
+      <para>
+       给定一个要建立索引的项，返回一个用 palloc 分配的键数组。返回键的数量必须存入
+       <literal>*nkeys</literal>。如果任一键可以为 null，还要另外 palloc 一个包含
+       <literal>*nkeys</literal> 个 <type>bool</type> 字段的数组，将其地址存入
+       <literal>*nullFlags</literal>，并按需设置这些空值标志。如果所有键都非空，
+       <literal>*nullFlags</literal> 可以保持为 <symbol>NULL</symbol>（其初始值）。
+       如果该项不包含任何键，则返回值可以为 <symbol>NULL</symbol>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gin-varlistentry-2">
+     <term><function>Datum *extractQuery(Datum query, int32 *nkeys,
+        StrategyNumber n, bool **pmatch, Pointer **extra_data,
+        bool **nullFlags, int32 *searchMode)</function></term>
+     <listitem>
+      <para>
+       给定一个待查询的值，返回一个用 palloc 分配的键数组；也就是说，
+       <literal>query</literal> 是一个可索引操作符右侧的值，而该操作符左侧是被索引列。
+       <literal>n</literal> 是该操作符在操作符类中的策略号（见 <xref linkend="xindex-strategies"/>）。
+       通常，<function>extractQuery</function> 需要查看 <literal>n</literal>，以确定
+       <literal>query</literal> 的数据类型，以及应采用何种方法提取键值。返回键的数量必须存入
+       <literal>*nkeys</literal>。如果任一键可以为 null，还要另外 palloc 一个包含
+       <literal>*nkeys</literal> 个 <type>bool</type> 字段的数组，将其地址存入
+       <literal>*nullFlags</literal>，并按需设置这些空值标志。如果所有键都非空，
+       <literal>*nullFlags</literal> 可以保持为 <symbol>NULL</symbol>（其初始值）。
+       如果 <literal>query</literal> 不包含任何键，则返回值可以为 <symbol>NULL</symbol>。
+      </para>
+
+      <para>
+       <literal>searchMode</literal> 是一个输出参数，用于让 <function>extractQuery</function>
+       指定搜索如何执行。若 <literal>*searchMode</literal> 被设置为
+       <literal>GIN_SEARCH_MODE_DEFAULT</literal>（调用前它会被初始化为该值），
+       则只有至少匹配一个返回键的项才会被视为候选匹配。若 <literal>*searchMode</literal>
+       被设置为 <literal>GIN_SEARCH_MODE_INCLUDE_EMPTY</literal>，则除至少包含一个匹配键的项之外，
+       完全不含任何键的项也会被视为候选匹配。（例如，该模式对于实现<quote>是子集</quote>操作符很有用。）
+       若 <literal>*searchMode</literal> 被设置为 <literal>GIN_SEARCH_MODE_ALL</literal>，
+       则索引中所有非空项都会被视为候选匹配，无论它们是否匹配任一返回键。
+       （该模式比前两种选择慢得多，因为它基本上需要扫描整个索引；但为了正确处理某些边界情况，
+       可能有此必要。在大多数情况下都需要此模式的操作符，大概并不适合作为
+       <acronym>GIN</acronym> 操作符类的候选。）用于设置该模式的符号定义在
+       <filename>access/gin.h</filename> 中。
+      </para>
+
+      <para>
+       <literal>pmatch</literal> 是一个在支持部分匹配时使用的输出参数。要使用它，
+       <function>extractQuery</function> 必须分配一个包含 <literal>*nkeys</literal> 个
+       <type>bool</type> 的数组，并将其地址存入 <literal>*pmatch</literal>。若相应键需要部分匹配，
+       则数组对应元素应设置为 true，否则设置为 false。如果 <literal>*pmatch</literal>
+       被设置为 <symbol>NULL</symbol>，那么 <acronym>GIN</acronym> 认为不需要部分匹配。
+       该变量在调用前会初始化为 <symbol>NULL</symbol>，因此不支持部分匹配的操作符类可以直接忽略此参数。
+      </para>
+
+      <para>
+       <literal>extra_data</literal> 是一个输出参数，用于让 <function>extractQuery</function>
+       向 <function>consistent</function> 和 <function>comparePartial</function> 方法传递额外数据。
+       要使用它，<function>extractQuery</function> 必须分配一个包含 <literal>*nkeys</literal>
+       个指针的数组，并将其地址存入 <literal>*extra_data</literal>，然后把所需内容存入各个指针。
+       该变量在调用前会初始化为 <symbol>NULL</symbol>，因此不需要额外数据的操作符类可以直接忽略此参数。
+       如果设置了 <literal>*extra_data</literal>，则整个数组会传给 <function>consistent</function>
+       方法，而对应元素会传给 <function>comparePartial</function> 方法。
+      </para>
+
+     </listitem>
+    </varlistentry>
+  </variablelist>
+
+  操作符类还必须提供一个函数，用于检查被索引项是否匹配查询。它有两种形式：布尔型
+  <function>consistent</function> 函数，以及三值型 <function>triConsistent</function> 函数。
+  <function>triConsistent</function> 覆盖了两者的功能，因此仅提供 <function>triConsistent</function>
+  就已经足够。不过，如果布尔变体的计算明显更便宜，那么同时提供两者会更有利。
+  若只提供布尔变体，则一些依赖于在取回所有键之前先排除索引项的优化将被禁用。
+
+  <variablelist>
+    <varlistentry id="zh18-auto-gin-varlistentry-3">
+     <term><function>bool consistent(bool check[], StrategyNumber n, Datum query,
+        int32 nkeys, Pointer extra_data[], bool *recheck,
+        Datum queryKeys[], bool nullFlags[])</function></term>
+     <listitem>
+      <para>
+       如果被索引项满足策略号为 <literal>n</literal> 的查询操作符，则返回 true；
+       如果同时返回需要复核的指示，那么 true 也可以只表示它<quote>可能满足</quote>。
+       该函数无法直接访问被索引项的值，因为 <acronym>GIN</acronym> 并不显式存储项。
+       它所能利用的是这样一种信息：从查询中提取出的哪些键值出现在给定的被索引项中。
+       <literal>check</literal> 数组长度为 <literal>nkeys</literal>，这与先前针对该
+       <literal>query</literal> 数据由 <function>extractQuery</function> 返回的键数量相同。
+       如果被索引项包含相应查询键，则 <literal>check</literal> 数组中的对应元素为 true；
+       也就是说，如果 <literal>check[i] == true</literal>，则 <function>extractQuery</function>
+       结果数组中的第 i 个键存在于该被索引项中。传入原始 <literal>query</literal> 数据值，
+       是为了让 <function>consistent</function> 方法在需要时可以查看它；同样也会传入先前由
+       <function>extractQuery</function> 返回的 <literal>queryKeys[]</literal> 和
+       <literal>nullFlags[]</literal> 数组。<literal>extra_data</literal> 则是
+       <function>extractQuery</function> 返回的额外数据数组，如果没有则为 <symbol>NULL</symbol>。
+      </para>
+
+      <para>
+       当 <function>extractQuery</function> 在 <literal>queryKeys[]</literal> 中返回一个 null 键时，
+       若被索引项包含 null 键，则对应的 <literal>check[]</literal> 元素为 true；也就是说，
+       <literal>check[]</literal> 的语义类似于 <literal>IS NOT DISTINCT FROM</literal>。
+       如果 <function>consistent</function> 函数需要区分普通值匹配与 null 匹配，
+       它可以检查对应的 <literal>nullFlags[]</literal> 元素。
+      </para>
+
+      <para>
+       成功时，如果需要根据查询操作符重新检查堆元组，则 <literal>*recheck</literal> 应设置为 true；
+       如果索引测试是精确的，则设置为 false。也就是说，返回 false 保证该堆元组不匹配查询；
+       返回 true 且 <literal>*recheck</literal> 为 false 保证该堆元组匹配查询；
+       返回 true 且 <literal>*recheck</literal> 为 true 则表示该堆元组可能匹配查询，
+       因此需要取出该元组，并直接对最初被索引的项值重新计算查询操作符以完成复核。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-gin-varlistentry-4">
+     <term><function>GinTernaryValue triConsistent(GinTernaryValue check[], StrategyNumber n, Datum query,
+        int32 nkeys, Pointer extra_data[],
+        Datum queryKeys[], bool nullFlags[])</function></term>
+     <listitem>
+      <para>
+       <function>triConsistent</function> 与 <function>consistent</function> 类似，不过
+       <literal>check</literal> 向量中的元素不是布尔值，而是每个键都有三种可能的值：
+       <literal>GIN_TRUE</literal>、<literal>GIN_FALSE</literal> 和 <literal>GIN_MAYBE</literal>。
+       <literal>GIN_FALSE</literal> 和 <literal>GIN_TRUE</literal> 与普通布尔值含义相同，
+       而 <literal>GIN_MAYBE</literal> 表示该键是否存在尚不确定。存在 <literal>GIN_MAYBE</literal>
+       值时，只有当无论索引项是否包含对应查询键，该项都确定匹配时，函数才应返回
+       <literal>GIN_TRUE</literal>。同样，只有当无论是否包含 <literal>GIN_MAYBE</literal> 键，
+       该项都确定不匹配时，函数才必须返回 <literal>GIN_FALSE</literal>。如果结果依赖于
+       <literal>GIN_MAYBE</literal> 条目，也就是说，无法根据已知的查询键确认或否定匹配，
+       则函数必须返回 <literal>GIN_MAYBE</literal>。
+      </para>
+      <para>
+       当 <literal>check</literal> 向量中没有 <literal>GIN_MAYBE</literal> 值时，
+       返回 <literal>GIN_MAYBE</literal> 等价于在布尔型 <function>consistent</function>
+       函数中设置 <literal>recheck</literal> 标志。
+      </para>
+     </listitem>
+    </varlistentry>
+  </variablelist>
+ </para>
+
+ <para>
+  此外，<acronym>GIN</acronym> 必须有一种方法对存储在索引中的键值进行排序。
+  操作符类可以通过指定一个比较方法来定义这种排序顺序：
+
+  <variablelist>
+    <varlistentry id="zh18-auto-gin-varlistentry-5">
+     <term><function>int compare(Datum a, Datum b)</function></term>
+     <listitem>
+      <para>
+       比较两个键（不是被索引项！），并返回一个整数：小于零、等于零或大于零，
+       分别表示第一个键小于、等于或大于第二个键。null 键绝不会被传递给这个函数。
+      </para>
+     </listitem>
+    </varlistentry>
+  </variablelist>
+
+  或者，如果操作符类没有提供 <function>compare</function> 方法，<acronym>GIN</acronym>
+  将查找该索引键数据类型的默认 B-树操作符类，并使用其比较函数。建议在仅面向单一数据类型的
+  <acronym>GIN</acronym> 操作符类中显式指定比较函数，因为查找 B-树操作符类会消耗少量周期。
+  不过，多态 <acronym>GIN</acronym> 操作符类（例如 <literal>array_ops</literal>）通常无法指定单一比较函数。
+ </para>
+
+ <para>
+  用于 <acronym>GIN</acronym> 的操作符类还可以选择性提供下列方法：
+
+  <variablelist>
+    <varlistentry id="zh18-auto-gin-varlistentry-6">
+     <term><function>int comparePartial(Datum partial_key, Datum key, StrategyNumber n,
+                              Pointer extra_data)</function></term>
+     <listitem>
+      <para>
+       比较部分匹配查询键与索引键。返回一个整数，其符号表示结果：小于零表示索引键不匹配查询，
+       但索引扫描应继续；零表示索引键匹配查询；大于零表示索引扫描应停止，因为后续不可能再有匹配项。
+       产生该部分匹配查询的操作符的策略号 <literal>n</literal> 会被传入，以便在需要其语义来决定何时结束扫描时使用。
+       另外，<literal>extra_data</literal> 是由 <function>extractQuery</function> 生成的额外数据数组中的对应元素，
+       如果没有则为 <symbol>NULL</symbol>。null 键绝不会被传递给这个函数。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry id="zh18-auto-gin-varlistentry-7">
+     <term><function>void options(local_relopts *relopts)</function></term>
+     <listitem>
+      <para>
+       定义一组用户可见的参数，用于控制操作符类行为。
+      </para>
+
+      <para>
+       <function>options</function> 函数会接收一个指向 <structname>local_relopts</structname>
+       结构的指针，需要用一组特定于操作符类的选项填充它。这些选项可通过
+       <literal>PG_HAS_OPCLASS_OPTIONS()</literal> 和 <literal>PG_GET_OPCLASS_OPTIONS()</literal>
+       宏，在其他支持函数中访问。
+      </para>
+
+      <para>
+       由于被索引值的键提取方式以及键在 <acronym>GIN</acronym> 中的表示都很灵活，
+       它们可能依赖用户指定的参数。
+      </para>
+     </listitem>
+    </varlistentry>
+  </variablelist>
+ </para>
+
+ <para>
+  要支持<quote>部分匹配</quote>查询，操作符类必须提供 <function>comparePartial</function> 方法，
+  并且其 <function>extractQuery</function> 方法在遇到部分匹配查询时必须设置
+  <literal>pmatch</literal> 参数。详见 <xref linkend="gin-partial-match"/>。
+ </para>
+
+ <para>
+  上文提到的各种 <literal>Datum</literal> 值，其实际数据类型会因操作符类而异。
+  传给 <function>extractValue</function> 的项值始终是该操作符类的输入类型，而所有键值都必须是该类的
+  <literal>STORAGE</literal> 类型。传给 <function>extractQuery</function>、
+  <function>consistent</function> 和 <function>triConsistent</function> 的
+  <literal>query</literal> 参数类型，是由该策略号标识的类成员操作符右侧输入类型。
+  只要能够从中提取出正确类型的键值，它就不必与被索引类型相同。不过，建议在这三个支持函数的
+  SQL 声明中，对 <literal>query</literal> 参数使用该操作符类的被索引数据类型，
+  尽管依据具体操作符，实际类型可能是别的类型。
+ </para>
+
+</sect2>
+
+<sect2 id="gin-implementation">
+ <title>实现</title>
+
+ <para>
+  在内部，一个 <acronym>GIN</acronym> 索引包含一个基于键构建的 B-树索引，其中每个键都是一个或多个被索引项中的某个元素
+  （例如数组成员），而叶子页中的每个元组要么包含一个指向堆指针 B-树的指针（<quote>posting tree</quote>），
+  要么在列表足够小、能够连同键值一起放入单个索引元组时，直接包含一个简单的堆指针列表（<quote>posting list</quote>）。
+  <xref linkend="gin-internals-figure"/> 展示了 <acronym>GIN</acronym> 索引的这些组成部分。
+ </para>
+
+ <para>
+  从 <productname>PostgreSQL</productname> 9.1 开始，索引中可以包含 null 键值。
+  此外，对于那些自身为 null，或按照 <function>extractValue</function> 的定义不包含任何键的被索引项，
+  索引中也会包含占位符 null 值。这样一来，应该找到空项的搜索就能够找到它们。
+ </para>
+
+ <para>
+  多列 <acronym>GIN</acronym> 索引的实现方式，是在组合值（列号，键值）之上构建一个单独的 B-树。
+  不同列的键值可以具有不同类型。
+ </para>
+
+ <figure id="gin-internals-figure">
+  <title>GIN 内部结构</title>
+  <mediaobject>
+   <imageobject>
+    <imagedata fileref="images/gin.svg" format="SVG" width="100%"/>
+   </imageobject>
+  </mediaobject>
+ </figure>
+
+ <sect3 id="gin-fast-update">
+  <title>GIN 快速更新技术</title>
+
+  <para>
+   由于倒排索引的内在性质，更新 <acronym>GIN</acronym> 索引往往比较慢：插入或更新一个堆元组，
+   可能会导致向索引中执行多次插入（从被索引项中提取出的每个键都要插入一次）。
+   <acronym>GIN</acronym> 可以通过把新元组插入一个临时的、未排序的待处理列表，
+   来推迟其中的大部分工作。当表被清理或自动分析时，或者调用
+   <function>gin_clean_pending_list</function> 函数时，又或者待处理列表增长到大于
+   <xref linkend="guc-gin-pending-list-limit"/> 时，这些项就会被移入主要的
+   <acronym>GIN</acronym> 数据结构中，所用的是与初始索引创建时相同的批量插入技术。
+   即便把额外的清理开销计算在内，这也会大幅提高 <acronym>GIN</acronym> 索引的更新速度。
+   此外，这部分开销工作还可以由后台进程完成，而不是在前台查询处理过程中完成。
+  </para>
+
+  <para>
+   这种方法的主要缺点是，搜索除了要查找常规索引之外，还必须扫描待处理列表，
+   因此大型待处理列表会显著拖慢搜索。另一个缺点是，虽然大多数更新都很快，
+   但一旦某次更新使待处理列表变得<quote>过大</quote>，就会立刻触发一次清理周期，
+   因此该次更新会比其他更新慢得多。恰当地使用自动清理可以将这两个问题都尽量减轻。
+  </para>
+
+  <para>
+   如果一致的响应时间比更新速度更重要，可以通过关闭 <acronym>GIN</acronym> 索引的
+   <literal>fastupdate</literal> 存储参数来禁用待处理列表机制。详见
+   <xref linkend="sql-createindex"/>。
+  </para>
+ </sect3>
+
+ <sect3 id="gin-partial-match">
+  <title>部分匹配算法</title>
+
+  <para>
+   <acronym>GIN</acronym> 可以支持<quote>部分匹配</quote>查询。在这种查询中，
+   查询无法确定一个或多个键的精确匹配，但可能的匹配会落在一个相对狭窄的键值范围内
+   （该范围位于由 <function>compare</function> 支持方法确定的键排序顺序中）。
+   <function>extractQuery</function> 方法不是返回一个要精确匹配的键值，
+   而是返回待搜索范围的下界键值，并将 <literal>pmatch</literal> 标志设为 true。
+   随后使用 <function>comparePartial</function> 方法扫描该键范围。
+   对于匹配的索引键，<function>comparePartial</function> 必须返回零；
+   对于虽然不匹配但仍处在待搜索范围内的索引键，返回小于零；
+   如果索引键已经超出了可能匹配的范围，则返回大于零。
+  </para>
+ </sect3>
+
+</sect2>
+
+<sect2 id="gin-tips">
+<title>GIN 提示和技巧</title>
+
+ <variablelist>
+  <varlistentry id="zh18-auto-gin-varlistentry-8">
+   <term>创建与插入</term>
+   <listitem>
+    <para>
+     向 <acronym>GIN</acronym> 索引插入数据可能较慢，因为每个项很可能需要插入许多键。
+     因此，对于向表中执行的批量插入，建议先删除 GIN 索引，待批量插入完成后再重建它。
+    </para>
+
+    <para>
+     当为 <acronym>GIN</acronym> 启用 <literal>fastupdate</literal> 时
+     （详见 <xref linkend="gin-fast-update"/>），这种代价会比未启用时小一些。
+     但对于非常大的更新，最好仍然是删除并重建索引。
+    </para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-gin-varlistentry-9">
+   <term><xref linkend="guc-maintenance-work-mem"/></term>
+   <listitem>
+    <para>
+     <acronym>GIN</acronym> 索引的构建时间对 <varname>maintenance_work_mem</varname>
+     设置非常敏感；在创建索引时节省工作内存并不划算。
+    </para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-gin-varlistentry-10">
+   <term><xref linkend="guc-gin-pending-list-limit"/></term>
+   <listitem>
+    <para>
+     在对现有 <acronym>GIN</acronym> 索引执行一系列插入且其 <literal>fastupdate</literal>
+     已启用时，系统会在待处理列表增长到超过 <varname>gin_pending_list_limit</varname> 时清理该列表。
+     为避免观测到的响应时间波动，最好让待处理列表的清理在后台发生（即通过自动清理）。
+     可以通过增大 <varname>gin_pending_list_limit</varname> 或让自动清理更积极，
+     来避免前台清理操作。不过，提高清理触发阈值也意味着，一旦确实发生前台清理，耗时会更长。
+    </para>
+    <para>
+     可以通过更改存储参数为单个 <acronym>GIN</acronym> 索引覆盖
+     <varname>gin_pending_list_limit</varname>，从而让每个 <acronym>GIN</acronym> 索引拥有自己的清理阈值。
+     例如，可以只提高那些更新很频繁的 <acronym>GIN</acronym> 索引的阈值，而把其他索引的阈值调低。
+    </para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-gin-varlistentry-11">
+   <term><xref linkend="guc-gin-fuzzy-search-limit"/></term>
+   <listitem>
+    <para>
+     开发 <acronym>GIN</acronym> 索引的主要目标，是为 <productname>PostgreSQL</productname>
+     中高度可伸缩的全文检索提供支持，而全文检索返回一个非常大的结果集的情况也很常见。
+     此外，当查询包含非常常见的词时，通常也会出现这种情况，以至于这个大型结果集本身并无多大用处。
+     由于从磁盘读取大量元组并对其排序可能需要很长时间，这在生产环境中是不可接受的。
+     （注意，索引搜索本身是非常快的。）
+    </para>
+    <para>
+     为了便于受控地执行这类查询，<acronym>GIN</acronym> 对返回行数设置了一个可配置的软上限，
+     即配置参数 <varname>gin_fuzzy_search_limit</varname>。默认值为 0（表示无限制）。
+     如果设置了非零限制，那么返回集合将是整个结果集的一个随机子集。
+    </para>
+    <para>
+     <quote>软</quote>的意思是，实际返回结果的数量可能会与指定的限制略有不同，
+     这取决于查询以及系统随机数生成器的质量。
+    </para>
+    <para>
+     根据经验，数千量级的值（例如 5000 &mdash; 20000）效果不错。
+    </para>
+   </listitem>
+  </varlistentry>
+ </variablelist>
+
+</sect2>
+
+<sect2 id="gin-limit">
+ <title>限制</title>
+
+ <para>
+  <acronym>GIN</acronym> 假定可索引操作符是严格的。这意味着，当项值为 null 时，
+  根本不会对其调用 <function>extractValue</function>（而是自动创建一个占位符索引项）；
+  当查询值为 null 时，也不会调用 <function>extractQuery</function>（而是认为该查询不可满足）。
+  不过要注意，非空组合项或查询值内部包含的 null 键值仍然受支持。
+ </para>
+</sect2>
+
+<sect2 id="gin-examples">
+ <title>示例</title>
+
+ <para>
+  <productname>PostgreSQL</productname> 核心发布包含前面在
+  <xref linkend="gin-builtin-opclasses-table"/> 中展示过的 <acronym>GIN</acronym> 操作符类。
+  下列 <filename>contrib</filename> 模块也包含 <acronym>GIN</acronym> 操作符类：
+
+ <variablelist>
+  <varlistentry id="zh18-auto-gin-varlistentry-12">
+   <term><filename>btree_gin</filename></term>
+   <listitem>
+    <para>为若干数据类型提供等效于 B-树的功能</para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-gin-varlistentry-13">
+   <term><filename>hstore</filename></term>
+   <listitem>
+    <para>用于存储（键，值）对的模块</para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-gin-varlistentry-14">
+   <term><filename>intarray</filename></term>
+   <listitem>
+    <para>对 <type>int[]</type> 的增强支持</para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry id="zh18-auto-gin-varlistentry-15">
+   <term><filename>pg_trgm</filename></term>
+   <listitem>
+    <para>基于三元组匹配的文本相似度</para>
+   </listitem>
+  </varlistentry>
+ </variablelist>
+ </para>
+</sect2>
+
+</sect1>

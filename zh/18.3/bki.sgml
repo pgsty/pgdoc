@@ -1,0 +1,641 @@
+<!-- doc/src/sgml/bki.sgml -->
+
+<chapter id="bki">
+ <title>系统目录声明与初始内容</title>
+
+ <para>
+  <productname>PostgreSQL</productname>使用许多不同的系统目录来跟踪数据库对象（例如表和函数）的存在及其属性。系统目录与普通用户表在物理上没有区别，但后端 C 代码知道每个目录的结构和属性，并且能够在较低层次上直接操作它。因此，例如，试图在运行中修改某个目录的结构并不可取；那会破坏 C 代码中关于目录行布局方式的既有假设。不过，目录的结构可能会在主版本之间发生变化。
+ </para>
+
+ <para>
+  目录的结构声明在源码树 <filename>src/include/catalog/</filename> 目录中的、采用特殊格式的 C 头文件里。每个目录都有一个以该目录命名的头文件（例如，<structname>pg_class</structname> 对应 <filename>pg_class.h</filename>），其中定义了该目录具有的列集合，以及 OID 等其他一些基本属性。
+ </para>
+
+ <para>
+  许多目录都有初始数据，这些数据必须在 <application>initdb</application> 的 <quote>bootstrap</quote> 阶段装入其中，才能让系统达到可以执行 SQL 命令的程度。（例如，<filename>pg_class.h</filename> 必须包含它自身的一条记录，以及每个其他系统目录和索引的一条记录。）这些初始数据以可编辑形式保存在同样位于 <filename>src/include/catalog/</filename> 目录中的数据文件里。例如，<filename>pg_proc.dat</filename> 描述了必须插入到 <structname>pg_proc</structname> 目录中的所有初始行。
+ </para>
+
+ <para>
+  为了创建目录文件并将这些初始数据装入其中，以 bootstrap 模式运行的后端会读取一个包含命令和初始数据的 <acronym>BKI</acronym>（Backend Interface，后端接口）文件。在构建 <productname>PostgreSQL</productname> 发行版时，会由名为 <filename>genbki.pl</filename> 的 Perl 脚本根据上述头文件和数据文件生成该模式所使用的 <filename>postgres.bki</filename> 文件。尽管 <filename>postgres.bki</filename> 针对特定的 <productname>PostgreSQL</productname> 发行版，但它与平台无关，并会安装到安装树的 <filename>share</filename> 子目录中。
+ </para>
+
+ <para>
+  <filename>genbki.pl</filename> 还会为每个目录生成一个派生头文件，例如为 <structname>pg_class</structname> 目录生成 <filename>pg_class_d.h</filename>。该文件包含自动生成的宏定义，也可能包含其他宏、枚举声明等，对于读取特定目录的客户端 C 代码会很有用。
+ </para>
+
+ <para>
+  大多数 PostgreSQL 开发者并不需要直接关心 <acronym>BKI</acronym> 文件，但后端中几乎任何稍有分量的功能新增，都需要修改目录头文件和/或初始数据文件。本章余下部分将提供一些相关信息，并且为求完整，也会描述 <acronym>BKI</acronym> 文件格式。
+ </para>
+
+ <sect1 id="system-catalog-declarations">
+  <title>系统目录声明规则</title>
+
+  <para>
+   目录头文件最关键的部分，是一个描述该目录中每一行布局的 C 结构定义。它以一个 <literal>CATALOG</literal> 宏开头，而对 C 编译器来说，这个宏不过是 <literal>typedef struct FormData_<replaceable>catalogname</replaceable></literal> 的简写。结构体中的每个字段都会生成一个目录列。字段可以使用 <filename>genbki.h</filename> 中描述的 BKI 属性宏进行标注，例如为字段定义默认值，或者把它标记为可空或不可空。<literal>CATALOG</literal> 这一行本身也可以使用 <filename>genbki.h</filename> 中描述的其他 BKI 属性宏进行标注，以定义该目录整体的其他属性，例如它是否为共享关系。
+  </para>
+
+  <para>
+   系统目录缓存代码（以及一般而言大多数操作目录的代码）都假定所有系统目录元组的定长部分确实存在，因为它会把这个 C 结构声明映射到这些部分上。因此，所有变长字段和可空字段都必须放在末尾，并且不能作为结构体字段来访问。例如，如果你试图把 <structname>pg_type</structname>.<structfield>typrelid</structfield> 设为 NULL，那么当某段代码尝试引用 <literal>typetup-&gt;typrelid</literal> 时就会失败；更糟的是，也可能在引用 <literal>typetup-&gt;typelem</literal> 时失败，因为后者紧跟在 <structfield>typrelid</structfield> 之后。这会导致随机错误，甚至段错误。
+  </para>
+
+  <para>
+   为了在一定程度上防范这类错误，变长字段或可空字段不应该直接暴露给 C 编译器。实现方法是把它们包在 <literal>#ifdef CATALOG_VARLEN</literal> ... <literal>#endif</literal> 中（其中 <literal>CATALOG_VARLEN</literal> 是一个永远不会被定义的符号）。这样可以防止 C 代码不小心去访问那些可能不存在、或位于其他偏移位置的字段。作为防止创建错误行的另一层保护，我们要求所有本应不可空的列都在 <structname>pg_attribute</structname> 中被标记出来。如果目录列是定宽的，且其前面没有任何可空列或变宽列，bootstrap 代码会自动把它标记为 <literal>NOT NULL</literal>。在这一规则不足以覆盖的地方，可以按需使用 <literal>BKI_FORCE_NOT_NULL</literal> 和 <literal>BKI_FORCE_NULL</literal> 标注来强制正确的标记。
+  </para>
+
+  <para>
+   前端代码不应该包含任何 <filename>pg_xxx.h</filename> 目录头文件，因为这些文件可能含有在后端之外无法编译的 C 代码。（通常，这是因为这些文件也包含了 <filename>src/backend/catalog/</filename> 中文件里函数的声明。）前端代码应改为包含相应生成的 <filename>pg_xxx_d.h</filename> 头文件，其中会带有 OID <literal>#define</literal> 以及其他任何可能对客户端有用的数据。如果你希望目录头文件中的宏或其他代码对前端代码可见，可以在那一部分外围加上 <literal>#ifdef EXPOSE_TO_CLIENT_CODE</literal> ... <literal>#endif</literal>，以指示 <filename>genbki.pl</filename> 把该部分复制到 <filename>pg_xxx_d.h</filename> 头文件中。
+  </para>
+
+  <para>
+   有少数目录基础到这样的程度，以致它们甚至不能通过大多数目录所使用的 <acronym>BKI</acronym> <literal>create</literal> 命令来创建，因为该命令需要向这些目录中写入信息来描述新目录。这些目录称为<firstterm>bootstrap</firstterm>目录，而定义这样的目录需要额外做很多工作：你必须在 <structname>pg_class</structname> 和 <structname>pg_type</structname> 的预装载内容中手工为它们准备合适的条目，并且当该目录的结构后续发生变化时，还需要更新这些条目。（bootstrap 目录在 <structname>pg_attribute</structname> 中也需要预装载条目，不过幸运的是，如今 <filename>genbki.pl</filename> 会处理这件事。）如果可能的话，应尽量避免让新目录成为 bootstrap 目录。
+  </para>
+ </sect1>
+
+ <sect1 id="system-catalog-initial-data">
+  <title>系统目录初始数据</title>
+
+  <para>
+   每个含有手工创建初始数据的目录（有些目录没有）都有一个对应的 <literal>.dat</literal> 文件，其中以可编辑格式保存该目录的初始数据。
+  </para>
+
+  <sect2 id="system-catalog-initial-data-format">
+   <title>数据文件格式</title>
+
+   <para>
+    每个 <literal>.dat</literal> 文件都包含 Perl 数据结构字面量，只需直接用 eval 求值，就会得到一个由哈希引用数组组成的内存数据结构，其中每个数组元素对应一行目录数据。下面摘自 <filename>pg_database.dat</filename> 的一小段、经过轻微修改的内容，可以展示其关键特性：
+   </para>
+
+<!-- The "slight modification" is the apostrophe in the description. -->
+<programlisting><![CDATA[
+[
+
+# A comment could appear here.
+{ oid => '1', oid_symbol => 'Template1DbOid',
+  descr => 'database\'s default template',
+  datname => 'template1', encoding => 'ENCODING',
+  datlocprovider => 'LOCALE_PROVIDER', datistemplate => 't',
+  datallowconn => 't', dathasloginevt => 'f', datconnlimit => '-1', datfrozenxid => '0',
+  datminmxid => '1', dattablespace => 'pg_default', datcollate => 'LC_COLLATE',
+  datctype => 'LC_CTYPE', datlocale => 'DATLOCALE', datacl => '_null_' },
+
+]
+]]></programlisting>
+
+   <para>
+    需要注意的几点：
+   </para>
+
+   <itemizedlist>
+
+    <listitem>
+     <para>
+      整个文件的布局是：一个左方括号、一个或多个花括号集合（每个集合代表一行目录数据），最后是一个右方括号。每个右花括号后面都要写一个逗号。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      在每一行目录数据内部，写成以逗号分隔的 <replaceable>key</replaceable> <literal>=&gt;</literal> <replaceable>value</replaceable> 对。允许的 <replaceable>key</replaceable> 包括该目录各列的名字，以及元数据键 <literal>oid</literal>、<literal>oid_symbol</literal>、<literal>array_type_oid</literal> 和 <literal>descr</literal>。(<literal>oid</literal> 和 <literal>oid_symbol</literal> 的用法见下文 <xref linkend="system-catalog-oid-assignment"/>；<literal>array_type_oid</literal> 的用法见 <xref linkend="system-catalog-auto-array-types"/>。<literal>descr</literal> 为对象提供描述字符串，并会按需要插入到 <structname>pg_description</structname> 或 <structname>pg_shdescription</structname> 中。) 元数据键虽然是可选的，但目录定义的列都必须提供，除非该目录的 <literal>.h</literal> 文件为该列指定了默认值。（在上面的例子中，<structfield>datdba</structfield> 字段被省略，是因为 <filename>pg_database.h</filename> 为它提供了合适的默认值。）
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      所有值都必须用单引号括起来。值内部出现的单引号要用反斜线转义。作为数据的反斜线可以写成双反斜线，但也不必；这遵循 Perl 对简单单引号字面量的规则。注意，作为数据出现的反斜线也会按照转义字符串常量相同的规则被 bootstrap 扫描器当作转义处理（见 <xref linkend="sql-syntax-strings-escape"/>）；例如 <literal>\t</literal> 会转换为一个制表符。如果你确实希望最终值里包含一个反斜线，就需要写四个：Perl 会先去掉两个，留给 bootstrap 扫描器看到的是 <literal>\\</literal>。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      NULL 值用 <literal>_null_</literal> 表示。（注意，没有办法创建一个值恰好等于这个字符串。）
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      注释以前缀 <literal>#</literal> 表示，并且必须单独成行。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      如果字段值是其他目录条目的 OID，应当使用符号名而不是真实的数字 OID 来表示。（上面的例子中，<structfield>dattablespace</structfield> 就包含了这样的引用。）这将在下文 <xref linkend="system-catalog-oid-references"/> 中说明。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      由于哈希是无序数据结构，字段顺序和行布局在语义上并不重要。不过，为了保持外观一致，我们规定了几条由格式化脚本 <filename>reformat_dat_file.pl</filename> 应用的规则：
+
+      <itemizedlist>
+
+       <listitem>
+        <para>
+         在每对花括号内部，元数据字段 <literal>oid</literal>、<literal>oid_symbol</literal>、<literal>array_type_oid</literal> 和 <literal>descr</literal>（若存在）按这个顺序排在最前面，然后才是该目录自身的字段，并按它们的定义顺序排列。
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         如有可能，会根据需要在字段之间插入换行，以便把行长限制在 80 个字符以内。元数据字段和普通字段之间也会插入一次换行。
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         如果目录的 <literal>.h</literal> 文件为某列指定了默认值，而某条数据又使用了同样的值，<filename>reformat_dat_file.pl</filename> 就会把该字段从数据文件中省略掉，以保持数据表示紧凑。
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         <filename>reformat_dat_file.pl</filename> 会原样保留空行和注释行。
+        </para>
+       </listitem>
+
+      </itemizedlist>
+
+      建议在提交目录数据补丁前先运行 <filename>reformat_dat_file.pl</filename>。为方便起见，你可以直接切换到 <filename>src/include/catalog/</filename> 并运行 <literal>make reformat-dat-files</literal>。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      如果你想新增一种缩小数据表示的方法，就必须在 <filename>reformat_dat_file.pl</filename> 中实现它，并且还要让 <function>Catalog::ParseData()</function> 知道如何把数据重新展开为完整表示。
+     </para>
+    </listitem>
+
+   </itemizedlist>
+  </sect2>
+
+  <sect2 id="system-catalog-oid-assignment">
+   <title>OID 分配</title>
+
+   <para>
+    出现在初始数据中的目录行，可以通过写一个 <literal>oid =&gt; <replaceable>nnnn</replaceable></literal> 元数据字段来手工指定 OID。此外，如果已经指定了 OID，还可以通过写一个 <literal>oid_symbol =&gt; <replaceable>name</replaceable></literal> 元数据字段，为该 OID 创建一个 C 宏。
+   </para>
+
+   <para>
+    如果其他预装载行中有对某个预装载目录行的 OID 引用，那么该行就必须预先分配 OID。如果该行的 OID 需要在 C 代码中被引用，也同样需要预分配 OID。如果这两种情况都不适用，就可以省略 <literal>oid</literal> 元数据字段，由 bootstrap 代码自动分配 OID。实际中，即便在某个目录里只有部分预装载行真的被交叉引用，我们通常也会对该目录中的预装载行要么全部预先分配 OID，要么一个都不分配。
+   </para>
+
+   <para>
+    在 C 代码里直接写任何 OID 的实际数值，都被认为是很不好的做法；应始终改用宏。对 <structname>pg_proc</structname> OID 的直接引用十分常见，因此有一个专门机制可以自动创建所需宏；见 <filename>src/backend/utils/Gen_fmgrtab.pl</filename>。类似地，<structname>pg_type</structname> OID 也有一种自动创建宏的方法，只是出于历史原因，做法并不完全相同。因此，这两个目录中并不需要 <literal>oid_symbol</literal> 项。同样，系统目录和索引的 <structname>pg_class</structname> OID 宏也是自动建立的。对于其他所有系统目录，你必须通过 <literal>oid_symbol</literal> 项手工指定所需的宏。
+   </para>
+
+   <para>
+    要为一个新的预装载行找到可用 OID，可以运行脚本 <filename>src/include/catalog/unused_oids</filename>。它会输出未使用 OID 的闭区间范围（例如输出行 <literal>45-900</literal> 表示 OID 45 到 900 尚未分配）。目前，OID 1&ndash;9999 保留给手工分配；<filename>unused_oids</filename> 脚本只是简单地扫描目录头文件和 <filename>.dat</filename> 文件，看看哪些 OID 尚未出现。你也可以使用 <filename>duplicate_oids</filename> 脚本检查错误。（<filename>genbki.pl</filename> 会为没有手工指定 OID 的行自动分配 OID，并且也会在编译时检测重复 OID。）
+   </para>
+
+   <para>
+    为一个预计不会立刻提交的补丁选择 OID 时，最佳实践是使用一组大致连续的 OID，从 8000&mdash;9999 范围内某个随机选取的值开始。这样可以尽量降低与其他并行开发补丁发生 OID 冲突的风险。为了让 8000&mdash;9999 这一区间保留给开发用途，在补丁提交到主 git 仓库之后，应把其 OID 重新编号到该范围以下的可用空间。通常这会在每个开发周期接近尾声时统一进行，同时移动该周期中各补丁占用的所有 OID。<filename>renumber_oids.pl</filename> 脚本可用于此目的。如果发现某个未提交补丁与近期已提交补丁发生 OID 冲突，<filename>renumber_oids.pl</filename> 也可能有助于从这种情况中恢复。
+   </para>
+
+   <para>
+    由于遵循这一约定，补丁分配的 OID 后续可能会被重新编号，因此在补丁进入正式发布版本之前，不应认为这些 OID 是稳定的。不过，一旦发布，我们就不会再修改手工分配的对象 OID，因为那会带来各种兼容性问题。
+   </para>
+
+   <para>
+    如果 <filename>genbki.pl</filename> 需要为某个没有手工分配 OID 的目录条目分配 OID，它会使用 10000&mdash;11999 范围内的值。服务器的 OID 计数器会在 bootstrap 运行开始时被设为 10000，因此在 bootstrap 处理期间动态创建的对象也会得到这一范围内的 OID。（通常的 OID 分配机制会负责防止任何冲突。）
+   </para>
+
+   <para>
+    OID 低于 <symbol>FirstUnpinnedObjectId</symbol>（12000）的对象会被视为<quote>固定</quote>，从而无法删除。（有少量例外情形，它们被硬编码在 <function>IsPinnedObject()</function> 中。）一旦 <application>initdb</application> 准备好创建未固定对象，就会把 OID 计数器强制提升到 <symbol>FirstUnpinnedObjectId</symbol>。因此，在 <application>initdb</application> 后续阶段创建的对象，例如运行 <filename>information_schema.sql</filename> 脚本时创建的对象，就不会被固定，而所有 <filename>genbki.pl</filename> 已知的对象则都会被固定。
+   </para>
+
+   <para>
+    在正常数据库运行期间分配的 OID 被限制为不小于 16384。这保证了 10000&mdash;16383 区间可供 <filename>genbki.pl</filename> 或 <application>initdb</application> 期间自动分配 OID 使用。这些自动分配的 OID 不被视为稳定值，并且可能因安装不同而不同。
+   </para>
+  </sect2>
+
+  <sect2 id="system-catalog-oid-references">
+   <title>OID 引用查找</title>
+
+   <para>
+    原则上，一个初始目录行到另一个初始目录行的交叉引用，只要在引用字段中写入被引用行预先分配的 OID 即可。不过，这违反项目策略，因为这样容易出错、难以阅读，而且如果新分配的 OID 被重新编号，也很容易失效。因此，<filename>genbki.pl</filename> 提供了使用符号引用的机制。规则如下：
+   </para>
+
+   <itemizedlist>
+
+    <listitem>
+     <para>
+      在某个特定目录列上启用符号引用的方法，是在该列定义后附加 <literal>BKI_LOOKUP(<replaceable>lookuprule</replaceable>)</literal>，其中 <replaceable>lookuprule</replaceable> 是被引用目录的名字，例如 <literal>pg_proc</literal>。<literal>BKI_LOOKUP</literal> 可以附加在类型为 <type>Oid</type>、<type>regproc</type>、<type>oidvector</type> 或 <type>Oid[]</type> 的列上；在后两种情况下，它表示对数组中的每个元素都执行一次查找。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      也允许把 <literal>BKI_LOOKUP(encoding)</literal> 附加到整数列上，用于引用字符集编码。字符集编码目前并不以目录 OID 的形式表示，但 <filename>genbki.pl</filename> 知道一组可用值。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      在某些目录列中，允许条目为零，而不必是一个有效引用。如果允许这样做，就应写 <literal>BKI_LOOKUP_OPT</literal> 而不是 <literal>BKI_LOOKUP</literal>。这样你就可以把某个条目写成 <literal>0</literal>。（如果该列声明为 <type>regproc</type>，还可以选择写成 <literal>-</literal> 而不是 <literal>0</literal>。）除这一特殊情况外，<literal>BKI_LOOKUP</literal> 列中的所有条目都必须是符号引用。<filename>genbki.pl</filename> 会对无法识别的名字发出警告。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      大多数类型的目录对象都只通过其名称引用。注意，类型名必须与被引用的 <structname>pg_type</structname> 条目中的 <structfield>typname</structfield> 完全一致；不能使用诸如用 <literal>integer</literal> 代表 <literal>int4</literal> 这样的别名。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      如果某个函数在 <filename>pg_proc.dat</filename> 条目中按 <structfield>proname</structfield> 唯一可辨识，那么可以直接使用它的 <structfield>proname</structfield> 来表示（这和 regproc 输入的行为类似）。否则，应把它写成 <replaceable>proname(argtypename,argtypename,...)</replaceable> 的形式，类似 regprocedure。参数类型名的拼写必须与该 <filename>pg_proc.dat</filename> 条目中 <structfield>proargtypes</structfield> 字段里的写法完全一致。不要插入任何空格。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      操作符写成 <replaceable>oprname(lefttype,righttype)</replaceable> 的形式，其中类型名必须与 <filename>pg_operator.dat</filename> 条目中 <structfield>oprleft</structfield> 和 <structfield>oprright</structfield> 字段里的写法完全一致。（对于一元操作符中省略的操作数，写 <literal>0</literal>。）
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      操作符类和操作符族的名字只在某个访问方法内部唯一，因此它们写成 <replaceable>access_method_name</replaceable><literal>/</literal><replaceable>object_name</replaceable> 的形式。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      在以上所有情形中，都不支持模式限定；bootstrap 期间创建的所有对象都应位于 <literal>pg_catalog</literal> 模式中。
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    <filename>genbki.pl</filename> 在运行时会解析所有符号引用，并在输出的 BKI 文件中写入简单的数字 OID。因此，bootstrap 后端无需处理符号引用。
+   </para>
+
+   <para>
+    即使某个目录没有需要查找的初始数据，也仍然值得把 OID 引用列标记为 <literal>BKI_LOOKUP</literal> 或 <literal>BKI_LOOKUP_OPT</literal>。这样可以让 <filename>genbki.pl</filename> 记录系统目录中存在的外键关系。该信息会在回归测试中用于检查错误条目。另见宏 <literal>DECLARE_FOREIGN_KEY</literal>、<literal>DECLARE_FOREIGN_KEY_OPT</literal>、<literal>DECLARE_ARRAY_FOREIGN_KEY</literal> 和 <literal>DECLARE_ARRAY_FOREIGN_KEY_OPT</literal>，它们用于声明对 <literal>BKI_LOOKUP</literal> 来说过于复杂的外键关系（通常是多列外键）。
+   </para>
+  </sect2>
+
+  <sect2 id="system-catalog-auto-array-types">
+   <title>数组类型的自动创建</title>
+
+   <para>
+    大多数标量数据类型都应有一个对应的数组类型（也就是一种标准的 varlena 数组类型，其元素类型就是该标量类型，并由该标量类型的 <structname>pg_type</structname> 条目中的 <structfield>typarray</structfield> 字段引用）。在大多数情况下，<filename>genbki.pl</filename> 能够自动为该数组类型生成 <structname>pg_type</structname> 条目。
+   </para>
+
+   <para>
+    要使用这一功能，只需在该标量类型的 <structname>pg_type</structname> 条目中写一个 <literal>array_type_oid =&gt; <replaceable>nnnn</replaceable></literal> 元数据字段，指定数组类型要使用的 OID。这样就可以省略 <structfield>typarray</structfield> 字段，因为它会自动填入该 OID。
+   </para>
+
+   <para>
+    生成出的数组类型名，是在标量类型名前面加一个下划线。数组条目的其他字段会根据 <filename>pg_type.h</filename> 中的 <literal>BKI_ARRAY_DEFAULT(<replaceable>value</replaceable>)</literal> 标注填写；如果没有该标注，就从标量类型复制。（<structfield>typalign</structfield> 另有一个特殊情况。）然后，这两个条目的 <structfield>typelem</structfield> 和 <structfield>typarray</structfield> 字段会被设置为彼此交叉引用。
+   </para>
+  </sect2>
+
+  <sect2 id="system-catalog-recipes">
+   <title>编辑数据文件的方法</title>
+
+   <para>
+    下面给出一些建议，说明在更新目录数据文件时，执行常见任务最简便的方法。
+   </para>
+
+   <formalpara>
+    <title>向目录中增加一个带默认值的新列：</title>
+    <para>
+     在头文件中加入该列，并加上 <literal>BKI_DEFAULT(<replaceable>value</replaceable>)</literal> 标注。数据文件通常只需在那些需要非默认值的现有行中补上该字段。
+    </para>
+   </formalpara>
+
+   <formalpara>
+    <title>为现有列增加一个原本没有的默认值：</title>
+    <para>
+     在头文件中加上 <literal>BKI_DEFAULT</literal> 标注，然后运行 <literal>make reformat-dat-files</literal>，移除现在已经冗余的字段项。
+    </para>
+   </formalpara>
+
+   <formalpara>
+    <title>移除一列，不论它是否有默认值：</title>
+    <para>
+     从头文件中删掉该列，然后运行 <literal>make reformat-dat-files</literal>，移除现在已经无用的字段项。
+    </para>
+   </formalpara>
+
+   <formalpara>
+    <title>修改或移除现有默认值：</title>
+    <para>
+     不能只改头文件，因为那样会导致当前数据被错误解释。首先运行 <literal>make expand-dat-files</literal>，把所有默认值都显式写入数据文件；然后修改或移除 <literal>BKI_DEFAULT</literal> 标注；再运行 <literal>make reformat-dat-files</literal>，重新去掉多余字段。
+    </para>
+   </formalpara>
+
+   <formalpara>
+    <title>临时性的批量编辑：</title>
+    <para>
+     <filename>reformat_dat_file.pl</filename> 可以改造为执行许多种批量修改。请查找其中标示可插入一次性代码位置的块注释。下面这个例子里，我们准备把 <structname>pg_proc</structname> 中两个布尔字段合并成一个 char 字段：
+
+     <orderedlist>
+      <listitem>
+       <para>
+        在 <filename>pg_proc.h</filename> 中加入一个带默认值的新列：
+<programlisting>
++    /* see PROKIND_ categories below */
++    char        prokind BKI_DEFAULT(f);
+</programlisting>
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        基于 <filename>reformat_dat_file.pl</filename> 新建一个脚本，在处理过程中插入合适的值：
+<programlisting>
+-           # At this point we have the full row in memory as a hash
+-           # and can do any operations we want. As written, it only
+-           # removes default values, but this script can be adapted to
+-           # do one-off bulk-editing.
++           # One-off change to migrate to prokind
++           # Default has already been filled in by now, so change to other
++           # values as appropriate
++           if ($values{proisagg} eq 't')
++           {
++               $values{prokind} = 'a';
++           }
++           elsif ($values{proiswindow} eq 't')
++           {
++               $values{prokind} = 'w';
++           }
+</programlisting>
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        运行这个新脚本：
+<programlisting>
+$ cd src/include/catalog
+$ perl  rewrite_dat_with_prokind.pl  pg_proc.dat
+</programlisting>
+        此时，<filename>pg_proc.dat</filename> 会同时具有 <structfield>prokind</structfield>、<structfield>proisagg</structfield> 和 <structfield>proiswindow</structfield> 这三列，不过它们只会出现在取值非默认的那些行里。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        从 <filename>pg_proc.h</filename> 中移除旧列：
+<programlisting>
+-    /* is it an aggregate? */
+-    bool        proisagg BKI_DEFAULT(f);
+-
+-    /* is it a window function? */
+-    bool        proiswindow BKI_DEFAULT(f);
+</programlisting>
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        最后，运行 <literal>make reformat-dat-files</literal>，从 <filename>pg_proc.dat</filename> 中移除无用的旧项。
+       </para>
+      </listitem>
+     </orderedlist>
+
+     关于用于批量编辑的脚本的更多例子，见这条消息所附的 <filename>convert_oid2name.pl</filename> 和 <filename>remove_pg_type_oid_symbols.pl</filename>：
+     <ulink url="https://www.postgresql.org/message-id/CAJVSVGVX8gXnPm+Xa=DxR7kFYprcQ1tNcCT5D0O3ShfnM6jehA@mail.gmail.com"></ulink>
+    </para>
+   </formalpara>
+  </sect2>
+ </sect1>
+
+ <sect1 id="bki-format">
+  <title><acronym>BKI</acronym> 文件格式</title>
+
+  <para>
+   本节描述 <productname>PostgreSQL</productname> 后端如何解释 <acronym>BKI</acronym> 文件。如果手边有一份 <filename>postgres.bki</filename> 文件作为示例，这段说明会更容易理解。
+  </para>
+
+  <para>
+   <acronym>BKI</acronym> 输入由一系列命令组成。根据命令语法的不同，每条命令由若干词元组成。词元通常由空白分隔，但如果不会产生歧义，也可以不分隔。没有专门的命令分隔符；语法上不可能属于前一条命令的下一个词元，就会开始一条新命令。（通常为了清晰，你会把新命令写在新的一行。）词元可以是某些关键字、特殊字符（圆括号、逗号等）、标识符、数字，或者单引号字符串。所有内容都区分大小写。
+  </para>
+
+  <para>
+   以 <literal>#</literal> 开头的行会被忽略。
+  </para>
+
+ </sect1>
+
+ <sect1 id="bki-commands">
+  <title><acronym>BKI</acronym> 命令</title>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-bki-varlistentry-1">
+    <term>
+     <literal>create</literal>
+     <replaceable class="parameter">tablename</replaceable>
+     <replaceable class="parameter">tableoid</replaceable>
+     <optional><literal>bootstrap</literal></optional>
+     <optional><literal>shared_relation</literal></optional>
+     <optional><literal>rowtype_oid</literal> <replaceable>oid</replaceable></optional>
+     (<replaceable class="parameter">name1</replaceable> =
+     <replaceable class="parameter">type1</replaceable>
+     <optional><literal>FORCE NOT NULL</literal> | <literal>FORCE NULL</literal> </optional> <optional>,
+     <replaceable class="parameter">name2</replaceable> =
+     <replaceable class="parameter">type2</replaceable>
+     <optional><literal>FORCE NOT NULL</literal> | <literal>FORCE NULL</literal> </optional>,
+     ...</optional>)
+    </term>
+
+    <listitem>
+     <para>
+      创建一个名为 <replaceable class="parameter">tablename</replaceable>、OID 为 <replaceable class="parameter">tableoid</replaceable> 的表，其列定义在括号中给出。
+     </para>
+
+     <para>
+      <filename>bootstrap.c</filename> 直接支持以下列类型：<type>bool</type>、<type>bytea</type>、<type>char</type>（1 字节）、<type>name</type>、<type>int2</type>、<type>int4</type>、<type>regproc</type>、<type>regclass</type>、<type>regtype</type>、<type>text</type>、<type>oid</type>、<type>tid</type>、<type>xid</type>、<type>cid</type>、<type>int2vector</type>、<type>oidvector</type>、<type>_int4</type>（数组）、<type>_text</type>（数组）、<type>_oid</type>（数组）、<type>_char</type>（数组）以及 <type>_aclitem</type>（数组）。虽然也可以创建包含其他类型列的表，但这必须等到 <structname>pg_type</structname> 创建完成并填入合适条目之后才能做到。（实际上，这意味着 bootstrap 目录中只能使用这些列类型，而非 bootstrap 目录则可以包含任何内置类型。）
+     </para>
+
+     <para>
+      指定 <literal>bootstrap</literal> 时，表只会在磁盘上创建；不会在 <structname>pg_class</structname>、<structname>pg_attribute</structname> 等目录中为它写入任何信息。因此，在通过 <literal>insert</literal> 命令以较为原始的方式补入这些条目之前，普通 SQL 操作无法访问该表。这个选项用于创建 <structname>pg_class</structname> 等目录自身。
+     </para>
+
+     <para>
+      如果指定了 <literal>shared_relation</literal>，该表就会作为共享表创建。该表的行类型 OID（即 <structname>pg_type</structname> 中对应的 OID）还可以通过 <literal>rowtype_oid</literal> 子句显式指定；如果不指定，就会自动为其生成一个 OID。（如果指定了 <literal>bootstrap</literal>，那么 <literal>rowtype_oid</literal> 子句其实没有用，但仍然可以写上，作为文档说明。）
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-bki-varlistentry-2">
+    <term>
+     <literal>open</literal> <replaceable class="parameter">tablename</replaceable>
+    </term>
+
+    <listitem>
+     <para>
+      打开名为 <replaceable class="parameter">tablename</replaceable> 的表，以便插入数据。当前任何已打开的表都会被关闭。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-bki-varlistentry-3">
+    <term>
+     <literal>close</literal> <replaceable class="parameter">tablename</replaceable>
+    </term>
+
+    <listitem>
+     <para>
+      关闭当前打开的表。给出表名是为了做交叉校验。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-bki-varlistentry-4">
+    <term>
+     <literal>insert</literal> <literal>(</literal> <optional><replaceable class="parameter">oid_value</replaceable></optional> <replaceable class="parameter">value1</replaceable> <replaceable class="parameter">value2</replaceable> ... <literal>)</literal>
+    </term>
+
+    <listitem>
+     <para>
+      向当前打开的表插入一行新数据，使用 <replaceable class="parameter">value1</replaceable>、<replaceable class="parameter">value2</replaceable> 等作为各列的值。
+     </para>
+
+     <para>
+      NULL 值可以用特殊关键字 <literal>_null_</literal> 表示。凡是不像标识符或纯数字字符串的值，都必须用单引号括起来。（如果要在值中包含单引号，就把它写两次。字符串中也允许使用转义字符串风格的反斜线转义。）
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-bki-varlistentry-5">
+    <term>
+     <literal>declare</literal> <optional><literal>unique</literal></optional>
+     <literal>index</literal> <replaceable class="parameter">indexname</replaceable>
+     <replaceable class="parameter">indexoid</replaceable>
+     <literal>on</literal> <replaceable class="parameter">tablename</replaceable>
+     <literal>using</literal> <replaceable class="parameter">amname</replaceable>
+     <literal>(</literal> <replaceable class="parameter">opclass1</replaceable>
+     <replaceable class="parameter">name1</replaceable>
+     <optional>, ...</optional> <literal>)</literal>
+    </term>
+
+    <listitem>
+     <para>
+      在名为 <replaceable class="parameter">tablename</replaceable> 的表上，使用 <replaceable class="parameter">amname</replaceable> 访问方法，创建一个名为 <replaceable class="parameter">indexname</replaceable>、OID 为 <replaceable class="parameter">indexoid</replaceable> 的索引。要建立索引的字段分别称为 <replaceable class="parameter">name1</replaceable>、<replaceable class="parameter">name2</replaceable> 等；使用的操作符类分别为 <replaceable class="parameter">opclass1</replaceable>、<replaceable class="parameter">opclass2</replaceable> 等。该命令会创建索引文件并写入相应的目录条目，但不会初始化索引内容。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-bki-varlistentry-6">
+    <term>
+     <literal>declare toast</literal>
+     <replaceable class="parameter">toasttableoid</replaceable>
+     <replaceable class="parameter">toastindexoid</replaceable>
+     <literal>on</literal> <replaceable class="parameter">tablename</replaceable>
+    </term>
+
+    <listitem>
+     <para>
+      为名为 <replaceable class="parameter">tablename</replaceable> 的表创建一个 TOAST 表。该 TOAST 表的 OID 设为 <replaceable class="parameter">toasttableoid</replaceable>，其索引的 OID 设为 <replaceable class="parameter">toastindexoid</replaceable>。与 <literal>declare index</literal> 一样，索引填充会被延后。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-bki-varlistentry-7">
+    <term><literal>build indices</literal></term>
+
+    <listitem>
+     <para>
+      填充之前已声明的索引。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+ </sect1>
+
+ <sect1 id="bki-structure">
+  <title>bootstrap <acronym>BKI</acronym> 文件的结构</title>
+
+  <para>
+   在 <literal>open</literal> 命令可以使用之前，它所依赖的那些表必须已经存在，并且其中已经有了将要被打开之表对应的条目。（这些最基本的表包括 <structname>pg_class</structname>、<structname>pg_attribute</structname>、<structname>pg_proc</structname> 和 <structname>pg_type</structname>。）为了让这些表本身也能够被填充，带 <literal>bootstrap</literal> 选项的 <literal>create</literal> 命令会隐式打开刚创建的表，以便插入数据。
+  </para>
+
+  <para>
+   同样，<literal>declare index</literal> 和 <literal>declare toast</literal> 命令也必须等到它们所需的系统目录已经创建并填充完毕之后才能使用。
+  </para>
+
+  <para>
+   因此，<filename>postgres.bki</filename> 文件的结构必须如下：
+   <orderedlist>
+    <listitem>
+     <para>
+      对某个关键表执行 <literal>create bootstrap</literal>
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      用 <literal>insert</literal> 插入至少足以描述这些关键表的数据
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>close</literal>
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      对其他关键表重复上述步骤。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      对某个非关键表执行 <literal>create</literal>（不带 <literal>bootstrap</literal>）
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>open</literal>
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      用 <literal>insert</literal> 插入所需数据
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>close</literal>
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      对其他非关键表重复上述步骤。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      定义索引和 TOAST 表。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>build indices</literal>
+     </para>
+    </listitem>
+   </orderedlist>
+  </para>
+
+  <para>
+   无疑还存在其他未文档化的顺序依赖。
+  </para>
+ </sect1>
+
+ <sect1 id="bki-example">
+  <title>BKI 示例</title>
+
+  <para>
+   下列命令序列会创建一个 OID 为 420 的 <literal>test_table</literal> 表，该表有三列：<literal>oid</literal>、<literal>cola</literal> 和 <literal>colb</literal>，它们的类型分别是 <type>oid</type>、<type>int4</type> 和 <type>text</type>；然后再向该表插入两行数据：
+<programlisting>
+create test_table 420 (oid = oid, cola = int4, colb = text)
+open test_table
+insert ( 421 1 'value 1' )
+insert ( 422 2 _null_ )
+close test_table
+</programlisting>
+  </para>
+ </sect1>
+</chapter>

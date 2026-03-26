@@ -1,0 +1,1387 @@
+<!-- doc/src/sgml/high-availability.sgml -->
+
+<chapter id="high-availability">
+ <title>高可用、负载均衡和复制</title>
+
+ <indexterm><primary>高可用</primary></indexterm>
+ <indexterm><primary>故障转移</primary></indexterm>
+ <indexterm><primary>复制</primary></indexterm>
+ <indexterm><primary>负载均衡</primary></indexterm>
+ <indexterm><primary>集簇</primary></indexterm>
+ <indexterm><primary>数据分区</primary></indexterm>
+
+ <para>
+  数据库服务器可以协同工作，从而在主库失效时让第二台服务器快速接管其任务（高可用性），或者让多台计算机提供同一份数据（负载均衡）。理想情况下，数据库服务器应当能够无缝协同工作。提供静态网页服务的 Web 服务器只需把 Web 请求分发到多台机器，就能很容易地组合起来。事实上，只读数据库服务器也相对容易组合起来。不幸的是，大多数数据库服务器同时处理读写请求，而读/写服务器要更难组合。这是因为，只读数据只需要在每台服务器上放置一次，而对任意一台服务器的写入都必须传播到所有服务器，以保证后续对这些服务器的读取请求返回一致的结果。
+ </para>
+
+ <para>
+  这种同步问题是服务器协同工作的根本难点。由于不存在一种能够对所有使用场景都消除同步问题影响的单一方案，因此出现了多种不同的解决方案。每一种方案都以不同方式处理这个问题，并且针对特定负载将其影响降到最低。
+ </para>
+
+ <para>
+  某些方案通过只允许一台服务器修改数据来处理同步。能够修改数据的服务器称为读/写、<firstterm>主</firstterm>或<firstterm>主库</firstterm>服务器。跟踪主库变更的服务器称为<firstterm>备库</firstterm>或<firstterm>次级服务器</firstterm>。只能在被提升为主库之后才能连接的备库称为<firstterm>温备</firstterm>，而能够接受连接并提供只读查询的备库称为<firstterm>热备</firstterm>。
+ </para>
+
+ <para>
+  某些方案是同步的，即一个修改数据的事务只有在所有服务器都提交该事务之后才被视为已提交。这保证一次故障转移不会丢失任何数据，并且所有负载均衡的服务器无论查询哪一台都将返回一致的结果。相反，异步方案允许一次提交与其传播到其他服务器之间存在一定延迟，这就带来了切换到备库时丢失某些事务的可能性，也意味着负载均衡的服务器可能返回略微陈旧的结果。当同步通信过慢时，就会使用异步通信。
+ </para>
+
+ <para>
+  这些方案还可以按粒度分类。有些方案只能处理整个数据库服务器，而另一些则允许在每个表或者每个数据库级别进行控制。
+ </para>
+
+ <para>
+  无论做出哪种选择，都必须考虑性能。功能与性能之间通常存在权衡。例如，在低速网络上采用完全同步的方案，性能可能下降一半以上，而异步方案对性能的影响则可能很小。
+ </para>
+
+ <para>
+  本节其余部分将概述多种故障转移、复制和负载均衡方案。
+ </para>
+
+ <sect1 id="different-replication-solutions">
+ <title>不同方案的比较</title>
+
+ <variablelist>
+
+  <varlistentry>
+   <term>共享磁盘故障转移</term>
+   <listitem>
+
+    <para>
+     共享磁盘故障转移通过只保留一份数据库拷贝来避免同步开销。它使用一个由多个服务器共享的单一磁盘阵列。如果主库失效，备库就可以挂载并启动数据库，就好像它正在从一次数据库崩溃中恢复一样。这允许快速故障转移而不会丢失数据。
+    </para>
+
+    <para>
+     共享硬件功能常见于网络存储设备。使用网络文件系统也是可行的，但必须注意文件系统是否具备完整的 <acronym>POSIX</acronym> 行为（见<xref
+     linkend="creating-cluster-nfs"/>）。这种方法的一大局限是，如果共享磁盘阵列失效或损坏，主库和备库都会无法工作。另一个问题是，在主库运行期间，备库绝不应访问共享存储。
+    </para>
+
+   </listitem>
+  </varlistentry>
+
+  <varlistentry>
+   <term>文件系统（块设备）复制</term>
+   <listitem>
+
+    <para>
+     共享硬件功能的一种变体是文件系统复制，其中对一个文件系统的所有更改都会镜像到位于另一台计算机上的文件系统。唯一的限制是，这种镜像必须以能够保证备库拥有该文件系统一致拷贝的方式完成 &mdash; 特别是，对备库的写入必须与主库上的写入保持相同顺序。<productname>DRBD</productname> 是 Linux 上一种流行的文件系统复制方案。
+    </para>
+
+<!--
+https://forge.continuent.org/pipermail/sequoia/2006-November/004070.html
+
+Oracle RAC is a shared disk approach and just send cache invalidations
+to other nodes but not actual data. As the disk is shared, data is
+only committed once to disk and there is a distributed locking
+protocol to make nodes agree on a serializable transactional order.
+-->
+
+   </listitem>
+  </varlistentry>
+
+  <varlistentry>
+   <term>预写式日志传送</term>
+   <listitem>
+
+    <para>
+     温备和热备服务器能够通过读取预写式日志（<acronym>WAL</acronym>）记录流来保持最新状态。如果主库失效，备库拥有主库的几乎全部数据，并且能够迅速成为新的主库。这可以是同步的，也可以是异步的，并且只能用于整个数据库服务器。
+    </para>
+    <para>
+     可以使用基于文件的日志传送（<xref linkend="warm-standby"/>）、流复制（见 <xref linkend="streaming-replication"/>）或两者结合的方式来实现备库。有关热备的信息，见 <xref linkend="hot-standby"/>。
+    </para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry>
+   <term>逻辑复制</term>
+   <listitem>
+    <para>
+     逻辑复制允许数据库服务器将数据修改流发送到另一台服务器。<productname>PostgreSQL</productname> 逻辑复制从 WAL 构造逻辑数据修改流。逻辑复制允许按表粒度复制数据变更。此外，发布自身数据更新的服务器也可以订阅其他服务器的更改，从而允许数据在多个方向上流动。有关逻辑复制的更多信息，请参考<xref linkend="logical-replication"/>。通过逻辑解码接口（<xref linkend="logicaldecoding"/>），第三方扩展也能提供类似的功能。
+    </para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry>
+   <term>基于触发器的主库-备库复制</term>
+   <listitem>
+
+    <para>
+     基于触发器的复制通常会将修改数据的查询汇聚到指定的主库。它按表粒度工作，主库（通常）会把数据更改异步发送到备库。主库运行期间，备库可以响应查询，并且可能允许某些本地数据更改或写入活动。这种复制形式常用于卸载大型分析型查询或数据仓库查询。
+    </para>
+
+    <para>
+     <productname>Slony-I</productname> 是这种复制类型的一个示例。它按表粒度工作，并且支持多个备库。由于它会以批处理方式异步更新备库，因此在故障转移期间可能会发生数据丢失。
+    </para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry>
+   <term>基于 SQL 的复制中间件</term>
+   <listitem>
+
+    <para>
+     在基于 SQL 的复制中间件中，一个程序会拦截每一条 SQL 查询，并将其发送到一台或所有服务器。每台服务器独立运行。读写查询必须发送到所有服务器，这样每台服务器都会收到所有变更；但只读查询可以只发送到某一台服务器，从而把读取负载分散到多台服务器之间。
+    </para>
+
+    <para>
+     如果只是原样广播查询，那么诸如<function>random()</function>、<function>CURRENT_TIMESTAMP</function>以及序列之类的对象，在不同服务器上可能得到不同的值。这是因为每台服务器都是独立运行的，而且被广播的是 SQL 查询，而不是真正的数据变更。如果这不可接受，那么中间件或应用程序就必须从单一来源确定这些值，然后在写查询中使用这些值。还必须注意保证所有事务在所有服务器上要么都提交，要么都中止，这可能需要使用两阶段提交（<xref linkend="sql-prepare-transaction"/>和<xref linkend="sql-commit-prepared"/>）。<productname>Pgpool-II</productname>和<productname>Continuent Tungsten</productname>就是这类复制的示例。
+    </para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry>
+   <term>异步多主复制</term>
+   <listitem>
+
+    <para>
+     对于那些并不经常连接或通信链路较慢的服务器，例如笔记本电脑或远程服务器，保持服务器间的数据一致是一个挑战。使用异步多主复制时，每台服务器都独立工作，并定期与其他服务器通信，以识别冲突事务。这些冲突可以由用户或冲突解决规则来解决。Bucardo 是这种复制类型的一个示例。
+    </para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry>
+   <term>同步多主复制</term>
+   <listitem>
+
+    <para>
+     在同步多主复制中，每台服务器都能接受写请求，并且在每个事务提交之前，修改过的数据都会从原始服务器传送给其他每台服务器。繁重的写入活动可能导致过多锁定和提交延迟，进而带来较差的性能。读请求可以发送给任意服务器。某些实现使用共享磁盘来减少通信开销。同步多主复制尤其适合以读为主的负载，尽管它的一大优势是任意服务器都能接受写请求 &mdash; 无需在主库和备库之间划分负载，并且由于数据更改是从一台服务器传送到另一台服务器，因此不会出现非确定函数（如 <function>random()</function>）的问题。
+    </para>
+
+    <para>
+     <productname>PostgreSQL</productname> 本身不提供这种复制，不过可以在应用代码或中间件中利用 <productname>PostgreSQL</productname> 的两阶段提交（<xref
+     linkend="sql-prepare-transaction"/> 和 <xref
+     linkend="sql-commit-prepared"/>）来实现这一功能。
+    </para>
+   </listitem>
+  </varlistentry>
+
+ </variablelist>
+
+ <para>
+  <xref linkend="high-availability-matrix"/>总结了上述多种方案的能力。
+ </para>
+
+ <table id="high-availability-matrix">
+  <title>高可用、负载均衡和复制特性矩阵</title>
+  <tgroup cols="9">
+   <colspec colname="col1" colwidth="1.1*"/>
+   <colspec colname="col2" colwidth="1*"/>
+   <colspec colname="col3" colwidth="1*"/>
+   <colspec colname="col4" colwidth="1*"/>
+   <colspec colname="col5" colwidth="1*"/>
+   <colspec colname="col6" colwidth="1*"/>
+   <colspec colname="col7" colwidth="1*"/>
+   <colspec colname="col8" colwidth="1*"/>
+   <colspec colname="col9" colwidth="1*"/>
+   <thead>
+    <row>
+     <entry>特性</entry>
+     <entry>共享磁盘</entry>
+     <entry>文件系统复制</entry>
+     <entry>预写式日志传送</entry>
+     <entry>逻辑复制</entry>
+     <entry>基于触发器&zwsp;的复制</entry>
+     <entry>SQL 复制中间件</entry>
+     <entry>异步多主复制</entry>
+     <entry>同步多主复制</entry>
+    </row>
+   </thead>
+
+   <tbody>
+
+    <row>
+     <entry>常见示例</entry>
+     <entry align="center">NAS</entry>
+     <entry align="center">DRBD</entry>
+     <entry align="center">内置流复制</entry>
+     <entry align="center">内置逻辑复制、pglogical</entry>
+     <entry align="center">Londiste，Slony</entry>
+     <entry align="center">pgpool-II</entry>
+     <entry align="center">Bucardo</entry>
+     <entry align="center"></entry>
+    </row>
+
+    <row>
+     <entry>通信方法</entry>
+     <entry align="center">共享磁盘</entry>
+     <entry align="center">磁盘块</entry>
+     <entry align="center">WAL</entry>
+     <entry align="center">逻辑解码</entry>
+     <entry align="center">表行</entry>
+     <entry align="center">SQL</entry>
+     <entry align="center">表行</entry>
+     <entry align="center">表行和行锁</entry>
+    </row>
+
+    <row>
+     <entry>不要求特殊硬件</entry>
+     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+    </row>
+
+    <row>
+     <entry>允许多个主库</entry>
+     <entry align="center"></entry>
+     <entry align="center"></entry>
+     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+    </row>
+
+    <row>
+     <entry>主库无额外负载</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center"></entry>
+     <entry align="center"></entry>
+    </row>
+
+    <row>
+     <entry>不等待多个服务器</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center"></entry>
+     <entry align="center">关闭同步时</entry>
+     <entry align="center">关闭同步时</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center"></entry>
+    </row>
+
+    <row>
+     <entry>主库失效时绝不丢失数据</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">启用同步时</entry>
+     <entry align="center">启用同步时</entry>
+     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
+    </row>
+
+    <row>
+     <entry>副本接受只读查询</entry>
+     <entry align="center"></entry>
+     <entry align="center"></entry>
+     <entry align="center">启用热备时</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+    </row>
+
+    <row>
+     <entry>每个表粒度</entry>
+     <entry align="center"></entry>
+     <entry align="center"></entry>
+     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+    </row>
+
+    <row>
+     <entry>不需要冲突解决</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center">&bull;</entry>
+     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
+    </row>
+
+   </tbody>
+  </tgroup>
+ </table>
+
+ <para>
+  有一些方案不适合上述的类别：
+ </para>
+
+ <variablelist>
+
+  <varlistentry>
+   <term>数据分区</term>
+   <listitem>
+
+    <para>
+     数据分区会把表拆分成多个数据集。每个数据集只能由一台服务器修改。例如，可以按办公室划分数据，如伦敦和巴黎，每个办公室各有一台服务器。如果有必要执行组合伦敦和巴黎数据的查询，应用可以同时查询两台服务器，或者可以使用主库/备库复制，在每台服务器上保留其他办公室数据的只读副本。
+    </para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry>
+   <term>多服务器并行查询执行</term>
+   <listitem>
+
+    <para>
+     上述许多方案都允许多台服务器处理多个查询，但没有一种允许单个查询同时使用多台服务器来更快完成。这种方案允许多台服务器在同一个查询上并发工作。通常的做法是把数据分散到各台服务器上，让每台服务器执行该查询中属于自己的部分，然后把结果返回给一台中心服务器，由它汇总结果并返回给用户。这种方案也可以使用<productname>PL/Proxy</productname>工具集来实现。
+    </para>
+
+   </listitem>
+  </varlistentry>
+
+ </variablelist>
+
+  <para>
+   还应注意，由于<productname>PostgreSQL</productname>是开源且易于扩展的，许多公司基于<productname>PostgreSQL</productname>开发出了具有独特故障转移、复制和负载均衡能力的商业闭源解决方案。这里不讨论这些方案。
+  </para>
+
+ </sect1>
+
+
+ <sect1 id="warm-standby">
+ <title>日志传送备库</title>
+
+
+  <para>
+   连续归档可用于创建一种<firstterm>高可用性</firstterm>（HA）集簇配置，其中有一个或多个<firstterm>备库</firstterm>随时准备在主库失效时接管操作。这种能力通常称为<firstterm>温备</firstterm>或<firstterm>日志传送</firstterm>。
+  </para>
+
+  <para>
+   主库和备库协同工作以提供这种能力，不过两者之间只是松耦合。主库运行在持续归档模式下，而每台备库都运行在持续恢复模式下，从主库读取 WAL 文件。启用这种能力不需要修改数据库表，因此与其他一些复制方案相比，它的管理开销较低。这种配置对主库的性能影响也相对较小。
+  </para>
+
+  <para>
+   将 WAL 记录直接从一台数据库服务器移动到另一台数据库服务器，通常称为日志传送。<productname>PostgreSQL</productname> 通过一次传送一个文件（WAL 段）中的 WAL 记录来实现基于文件的日志传送。WAL 文件（16MB）可以轻松且低成本地传送到任意距离，无论是邻近系统、同一站点的另一台系统，还是地球另一端的系统。该技术所需的带宽取决于主库的事务速率。基于记录的日志传送粒度更细，会通过网络连接增量地流式传送 WAL 变更（见 <xref
+   linkend="streaming-replication"/>）。
+  </para>
+
+  <para>
+   需要注意的是，日志传送是异步的，也就是说 WAL 记录是在事务提交之后才被传送的。因此，如果主库发生灾难性故障，就会存在一个数据丢失窗口；尚未传送的事务将会丢失。对于基于文件的日志传送，可以通过使用 <varname>archive_timeout</varname> 参数来限制这个数据丢失窗口，它可以设置为低至数秒。不过，如此低的设置会显著增加文件传送所需的带宽。流复制（见 <xref linkend="streaming-replication"/>）允许把数据丢失窗口缩得更小。
+  </para>
+
+  <para>
+   恢复性能已经足够好，因此一旦备库被激活，通常只需片刻就能达到完全可用状态。因此，这种配置被称为温备配置，它提供了高可用性。从归档的基础备份中恢复服务器并向前重放则需要更长时间，因此这种技术只能用于灾难恢复，而不是高可用性。备库还可以用于只读查询，这种情况下它被称为<firstterm>热备</firstterm>服务器。更多信息见 <xref linkend="hot-standby"/>。
+  </para>
+
+  <indexterm zone="high-availability">
+   <primary>温备</primary>
+  </indexterm>
+
+  <indexterm zone="high-availability">
+   <primary>PITR 备库</primary>
+  </indexterm>
+
+  <indexterm zone="high-availability">
+   <primary>备库</primary>
+  </indexterm>
+
+  <indexterm zone="high-availability">
+   <primary>日志传送</primary>
+  </indexterm>
+
+  <indexterm zone="high-availability">
+   <primary>见证服务器</primary>
+  </indexterm>
+
+  <indexterm zone="high-availability">
+   <primary>STONITH</primary>
+  </indexterm>
+
+  <sect2 id="standby-planning">
+   <title>规划</title>
+
+   <para>
+    通常，最好让主库和备库尽可能相似，至少从数据库服务器的角度看应如此。尤其是，与表空间相关的路径名会原样传递，因此如果使用该特性，主库和备库必须为表空间配置完全相同的挂载路径。请记住，如果在主库上执行 <xref linkend="sql-createtablespace"/>，则它所需的任何新挂载点都必须在执行该命令之前先在主库和所有备库上创建好。硬件不必完全相同，但经验表明，在应用和系统的整个生命周期内，维护两个相同的系统要比维护两个不同的系统更容易。无论如何，硬件架构必须相同 &mdash; 例如，从 32 位系统向 64 位系统传送日志是不可行的。
+   </para>
+
+   <para>
+    一般来说，不能在运行不同主版本 <productname>PostgreSQL</productname> 的服务器之间传送日志。PostgreSQL 全球开发组的策略是在次版本升级期间不改变磁盘格式，因此主库和备库运行不同次版本通常也能正常工作。不过，这方面并没有正式支持，因此仍建议主库和备库尽量保持在相同的发行级别。当升级到新的次版本时，最安全的策略是先升级备库 &mdash; 新的次版本更有可能兼容读取前一个次版本生成的 WAL 文件，反过来则未必。
+   </para>
+
+  </sect2>
+
+  <sect2 id="standby-server-operation" xreflabel="Standby Server Operation">
+   <title>备库操作</title>
+
+   <para>
+    如果服务器启动时其数据目录中存在<anchor id="file-standby-signal" xreflabel="standby.signal"/>
+    <filename>standby.signal</filename>
+    <indexterm><primary><filename>standby.signal</filename></primary></indexterm>文件，服务器就会进入备库模式。
+   </para>
+
+   <para>
+    在备库模式中，服务器会持续应用从主库接收到的 WAL。备库可以从 WAL 归档中读取 WAL（见 <xref linkend="guc-restore-command"/>），也可以通过 TCP 连接直接从主库读取 WAL（流复制）。备库还会尝试恢复位于备库集簇 <filename>pg_wal</filename> 目录中的任何 WAL。这种情况通常发生在服务器重启之后，此时备库会再次重放重启前从主库流入的 WAL；不过你也可以在任何时候手动把文件复制到 <filename>pg_wal</filename> 中，以便让它们被重放。
+   </para>
+
+   <para>
+    启动时，备库首先通过调用 <varname>restore_command</varname> 恢复归档位置中所有可用的 WAL。一旦到达其中可用 WAL 的末尾，并且 <varname>restore_command</varname> 失败，它就会尝试恢复 <filename>pg_wal</filename> 目录中可用的任何 WAL。如果这也失败，并且已经配置了流复制，备库就会尝试连接到主库，并从归档或 <filename>pg_wal</filename> 中找到的最后一条有效记录开始流式接收 WAL。如果这仍然失败，或者没有配置流复制，或者连接后来断开，备库就会返回第 1 步，再次尝试从归档恢复文件。这样在归档、<filename>pg_wal</filename> 以及流复制之间循环重试，直到服务器停止或被提升。
+   </para>
+
+   <para>
+    当执行 <command>pg_ctl promote</command> 或调用 <function>pg_promote()</function> 时，将退出备库模式，服务器切换到正常运行。在故障转移之前，会先恢复归档中或 <filename>pg_wal</filename> 中立即可用的所有 WAL，但不会尝试连接主库。
+   </para>
+  </sect2>
+
+  <sect2 id="preparing-primary-for-standby">
+   <title>为备库准备主库</title>
+
+   <para>
+    如 <xref linkend="continuous-archiving"/> 所述，在主库上设置持续归档，将日志归档到备库可访问的归档目录。即使主库宕机，该归档位置也应该对备库可访问；也就是说，它应位于备库本身或另一台可信服务器上，而不是位于主库上。
+   </para>
+
+   <para>
+    如果想使用流复制，就需要在主库上配置认证，以允许来自备库的复制连接；也就是说，创建一个角色，并在 <filename>pg_hba.conf</filename> 中添加一个或多个把数据库字段设置为 <literal>replication</literal> 的合适项。还要确保主库配置文件中的 <varname>max_wal_senders</varname> 被设置为足够大的值。如果要使用复制槽，还应确保 <varname>max_replication_slots</varname> 也设置得足够高。
+   </para>
+
+   <para>
+    如 <xref linkend="backup-base-backup"/> 所述，获取一个基础备份来引导备库。
+   </para>
+  </sect2>
+
+  <sect2 id="standby-server-setup">
+   <title>设置备库</title>
+
+   <para>
+    要设置备库，先恢复从主库获取的基础备份（见 <xref linkend="backup-pitr-recovery"/>）。然后在备库的集簇数据目录中创建一个 <link linkend="file-standby-signal"><filename>standby.signal</filename></link><indexterm><primary>standby.signal</primary></indexterm> 文件。把 <xref linkend="guc-restore-command"/> 设置为一个从 WAL 归档复制文件的简单命令。如果你打算出于高可用目的设置多个备库，请确认 <varname>recovery_target_timeline</varname> 被设置为 <literal>latest</literal>（默认值），这样该备库就会跟随故障转移到另一台备库后产生的时间线变化。
+   </para>
+
+   <note>
+     <para>
+     如果文件不存在，<xref linkend="guc-restore-command"/>应立即返回；服务器会在必要时再次尝试执行该命令。
+    </para>
+   </note>
+
+   <para>
+     如果想使用流复制，就在 <xref linkend="guc-primary-conninfo"/> 中填入一个 libpq 连接字符串，其中包含主机名（或 IP 地址）以及连接主库所需的其他细节。如果主库认证需要密码，也应在 <xref linkend="guc-primary-conninfo"/> 中指定该密码。
+   </para>
+
+   <para>
+    如果你是为了高可用目的设置备库，那么也应像主库一样设置 WAL 归档、连接和认证，因为故障转移后该备库将作为主库工作。
+   </para>
+
+   <para>
+    如果使用 WAL 归档，可以借助<xref
+    linkend="guc-archive-cleanup-command"/> 参数删除备库不再需要的文件，以尽量缩小归档大小。<application>pg_archivecleanup</application> 工具专门设计用于在典型的单备库配置中与 <varname>archive_cleanup_command</varname> 配合使用，见 <xref linkend="pgarchivecleanup"/>。不过请注意，如果你还把归档用于备份目的，即使这些文件对备库已经不再需要，也必须至少保留从最新基础备份恢复所需的那些文件。
+   </para>
+
+   <para>
+    一个简单的配置示例如下：
+<programlisting>
+primary_conninfo = 'host=192.168.1.50 port=5432 user=foo password=foopass options=''-c wal_sender_timeout=5000'''
+restore_command = 'cp /path/to/archive/%f %p'
+archive_cleanup_command = 'pg_archivecleanup /path/to/archive %r'
+</programlisting>
+   </para>
+
+   <para>
+    备库的数量可以任意多，但如果使用流复制，请确保主库上的 <varname>max_wal_senders</varname> 设置得足够高，以允许它们同时连接。
+   </para>
+
+  </sect2>
+
+  <sect2 id="streaming-replication">
+   <title>流复制</title>
+
+   <indexterm zone="high-availability">
+    <primary>流复制</primary>
+   </indexterm>
+
+   <para>
+    与基于文件的日志传送相比，流复制可以让备库保持得更接近最新状态。备库连接到主库，主库在生成 WAL 记录时就会把它们流式发送给备库，而不必等待 WAL 文件被写满。
+   </para>
+
+   <para>
+    默认情况下流复制是异步的（见 <xref linkend="synchronous-replication"/>），在这种情况下主库上提交一个事务与该变化在备库上变得可见之间存在短暂的延迟。不过这种延迟比基于文件的日志传送方式中要小得多，在备库的能力足以跟得上负载的前提下，延迟通常低于一秒。在流复制中，不需要 <varname>archive_timeout</varname> 来缩减数据丢失窗口。
+   </para>
+
+   <para>
+    如果你使用流复制，但没有启用基于文件的持续归档，服务器可能会在备库收到旧的 WAL 段之前就把它们回收掉。如果发生这种情况，备库就需要重新通过新的基础备份进行初始化。可以通过把 <varname>wal_keep_size</varname> 设置得足够大，以确保 WAL 段不会过早被回收，或者为备库配置一个复制槽，从而避免这种情况。如果配置了一个备库可访问的 WAL 归档，就不需要这些方案，因为只要归档保留了足够多的段，备库始终可以利用归档追赶上来。
+   </para>
+
+   <para>
+    要使用流复制，请先按 <xref linkend="warm-standby"/> 所述设置一个基于文件的日志传送备库。把它转变为流复制备库的步骤，就是把 <varname>primary_conninfo</varname> 设置为指向主库。还要在主库上设置 <xref linkend="guc-listen-addresses"/> 和认证选项（见 <filename>pg_hba.conf</filename>），以便备库能够连接到主库上的 <literal>replication</literal> 伪数据库（见 <xref linkend="streaming-replication-authentication"/>）。
+   </para>
+
+   <para>
+    在支持 keepalive 套接字选项的系统上，设置 <xref linkend="guc-tcp-keepalives-idle"/>、<xref linkend="guc-tcp-keepalives-interval"/> 和 <xref linkend="guc-tcp-keepalives-count"/> 有助于主库迅速注意到断开的连接。
+   </para>
+
+   <para>
+    设置来自备库的最大并发连接数（详见 <xref linkend="guc-max-wal-senders"/>）。
+   </para>
+
+   <para>
+    当备库启动并且 <varname>primary_conninfo</varname> 设置正确后，它会在重放完归档中所有可用的 WAL 文件之后连接到主库。如果连接成功建立，你会在备库上看到一个 <literal>walreceiver</literal>，并在主库上看到相应的 <literal>walsender</literal> 进程。
+   </para>
+
+   <sect3 id="streaming-replication-authentication">
+    <title>认证</title>
+    <para>
+     正确设置复制访问权限非常重要，因为从 WAL 流中很容易提取出需要权限才能访问的信息，因此必须确保只有受信任的用户才能读取它。备库必须以具有 <literal>REPLICATION</literal> 权限的账户或超级用户身份向主库认证。建议专门创建一个具有 <literal>REPLICATION</literal> 和 <literal>LOGIN</literal> 权限的用户账户用于复制。虽然 <literal>REPLICATION</literal> 权限的权限很高，但它并不允许用户修改主系统上的任何数据，而 <literal>SUPERUSER</literal> 权限则允许。
+    </para>
+
+    <para>
+     复制的客户端认证由 <filename>pg_hba.conf</filename> 中的一条记录控制，该记录需要把 <literal>replication</literal> 指定在 <replaceable>database</replaceable> 字段中。例如，如果备库运行在主机 IP <literal>192.168.1.100</literal> 上，并且用于复制的账户名为 <literal>foo</literal>，管理员可以在主库上的 <filename>pg_hba.conf</filename> 文件中加入下列行：
+
+<programlisting>
+# Allow the user "foo" from host 192.168.1.100 to connect to the primary
+# as a replication standby if the user's password is correctly supplied.
+#
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+host    replication     foo             192.168.1.100/32        scram-sha-256
+</programlisting>
+    </para>
+    <para>
+     主库的主机名和端口号、连接用户名以及密码都在 <xref linkend="guc-primary-conninfo"/> 中指定。密码也可以设置在备库上的 <filename>~/.pgpass</filename> 文件中（把 <literal>replication</literal> 指定在 <replaceable>database</replaceable> 字段中）。例如，如果主库运行在主机 IP <literal>192.168.1.50</literal>、端口 <literal>5432</literal> 上，用于复制的账户名为 <literal>foo</literal>，并且密码是 <literal>foopass</literal>，管理员可以在备库的 <filename>postgresql.conf</filename> 文件中加入下列行：
+
+<programlisting>
+# The standby connects to the primary that is running on host 192.168.1.50
+# and port 5432 as the user "foo" whose password is "foopass".
+primary_conninfo = 'host=192.168.1.50 port=5432 user=foo password=foopass'
+</programlisting>
+    </para>
+   </sect3>
+
+   <sect3 id="streaming-replication-monitoring">
+    <title>监控</title>
+    <para>
+     流复制的一个重要健康指标，是主库上已经生成但尚未在备库上应用的 WAL 记录量。你可以通过比较主库上的当前 WAL 写入位置和备库收到的最后一个 WAL 位置来计算这种滞后。这些位置分别可以用主库上的 <function>pg_current_wal_lsn</function> 和备库上的 <function>pg_last_wal_receive_lsn</function> 取得（详见 <xref linkend="functions-admin-backup-table"/> 和 <xref linkend="functions-recovery-info-table"/>）。备库上的最后一个 WAL 接收位置也会显示在 WAL 接收进程的进程状态中，即通过 <command>ps</command> 命令显示的状态（详见 <xref linkend="monitoring-ps"/>）。
+    </para>
+    <para>
+     你可以通过 <link linkend="monitoring-pg-stat-replication-view"><structname>pg_stat_replication</structname></link> 视图取得 WAL 发送进程列表。<function>pg_current_wal_lsn</function> 与该视图的 <literal>sent_lsn</literal> 字段之间存在较大差异，可能表示主库负载很重；而 <literal>sent_lsn</literal> 与备库上的 <function>pg_last_wal_receive_lsn</function> 之间存在较大差异，则可能表示网络延迟，或者备库负载很重。
+    </para>
+    <para>
+     在热备上，WAL 接收进程的状态可以通过<link linkend="monitoring-pg-stat-wal-receiver-view">
+     <structname>pg_stat_wal_receiver</structname></link>视图取得。<function>pg_last_wal_replay_lsn</function>与该视图的<literal>flushed_lsn</literal>之间存在较大差异，表示 WAL 的接收速度快于它被重放的速度。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 id="streaming-replication-slots">
+   <title>复制槽</title>
+   <indexterm>
+    <primary>复制槽</primary>
+    <secondary>流复制</secondary>
+   </indexterm>
+   <para>
+    复制槽提供了一种自动化方法，以确保主库在所有备库都收到 WAL 段之前不会删除它们，并且即使备库处于断开状态，主库也不会删除可能导致<link linkend="hot-standby-conflict">恢复冲突</link>的行。
+   </para>
+   <para>
+    如果不使用复制槽，也可以通过<xref linkend="guc-wal-keep-size"/>阻止旧的 WAL 段被移除，或者通过<xref linkend="guc-archive-command"/>或<xref linkend="guc-archive-library"/>把这些段保存到归档中。这些方法的一个缺点是，它们通常会保留多于实际所需数量的 WAL 段，而复制槽只会保留已知确实需要的段数。
+   </para>
+   <para>
+    类似地，如果不配合复制槽单独使用 <xref linkend="guc-hot-standby-feedback"/>，它虽然能防止相关的行被清理而避免因清理产生的问题，但在备库未连接的那段时间内并不能提供保护。
+   </para>
+
+   <caution>
+    <para>
+     注意，复制槽可能会导致服务器保留过多的 WAL 段，以至于占满分配给<literal>pg_wal</literal>的空间。可以使用<xref linkend="guc-max-slot-wal-keep-size"/>来限制复制槽保留的 WAL 文件大小。
+    </para>
+   </caution>
+
+   <sect3 id="streaming-replication-slots-manipulation">
+    <title>查询和管理复制槽</title>
+    <para>
+     每个复制槽都有一个名称，该名称可以包含小写字母、数字和下划线字符。
+    </para>
+    <para>
+     现有复制槽及其状态可以在
+     <link linkend="view-pg-replication-slots"><structname>pg_replication_slots</structname></link>
+     视图中查看。
+    </para>
+    <para>
+     复制槽可以通过流复制协议（见<xref linkend="protocol-replication"/>）或者 SQL 函数（见<xref linkend="functions-replication"/>）创建和删除。
+   </para>
+  </sect3>
+  <sect3 id="streaming-replication-slots-config">
+    <title>配置示例</title>
+    <para>
+     你可以像下面这样创建一个复制槽：
+<programlisting>
+postgres=# SELECT * FROM pg_create_physical_replication_slot('node_a_slot');
+  slot_name  | lsn
+-------------+-----
+ node_a_slot |
+
+postgres=# SELECT slot_name, slot_type, active FROM pg_replication_slots;
+  slot_name  | slot_type | active
+-------------+-----------+--------
+ node_a_slot | physical  | f
+(1 row)
+</programlisting>
+     要让备库使用这个槽，应在备库上配置 <varname>primary_slot_name</varname>。下面是一个简单示例：
+<programlisting>
+primary_conninfo = 'host=192.168.1.50 port=5432 user=foo password=foopass'
+primary_slot_name = 'node_a_slot'
+</programlisting>
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 id="cascading-replication">
+   <title>级联复制</title>
+
+   <indexterm zone="high-availability">
+    <primary>级联复制</primary>
+   </indexterm>
+
+   <para>
+    级联复制特性允许一台备库接受复制连接，并像中继器一样把 WAL 记录流式发送给其他备库。这可以用来减少直接连接到主库的连接数，并使站点间的带宽开销最小化。
+   </para>
+
+   <para>
+    一台同时扮演接收者和发送者角色的备库称为级联备库。与主库连接更直接（经过更少级联备库）的备库称为上游服务器，而距离更远的备库称为下游服务器。级联复制并不限制下游服务器的数量和拓扑，不过每台备库只连接到一台上游服务器，而这条链路最终都会通向同一台主库。
+   </para>
+
+   <para>
+    级联备库不仅发送从主库接收到的 WAL 记录，也会发送那些从归档中恢复的记录。因此，即使某条上游复制连接被中断，只要仍有新的 WAL 记录可用，下游的流复制就会继续。
+   </para>
+
+   <para>
+    级联复制目前是异步的。同步复制（见<xref linkend="synchronous-replication"/>）设置当前对级联复制无影响。
+   </para>
+
+   <para>
+    热备反馈会向上传播，无论级联拓扑如何。
+   </para>
+
+   <para>
+    如果一台上游备库被提升为新的主库，并且下游服务器的 <varname>recovery_target_timeline</varname> 被设置为 <literal>'latest'</literal>（默认值），下游服务器将继续从新的主库接收流。
+   </para>
+
+   <para>
+    要使用级联复制，需要把级联备库设置为能够接受复制连接（也就是设置 <xref linkend="guc-max-wal-senders"/> 和 <xref linkend="guc-hot-standby"/>，并配置 <link linkend="auth-pg-hba-conf">基于主机的认证</link>）。你还需要把下游备库中的 <varname>primary_conninfo</varname> 设置为指向级联备库。
+   </para>
+  </sect2>
+
+  <sect2 id="synchronous-replication">
+   <title>同步复制</title>
+
+   <indexterm zone="high-availability">
+    <primary>同步复制</primary>
+   </indexterm>
+
+   <para>
+    <productname>PostgreSQL</productname> 的流复制默认是异步的。如果主库崩溃，则某些已提交的事务可能尚未复制到备库，从而导致数据丢失。数据丢失量与故障转移时的复制延迟成正比。
+   </para>
+
+   <para>
+    同步复制能够确认一个事务所做的全部修改已经被传送到一台或多台同步备库。这扩展了事务提交所提供的标准持久性级别。在计算机科学理论中，这种保护级别被称为 2-safe 复制；而当<varname>synchronous_commit</varname>被设置为<literal>remote_write</literal>时，则称为 group-1-safe（group-safe 和 1-safe）。
+   </para>
+
+   <para>
+    请求同步复制时，每个写事务的提交都会等待，直到收到确认，表明该提交已被写入主库和备库磁盘上的预写式日志。数据唯一可能丢失的情况，是主库和备库同时崩溃。这可以提供更高的持久性级别，不过前提是系统管理员必须谨慎地部署和管理这两台服务器。等待确认会增强用户对服务器崩溃时更改不会丢失的信心，但也必然会增加请求事务的响应时间。最短等待时间是主库与备库之间的往返时间。
+   </para>
+
+   <para>
+    只读事务和事务回滚不需要等待备库的回应。子事务提交也不需要等待备库响应，只有顶层提交才需要等待。数据装载或索引构建等长时间运行的动作，不会一直等到最终提交消息。所有两阶段提交操作都需要等待提交，包括 prepare 和 commit。
+   </para>
+
+   <para>
+    同步备库可以是物理复制备库，也可以是逻辑复制订阅者。它还可以是任何其他物理或逻辑 WAL 复制流的消费者，只要它知道如何发送适当的反馈消息。除了内置的物理和逻辑复制系统之外，还包括<command>pg_receivewal</command>和<command>pg_recvlogical</command>之类的专用程序，以及一些第三方复制系统和定制程序。关于同步复制支持的细节，请查看相应文档。
+   </para>
+
+   <sect3 id="synchronous-replication-config">
+    <title>基本配置</title>
+
+   <para>
+    一旦流复制已经配置好，配置同步复制只需要额外一步：必须把<xref linkend="guc-synchronous-standby-names"/>设置为非空值。<varname>synchronous_commit</varname>也必须设置为<literal>on</literal>，但由于这是默认值，通常无需更改（见<xref linkend="runtime-config-wal-settings"/>和<xref linkend="runtime-config-replication-primary"/>）。这样的配置会导致每次提交都等待确认，以保证备库已经把提交记录写入持久存储。<varname>synchronous_commit</varname>可以由单个用户设置，因此既可以在配置文件中配置，也可以针对特定用户或数据库配置，或者由应用动态配置，从而在每事务级别控制持久性保证。
+   </para>
+
+   <para>
+    当提交记录已经在主库上写入磁盘之后，WAL 记录就会被发送到备库。每当新的一批 WAL 数据被写入磁盘时，备库就会发送回复消息，除非备库上的<varname>wal_receiver_status_interval</varname>被设置为零。如果<varname>synchronous_commit</varname>被设置为<literal>remote_apply</literal>，那么备库会在提交记录被重放时发送回复消息，从而使该事务变得可见。如果根据主库上的<varname>synchronous_standby_names</varname>设置，该备库被选为同步备库，那么它发出的回复会与其他同步备库的回复一起，用于决定何时释放那些正在等待确认提交记录已被收到的事务。这些参数允许管理员指定哪些备库应作为同步备库。注意，同步复制的配置主要在主库上进行。被命名的备库必须直接连接到主库；主库并不知道使用级联复制的下游备库。
+   </para>
+
+   <para>
+    把<varname>synchronous_commit</varname>设置为<literal>remote_write</literal>，会使每次提交都等待，直到备库确认已经收到提交记录并把它写入自己的操作系统，但不会等待数据被刷到备库磁盘上。与<literal>on</literal>相比，这种设置提供较弱一些的持久性保证：在操作系统崩溃时，备库可能丢失数据，尽管在<productname>PostgreSQL</productname>崩溃时不会。不过在实践中，这是一种有用的设置，因为它可以降低事务响应时间。只有当主库和备库都崩溃，并且主库数据库同时发生损坏时，才可能发生数据丢失。
+   </para>
+
+   <para>
+    把<varname>synchronous_commit</varname>设置为<literal>remote_apply</literal>，会使每次提交都等待，直到当前同步备库报告它们已经重放了该事务，从而使它对用户查询可见。在简单场景下，这可以支持具备因果一致性的负载均衡。
+   </para>
+
+   <para>
+    如果请求快速关闭，用户将停止等待。不过，与使用异步复制时一样，在所有尚未解决的 WAL 记录传输到当前已连接的备库之前，服务器不会完全关闭。
+   </para>
+
+   </sect3>
+
+   <sect3 id="synchronous-replication-multiple-standbys">
+    <title>多个同步备库</title>
+
+   <para>
+    同步复制支持一台或多台同步备库；事务将一直等待，直到所有被视为同步的备库确认已收到其数据。事务需要等待多少台同步备库的回复，由<varname>synchronous_standby_names</varname>指定。该参数还指定了一个备库名称列表，以及从中选择同步备库的方法（<literal>FIRST</literal>和<literal>ANY</literal>）。
+   </para>
+   <para>
+    <literal>FIRST</literal>方法指定基于优先级的同步复制，使事务提交等待，直到它们的 WAL 记录被复制到按优先级选出的、所要求数量的同步备库上。列表中出现得越早的备库优先级越高，并会被视为同步备库。该列表中更靠后的备库则是潜在的同步备库。如果当前某个同步备库因任何原因断开连接，它将立刻由下一个优先级最高的备库替代。
+   </para>
+   <para>
+    基于优先级的多同步备库的<varname>synchronous_standby_names</varname>示例如下：
+<programlisting>
+synchronous_standby_names = 'FIRST 2 (s1, s2, s3)'
+</programlisting>
+    在这个例子中，如果四台备库<literal>s1</literal>、<literal>s2</literal>、<literal>s3</literal>和<literal>s4</literal>都在运行，则<literal>s1</literal>和<literal>s2</literal>会被选为同步备库，因为它们的名字在备库名称列表中出现得更早。<literal>s3</literal>是潜在的同步备库，当<literal>s1</literal>或<literal>s2</literal>中的任意一台失效时，它就会接替其角色。由于<literal>s4</literal>的名称不在列表中，因此它是异步备库。
+   </para>
+   <para>
+    <literal>ANY</literal>方法指定基于法定人数的同步复制，使事务提交等待，直到它们的 WAL 记录被复制到列表中所要求数量的同步备库中的<emphasis>至少</emphasis>这么多台。
+   </para>
+   <para>
+    基于法定人数的多同步备库的<varname>synchronous_standby_names</varname>示例如下：
+<programlisting>
+synchronous_standby_names = 'ANY 2 (s1, s2, s3)'
+</programlisting>
+    在这个例子中，如果四台备库<literal>s1</literal>、<literal>s2</literal>、<literal>s3</literal>和<literal>s4</literal>都在运行，事务提交将等待来自<literal>s1</literal>、<literal>s2</literal>和<literal>s3</literal>中的任意两台备库的回复。由于<literal>s4</literal>的名字不在列表中，因此它是异步备库。
+   </para>
+   <para>
+    备库的同步状态可以通过<structname>pg_stat_replication</structname>视图查看。
+   </para>
+   </sect3>
+
+   <sect3 id="synchronous-replication-performance">
+    <title>性能规划</title>
+
+   <para>
+    同步复制通常要求对备库进行仔细规划和部署，才能保证应用具有可接受的性能。等待本身不会占用系统资源，但事务锁会一直保持到传输得到确认。因此，若不谨慎使用同步复制，数据库应用的性能会因为响应时间增加和争用加剧而下降。
+   </para>
+
+   <para>
+    <productname>PostgreSQL</productname>允许应用开发者通过复制来指定所需的持久性级别。这可以在整个系统级别指定，也可以针对特定用户、特定连接，甚至单个事务指定。
+   </para>
+
+   <para>
+    例如，一个应用负载可能由如下部分组成：10% 的变更是重要的客户资料，而 90% 的变更是不太重要、即使丢失业务也较容易承受的数据，例如用户之间的聊天消息。
+   </para>
+
+   <para>
+    通过在应用级别（在主库上）指定同步复制选项，我们可以只对最重要的变更提供同步复制，而不会拖慢整体工作负载。应用级别选项是让高性能应用获得同步复制收益的一种重要而实用的工具。
+   </para>
+
+   <para>
+    你应当确保网络带宽高于 WAL 数据的生成速率。
+   </para>
+
+   </sect3>
+
+   <sect3 id="synchronous-replication-ha">
+    <title>高可用规划</title>
+
+   <para>
+    <varname>synchronous_standby_names</varname>指定了当<varname>synchronous_commit</varname>设置为<literal>on</literal>、<literal>remote_apply</literal>或<literal>remote_write</literal>时，事务提交需要等待其响应的同步备库的数量和名称。如果任意一台同步备库崩溃，此类事务提交就可能永远无法完成。
+   </para>
+
+   <para>
+    对于高可用而言，最好的办法是确保你始终保有所要求数量的同步备库。这可以通过在<varname>synchronous_standby_names</varname>中命名多个潜在同步备库来实现。
+   </para>
+
+   <para>
+    在基于优先级的同步复制中，列表中出现较早的备库将被用作同步备库。列在它们之后的备库，会在当前同步备库失效时接替其角色。
+   </para>
+
+   <para>
+    在基于法定人数的同步复制中，列表中的所有备库都会被用作同步备库候选。即使其中一台失效，其他备库仍会继续承担同步备库候选的角色。
+   </para>
+
+   <para>
+    当一台备库第一次连接到主库时，它还没有正确同步。这种状态称为<literal>catchup</literal>模式。一旦备库与主库之间的滞后第一次变为零，它就会进入实时的<literal>streaming</literal>状态。备库刚创建之后，追赶阶段可能会持续较长时间。如果备库被关闭，则追赶阶段会随着它停机时间的延长而变长。只有在到达<literal>streaming</literal>状态后，备库才能成为同步备库。这种状态可以通过<structname>pg_stat_replication</structname>视图查看。
+   </para>
+
+   <para>
+    如果主库在提交正等待确认时重启，这些等待中的事务会在主库恢复后被标记为已完全提交。无法确定在主库崩溃时，所有备库是否已经收到全部尚未处理的 WAL 数据。因此，某些事务可能不会在备库上显示为已提交，即使它们在主库上显示为已提交。我们所提供的保证是：只有在确认 WAL 数据已经被所有同步备库安全接收之后，应用才会收到事务成功提交的显式确认。
+   </para>
+
+   <para>
+    如果你确实无法维持所要求数量的同步备库，那么就应当在<varname>synchronous_standby_names</varname>中减少事务提交需要等待其响应的同步备库数量（或者禁用它），然后在主库上重新加载配置文件。
+   </para>
+
+   <para>
+    如果主库与剩余的备库隔离开了，你应当故障转移到那些剩余备库中最佳的候选者。
+   </para>
+
+   <para>
+    如果你需要在事务正在等待时重新创建一台备库，请确保<function>pg_backup_start()</function>和<function>pg_backup_stop()</function>是在一个把<varname>synchronous_commit</varname>设置为<literal>off</literal>的会话中运行的，否则这些请求将永远等待备库出现。
+   </para>
+
+   </sect3>
+  </sect2>
+
+  <sect2 id="continuous-archiving-in-standby">
+   <title>在备库中持续归档</title>
+
+   <indexterm>
+     <primary>持续归档</primary>
+     <secondary>在备库中</secondary>
+   </indexterm>
+
+   <para>
+     当在备库中使用持续 WAL 归档时，有两种不同的场景：WAL 归档可以由主库和备库共享，或者备库可以拥有自己的 WAL 归档。当备库拥有自己的 WAL 归档时，应把<varname>archive_mode</varname>设置为<literal>always</literal>，这样备库就会为它接收到的每个 WAL 段调用归档命令，无论该 WAL 段是通过从归档恢复得到的，还是通过流复制得到的。共享归档也可以类似处理，但<varname>archive_command</varname>或<varname>archive_library</varname>必须检查正在归档的文件是否已经存在，以及已有文件的内容是否完全相同。这就要求在<varname>archive_command</varname>或<varname>archive_library</varname>中更加小心：既不能用不同内容覆盖现有文件，又要在同一个文件被归档两次且内容完全相同时返回成功。如果两台服务器同时尝试归档同一个文件，还必须确保整个过程不存在竞争条件。
+   </para>
+
+   <para>
+     如果<varname>archive_mode</varname>被设置为<literal>on</literal>，那么归档器在恢复期间或备库模式下不会启用。如果备库被提升，它会在提升后开始归档，但不会归档任何不是由它自己生成的 WAL 或时间线历史文件。要在归档中获得完整的一系列 WAL 文件，就必须确保所有 WAL 在到达备库之前已经被归档。对于基于文件的日志传送，这天然成立，因为备库只能恢复归档中找到的文件；但在启用流复制时则不是这样。当服务器不处于恢复模式时，<literal>on</literal>和<literal>always</literal>模式之间没有区别。
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="warm-standby-failover">
+  <title>故障转移</title>
+
+  <para>
+   如果主库失效，备库就应该开始执行故障转移过程。
+  </para>
+
+  <para>
+   如果备库失效，则不需要发生故障转移。如果备库能够重新启动，即使是在稍后某个时间点，恢复过程也可以立即重新开始，从而利用可重启恢复的优势。如果备库无法重新启动，则应创建一个全新的备库实例。
+  </para>
+
+  <para>
+   如果主库失效，而备库成为新的主库，那么旧主库之后如果重新启动，你必须有一种机制通知它，它已经不再是主库。这有时被称为<acronym>STONITH</acronym>（Shoot The Other Node In The Head），它对于避免两个系统都认为自己是主库的情况至关重要，因为那种情况会导致混乱，并最终造成数据丢失。
+  </para>
+
+  <para>
+   许多故障转移系统只使用两个系统，即主库和备库，并通过某种心跳机制连接它们，以持续验证两者之间的连通性以及主库的可用性。也可以使用第三个系统（称为见证服务器）来防止某些不恰当的故障转移，但除非设置得足够谨慎并经过严格测试，否则额外增加的复杂性可能并不值得。
+  </para>
+
+  <para>
+   <productname>PostgreSQL</productname>并不提供用于识别主库故障并通知备库的系统软件。现在已经存在许多这样的工具，并且它们通常能很好地与成功故障转移所需的操作系统设施整合在一起，例如 IP 地址迁移。
+  </para>
+
+  <para>
+   一旦故障转移到备库，系统中就只剩下一台服务器在运行。这被称为退化状态。原来的备库现在成为主库，而原来的主库已经停机，并且可能持续停机。要恢复到正常运行状态，就必须重新创建一台备库：要么在原主库恢复后在其上重建，要么在第三台可能是全新的服务器上重建。在大型集簇上，可以使用<xref linkend="app-pgrewind"/>工具来加快这一过程。一旦完成，就可以认为主库和备库已经交换了角色。有些人会选择使用第三台服务器，在新的备库重建完成之前为新的主库提供备份，但显然这会让系统配置和操作流程更加复杂。
+  </para>
+
+  <para>
+   因此，从主库切换到备库可以很快，但重新准备故障转移集簇仍然需要时间。定期在主库与备库之间进行切换是有益的，因为它允许每个系统定期停机维护。这也相当于对故障转移机制进行测试，以确保真正需要它时它能够正常工作。建议编写书面的管理操作规程。
+  </para>
+
+  <para>
+   如果你选择了逻辑复制槽同步（见<xref linkend="logicaldecoding-replication-slots-synchronization"/>），那么在切换到备库之前，建议检查备库上已同步的逻辑槽是否已经为故障转移做好准备。这可以通过执行<xref linkend="logical-replication-failover"/>中描述的步骤来完成。
+  </para>
+
+  <para>
+   要触发日志传送备库的故障转移，请运行<command>pg_ctl promote</command>或调用<function>pg_promote()</function>。如果你设置的是仅用于从主库卸载只读查询的报表服务器，而不是用于高可用目的，那么就不需要执行提升。
+  </para>
+ </sect1>
+
+ <sect1 id="hot-standby">
+  <title>热备</title>
+
+  <indexterm zone="high-availability">
+   <primary>热备</primary>
+  </indexterm>
+
+   <para>
+    热备是用来描述服务器在归档恢复或备库模式下仍然可以接受连接并运行只读查询的能力的术语。这对于复制用途以及把备份以极高精度恢复到目标状态都很有用。术语热备还指服务器能够在用户持续运行查询和/或保持连接不断开的同时，从恢复状态切换到正常运行状态的能力。
+   </para>
+
+   <para>
+    在热备模式下运行查询与正常查询操作类似，不过正如下文所述，在使用和管理上存在一些差异。
+   </para>
+
+  <sect2 id="hot-standby-users">
+   <title>用户概览</title>
+
+   <para>
+    当备库上的<xref linkend="guc-hot-standby"/>参数被设置为真时，一旦恢复把系统带到一致状态并为热备做好准备，它就会开始接受连接。所有这类连接都严格是只读的，甚至不能写入临时表。
+   </para>
+
+   <para>
+    备库上的数据需要一些时间才能从主库到达，因此主库和备库之间会有可测量的延迟。因此，在主库和备库上几乎同时运行同一查询，可能会返回不同的结果。我们说备库上的数据与主库是<firstterm>最终一致</firstterm>的。一旦某个事务的提交记录在备库上被重放，该事务所做的修改就会对备库上之后取得的所有新快照可见。快照可以在每个查询开始时取得，也可以在每个事务开始时取得，这取决于当前的事务隔离级别。详见<xref linkend="transaction-iso"/>。
+   </para>
+
+   <para>
+    在热备期间启动的事务可以发出下列命令：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       查询访问：<command>SELECT</command>、<command>COPY TO</command>
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       游标命令：<command>DECLARE</command>、<command>FETCH</command>、<command>CLOSE</command>
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       设置：<command>SHOW</command>、<command>SET</command>、<command>RESET</command>
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       事务管理命令:
+        <itemizedlist>
+         <listitem>
+          <para>
+           <command>BEGIN</command>、<command>END</command>、<command>ABORT</command>、<command>START TRANSACTION</command>
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <command>SAVEPOINT</command>、<command>RELEASE</command>、<command>ROLLBACK TO SAVEPOINT</command>
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <command>EXCEPTION</command>块或其他内部子事务
+          </para>
+         </listitem>
+        </itemizedlist>
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <command>LOCK TABLE</command>，不过只限于显式指定下列模式之一时：
+       <literal>ACCESS SHARE</literal>、<literal>ROW SHARE</literal> 或 <literal>ROW EXCLUSIVE</literal>
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       计划和资源：<command>PREPARE</command>、<command>EXECUTE</command>、
+       <command>DEALLOCATE</command>、<command>DISCARD</command>
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       插件和扩展：<command>LOAD</command>
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <command>UNLISTEN</command>
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    在热备期间启动的事务永远不会被分配事务 ID，也不能写入系统预写式日志。因此，下列动作都会产生错误消息：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       数据操纵语言（DML）：<command>INSERT</command>、
+       <command>UPDATE</command>、<command>DELETE</command>、
+       <command>MERGE</command>、<command>COPY FROM</command>、
+       <command>TRUNCATE</command>。请注意，恢复期间不存在任何允许执行触发器的动作。这个限制甚至适用于临时表，因为不分配事务 ID 就无法读取或写入表行，而这在热备环境中目前是不可能的。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       数据定义语言（DDL）：<command>CREATE</command>、
+       <command>DROP</command>、<command>ALTER</command>、<command>COMMENT</command>。这个限制甚至适用于临时表，因为执行这些操作需要更新系统目录表。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <command>SELECT ... FOR SHARE | UPDATE</command>，因为不更新底层数据文件就无法获取行锁。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       作用在<command>SELECT</command>语句上、会生成 DML 命令的规则。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <command>LOCK</command>，如果它显式请求高于 <literal>ROW EXCLUSIVE MODE</literal> 的模式。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       简写默认形式的<command>LOCK</command>，因为它请求的是 <literal>ACCESS EXCLUSIVE MODE</literal>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       显式设置为非只读状态的事务管理命令：
+        <itemizedlist>
+         <listitem>
+          <para>
+            <command>BEGIN READ WRITE</command>,
+            <command>START TRANSACTION READ WRITE</command>
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+            <command>SET TRANSACTION READ WRITE</command>,
+            <command>SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE</command>
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <command>SET transaction_read_only = off</command>
+          </para>
+         </listitem>
+        </itemizedlist>
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       两阶段提交命令：<command>PREPARE TRANSACTION</command>、
+       <command>COMMIT PREPARED</command>、<command>ROLLBACK PREPARED</command>，
+       因为即使是只读事务，在 prepare 阶段（两阶段提交的第一阶段）也需要写入 WAL。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       序列更新：<function>nextval()</function>、<function>setval()</function>
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <command>LISTEN</command>、<command>NOTIFY</command>
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    在正常运行中，<quote>只读</quote>事务允许使用<command>LISTEN</command>和<command>NOTIFY</command>，因此热备会话受到的限制要比普通只读会话稍微更严格一些。将来的版本中，这些限制中的某些可能会被放宽。
+   </para>
+
+   <para>
+    在热备期间，参数<varname>transaction_read_only</varname>始终为真，并且不能更改。不过，只要不尝试修改数据库，热备期间的连接行为与其他数据库连接大致相同。如果发生故障转移或切换，数据库将切换到正常处理模式。服务器切换模式时，会话仍会保持连接。一旦热备结束，就可以发起读写事务（即使该会话是在热备期间开始的）。
+   </para>
+
+   <para>
+    用户可以通过执行<command>SHOW in_hot_standby</command>来判断自己的会话当前是否处于热备状态。（在服务器 14 之前的版本中，不存在<varname>in_hot_standby</varname>参数；对于更早版本的服务器，一个可行的替代方法是执行<command>SHOW transaction_read_only</command>。）此外，还有一组函数（<xref linkend="functions-recovery-info-table"/>）允许用户访问有关备库的信息。借助这些函数，你可以编写感知数据库当前状态的程序，用于监控恢复进度，或者编写把数据库恢复到特定状态的复杂程序。
+   </para>
+  </sect2>
+
+  <sect2 id="hot-standby-conflict">
+   <title>处理查询冲突</title>
+
+   <para>
+    主库和备库在许多方面都是松耦合的。主库上的动作会对备库产生影响，因此它们之间可能出现负面交互或冲突。最容易理解的冲突是性能：如果主库上正在执行一次大规模数据装载，那么备库上也会产生类似的 WAL 记录流，因此备库查询可能会争用系统资源，例如 I/O。
+   </para>
+
+   <para>
+    热备还可能发生其他类型的冲突。这些冲突属于<emphasis>硬冲突</emphasis>，因为查询可能需要被取消，并且在某些情况下还需要断开会话来解决冲突。系统为用户提供了若干种处理这些冲突的方法。冲突场景包括：
+
+      <itemizedlist>
+       <listitem>
+        <para>
+         主库上获取的 Access Exclusive 锁，包括显式的<command>LOCK</command>命令和各种<acronym>DDL</acronym>操作，会与备库查询中的表访问发生冲突。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         主库上删除表空间，会与备库查询把该表空间用于临时工作文件发生冲突。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         主库上删除数据库，会与备库上连接到该数据库的会话发生冲突。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         来自 WAL 的清理记录在应用时，会与那些快照仍然能够<quote>看到</quote>将被删除行的备库事务发生冲突。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         来自 WAL 的清理记录在应用时，会与备库上访问目标页面的查询发生冲突，而不管待删除的数据是否可见。
+        </para>
+       </listitem>
+      </itemizedlist>
+   </para>
+
+   <para>
+    在主库上，这些情况只会导致等待；用户可以选择取消冲突动作中的任意一方。但是在备库上没有这种选择：已经被写入 WAL 的动作早已在主库上发生，因此备库在应用它时不能失败。此外，让 WAL 应用无限期等待通常是很不可取的，因为备库的状态会越来越落后于主库。因此，系统提供了一种机制，用来强制取消那些与即将应用的 WAL 记录发生冲突的备库查询。
+   </para>
+
+   <para>
+    一个典型例子是，主库上的管理员在某个表上执行<command>DROP TABLE</command>，而备库上正有查询访问该表。显然，如果<command>DROP TABLE</command>在备库上被应用，该备库查询就无法继续。如果这种情况发生在主库上，<command>DROP TABLE</command>会等待直到其他查询结束。但在主库上执行<command>DROP TABLE</command>时，主库并不知道备库上正在运行哪些查询，因此它不会等待这些备库查询。于是，WAL 变更记录会在备库查询仍在运行时到达备库，从而引发冲突。备库要么延迟应用这条 WAL 记录（以及之后的所有记录），要么取消冲突查询，以便应用<command>DROP TABLE</command>。
+   </para>
+
+   <para>
+    当冲突查询很短时，通常最好通过稍微延迟 WAL 应用来让它完成；但 WAL 应用长时间延迟通常并不可取。因此，取消机制提供了<xref linkend="guc-max-standby-archive-delay"/>和<xref
+    linkend="guc-max-standby-streaming-delay"/>这两个参数，用于定义 WAL 应用允许的最大延迟。一旦应用新收到的 WAL 数据所花费的时间超过相应延迟设置，冲突查询就会被取消。之所以有两个参数，是为了分别针对从归档读取 WAL 数据的场景（即从基础备份进行初始恢复，或者<quote>追赶</quote>一台已经远远落后的备库）以及通过流复制读取 WAL 数据的场景指定不同的延迟值。
+   </para>
+
+   <para>
+    如果一台备库主要用于高可用性，那么最好把这些延迟参数设置得较短，这样服务器就不会因为备库查询导致的延迟而远远落后于主库。但是，如果该备库的用途是执行长时间运行的查询，那么较高甚至无限的延迟值可能更合适。不过要记住，如果某个长时间运行的查询延迟了 WAL 记录的应用，它也可能使备库上的其他会话看不到主库上的最新变更。
+   </para>
+
+   <para>
+    一旦<varname>max_standby_archive_delay</varname>或<varname>max_standby_streaming_delay</varname>指定的延迟被超越，冲突查询将被取消。这通常仅导致一个取消错误，尽管在重放一个<command>DROP DATABASE</command>的情况下整个冲突会话都将被中断。另外，如果冲突发生在一个被空闲事务持有的锁上，该冲突会话会被中断（这种行为可能在未来被改变）。
+   </para>
+
+   <para>
+    被取消的查询可能会立即被重试（当然是在开始一个新的事务后）。因为查询取消依赖于 WAL 记录被重放的本质，如果一个被取消的查询被再次执行，它可能会很好地成功完成。
+   </para>
+
+   <para>
+    记住延迟参数是从 WAL 数据被备库收到后流逝的时间。因此，留给备库上任何一个查询的宽限期从不会超过延迟参数，并且如果备库已经由于等待之前的查询完成而落后或者因为过重的更新负载而无法跟上主库，宽限期可能会更少。
+   </para>
+
+   <para>
+    备库查询与 WAL 重放发生冲突的最常见原因是<quote>过早清理</quote>。正常情况下，当没有事务需要看到旧行版本时，<productname>PostgreSQL</productname>允许清理这些旧行版本，以保证按照 MVCC 规则得到正确的数据可见性。不过，这条规则只能应用于在主库上执行的事务。因此，主库上的清理有可能移除某个备库事务仍然可见的行版本。
+   </para>
+
+   <para>
+    行版本清理并不是与备库查询发生冲突的唯一潜在原因。所有仅索引扫描（包括在备库上运行的那些）都必须使用一个<acronym>MVCC</acronym>快照，它与可见性映射<quote>一致</quote>。因此，每当<command>VACUUM</command><link
+     linkend="vacuum-for-visibility-map">在可见性映射中把某个页面标记为全可见</link>，而该页面中包含一行或多行对所有备库查询都<emphasis>不可见</emphasis>的数据时，就必须产生冲突。所以，即使针对一个没有更新或删除任何需要清理行的表执行<command>VACUUM</command>，也可能导致冲突。
+   </para>
+
+   <para>
+    用户应当清楚，主库上经常并且大量更新的表，会很快导致备库上的长时间运行查询被取消。在这种情况下，把<varname>max_standby_archive_delay</varname>或<varname>max_standby_streaming_delay</varname>设置为有限值，可以视作类似于设置<varname>statement_timeout</varname>。
+   </para>
+
+   <para>
+    如果备库查询被取消的次数多得令人无法接受，也存在补救办法。第一种选择是设置<varname>hot_standby_feedback</varname>参数，它会阻止<command>VACUUM</command>移除最近死亡的行，因此不会发生清理冲突。如果这样做，你应当注意这会延迟主库上死行的清理，从而可能导致不希望出现的表膨胀。不过，清理情况不会比直接在主库上运行这些备库查询更糟，而且你仍然可以获得把执行卸载到备库上的好处。如果备库经常连接又断开，你可能还需要进行一些调整，以应对无法提供<varname>hot_standby_feedback</varname>反馈的那段时间。例如，可以考虑增大<varname>max_standby_archive_delay</varname>，使查询在断开期间不会因为 WAL 归档文件中的冲突而被迅速取消。你也应考虑增大<varname>max_standby_streaming_delay</varname>，以避免重新连接后由于新到达的流式 WAL 条目而被快速取消。
+   </para>
+
+   <para>
+    查询取消的数量及其原因可以通过备库上的<structname>pg_stat_database_conflicts</structname>系统视图查看。<structname>pg_stat_database</structname>系统视图也包含汇总信息。
+   </para>
+
+   <para>
+    当 WAL 重放因冲突而等待的时间超过<varname>deadlock_timeout</varname>时，用户可以控制是否生成日志消息。这由<xref linkend="guc-log-recovery-conflict-waits"/>参数控制。
+   </para>
+  </sect2>
+
+  <sect2 id="hot-standby-admin">
+   <title>管理员概览</title>
+
+   <para>
+    如果<varname>hot_standby</varname>被设置为<literal>on</literal>（默认值），并且该设置位于<filename>postgresql.conf</filename>中，同时存在<link linkend="file-standby-signal"><filename>standby.signal</filename></link><indexterm><primary>standby.signal</primary><secondary>用于热备</secondary></indexterm>文件，那么服务器就会运行在热备模式下。不过，允许热备连接可能还需要一段时间，因为服务器在完成足够多的恢复、能够提供一个可供查询运行的一致状态之前，不会接受连接。在此期间，尝试连接的客户端会收到错误消息而被拒绝。要确认服务器已经启动，可以让应用循环尝试连接，或者在服务器日志中查找以下消息：
+
+<programlisting>
+LOG:  entering standby mode
+
+... then some time later ...
+
+LOG:  consistent recovery state reached
+LOG:  database system is ready to accept read-only connections
+</programlisting>
+
+    一致性信息在主库上每个检查点时记录一次。在主库的<varname>wal_level</varname>未设置为<literal>replica</literal>或<literal>logical</literal>期间所写入的 WAL 被读取时，无法启用热备。即使已经达到一致状态，如果同时满足下列两个条件，恢复快照也可能还没有准备好用于热备，从而推迟接受只读连接。要启用热备，就需要在主库上结束那些包含超过 64 个子事务的长生命周期写事务。
+
+      <itemizedlist>
+       <listitem>
+        <para>
+         某个写事务包含超过 64 个子事务
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         非常长生命周期的写事务
+        </para>
+       </listitem>
+      </itemizedlist>
+
+    如果你运行的是基于文件的日志传送（温备），那么可能需要等到下一个 WAL 文件到达，这个等待时间可能长达主库上<varname>archive_timeout</varname>的设置值。
+   </para>
+
+   <para>
+    某些参数的设置决定了用于跟踪事务 ID、锁以及预备事务的共享内存大小。为了确保备库在恢复过程中不会耗尽共享内存，这些共享内存结构在备库上绝不能比主库上更小。例如，如果主库曾使用过预备事务，而备库没有为跟踪预备事务分配任何共享内存，那么恢复就无法继续，直到修改备库的配置。受影响的参数有：
+      <itemizedlist>
+       <listitem>
+        <para>
+         <varname>max_connections</varname>
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <varname>max_prepared_transactions</varname>
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <varname>max_locks_per_transaction</varname>
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <varname>max_wal_senders</varname>
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <varname>max_worker_processes</varname>
+        </para>
+       </listitem>
+      </itemizedlist>
+    避免这类问题最简单的方法，就是让备库上的这些参数值等于或大于主库上的值。因此，如果你想增大这些值，应先在所有备库上增大，再把变更应用到主库。相反，如果想减小这些值，则应先在主库上减小，再把变更应用到所有备库。请记住，当一台备库被提升后，它会成为其后续备库所需参数设置的新参考。因此，为避免在切换或故障转移期间出现问题，建议在所有备库上保持这些设置相同。
+   </para>
+
+   <para>
+   WAL 会跟踪主库上这些参数的变化。如果热备在处理 WAL 时发现主库上的当前值高于自身设置值，它将记录一条警告并暂停恢复。例如：
+<screen>
+WARNING:  hot standby is not possible because of insufficient parameter settings
+DETAIL:  max_connections = 80 is a lower setting than on the primary server, where its value was 100.
+LOG:  recovery has paused
+DETAIL:  If recovery is unpaused, the server will shut down.
+HINT:  You can then restart the server after making the necessary configuration changes.
+</screen>
+    到了这一步，必须先更新备库上的设置并重启实例，恢复才能继续。如果该备库不是热备，那么遇到这种不兼容的参数变化时，它会直接关闭而不会暂停，因为继续保持其运行没有意义。
+   </para>
+
+   <para>
+    管理员为<xref linkend="guc-max-standby-archive-delay"/>和<xref
+    linkend="guc-max-standby-streaming-delay"/>选择合适的设置非常重要。最佳选择取决于业务优先级。例如，如果服务器的主要任务是充当高可用服务器，那么你会希望延迟设置较低，甚至可能设为零，尽管这是一个非常激进的设置。如果备库承担的是决策支持查询的附加服务器角色，那么把最大延迟设置为数小时甚至 -1（意味着永远等待查询完成）也可能是可以接受的。
+   </para>
+
+   <para>
+    主库上写出的事务状态 "hint bits" 不会被 WAL 记录，因此备库上的数据很可能会再次写出这些提示位。这样一来，即使所有用户都是只读的，备库仍然会执行磁盘写操作；不过数据值本身并不会发生变化。用户仍然会写出大型排序临时文件，并重新生成 relcache 信息文件，因此在热备模式下，数据库没有任何部分是真正只读的。还要注意，使用<application>dblink</application>模块写入远程数据库，以及借助 PL 函数执行其他数据库外部操作，依然是可能的，即使该事务在本地是只读的。
+   </para>
+
+   <para>
+    在恢复模式下，不接受下列类型的管理命令：
+
+      <itemizedlist>
+       <listitem>
+        <para>
+         数据定义语言：例如 <command>CREATE INDEX</command>
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         权限和所有权：<command>GRANT</command>、<command>REVOKE</command>、
+         <command>REASSIGN</command>
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         维护命令：<command>ANALYZE</command>、<command>VACUUM</command>、
+         <command>CLUSTER</command>、<command>REINDEX</command>
+        </para>
+       </listitem>
+      </itemizedlist>
+   </para>
+
+   <para>
+    再次注意，这些命令中的某些在主库上的“只读”事务中实际上是被允许的。
+   </para>
+
+   <para>
+    因此，你不能创建只存在于备库上的额外索引，也不能创建只存在于备库上的统计信息。如果需要这些管理命令，应在主库上执行，最终这些变更会传播到备库。
+   </para>
+
+   <para>
+    <function>pg_cancel_backend()</function>和<function>pg_terminate_backend()</function>可以作用于用户后端，但不能作用于执行恢复操作的启动进程。<structname>pg_stat_activity</structname>不会把正在恢复的事务显示为活动状态。因此，恢复期间<structname>pg_prepared_xacts</structname>始终为空。如果你希望解决处于不确定状态的预备事务，请查看主库上的<literal>pg_prepared_xacts</literal>，并在那里发出命令解决这些事务，或者在恢复结束后再解决它们。
+   </para>
+
+   <para>
+    与正常情况一样，<structname>pg_locks</structname>会显示后端持有的锁。<structname>pg_locks</structname>还会显示一个由启动进程管理的虚拟事务，它拥有所有正在被恢复重放的事务所持有的<literal>AccessExclusiveLocks</literal>。请注意，启动进程不会为了修改数据库而获取锁，因此除了<literal>AccessExclusiveLocks</literal>之外，其他锁不会在启动进程的<structname>pg_locks</structname>中显示；它们只是被假定存在。
+   </para>
+
+   <para>
+    <productname>Nagios</productname>的<productname>check_pgsql</productname>插件可以工作，因为它检查的简单信息是存在的。<productname>check_postgres</productname>监控脚本也可以工作，尽管其中某些被报告的值可能会给出不同或令人困惑的结果。例如，最近一次清理时间不会被维护，因为备库上不会发生清理。不过，主库上执行的清理仍然会把其变更发送到备库。
+   </para>
+
+   <para>
+    恢复期间，WAL 文件控制命令不可用，例如<function>pg_backup_start</function>、<function>pg_switch_wal</function>等。
+   </para>
+
+   <para>
+    可动态载入的模块可以工作，包括<structname>pg_stat_statements</structname>。
+   </para>
+
+   <para>
+    咨询锁在恢复期间可以正常工作，包括死锁检测。注意，咨询锁从不会被 WAL 记录，因此主库或备库上的咨询锁都不可能与 WAL 重放发生冲突。同样，也不可能在主库上获取一个咨询锁，却在备库上触发一个类似的咨询锁。咨询锁只与获取它们的那台服务器相关。
+   </para>
+
+   <para>
+    基于触发器的复制系统，如<productname>Slony</productname>、<productname>Londiste</productname>和<productname>Bucardo</productname>，根本无法在备库上运行；不过只要它们的变更不会被发送到备库并在那里应用，它们在主库上就可以正常工作。WAL 重放并不是基于触发器的，因此你不能把备库作为任何需要额外数据库写操作或依赖触发器的系统的中继节点。
+   </para>
+
+   <para>
+    不能分配新的 OID，不过某些<acronym>UUID</acronym>生成器仍可工作，只要它们不依赖于向数据库写入新的状态。
+   </para>
+
+   <para>
+    目前，在只读事务期间不允许创建临时表，因此某些现有脚本在这种情况下将无法正常运行。这个限制可能会在未来版本中放宽。这既涉及 SQL 标准兼容性问题，也涉及技术问题。
+   </para>
+
+   <para>
+    只有在表空间为空时<command>DROP TABLESPACE</command>才能成功。某些备库用户可能正在通过他们的<varname>temp_tablespaces</varname>参数使用该表空间。如果该表空间中存在临时文件，所有活动查询都将被取消，以确保临时文件被移除，这样该表空间才能被移除并且 WAL 重放可以继续。
+   </para>
+
+   <para>
+    在主库上执行<command>DROP DATABASE</command>或<command>ALTER DATABASE ... SET TABLESPACE</command>会生成一条 WAL 记录，从而强制断开备库上所有连接到该数据库的用户。这个动作会立即发生，而不受<varname>max_standby_streaming_delay</varname>设置的影响。注意，<command>ALTER DATABASE ... RENAME</command>不会断开用户，这在大多数情况下不会被注意到，但如果程序依赖某种基于数据库名的机制，在某些情况下可能会导致混乱。
+   </para>
+
+   <para>
+    在普通（非恢复）模式下，如果你对一个具有登录能力的角色执行<command>DROP USER</command>或<command>DROP ROLE</command>，而该用户仍然处于连接状态，那么已连接用户不会发生任何变化 &mdash; 他们会继续保持连接，不过之后不能重新连接。这种行为在恢复期间同样适用，因此在主库上执行一次<command>DROP USER</command>并不会断开备库上的该用户连接。
+   </para>
+
+   <para>
+    累积统计系统在恢复期间是活动的。所有扫描、读取、块访问、索引使用等，都会在备库上照常记录。不过，WAL 重放不会增加关系和数据库级别的特定计数器。也就是说，重放不会增加<structname>pg_stat_all_tables</structname>中的列（例如<structfield>n_tup_ins</structfield>），启动进程执行的读写也不会被记录到<structname>pg_statio_</structname>视图中，相关的<structname>pg_stat_database</structname>列也不会增加。
+   </para>
+
+   <para>
+    恢复期间自动清理不会运行。它会在恢复结束时正常启动。
+   </para>
+
+   <para>
+    检查点进程和后台写入进程在恢复期间是活动的。检查点进程会执行重启点（类似于主库上的检查点），后台写入进程会执行正常的块清理活动。这可能包括更新存储在备库上的提示位信息。恢复期间接受<command>CHECKPOINT</command>命令，不过它执行的是重启点，而不是新的检查点。
+   </para>
+  </sect2>
+
+  <sect2 id="hot-standby-parameters">
+   <title>热备参数参考</title>
+
+   <para>
+    多个参数已经在<xref linkend="hot-standby-conflict"/>和<xref linkend="hot-standby-admin"/>中提到过。
+   </para>
+
+   <para>
+    在主库上，可以使用<xref linkend="guc-wal-level"/>参数。<xref linkend="guc-max-standby-archive-delay"/>和<xref linkend="guc-max-standby-streaming-delay"/>如果设置在主库上，则不会生效。
+   </para>
+
+   <para>
+    在备库上，可以使用<xref linkend="guc-hot-standby"/>、<xref linkend="guc-max-standby-archive-delay"/>和<xref linkend="guc-max-standby-streaming-delay"/>这几个参数。
+   </para>
+  </sect2>
+
+  <sect2 id="hot-standby-caveats">
+   <title>注意事项</title>
+
+   <para>
+    热备有若干限制。
+    这些限制在未来的版本中可以、也很可能会被修复：
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     在能够取得快照之前，必须完整了解正在运行的事务。使用大量子事务（目前超过 64 个）的事务，会把只读连接的启动推迟到持续时间最长的写事务完成之后。如果发生这种情况，服务器日志中会发送解释性消息。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     备库查询的有效起始点是在主库的每个检查点上生成的。如果主库处于关闭状态时备库被关闭，那么在主库再次启动并在 WAL 日志中生成更多起始点之前，备库可能无法重新进入热备状态。不过在最常见的场景中，这通常不是问题。一般来说，如果主库关闭且不再可用，很可能是出现了严重故障，此时无论如何都需要把备库提升为新的主库。而在主库被有意关闭的情况下，协调好备库顺利成为新主库，本来也就是标准流程。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     在恢复结束时，由预备事务持有的<literal>AccessExclusiveLocks</literal>将需要正常数量两倍的锁表项。如果你计划运行大量并发的预备事务，而这些事务通常会持有<literal>AccessExclusiveLocks</literal>，或者你计划运行一个会持有许多<literal>AccessExclusiveLocks</literal>的大事务，那么建议选择更大的<varname>max_locks_per_transaction</varname>值，可能要达到主库上该参数值的两倍。如果你的<varname>max_prepared_transactions</varname>设置为 0，则完全不需要考虑这一点。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     热备中尚不支持可串行化事务隔离级别。（详见<xref linkend="xact-serializable"/>和<xref linkend="serializable-consistency"/>。）在热备模式下尝试把事务设置为可串行化隔离级别会产生错误。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+   </para>
+  </sect2>
+
+ </sect1>
+
+</chapter>

@@ -1,0 +1,258 @@
+<!-- doc/src/sgml/custom-scan.sgml -->
+
+<chapter id="custom-scan">
+ <title>编写自定义扫描提供者</title>
+
+ <indexterm zone="custom-scan">
+  <primary>自定义扫描提供者</primary>
+  <secondary>处理器</secondary>
+ </indexterm>
+
+ <para>
+  <productname>PostgreSQL</productname> 支持一组实验性功能，旨在允许扩展模块向系统中添加新的扫描类型。与<link linkend="fdwhandler">外部数据包装器</link>不同，后者只负责了解如何扫描其自身的外部表，而自定义扫描提供者则可以为系统中的任何关系提供一种替代扫描方法。通常，编写自定义扫描提供者的动机，是为了能够使用某些核心系统尚不支持的优化，例如缓存或某种形式的硬件加速。本章概述如何编写新的自定义扫描提供者。
+ </para>
+
+ <para>
+  实现一种新的自定义扫描类型分为三个步骤。首先，在规划期间，需要生成表示使用所提策略进行扫描的访问路径。其次，如果规划器从这些访问路径中选出一条，作为扫描某个特定关系的最优策略，就必须将该访问路径转换为计划。最后，还必须能够执行该计划，并生成与针对同一关系的其他访问路径原本会生成的结果相同的结果。
+ </para>
+
+ <sect1 id="custom-scan-path">
+  <title>创建自定义扫描路径</title>
+
+  <para>
+    自定义扫描提供者通常会通过设置下面这个钩子，为一个基本关系添加路径。该钩子会在核心代码已经为该关系生成它所能生成的全部访问路径之后被调用（<literal>Gather</literal> 和 <literal>Gather Merge</literal> 路径除外，这两类路径会在此次调用之后生成，以便利用该钩子添加的部分路径）：
+<programlisting>
+typedef void (*set_rel_pathlist_hook_type) (PlannerInfo *root,
+                                            RelOptInfo *rel,
+                                            Index rti,
+                                            RangeTblEntry *rte);
+extern PGDLLIMPORT set_rel_pathlist_hook_type set_rel_pathlist_hook;
+</programlisting>
+  </para>
+
+  <para>
+    尽管这个钩子函数可以用来检查、修改或移除核心系统生成的路径，但自定义扫描提供者通常只会生成 <structname>CustomPath</structname> 对象，并使用 <function>add_path</function> 将其加入 <literal>rel</literal>；如果它们是部分路径，则使用 <function>add_partial_path</function>。自定义扫描提供者负责初始化 <structname>CustomPath</structname> 对象，其声明如下：
+<programlisting>
+typedef struct CustomPath
+{
+    Path      path;
+    uint32    flags;
+    List     *custom_paths;
+    List     *custom_restrictinfo;
+    List     *custom_private;
+    const CustomPathMethods *methods;
+} CustomPath;
+</programlisting>
+  </para>
+
+  <para>
+    <structfield>path</structfield> 必须像其他任何路径一样完成初始化，包括行数估计、启动代价和总代价，以及该路径提供的排序顺序。<structfield>flags</structfield> 是一个位掩码，用于指明扫描提供者是否支持某些可选能力。如果自定义路径支持反向扫描，<structfield>flags</structfield> 就应包含 <literal>CUSTOMPATH_SUPPORT_BACKWARD_SCAN</literal>；如果支持标记和恢复，就应包含 <literal>CUSTOMPATH_SUPPORT_MARK_RESTORE</literal>；如果能够执行投影，就应包含 <literal>CUSTOMPATH_SUPPORT_PROJECTION</literal>。（如果未设置 <literal>CUSTOMPATH_SUPPORT_PROJECTION</literal>，则只会要求扫描节点生成被扫描关系的 Var；而如果设置了该标志，扫描节点就必须能够对这些 Var 上的标量表达式求值。）可选字段 <structfield>custom_paths</structfield> 是该自定义路径节点所使用的 <structname>Path</structname> 节点列表；规划器会把它们转换成 <structname>Plan</structname> 节点。如下文所述，也可以为连接关系创建自定义路径；在这种情况下，应使用 <structfield>custom_restrictinfo</structfield> 保存要应用到该自定义路径所替代连接上的连接子句集合。否则它应为 NIL。<structfield>custom_private</structfield> 可用于存储自定义路径的私有数据。私有数据应以 <literal>nodeToString</literal> 能够处理的形式存储，这样尝试打印该自定义路径的调试例程才能按预期工作。<structfield>methods</structfield> 必须指向一个实现了所需自定义路径方法的对象（通常是静态分配的），下文会进一步说明。
+  </para>
+
+  <para>
+   自定义扫描提供者也可以提供连接路径。与基本关系一样，这种路径也必须产生与它所替代连接通常会产生的相同输出。为此，连接提供者应设置下列钩子，并在该钩子函数内部为连接关系创建 <structname>CustomPath</structname> 路径。
+<programlisting>
+typedef void (*set_join_pathlist_hook_type) (PlannerInfo *root,
+                                             RelOptInfo *joinrel,
+                                             RelOptInfo *outerrel,
+                                             RelOptInfo *innerrel,
+                                             JoinType jointype,
+                                             JoinPathExtraData *extra);
+extern PGDLLIMPORT set_join_pathlist_hook_type set_join_pathlist_hook;
+</programlisting>
+
+   对于同一个连接关系，这个钩子会针对不同的内外关系组合重复调用；如何尽量减少重复工作，是该钩子的职责。
+  </para>
+
+  <para>
+   还要注意，应用到该连接上的连接子句集合会以 <literal>extra-&gt;restrictlist</literal> 的形式传入，并且会随着内外关系组合的不同而变化。针对 <literal>joinrel</literal> 生成的 <structname>CustomPath</structname> 路径必须包含它所使用的那组连接子句；如果规划器将该路径选作 <literal>joinrel</literal> 的最佳路径，就会使用这些信息把该 <structname>CustomPath</structname> 路径转换成计划。
+  </para>
+
+  <sect2 id="custom-scan-path-callbacks">
+  <title>自定义扫描路径回调</title>
+
+  <para>
+<programlisting>
+Plan *(*PlanCustomPath) (PlannerInfo *root,
+                         RelOptInfo *rel,
+                         CustomPath *best_path,
+                         List *tlist,
+                         List *clauses,
+                         List *custom_plans);
+</programlisting>
+    将自定义路径转换为完成的计划。返回值通常是一个 <literal>CustomScan</literal> 对象，回调函数必须负责分配并初始化该对象。详见 <xref linkend="custom-scan-plan"/>。
+   </para>
+
+   <para>
+<programlisting>
+List *(*ReparameterizeCustomPathByChild) (PlannerInfo *root,
+                                          List *custom_private,
+                                          RelOptInfo *child_rel);
+</programlisting>
+    在把由给定子关系 <literal>child_rel</literal> 的最顶层父关系参数化的路径，转换为由该子关系参数化的路径时，会调用此回调。该回调用于重新参数化保存在 <structname>CustomPath</structname> 的给定 <literal>custom_private</literal> 成员中的任何路径，或者转换其中保存的任何表达式节点。该回调可根据需要使用 <literal>reparameterize_path_by_child</literal>、<literal>adjust_appendrel_attrs</literal> 或 <literal>adjust_appendrel_attrs_multilevel</literal>。
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="custom-scan-plan">
+  <title>创建自定义扫描计划</title>
+
+  <para>
+    在完成的计划树中，自定义扫描使用下述结构表示：
+<programlisting>
+typedef struct CustomScan
+{
+    Scan      scan;
+    uint32    flags;
+    List     *custom_plans;
+    List     *custom_exprs;
+    List     *custom_private;
+    List     *custom_scan_tlist;
+    Bitmapset *custom_relids;
+    const CustomScanMethods *methods;
+} CustomScan;
+</programlisting>
+  </para>
+
+  <para>
+    <structfield>scan</structfield> 必须像其他任何扫描一样完成初始化，包括估计代价、目标列表、限定条件等。<structfield>flags</structfield> 是一个位掩码，其含义与 <structname>CustomPath</structname> 中相同。<structfield>custom_plans</structfield> 可用于存储子 <structname>Plan</structname> 节点。<structfield>custom_exprs</structfield> 应当用于存储那些需要由 <filename>setrefs.c</filename> 和 <filename>subselect.c</filename> 修正的表达式树，而 <structfield>custom_private</structfield> 则应用于存放仅供自定义扫描提供者自身使用的其他私有数据。扫描基本关系时，<structfield>custom_scan_tlist</structfield> 可以为 NIL，表示该自定义扫描返回的扫描元组与该基本关系的行类型一致。否则，它就是描述实际扫描元组的目标列表。对于连接，必须提供 <structfield>custom_scan_tlist</structfield>；如果自定义扫描提供者能够计算某些非 Var 表达式，则在扫描场景下也可以提供该字段。<structfield>custom_relids</structfield> 由核心代码设置为该扫描节点所处理关系（范围表索引）的集合；除非该扫描是在替代一个连接，否则它将只有一个成员。<structfield>methods</structfield> 必须指向一个实现了所需自定义扫描方法的对象（通常是静态分配的），下文会进一步说明。
+  </para>
+
+  <para>
+   当 <structname>CustomScan</structname> 扫描单个关系时，<structfield>scan.scanrelid</structfield> 必须是待扫描表的范围表索引。当它替代的是一个连接时，<structfield>scan.scanrelid</structfield> 应为零。
+  </para>
+
+  <para>
+   计划树必须能够通过 <function>copyObject</function> 复制，因此存放在 <quote>custom</quote> 字段中的所有数据都必须由该函数能够处理的节点组成。此外，自定义扫描提供者不能像对 <structname>CustomPath</structname> 或 <structname>CustomScanState</structname> 那样，用一个包含 <structname>CustomScan</structname> 的更大结构替代该结构本身。
+  </para>
+
+  <sect2 id="custom-scan-plan-callbacks">
+   <title>自定义扫描计划回调</title>
+   <para>
+<programlisting>
+Node *(*CreateCustomScanState) (CustomScan *cscan);
+</programlisting>
+    为该 <structname>CustomScan</structname> 分配一个 <structname>CustomScanState</structname>。实际分配的空间往往会比普通 <structname>CustomScanState</structname> 所需的更大，因为很多提供者都希望把它作为第一个字段嵌入到一个更大的结构中。返回的值必须适当地设置节点标签和 <structfield>methods</structfield>，但在这个阶段，其他字段应当保留为零；待 <function>ExecInitCustomScan</function> 完成基本初始化之后，将调用 <function>BeginCustomScan</function> 回调，让自定义扫描提供者有机会执行其他所需操作。
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="custom-scan-execution">
+  <title>执行自定义扫描</title>
+
+  <para>
+   在执行 <structfield>CustomScan</structfield> 时，其执行状态由 <structfield>CustomScanState</structfield> 表示，其声明如下：
+<programlisting>
+typedef struct CustomScanState
+{
+    ScanState ss;
+    uint32    flags;
+    const CustomExecMethods *methods;
+} CustomScanState;
+</programlisting>
+  </para>
+
+  <para>
+   <structfield>ss</structfield> 的初始化方式与其他任何扫描状态相同，不过如果该扫描针对的是连接而不是基本关系，那么 <literal>ss.ss_currentRelation</literal> 会保留为 NULL。<structfield>flags</structfield> 是一个位掩码，其含义与 <structname>CustomPath</structname> 和 <structname>CustomScan</structname> 中相同。<structfield>methods</structfield> 必须指向一个实现了所需自定义扫描状态方法的对象（通常是静态分配的），下文会进一步说明。通常，<structname>CustomScanState</structname> 实际上会是一个更大的结构，并把上述结构嵌为其第一个成员；它不需要支持 <function>copyObject</function>。
+  </para>
+
+  <sect2 id="custom-scan-execution-callbacks">
+   <title>自定义扫描执行回调</title>
+
+   <para>
+<programlisting>
+void (*BeginCustomScan) (CustomScanState *node,
+                         EState *estate,
+                         int eflags);
+</programlisting>
+    完成所提供 <structname>CustomScanState</structname> 的初始化。标准字段已经由 <function>ExecInitCustomScan</function> 初始化，但任何私有字段都应在这里初始化。
+   </para>
+
+   <para>
+<programlisting>
+TupleTableSlot *(*ExecCustomScan) (CustomScanState *node);
+</programlisting>
+    取出下一个扫描元组。如果仍有元组剩余，它应当使用当前扫描方向中的下一个元组填充 <literal>ps_ResultTupleSlot</literal>，然后返回该元组槽。否则，应返回 <literal>NULL</literal> 或一个空槽。
+   </para>
+
+   <para>
+<programlisting>
+void (*EndCustomScan) (CustomScanState *node);
+</programlisting>
+    清理与 <literal>CustomScanState</literal> 关联的任何私有数据。这个方法是必需的，但如果没有相关数据，或者相关数据会被自动清理，则它不需要做任何事情。
+   </para>
+
+   <para>
+<programlisting>
+void (*ReScanCustomScan) (CustomScanState *node);
+</programlisting>
+    将当前扫描倒回到开始处，并准备重新扫描该关系。
+   </para>
+
+   <para>
+<programlisting>
+void (*MarkPosCustomScan) (CustomScanState *node);
+</programlisting>
+    保存当前扫描位置，以便之后可由 <function>RestrPosCustomScan</function> 回调恢复。这个回调是可选的，只需在设置了 <literal>CUSTOMPATH_SUPPORT_MARK_RESTORE</literal> 标志时提供。
+   </para>
+
+   <para>
+<programlisting>
+void (*RestrPosCustomScan) (CustomScanState *node);
+</programlisting>
+    恢复由 <function>MarkPosCustomScan</function> 回调保存的先前扫描位置。这个回调是可选的，只需在设置了 <literal>CUSTOMPATH_SUPPORT_MARK_RESTORE</literal> 标志时提供。
+   </para>
+
+   <para>
+<programlisting>
+Size (*EstimateDSMCustomScan) (CustomScanState *node,
+                               ParallelContext *pcxt);
+</programlisting>
+    估算并行操作所需的动态共享内存数量。这可能会高于实际使用量，但绝不能低于实际使用量。返回值的单位是字节。这个回调是可选的，只需在该自定义扫描提供者支持并行执行时提供。
+   </para>
+
+   <para>
+<programlisting>
+void (*InitializeDSMCustomScan) (CustomScanState *node,
+                                 ParallelContext *pcxt,
+                                 void *coordinate);
+</programlisting>
+    初始化并行操作所需的动态共享内存。<literal>coordinate</literal> 指向一块共享内存区域，其大小等于 <function>EstimateDSMCustomScan</function> 的返回值。这个回调是可选的，只需在该自定义扫描提供者支持并行执行时提供。
+   </para>
+
+   <para>
+<programlisting>
+void (*ReInitializeDSMCustomScan) (CustomScanState *node,
+                                   ParallelContext *pcxt,
+                                   void *coordinate);
+</programlisting>
+    当自定义扫描计划节点即将被重新扫描时，重新初始化并行操作所需的动态共享内存。这个回调是可选的，只需在该自定义扫描提供者支持并行执行时提供。推荐的做法是，此回调只重置共享状态，而 <function>ReScanCustomScan</function> 回调只重置本地状态。目前，这个回调会在 <function>ReScanCustomScan</function> 之前调用，但最好不要依赖这种顺序。
+   </para>
+
+   <para>
+<programlisting>
+void (*InitializeWorkerCustomScan) (CustomScanState *node,
+                                    shm_toc *toc,
+                                    void *coordinate);
+</programlisting>
+    基于领导者在 <function>InitializeDSMCustomScan</function> 期间建立的共享状态，初始化并行工作者的本地状态。这个回调是可选的，只需在该自定义扫描提供者支持并行执行时提供。
+   </para>
+
+   <para>
+<programlisting>
+void (*ShutdownCustomScan) (CustomScanState *node);
+</programlisting>
+    在预期该节点不会执行到完成时释放资源。这个回调不会在所有情况下都被调用；有时，可能会在没有先调用它的情况下直接调用 <literal>EndCustomScan</literal>。由于并行查询使用的 DSM 段会在调用该回调后立即销毁，因此希望在 DSM 段消失前执行某些动作的自定义扫描提供者应实现此方法。
+   </para>
+
+   <para>
+<programlisting>
+void (*ExplainCustomScan) (CustomScanState *node,
+                           List *ancestors,
+                           ExplainState *es);
+</programlisting>
+    为自定义扫描计划节点的 <command>EXPLAIN</command> 输出附加信息。这个回调是可选的。即使没有这个回调，存储在 <structname>ScanState</structname> 中的公共数据，例如目标列表和扫描关系，也会被显示；但该回调允许显示额外的私有状态。
+   </para>
+  </sect2>
+ </sect1>
+</chapter>

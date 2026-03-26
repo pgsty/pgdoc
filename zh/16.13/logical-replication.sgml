@@ -1,0 +1,2864 @@
+<!-- doc/src/sgml/logical-replication.sgml -->
+
+<chapter id="logical-replication">
+
+ <title>逻辑复制</title>
+
+ <para>
+  逻辑复制是一种基于数据对象及其复制标识（通常是主键）来复制数据对象及其变更的方法。这里使用“逻辑”一词，是为了与物理复制相区别；物理复制使用精确的块地址，并按字节逐一复制。PostgreSQL 可以同时支持这两种机制，见 <xref linkend="high-availability"/>。逻辑复制允许对数据复制和安全性进行细粒度控制。
+ </para>
+
+ <para>
+  逻辑复制采用<firstterm>发布</firstterm>和<firstterm>订阅</firstterm>模型，一个或多个<firstterm>订阅者</firstterm>订阅某个<firstterm>发布者</firstterm>节点上的一个或多个<firstterm>发布</firstterm>。订阅者从其订阅的发布中拉取数据，随后还可以重新发布这些数据，以实现级联复制或更复杂的配置。
+ </para>
+
+ <para>
+  表的逻辑复制通常开始于 PostgreSQL 在发布端数据库中为该表数据建立快照，并将其复制到订阅端。完成后，发布端自初始复制以来发生的变更会持续发送给订阅端。订阅端会按与发布端相同的顺序应用这些数据，因此对于单个订阅中的发布，可以保证事务一致性。这种数据复制方法有时也称为事务性复制。
+ </para>
+
+ <para>
+  逻辑复制的典型用法是：
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     当单个数据库或数据库的某个子集发生变更时，将增量变更发送给订阅者。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     当单个变更到达订阅端时触发触发器。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     将多个数据库汇总到单个数据库中（例如用于分析）。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     在PostgreSQL的不同主版本之间进行复制。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     在不同平台上（例如Linux到Windows）的PostgreSQL实例之间进行复制。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     向不同用户组开放对复制数据的访问。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     在多个数据库间共享数据库的一个子集。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </para>
+
+ <para>
+  订阅端数据库的行为与任何其他 PostgreSQL 实例相同，并且可以通过定义自己的发布，作为其他数据库的发布者。当应用把订阅端视为只读时，单个订阅不会产生冲突。另一方面，如果应用或其他订阅者对同一组表执行了其他写操作，就可能发生冲突。
+ </para>
+
+ <sect1 id="logical-replication-publication">
+  <title>发布</title>
+
+  <para>
+   <firstterm>发布</firstterm>可以定义在任何物理复制主库上。定义发布的节点称为
+   <firstterm>发布者</firstterm>。发布是一组由某个表或一组表产生的变更，也可称为
+   变更集或复制集。每个发布只存在于一个数据库中。
+  </para>
+
+  <para>
+   发布与模式不同，不影响表的访问方式。每个表在需要时都可以加入多个发布。
+   发布目前只能包含表以及模式中的所有表。除非创建发布时使用
+   <literal>ALL TABLES</literal>，否则对象必须显式添加。
+  </para>
+
+  <para>
+   发布可以选择将要产生的变更限制为
+   <command>INSERT</command>、<command>UPDATE</command>、
+   <command>DELETE</command> 和 <command>TRUNCATE</command>
+   的任意组合，类似于触发器按特定事件类型触发。默认会复制所有操作类型。
+   这些发布规范只适用于 DML 操作；不影响初始数据同步复制。
+   （行过滤器对 <command>TRUNCATE</command> 无效。见
+   <xref linkend="logical-replication-row-filter"/>）。
+  </para>
+
+  <para>
+   每个发布都可以有多个订阅者。
+  </para>
+
+  <para>
+   使用
+   <link linkend="sql-createpublication"><command>CREATE PUBLICATION</command></link>
+   命令创建发布，之后可使用对应命令修改或删除。
+  </para>
+
+  <para>
+   单个表可以使用
+   <link linkend="sql-alterpublication"><command>ALTER PUBLICATION</command></link>
+   动态添加和移除。<literal>ADD TABLE</literal> 与 <literal>DROP TABLE</literal>
+   都是事务性的，因此事务提交后，表会在正确的快照点开始或停止复制。
+  </para>
+
+  <sect2 id="logical-replication-publication-replica-identity">
+   <title>复制标识</title>
+
+   <para>
+    已发布的表若要复制 <command>UPDATE</command> 和
+    <command>DELETE</command> 操作，必须配置
+    <firstterm>复制标识</firstterm>，以便在订阅端识别应更新或删除的行。
+   </para>
+
+   <para>
+    默认情况下，如果存在主键，则主键就是复制标识。也可以将另一个唯一索引
+    （满足某些附加要求）设置为复制标识。如果表没有合适的键，可将复制标识设为
+    <literal>FULL</literal>，表示整行作为键。指定复制标识
+    <literal>FULL</literal> 时，订阅端在查找行时可以使用索引。
+    候选索引必须是 btree 或 hash、非部分索引，且最左索引字段必须是引用已发布表
+    列的列（而非表达式）。这些非唯一索引属性的限制，遵循了主键的一部分限制规则。
+    如果没有合适索引，订阅端查找会非常低效，因此复制标识
+    <literal>FULL</literal> 仅应在没有其他方案时作为后备选项。
+   </para>
+
+   <para>
+    如果发布端设置的是非 <literal>FULL</literal> 的复制标识，则订阅端也必须设置
+    由相同或更少列组成的复制标识。
+   </para>
+
+   <para>
+    对于复制标识定义为 <literal>NOTHING</literal>、无主键时的
+    <literal>DEFAULT</literal>，或使用已删除索引的 <literal>USING INDEX</literal>
+    的表，如果将其包含在复制 <command>UPDATE</command> 或
+    <command>DELETE</command> 的发布中，则不支持这些操作。尝试执行时会在发布端报错。
+   </para>
+
+   <para>
+    无论复制标识如何，<command>INSERT</command> 操作都可以继续执行。
+   </para>
+
+   <para>
+    关于如何设置复制标识，见
+    <link linkend="sql-altertable-replica-identity"><literal>ALTER TABLE...REPLICA IDENTITY</literal></link>。
+   </para>
+  </sect2>
+
+ </sect1>
+
+ <sect1 id="logical-replication-subscription">
+  <title>订阅</title>
+
+  <para>
+   <firstterm>订阅</firstterm>是逻辑复制的下游侧。定义订阅的节点称为
+   <firstterm>订阅者</firstterm>。订阅定义了到另一个数据库的连接，以及要订阅的
+   发布集合（一个或多个）。
+  </para>
+
+  <para>
+   订阅者数据库的行为与任何其他 PostgreSQL 实例相同，也可以通过定义自己的发布
+   作为其他数据库的发布者。
+  </para>
+
+  <para>
+   订阅者节点可按需拥有多个订阅。也可以在同一对发布者-订阅者之间定义多个订阅，
+   但必须注意确保被订阅的发布对象不重叠。
+  </para>
+
+  <para>
+   每个订阅都通过一个复制槽接收变更（见
+   <xref linkend="streaming-replication-slots"/>）。初始同步已有表数据时可能需要
+   额外复制槽，这些槽会在数据同步结束时删除。
+  </para>
+
+  <para>
+   逻辑复制订阅可以作为同步复制中的备库（见
+   <xref linkend="synchronous-replication"/>）。其备库名称默认是订阅名。
+   也可在订阅连接信息中通过 <literal>application_name</literal> 指定替代名称。
+  </para>
+
+  <para>
+   如果当前用户是超级用户，<command>pg_dump</command> 会转储订阅。
+   否则会写出警告并跳过订阅，因为非超级用户无法从
+   <structname>pg_subscription</structname> 目录读取全部订阅信息。
+  </para>
+
+  <para>
+   通过 <link linkend="sql-createsubscription"><command>CREATE SUBSCRIPTION</command></link>
+   添加订阅；可随时用
+   <link linkend="sql-altersubscription"><command>ALTER SUBSCRIPTION</command></link>
+   停止/恢复；并可用
+   <link linkend="sql-dropsubscription"><command>DROP SUBSCRIPTION</command></link>
+   删除。
+  </para>
+
+  <para>
+   删除并重建订阅会丢失同步信息，这意味着之后必须重新同步数据。
+  </para>
+
+  <para>
+   模式定义不会被复制，已发布的表必须在订阅端存在。复制目标只能是普通表。
+   例如，不能复制到视图。
+  </para>
+
+  <para>
+   发布端与订阅端通过表的完全限定名进行匹配。不支持复制到订阅端名称不同的表。
+  </para>
+
+  <para>
+   表列也按名称匹配。订阅端表的列顺序无需与发布端一致。只要数据的文本表示可转换
+   为目标类型，列数据类型也无需一致。例如，可从 <type>integer</type> 列复制到
+   <type>bigint</type> 列。目标表还可包含发布表未提供的额外列，这些列会填充为目标
+   表定义中的默认值。不过，二进制格式逻辑复制限制更严格。详见
+   <command>CREATE SUBSCRIPTION</command> 的
+   <link linkend="sql-createsubscription-params-with-binary"><literal>binary</literal></link>
+   选项。
+  </para>
+
+  <sect2 id="logical-replication-subscription-slot">
+   <title>复制槽管理</title>
+
+   <para>
+    如前所述，每个（活动）订阅都从远端（发布侧）的一个复制槽接收变更。
+   </para>
+   <para>
+    额外的表同步槽通常是临时的，由系统内部创建用于执行初始表同步，在不再需要时
+    自动删除。这些表同步槽的名称是自动生成的：
+    <quote><literal>pg_%u_sync_%u_%llu</literal></quote>
+    （参数分别为：订阅 <parameter>oid</parameter>、
+    表 <parameter>relid</parameter>、系统标识符 <parameter>sysid</parameter>）。
+   </para>
+   <para>
+    通常，远端复制槽会在使用
+    <link linkend="sql-createsubscription"><command>CREATE SUBSCRIPTION</command></link>
+    创建订阅时自动创建，并在使用
+    <link linkend="sql-dropsubscription"><command>DROP SUBSCRIPTION</command></link>
+    删除订阅时自动删除。但在某些场景下，分别操作订阅与底层复制槽会更有用或更必要。
+    常见场景如下：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       创建订阅时复制槽已存在。此时可使用
+       <literal>create_slot = false</literal> 选项创建订阅并关联已有槽。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       创建订阅时远端主机不可达或状态不明确。此时可使用
+       <literal>connect = false</literal> 选项创建订阅，系统将完全不连接远端主机。
+       <application>pg_dump</application> 就采用这种方式。此后在订阅激活前，
+       需要手工创建远端复制槽。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       删除订阅时希望保留复制槽。这在将订阅者数据库迁移到其他主机并从那里激活时
+       很有用。此时应在尝试删除订阅前，使用
+       <link linkend="sql-altersubscription"><command>ALTER SUBSCRIPTION</command></link>
+       将槽与订阅解除关联。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       删除订阅时远端主机不可达。此时应在尝试删除订阅前使用
+       <command>ALTER SUBSCRIPTION</command> 将槽与订阅解除关联。
+       如果远端数据库实例已不存在，则无需进一步操作。
+       但若只是暂时不可达，则应手工删除该复制槽（以及任何仍残留的表同步槽）；
+       否则这些槽会持续保留 WAL，最终可能导致磁盘被占满。
+       这类情况应谨慎排查。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+  </sect2>
+
+  <sect2 id="logical-replication-subscription-examples">
+    <title>示例：建立逻辑复制</title>
+
+    <para>
+     在发布端创建一些测试表。
+<programlisting>
+/* pub # */ CREATE TABLE t1(a int, b text, PRIMARY KEY(a));
+/* pub # */ CREATE TABLE t2(c int, d text, PRIMARY KEY(c));
+/* pub # */ CREATE TABLE t3(e int, f text, PRIMARY KEY(e));
+</programlisting></para>
+
+    <para>
+     在订阅端创建同样的表。
+<programlisting>
+/* sub # */ CREATE TABLE t1(a int, b text, PRIMARY KEY(a));
+/* sub # */ CREATE TABLE t2(c int, d text, PRIMARY KEY(c));
+/* sub # */ CREATE TABLE t3(e int, f text, PRIMARY KEY(e));
+</programlisting></para>
+
+    <para>
+     在发布端向表中插入数据。
+<programlisting>
+/* pub # */ INSERT INTO t1 VALUES (1, 'one'), (2, 'two'), (3, 'three');
+/* pub # */ INSERT INTO t2 VALUES (1, 'A'), (2, 'B'), (3, 'C');
+/* pub # */ INSERT INTO t3 VALUES (1, 'i'), (2, 'ii'), (3, 'iii');
+</programlisting></para>
+
+    <para>
+     为这些表创建发布。发布 <literal>pub2</literal> 和 <literal>pub3a</literal>
+     禁用了部分
+     <link linkend="sql-createpublication-params-with-publish"><literal>publish</literal></link>
+     操作。发布 <literal>pub3b</literal> 使用了行过滤器（见
+     <xref linkend="logical-replication-row-filter"/>）。
+<programlisting><![CDATA[
+/* pub # */ CREATE PUBLICATION pub1 FOR TABLE t1;
+/* pub # */ CREATE PUBLICATION pub2 FOR TABLE t2 WITH (publish = 'truncate');
+/* pub # */ CREATE PUBLICATION pub3a FOR TABLE t3 WITH (publish = 'truncate');
+/* pub # */ CREATE PUBLICATION pub3b FOR TABLE t3 WHERE (e > 5);
+]]></programlisting></para>
+
+    <para>
+     为这些发布创建订阅。订阅 <literal>sub3</literal> 同时订阅
+     <literal>pub3a</literal> 和 <literal>pub3b</literal>。默认情况下所有订阅都会复制
+     初始数据。
+<programlisting>
+/* sub # */ CREATE SUBSCRIPTION sub1
+/* sub - */ CONNECTION 'host=localhost dbname=test_pub application_name=sub1'
+/* sub - */ PUBLICATION pub1;
+/* sub # */ CREATE SUBSCRIPTION sub2
+/* sub - */ CONNECTION 'host=localhost dbname=test_pub application_name=sub2'
+/* sub - */ PUBLICATION pub2;
+/* sub # */ CREATE SUBSCRIPTION sub3
+/* sub - */ CONNECTION 'host=localhost dbname=test_pub application_name=sub3'
+/* sub - */ PUBLICATION pub3a, pub3b;
+</programlisting></para>
+
+    <para>
+     注意，无论发布的 <literal>publish</literal> 操作如何，初始表数据都会被复制。
+<programlisting>
+/* sub # */ SELECT * FROM t1;
+ a |   b
+---+-------
+ 1 | one
+ 2 | two
+ 3 | three
+(3 rows)
+
+/* sub # */ SELECT * FROM t2;
+ c | d
+---+---
+ 1 | A
+ 2 | B
+ 3 | C
+(3 rows)
+</programlisting></para>
+
+    <para>
+     此外，由于初始数据复制会忽略 <literal>publish</literal> 操作，且发布
+     <literal>pub3a</literal> 没有行过滤器，所以复制后的表 <literal>t3</literal>
+     会包含所有行，即使它们不匹配发布 <literal>pub3b</literal> 的行过滤器。
+<programlisting>
+/* sub # */ SELECT * FROM t3;
+ e |  f
+---+-----
+ 1 | i
+ 2 | ii
+ 3 | iii
+(3 rows)
+</programlisting></para>
+
+   <para>
+    在发布端向表继续插入数据。
+<programlisting>
+/* pub # */ INSERT INTO t1 VALUES (4, 'four'), (5, 'five'), (6, 'six');
+/* pub # */ INSERT INTO t2 VALUES (4, 'D'), (5, 'E'), (6, 'F');
+/* pub # */ INSERT INTO t3 VALUES (4, 'iv'), (5, 'v'), (6, 'vi');
+</programlisting></para>
+
+   <para>
+    现在发布端数据如下：
+<programlisting>
+/* pub # */ SELECT * FROM t1;
+ a |   b
+---+-------
+ 1 | one
+ 2 | two
+ 3 | three
+ 4 | four
+ 5 | five
+ 6 | six
+(6 rows)
+
+/* pub # */ SELECT * FROM t2;
+ c | d
+---+---
+ 1 | A
+ 2 | B
+ 3 | C
+ 4 | D
+ 5 | E
+ 6 | F
+(6 rows)
+
+/* pub # */ SELECT * FROM t3;
+ e |  f
+---+-----
+ 1 | i
+ 2 | ii
+ 3 | iii
+ 4 | iv
+ 5 | v
+ 6 | vi
+(6 rows)
+</programlisting></para>
+
+   <para>
+    注意在常规复制阶段会使用相应的 <literal>publish</literal> 操作。
+    这意味着发布 <literal>pub2</literal> 与 <literal>pub3a</literal> 不会复制
+    <literal>INSERT</literal>。另外，发布 <literal>pub3b</literal> 只会复制与其
+    行过滤器匹配的数据。现在订阅端数据如下：
+<programlisting>
+/* sub # */ SELECT * FROM t1;
+ a |   b
+---+-------
+ 1 | one
+ 2 | two
+ 3 | three
+ 4 | four
+ 5 | five
+ 6 | six
+(6 rows)
+
+/* sub # */ SELECT * FROM t2;
+ c | d
+---+---
+ 1 | A
+ 2 | B
+ 3 | C
+(3 rows)
+
+/* sub # */ SELECT * FROM t3;
+ e |  f
+---+-----
+ 1 | i
+ 2 | ii
+ 3 | iii
+ 6 | vi
+(4 rows)
+</programlisting></para>
+  </sect2>
+
+  <sect2 id="logical-replication-subscription-examples-deferred-slot">
+   <title>示例：延迟创建复制槽</title>
+
+   <para>
+    在某些场景（例如
+    <xref linkend="logical-replication-subscription-slot"/>）中，如果远端复制槽未自动创建，
+    用户必须在订阅激活前手工创建。下面示例展示了创建槽并激活订阅的步骤。
+    这些示例指定了标准逻辑解码输出插件 <literal>pgoutput</literal>，这是内置逻辑复制
+    使用的插件。
+   </para>
+   <para>
+    首先，创建示例所需的发布。
+<programlisting>
+/* pub # */ CREATE PUBLICATION pub1 FOR ALL TABLES;
+</programlisting></para>
+   <para>
+    示例 1：订阅指定 <literal>connect = false</literal>
+   </para>
+   <para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       创建订阅。
+<programlisting>
+/* sub # */ CREATE SUBSCRIPTION sub1
+/* sub - */ CONNECTION 'host=localhost dbname=test_pub'
+/* sub - */ PUBLICATION pub1
+/* sub - */ WITH (connect=false);
+WARNING:  subscription was created, but is not connected
+HINT:  To initiate replication, you must manually create the replication slot, enable the subscription, and refresh the subscription.
+</programlisting></para>
+     </listitem>
+     <listitem>
+      <para>
+       在发布端手工创建槽。由于 <literal>CREATE SUBSCRIPTION</literal> 时未指定名称，
+       要创建的槽名与订阅名相同，例如 "sub1"。
+<programlisting>
+/* pub # */ SELECT * FROM pg_create_logical_replication_slot('sub1', 'pgoutput');
+ slot_name |    lsn
+-----------+-----------
+ sub1      | 0/19404D0
+(1 row)
+</programlisting></para>
+     </listitem>
+     <listitem>
+      <para>
+       在订阅端完成订阅激活。之后 <literal>pub1</literal> 的表将开始复制。
+<programlisting>
+/* sub # */ ALTER SUBSCRIPTION sub1 ENABLE;
+/* sub # */ ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
+</programlisting></para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    示例 2：订阅指定 <literal>connect = false</literal>，并同时指定
+    <link linkend="sql-createsubscription-params-with-slot-name"><literal>slot_name</literal></link>
+    选项。
+    <itemizedlist>
+     <listitem>
+      <para>
+       创建订阅。
+<programlisting>
+/* sub # */ CREATE SUBSCRIPTION sub1
+/* sub - */ CONNECTION 'host=localhost dbname=test_pub'
+/* sub - */ PUBLICATION pub1
+/* sub - */ WITH (connect=false, slot_name='myslot');
+WARNING:  subscription was created, but is not connected
+HINT:  To initiate replication, you must manually create the replication slot, enable the subscription, and refresh the subscription.
+</programlisting></para>
+     </listitem>
+     <listitem>
+      <para>
+       在发布端使用与 <literal>CREATE SUBSCRIPTION</literal> 指定一致的名称手工创建槽，
+       例如 "myslot"。
+<programlisting>
+/* pub # */ SELECT * FROM pg_create_logical_replication_slot('myslot', 'pgoutput');
+ slot_name |    lsn
+-----------+-----------
+ myslot    | 0/19059A0
+(1 row)
+</programlisting></para>
+     </listitem>
+     <listitem>
+      <para>
+       在订阅端，剩余激活步骤与前例相同。
+<programlisting>
+/* sub # */ ALTER SUBSCRIPTION sub1 ENABLE;
+/* sub # */ ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
+</programlisting></para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    示例 3：订阅指定 <literal>slot_name = NONE</literal>
+    <itemizedlist>
+     <listitem>
+      <para>
+       创建订阅。设置 <literal>slot_name = NONE</literal> 时，还需要设置
+       <literal>enabled = false</literal> 和 <literal>create_slot = false</literal>。
+<programlisting>
+/* sub # */ CREATE SUBSCRIPTION sub1
+/* sub - */ CONNECTION 'host=localhost dbname=test_pub'
+/* sub - */ PUBLICATION pub1
+/* sub - */ WITH (slot_name=NONE, enabled=false, create_slot=false);
+</programlisting></para>
+     </listitem>
+     <listitem>
+      <para>
+       在发布端使用任意名称手工创建槽，例如 "myslot"。
+<programlisting>
+/* pub # */ SELECT * FROM pg_create_logical_replication_slot('myslot', 'pgoutput');
+ slot_name |    lsn
+-----------+-----------
+ myslot    | 0/1905930
+(1 row)
+</programlisting></para>
+     </listitem>
+     <listitem>
+      <para>
+       在订阅端，将订阅关联到刚创建的槽名。
+<programlisting>
+/* sub # */ ALTER SUBSCRIPTION sub1 SET (slot_name='myslot');
+</programlisting></para>
+     </listitem>
+     <listitem>
+      <para>
+       剩余的订阅激活步骤与前例相同。
+<programlisting>
+/* sub # */ ALTER SUBSCRIPTION sub1 ENABLE;
+/* sub # */ ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
+</programlisting></para>
+     </listitem>
+    </itemizedlist>
+   </para>
+  </sect2>
+
+ </sect1>
+
+ <sect1 id="logical-replication-failover">
+  <title>逻辑复制故障切换</title>
+
+  <para>
+   为了让订阅节点在发布节点宕机后仍能继续从发布端复制数据，发布节点必须有对应的
+   物理备库。创建订阅时指定 <literal>failover = true</literal>，即可将主库上与
+   订阅对应的逻辑槽同步到备库。详情见
+   <xref linkend="logicaldecoding-replication-slots-synchronization"/>。
+   启用
+   <link linkend="sql-createsubscription-params-with-failover"><literal>failover</literal></link>
+   参数可确保备库提升后这些订阅无缝切换，并继续订阅新主库上的发布。
+  </para>
+
+  <para>
+   由于槽同步逻辑是异步复制，在发生故障切换前，必须确认复制槽已经同步到备库。
+   为确保故障切换成功，备库必须领先于订阅端。可通过配置
+   <link linkend="guc-synchronized-standby-slots"><varname>synchronized_standby_slots</varname></link>
+   实现。
+  </para>
+
+  <para>
+   要确认某个订阅对应的备库确实已做好故障切换准备，请按下列步骤验证该订阅需要的
+   所有逻辑复制槽都已同步到备库：
+  </para>
+
+  <procedure>
+   <step performance="required">
+    <para>
+     在订阅节点上，使用以下 SQL 识别应同步到计划提升的备库的复制槽。
+     该查询返回启用故障切换的订阅对应的复制槽。
+<programlisting>
+/* sub # */ SELECT
+               array_agg(quote_literal(s.subslotname)) AS slots
+           FROM  pg_subscription s
+           WHERE s.subfailover AND
+                 s.subslotname IS NOT NULL;
+ slots
+-------
+ {'sub1','sub2','sub3'}
+(1 row)
+</programlisting></para>
+   </step>
+   <step performance="required">
+    <para>
+     在订阅节点上，使用以下 SQL 识别应同步到计划提升备库的表同步槽。
+     此查询需要在每个包含启用故障切换订阅的数据库中执行。
+     注意只有在表复制完成时，表同步槽才应同步到备库（见
+     <xref linkend="catalog-pg-subscription-rel"/>）。
+     在其他场景下无需确保表同步槽已同步，因为这些情况下它们会在新主库上被删除或重建。
+<programlisting>
+/* sub # */ SELECT
+               array_agg(quote_literal(slot_name)) AS slots
+           FROM
+           (
+               SELECT CONCAT('pg_', srsubid, '_sync_', srrelid, '_', ctl.system_identifier) AS slot_name
+               FROM pg_control_system() ctl, pg_subscription_rel r, pg_subscription s
+               WHERE r.srsubstate = 'f' AND s.oid = r.srsubid AND s.subfailover
+           );
+ slots
+-------
+ {'pg_16394_sync_16385_7394666715149055164'}
+(1 row)
+</programlisting></para>
+   </step>
+   <step performance="required">
+    <para>
+     检查上面识别出的逻辑复制槽是否存在于备库上，并且已准备好故障切换。
+<programlisting>
+/* standby # */ SELECT slot_name, (synced AND NOT temporary AND invalidation_reason IS NULL) AS failover_ready
+               FROM pg_replication_slots
+               WHERE slot_name IN
+                   ('sub1','sub2','sub3', 'pg_16394_sync_16385_7394666715149055164');
+  slot_name                                 | failover_ready
+--------------------------------------------+----------------
+  sub1                                      | t
+  sub2                                      | t
+  sub3                                      | t
+  pg_16394_sync_16385_7394666715149055164   | t
+(4 rows)
+</programlisting></para>
+    </step>
+  </procedure>
+
+  <para>
+   如果所有槽都存在于备库，且上述 SQL 查询结果
+   （<literal>failover_ready</literal>）为 true，则现有订阅可以继续订阅新主库上的发布。
+  </para>
+
+  <para>
+   上述步骤中的前两步针对的是 <productname>PostgreSQL</productname> 订阅端。
+   建议在每次故障切换后，都在将由目标备库服务的各个订阅节点上执行这两步，以获得完整的复制槽
+   列表，然后在第 3 步中统一验证故障切换就绪状态。
+   非 <productname>PostgreSQL</productname> 订阅端则可使用其自身方法识别各自订阅使用的复制槽。
+  </para>
+
+  <para>
+   在某些场景（如计划内故障切换）中，需要确认所有订阅端（无论是否为
+   <productname>PostgreSQL</productname>）在切换到某个备库后都能继续复制。
+   这种情况下，可用下列 SQL（而不是执行前两步）识别主库上需要同步到目标备库并准备
+   提升的复制槽。该查询返回所有启用故障切换订阅对应的复制槽。
+  </para>
+
+   <para>
+<programlisting>
+/* primary # */ SELECT array_agg(quote_literal(r.slot_name)) AS slots
+               FROM pg_replication_slots r
+               WHERE r.failover AND NOT r.temporary;
+ slots
+-------
+ {'sub1','sub2','sub3', 'pg_16394_sync_16385_7394666715149055164'}
+(1 row)
+</programlisting></para>
+ </sect1>
+ <sect1 id="logical-replication-row-filter">
+
+  <title>行过滤器</title>
+
+  <para>
+   默认情况下，所有已发布表中的全部数据都会复制到相应的订阅端。可以使用<firstterm>行过滤器</firstterm>来减少被复制的数据。
+   用户可能出于行为、安全或性能方面的原因选择使用行过滤器。如果某个已发布表设置了行过滤器，则只有当某一行的数据满足该行过滤器表达式时，该行才会被复制。
+   这样就可以只复制一组表中的部分数据。行过滤器按表定义。对于每个需要过滤数据的已发布表，在表名后使用<literal>WHERE</literal>子句。
+   <literal>WHERE</literal>子句必须用括号括起来。详见<xref linkend="sql-createpublication"/>。
+</para>
+
+  <sect2 id="logical-replication-row-filter-rules">
+
+   <title>行过滤规则</title>
+
+   <para>
+    行过滤器会在发布更改<emphasis>之前</emphasis>应用。如果行过滤器求值为<literal>false</literal>或<literal>NULL</literal>，
+    则该行不会被复制。<literal>WHERE</literal>子句表达式会使用复制连接所用的同一角色来求值（即在
+    <xref linkend="sql-createsubscription"/>的<link linkend="sql-createsubscription-params-connection"><literal>CONNECTION</literal></link>
+    子句中指定的角色）。行过滤器对<command>TRUNCATE</command>命令没有影响。
+</para>
+
+  </sect2>
+
+  <sect2 id="logical-replication-row-filter-restrictions">
+
+   <title>表达式限制</title>
+
+   <para>
+    <literal>WHERE</literal>子句只允许简单表达式。它不能包含用户定义的函数、操作符、类型和排序规则、系统列引用，或非不可变内置函数。
+   </para>
+
+   <para>
+    如果某个发布发布<command>UPDATE</command>或<command>DELETE</command>操作，
+    则行过滤器的<literal>WHERE</literal>子句只能包含被复制标识覆盖的列
+    （参见<xref linkend="sql-altertable-replica-identity"/>）。如果某个发布只发布
+    <command>INSERT</command>操作，则行过滤器的<literal>WHERE</literal>子句可以使用任意列。
+</para>
+
+  </sect2>
+
+  <sect2 id="logical-replication-row-filter-transformations">
+
+   <title><command>UPDATE</command> 转换</title>
+
+   <para>
+    每当处理<command>UPDATE</command>时，都会针对旧行和新行分别计算行过滤表达式（即分别使用更新前和更新后的数据）。
+    如果两次求值都为<literal>true</literal>，则复制该<command>UPDATE</command>更改。
+    如果两次求值都为<literal>false</literal>，则不复制该更改。
+    如果旧行和新行中只有一个满足行过滤表达式，则会把<command>UPDATE</command>转换为<command>INSERT</command>或<command>DELETE</command>，
+    以避免任何数据不一致。订阅端上的行应当反映发布端行过滤表达式所定义的结果。
+</para>
+
+   <para>
+    如果旧行满足行过滤表达式（即它已发送到订阅端），而新行不满足，那么从数据一致性的角度看，
+    应当从订阅端移除旧行。因此<command>UPDATE</command>会被转换为<command>DELETE</command>。
+</para>
+
+   <para>
+    如果旧行不满足行过滤表达式（即它未发送到订阅端），而新行满足，那么从数据一致性的角度看，
+    应当将新行加入订阅端。
+    因此，<command>UPDATE</command>会被转换为<command>INSERT</command>。
+</para>
+
+   <para>
+    <xref linkend="logical-replication-row-filter-transformations-summary"/>
+    总结了会应用哪些转换。
+   </para>
+
+   <table id="logical-replication-row-filter-transformations-summary">
+
+    <title><command>UPDATE</command> 转换摘要</title>
+    <tgroup cols="3">
+    <thead>
+
+     <row>
+      <entry>旧行</entry><entry>新行</entry><entry>转换</entry>
+     </row>
+    </thead>
+    <tbody>
+
+     <row>
+      <entry>不匹配</entry><entry>不匹配</entry><entry>不复制</entry>
+     </row>
+
+     <row>
+      <entry>不匹配</entry><entry>匹配</entry><entry><literal>INSERT</literal></entry>
+     </row>
+
+     <row>
+      <entry>匹配</entry><entry>不匹配</entry><entry><literal>DELETE</literal></entry>
+     </row>
+
+     <row>
+      <entry>匹配</entry><entry>匹配</entry><entry><literal>UPDATE</literal></entry>
+     </row>
+    </tbody>
+   </tgroup>
+   </table>
+
+  </sect2>
+
+  <sect2 id="logical-replication-row-filter-partitioned-table">
+
+   <title>分区表</title>
+
+   <para>
+    如果发布包含分区表，则发布参数<link linkend="sql-createpublication-params-with-publish-via-partition-root"><literal>publish_via_partition_root</literal></link>确定使用哪个行过滤器。
+    如果<literal>publish_via_partition_root</literal>为<literal>true</literal>，则使用<emphasis>根分区表</emphasis>的行过滤器。
+    否则，如果<literal>publish_via_partition_root</literal>为<literal>false</literal>（默认值），则使用各个<emphasis>分区</emphasis>的行过滤器。
+</para>
+
+  </sect2>
+
+  <sect2 id="logical-replication-row-filter-initial-data-sync">
+
+   <title>初始数据同步</title>
+
+   <para>
+    如果订阅需要复制预先存在的表数据，且某个发布包含<literal>WHERE</literal>子句，
+    则只有满足行过滤表达式的数据才会被复制到订阅端。
+</para>
+
+   <para>
+    如果某个订阅包含多个发布，而其中某张表带有不同的<literal>WHERE</literal>子句，
+    那么满足这些表达式中<emphasis>任意一个</emphasis>的行都会被复制。详见
+    <xref linkend="logical-replication-row-filter-combining"/>。
+</para>
+
+   <warning>
+
+    <para>
+     由于初始数据同步在复制现有表数据时不会考虑<link linkend="sql-createpublication-params-with-publish"><literal>publish</literal></link>参数，
+     因此有些使用 DML 时本不会复制的行，也可能在此阶段被复制。参见
+     <xref linkend="logical-replication-snapshot"/>，并查看
+     <xref linkend="logical-replication-subscription-examples"/>中的示例。
+</para>
+   </warning>
+
+   <note>
+
+    <para>
+     如果订阅端使用的是 15 之前的版本，那么即使发布中定义了行过滤器，复制预先存在的数据时也不会使用这些行过滤器。
+     这是因为旧版本只能复制整张表的全部数据。
+</para>
+   </note>
+
+  </sect2>
+
+  <sect2 id="logical-replication-row-filter-combining">
+
+   <title>组合多个行过滤器</title>
+
+   <para>
+    如果某个订阅包含多个发布，而其中同一张表针对相同的<link linkend="sql-createpublication-params-with-publish"><literal>publish</literal></link>操作使用了不同的行过滤器，
+    那么这些表达式会按 OR 组合，因此满足<emphasis>任意一个</emphasis>表达式的行都会被复制。这意味着，如果出现以下任一情况，那么同一张表上的其他所有行过滤器都会变得多余：
+    <itemizedlist>
+     <listitem>
+      <para>
+       其中某个发布没有行过滤器。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       其中某个发布是使用<link linkend="sql-createpublication-params-for-all-tables"><literal>FOR ALL TABLES</literal></link>创建的。该子句不允许行过滤器。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       其中某个发布是使用<link linkend="sql-createpublication-params-for-tables-in-schema"><literal>FOR TABLES IN SCHEMA</literal></link>创建的，并且该表属于所引用的模式。该子句不允许行过滤器。
+      </para>
+     </listitem>
+    </itemizedlist>
+</para>
+
+  </sect2>
+
+  <sect2 id="logical-replication-row-filter-examples">
+
+   <title>示例</title>
+
+   <para>
+    创建一些表，供下面的示例使用。
+<programlisting>
+/* pub # */ CREATE TABLE t1(a int, b int, c text, PRIMARY KEY(a,c));
+/* pub # */ CREATE TABLE t2(d int, e int, f int, PRIMARY KEY(d));
+/* pub # */ CREATE TABLE t3(g int, h int, i int, PRIMARY KEY(g));
+</programlisting></para>
+
+   <para>
+    创建一些发布。发布<literal>p1</literal>包含一个表（<literal>t1</literal>），该表带有行过滤器。
+    发布<literal>p2</literal>包含两个表，其中<literal>t1</literal>没有行过滤器，而<literal>t2</literal>带有行过滤器。
+    发布<literal>p3</literal>包含两个表，并且这两个表都带有行过滤器。
+<programlisting><![CDATA[
+/* pub # */ CREATE PUBLICATION p1 FOR TABLE t1 WHERE (a > 5 AND c = 'NSW');
+/* pub # */ CREATE PUBLICATION p2 FOR TABLE t1, t2 WHERE (e = 99);
+/* pub # */ CREATE PUBLICATION p3 FOR TABLE t2 WHERE (d = 10), t3 WHERE (g = 10);
+]]></programlisting></para>
+
+   <para>
+    <command>psql</command>可用于显示每个发布的行过滤表达式（如果已定义）。
+<programlisting><![CDATA[
+/* pub # */ \dRp+
+                                         Publication p1
+  Owner   | All tables | Inserts | Updates | Deletes | Truncates | Generated columns | Via root
+----------+------------+---------+---------+---------+-----------+-------------------+----------
+ postgres | f          | t       | t       | t       | t         | none              | f
+Tables:
+    "public.t1" WHERE ((a > 5) AND (c = 'NSW'::text))
+
+                                         Publication p2
+  Owner   | All tables | Inserts | Updates | Deletes | Truncates | Generated columns | Via root
+----------+------------+---------+---------+---------+-----------+-------------------+----------
+ postgres | f          | t       | t       | t       | t         | none              | f
+Tables:
+    "public.t1"
+    "public.t2" WHERE (e = 99)
+
+                                         Publication p3
+  Owner   | All tables | Inserts | Updates | Deletes | Truncates | Generated columns | Via root
+----------+------------+---------+---------+---------+-----------+-------------------+----------
+ postgres | f          | t       | t       | t       | t         | none              | f
+Tables:
+    "public.t2" WHERE (d = 10)
+    "public.t3" WHERE (g = 10)
+]]></programlisting></para>
+
+   <para>
+    <command>psql</command>可用于显示每个表的行过滤表达式（如果已定义）。可以看到，表<literal>t1</literal>属于两个发布，但只有在<literal>p1</literal>中带有行过滤器；
+    表<literal>t2</literal>也属于两个发布，并且在这两个发布中具有不同的行过滤器。
+<programlisting><![CDATA[
+/* pub # */ \d t1
+                 Table "public.t1"
+ Column |  Type   | Collation | Nullable | Default
+--------+---------+-----------+----------+---------
+ a      | integer |           | not null |
+ b      | integer |           |          |
+ c      | text    |           | not null |
+Indexes:
+    "t1_pkey" PRIMARY KEY, btree (a, c)
+Publications:
+    "p1" WHERE ((a > 5) AND (c = 'NSW'::text))
+    "p2"
+
+/* pub # */ \d t2
+                 Table "public.t2"
+ Column |  Type   | Collation | Nullable | Default
+--------+---------+-----------+----------+---------
+ d      | integer |           | not null |
+ e      | integer |           |          |
+ f      | integer |           |          |
+Indexes:
+    "t2_pkey" PRIMARY KEY, btree (d)
+Publications:
+    "p2" WHERE (e = 99)
+    "p3" WHERE (d = 10)
+
+/* pub # */ \d t3
+                 Table "public.t3"
+ Column |  Type   | Collation | Nullable | Default
+--------+---------+-----------+----------+---------
+ g      | integer |           | not null |
+ h      | integer |           |          |
+ i      | integer |           |          |
+Indexes:
+    "t3_pkey" PRIMARY KEY, btree (g)
+Publications:
+    "p3" WHERE (g = 10)
+]]></programlisting></para>
+
+   <para>
+    在订阅端节点上，创建一个与发布端定义相同的表<literal>t1</literal>，
+    然后创建订阅<literal>s1</literal>来订阅发布<literal>p1</literal>。
+<programlisting>
+/* sub # */ CREATE TABLE t1(a int, b int, c text, PRIMARY KEY(a,c));
+/* sub # */ CREATE SUBSCRIPTION s1
+/* sub - */ CONNECTION 'host=localhost dbname=test_pub application_name=s1'
+/* sub - */ PUBLICATION p1;
+</programlisting></para>
+
+   <para>
+    插入一些行。只有满足发布<literal>p1</literal>中<literal>t1 WHERE</literal>子句的那些行会被复制。
+<programlisting>
+/* pub # */ INSERT INTO t1 VALUES (2, 102, 'NSW');
+/* pub # */ INSERT INTO t1 VALUES (3, 103, 'QLD');
+/* pub # */ INSERT INTO t1 VALUES (4, 104, 'VIC');
+/* pub # */ INSERT INTO t1 VALUES (5, 105, 'ACT');
+/* pub # */ INSERT INTO t1 VALUES (6, 106, 'NSW');
+/* pub # */ INSERT INTO t1 VALUES (7, 107, 'NT');
+/* pub # */ INSERT INTO t1 VALUES (8, 108, 'QLD');
+/* pub # */ INSERT INTO t1 VALUES (9, 109, 'NSW');
+
+/* pub # */ SELECT * FROM t1;
+ a |  b  |  c
+---+-----+-----
+ 2 | 102 | NSW
+ 3 | 103 | QLD
+ 4 | 104 | VIC
+ 5 | 105 | ACT
+ 6 | 106 | NSW
+ 7 | 107 | NT
+ 8 | 108 | QLD
+ 9 | 109 | NSW
+(8 rows)
+</programlisting>
+<programlisting>
+/* sub # */ SELECT * FROM t1;
+ a |  b  |  c
+---+-----+-----
+ 6 | 106 | NSW
+ 9 | 109 | NSW
+(2 rows)
+</programlisting></para>
+
+   <para>
+    更新一些数据，此时旧行和新行的值都满足发布<literal>p1</literal>中<literal>t1 WHERE</literal>子句。该<command>UPDATE</command>会像平常一样复制该更改。
+<programlisting>
+/* pub # */ UPDATE t1 SET b = 999 WHERE a = 6;
+
+/* pub # */ SELECT * FROM t1;
+ a |  b  |  c
+---+-----+-----
+ 2 | 102 | NSW
+ 3 | 103 | QLD
+ 4 | 104 | VIC
+ 5 | 105 | ACT
+ 7 | 107 | NT
+ 8 | 108 | QLD
+ 9 | 109 | NSW
+ 6 | 999 | NSW
+(8 rows)
+</programlisting>
+<programlisting>
+/* sub # */ SELECT * FROM t1;
+ a |  b  |  c
+---+-----+-----
+ 9 | 109 | NSW
+ 6 | 999 | NSW
+(2 rows)
+</programlisting></para>
+
+   <para>
+    更新一些数据，此时旧行的值不满足发布<literal>p1</literal>中<literal>t1 WHERE</literal>子句，而新行的值满足该子句。
+    <command>UPDATE</command>会被转换为<command>INSERT</command>，并且该更改会被复制。可以在订阅端看到新行。
+<programlisting>
+/* pub # */ UPDATE t1 SET a = 555 WHERE a = 2;
+
+/* pub # */ SELECT * FROM t1;
+  a  |  b  |  c
+-----+-----+-----
+   3 | 103 | QLD
+   4 | 104 | VIC
+   5 | 105 | ACT
+   7 | 107 | NT
+   8 | 108 | QLD
+   9 | 109 | NSW
+   6 | 999 | NSW
+ 555 | 102 | NSW
+(8 rows)
+</programlisting>
+<programlisting>
+/* sub # */ SELECT * FROM t1;
+  a  |  b  |  c
+-----+-----+-----
+   9 | 109 | NSW
+   6 | 999 | NSW
+ 555 | 102 | NSW
+(3 rows)
+</programlisting></para>
+
+   <para>
+    更新一些数据，此时旧行的值满足发布<literal>p1</literal>中<literal>t1 WHERE</literal>子句，而新行的值不再满足该子句。
+    <command>UPDATE</command>会被转换为<command>DELETE</command>，并且该更改会被复制。可以看到该行已从订阅端移除。
+<programlisting>
+/* pub # */ UPDATE t1 SET c = 'VIC' WHERE a = 9;
+
+/* pub # */ SELECT * FROM t1;
+  a  |  b  |  c
+-----+-----+-----
+   3 | 103 | QLD
+   4 | 104 | VIC
+   5 | 105 | ACT
+   7 | 107 | NT
+   8 | 108 | QLD
+   6 | 999 | NSW
+ 555 | 102 | NSW
+   9 | 109 | VIC
+(8 rows)
+</programlisting>
+<programlisting>
+/* sub # */ SELECT * FROM t1;
+  a  |  b  |  c
+-----+-----+-----
+   6 | 999 | NSW
+ 555 | 102 | NSW
+(2 rows)
+</programlisting></para>
+
+   <para>
+    下面的示例展示了发布参数<link linkend="sql-createpublication-params-with-publish-via-partition-root"><literal>publish_via_partition_root</literal></link>
+    在分区表场景下如何决定使用父表还是子表的行过滤器。
+   </para>
+
+   <para>
+    在发布端创建一个分区表。
+<programlisting>
+/* pub # */ CREATE TABLE parent(a int PRIMARY KEY) PARTITION BY RANGE(a);
+/* pub # */ CREATE TABLE child PARTITION OF parent DEFAULT;
+</programlisting>
+   在订阅端创建相同的表。
+<programlisting>
+/* sub # */ CREATE TABLE parent(a int PRIMARY KEY) PARTITION BY RANGE(a);
+/* sub # */ CREATE TABLE child PARTITION OF parent DEFAULT;
+</programlisting></para>
+
+   <para>
+    创建一个发布<literal>p4</literal>，然后订阅它。发布参数<literal>publish_via_partition_root</literal>设置为 true。
+    分区表（<literal>parent</literal>）和分区（<literal>child</literal>）上都定义了行过滤器。
+<programlisting><![CDATA[
+/* pub # */ CREATE PUBLICATION p4 FOR TABLE parent WHERE (a < 5), child WHERE (a >= 5)
+/* pub - */ WITH (publish_via_partition_root=true);
+]]></programlisting>
+<programlisting>
+/* sub # */ CREATE SUBSCRIPTION s4
+/* sub - */ CONNECTION 'host=localhost dbname=test_pub application_name=s4'
+/* sub - */ PUBLICATION p4;
+</programlisting></para>
+
+   <para>
+    直接向<literal>parent</literal>和<literal>child</literal>表插入一些值。它们会使用<literal>parent</literal>的行过滤器进行复制（因为<literal>publish_via_partition_root</literal>为 true）。
+<programlisting>
+/* pub # */ INSERT INTO parent VALUES (2), (4), (6);
+/* pub # */ INSERT INTO child VALUES (3), (5), (7);
+
+/* pub # */ SELECT * FROM parent ORDER BY a;
+ a
+---
+ 2
+ 3
+ 4
+ 5
+ 6
+ 7
+(6 rows)
+</programlisting>
+<programlisting>
+/* sub # */ SELECT * FROM parent ORDER BY a;
+ a
+---
+ 2
+ 3
+ 4
+(3 rows)
+</programlisting></para>
+
+   <para>
+    重复相同的测试，但将<literal>publish_via_partition_root</literal>设为不同的值。
+    这里发布参数<literal>publish_via_partition_root</literal>设置为 false，并且在分区（<literal>child</literal>）上定义了行过滤器。
+<programlisting><![CDATA[
+/* pub # */ DROP PUBLICATION p4;
+/* pub # */ CREATE PUBLICATION p4 FOR TABLE parent, child WHERE (a >= 5)
+/* pub - */ WITH (publish_via_partition_root=false);
+]]></programlisting>
+<programlisting>
+/* sub # */ ALTER SUBSCRIPTION s4 REFRESH PUBLICATION;
+</programlisting></para>
+
+   <para>
+    像前面一样在发布端执行插入。它们会使用<literal>child</literal>的行过滤器进行复制（因为<literal>publish_via_partition_root</literal>为 false）。
+<programlisting>
+/* pub # */ TRUNCATE parent;
+/* pub # */ INSERT INTO parent VALUES (2), (4), (6);
+/* pub # */ INSERT INTO child VALUES (3), (5), (7);
+
+/* pub # */ SELECT * FROM parent ORDER BY a;
+ a
+---
+ 2
+ 3
+ 4
+ 5
+ 6
+ 7
+(6 rows)
+</programlisting>
+<programlisting>
+/* sub # */ SELECT * FROM child ORDER BY a;
+ a
+---
+ 5
+ 6
+ 7
+(3 rows)
+</programlisting></para>
+
+  </sect2>
+
+ </sect1>
+
+ <sect1 id="logical-replication-col-lists">
+
+  <title>列列表</title>
+
+  <para>
+   每个发布都可以选择指定每个表中的哪些列复制到订阅端。订阅端上的表必须至少具有所有已发布的列。
+   如果未指定列列表，则会复制发布端上的所有列。有关语法的详细信息，见<xref linkend="sql-createpublication"/>。
+</para>
+
+  <para>
+   选择哪些列可以基于行为或性能方面的考虑。然而，不要依赖此功能来实现安全性：
+   恶意订阅端仍然可以获得未被明确发布的列中的数据。如果需要考虑安全性，应在发布端采取保护措施。
+</para>
+
+  <para>
+   如果未指定列列表，那么以后向该表新增的任何列都会自动复制。这意味着，列出全部列的列列表与完全不指定列列表并不相同。
+</para>
+
+  <para>
+   列列表只能包含简单的列引用。列表中列的顺序不会被保留。
+</para>
+
+  <para>
+   生成列也可以在列列表中指定。这样就可以不受发布参数
+   <link linkend="sql-createpublication-params-with-publish-generated-columns">
+   <literal>publish_generated_columns</literal></link> 的限制而发布生成列。详见
+   <xref linkend="logical-replication-gencols"/>。
+  </para>
+
+  <para>
+   当发布还发布
+   <link linkend="sql-createpublication-params-for-tables-in-schema"><literal>FOR TABLES IN SCHEMA</literal></link>
+   时，不支持指定列列表。
+</para>
+
+  <para>
+   对于分区表，发布参数<link linkend="sql-createpublication-params-with-publish-via-partition-root"><literal>publish_via_partition_root</literal></link>
+   决定使用哪个列列表。如果<literal>publish_via_partition_root</literal>为<literal>true</literal>，则使用根分区表的列列表。
+   否则，如果<literal>publish_via_partition_root</literal>为<literal>false</literal>（默认值），则使用各个分区的列列表。
+</para>
+
+  <para>
+   如果某个发布发布<command>UPDATE</command>或<command>DELETE</command>操作，
+   那么任何列列表都必须包含该表的复制标识列（参见<xref linkend="sql-altertable-replica-identity"/>）。
+   如果某个发布只发布<command>INSERT</command>操作，那么列列表可以省略复制标识列。
+</para>
+
+  <para>
+   列列表对<literal>TRUNCATE</literal>命令没有影响。
+</para>
+
+  <para>
+   在初始数据同步期间，只会复制已发布的列。然而，如果订阅端使用的是 15 之
+   前的版本，那么在初始数据同步期间会复制表中的所有列，而忽略任何列列表。
+   如果订阅端使用的是 18 之前的版本，那么即使发布端定义了生成列，初始表同
+   步也不会复制生成列。
+</para>
+
+   <warning id="logical-replication-col-list-combining">
+
+    <title>警告：组合来自多个发布的列列表</title>
+
+    <para>
+     目前不支持这样的订阅：它包含多个发布，并且同一张表在这些发布中使用了不同的列列表。
+     <xref linkend="sql-createsubscription"/>会禁止创建这样的订阅，但在订阅创建之后，
+     仍然可能通过在发布端新增或修改列列表而进入这种情况。
+</para>
+
+    <para>
+     这意味着，更改已被订阅的发布上表的列列表，可能会导致订阅端抛出错误。
+    </para>
+
+    <para>
+     如果某个订阅受到了这个问题的影响，那么恢复复制的唯一方法是调整发布端的某个列列表，使它们全部一致；
+     然后要么重新创建该订阅，要么使用<link linkend="sql-altersubscription-params-setadddrop-publication"><literal>ALTER SUBSCRIPTION ... DROP PUBLICATION</literal></link>
+     删除一个有问题的发布，再把它重新加回来。
+</para>
+   </warning>
+
+  <sect2 id="logical-replication-col-list-examples">
+
+   <title>示例</title>
+
+   <para>
+    创建一个表<literal>t1</literal>，供下面的示例使用。
+<programlisting>
+/* pub # */ CREATE TABLE t1(id int, a text, b text, c text, d text, e text, PRIMARY KEY(id));
+</programlisting></para>
+
+   <para>
+    创建一个发布<literal>p1</literal>。为表<literal>t1</literal>定义一个列列表，以减少将被复制的列数。请注意，列列表中列名的顺序并不重要。
+<programlisting>
+/* pub # */ CREATE PUBLICATION p1 FOR TABLE t1 (id, b, a, d);
+</programlisting></para>
+
+    <para>
+     <literal>psql</literal>可用于显示每个发布的列列表（如果已定义）。
+<programlisting>
+/* pub # */ \dRp+
+                                         Publication p1
+  Owner   | All tables | Inserts | Updates | Deletes | Truncates | Generated columns | Via root
+----------+------------+---------+---------+---------+-----------+-------------------+----------
+ postgres | f          | t       | t       | t       | t         | none              | f
+Tables:
+    "public.t1" (id, a, b, d)
+</programlisting></para>
+
+    <para>
+     <literal>psql</literal>可用于显示每个表的列列表（如果已定义）。
+<programlisting>
+/* pub # */ \d t1
+                 Table "public.t1"
+ Column |  Type   | Collation | Nullable | Default
+--------+---------+-----------+----------+---------
+ id     | integer |           | not null |
+ a      | text    |           |          |
+ b      | text    |           |          |
+ c      | text    |           |          |
+ d      | text    |           |          |
+ e      | text    |           |          |
+Indexes:
+    "t1_pkey" PRIMARY KEY, btree (id)
+Publications:
+    "p1" (id, a, b, d)
+</programlisting></para>
+
+    <para>
+     在订阅端节点上，创建一个名为<literal>t1</literal>的表，它现在只需要发布端表<literal>t1</literal>中的部分列，然后创建订阅<literal>s1</literal>来订阅发布<literal>p1</literal>。
+<programlisting>
+/* sub # */ CREATE TABLE t1(id int, b text, a text, d text, PRIMARY KEY(id));
+/* sub # */ CREATE SUBSCRIPTION s1
+/* sub - */ CONNECTION 'host=localhost dbname=test_pub application_name=s1'
+/* sub - */ PUBLICATION p1;
+</programlisting></para>
+
+    <para>
+     在发布端节点上，向表<literal>t1</literal>插入一些行。
+<programlisting>
+/* pub # */ INSERT INTO t1 VALUES(1, 'a-1', 'b-1', 'c-1', 'd-1', 'e-1');
+/* pub # */ INSERT INTO t1 VALUES(2, 'a-2', 'b-2', 'c-2', 'd-2', 'e-2');
+/* pub # */ INSERT INTO t1 VALUES(3, 'a-3', 'b-3', 'c-3', 'd-3', 'e-3');
+/* pub # */ SELECT * FROM t1 ORDER BY id;
+ id |  a  |  b  |  c  |  d  |  e
+----+-----+-----+-----+-----+-----
+  1 | a-1 | b-1 | c-1 | d-1 | e-1
+  2 | a-2 | b-2 | c-2 | d-2 | e-2
+  3 | a-3 | b-3 | c-3 | d-3 | e-3
+(3 rows)
+</programlisting></para>
+
+    <para>
+     只有发布<literal>p1</literal>的列列表中包含的数据会被复制。
+<programlisting>
+/* sub # */ SELECT * FROM t1 ORDER BY id;
+ id |  b  |  a  |  d
+----+-----+-----+-----
+  1 | b-1 | a-1 | d-1
+  2 | b-2 | a-2 | d-2
+  3 | b-3 | a-3 | d-3
+(3 rows)
+</programlisting></para>
+
+  </sect2>
+
+ </sect1>
+
+ <sect1 id="logical-replication-gencols">
+  <title>生成列复制</title>
+
+  <para>
+   通常，订阅端的表会与发布端表定义相同，因此如果发布端表包含
+   <link linkend="ddl-generated-columns"><literal>GENERATED 列</literal></link>，
+   订阅端表也会有对应的生成列。在这种情况下，始终使用订阅端表生成列的值。
+  </para>
+
+  <para>
+   例如，下面可以看到订阅端表的生成列值来自订阅端列自身的计算：
+<programlisting>
+/* pub # */ CREATE TABLE tab_gen_to_gen (a int, b int GENERATED ALWAYS AS (a + 1) STORED);
+/* pub # */ INSERT INTO tab_gen_to_gen VALUES (1),(2),(3);
+/* pub # */ CREATE PUBLICATION pub1 FOR TABLE tab_gen_to_gen;
+/* pub # */ SELECT * FROM tab_gen_to_gen;
+ a | b
+---+---
+ 1 | 2
+ 2 | 3
+ 3 | 4
+(3 rows)
+
+/* sub # */ CREATE TABLE tab_gen_to_gen (a int, b int GENERATED ALWAYS AS (a * 100) STORED);
+/* sub # */ CREATE SUBSCRIPTION sub1 CONNECTION 'dbname=test_pub' PUBLICATION pub1;
+/* sub # */ SELECT * from tab_gen_to_gen;
+ a | b
+---+----
+ 1 | 100
+ 2 | 200
+ 3 | 300
+(3 rows)
+</programlisting>
+  </para>
+
+  <para>
+   实际上，在 18.0 之前的版本中，逻辑复制根本不会发布
+   <literal>GENERATED</literal> 列。
+  </para>
+
+  <para>
+   但在某些场景中，将生成列复制到普通列是有意义的。
+   <tip>
+    <para>
+     当通过输出插件将数据复制到非 PostgreSQL 数据库时，此特性可能很有用，
+     尤其是目标数据库不支持生成列时。
+    </para>
+   </tip>
+  </para>
+
+  <para>
+   默认不会发布生成列，但用户可以选择像普通列一样发布存储生成列。
+  </para>
+
+  <para>
+   有两种方式：
+   <itemizedlist>
+     <listitem>
+      <para>
+       将 <command>PUBLICATION</command> 参数
+       <link linkend="sql-createpublication-params-with-publish-generated-columns">
+       <literal>publish_generated_columns</literal></link>
+       设置为 <literal>stored</literal>。
+       这样 PostgreSQL 逻辑复制会发布该发布中各表当前及未来的存储生成列。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       指定表的 <link linkend="logical-replication-col-lists">列列表</link>，
+       显式指定要发布哪些存储生成列。
+      </para>
+
+      <note>
+       <para>
+        在确定发布哪些表列时，列列表优先级更高，会覆盖
+        <literal>publish_generated_columns</literal> 参数的效果。
+       </para>
+      </note>
+     </listitem>
+   </itemizedlist>
+  </para>
+
+  <para>
+   下表汇总了逻辑复制涉及生成列时的行为，分别展示未启用和启用发布生成列时的结果。
+  </para>
+
+  <table id="logical-replication-gencols-table-summary">
+   <title>复制结果汇总</title>
+   <tgroup cols="4">
+
+    <thead>
+     <row>
+      <entry>发布生成列？</entry>
+      <entry>发布端表列</entry>
+      <entry>订阅端表列</entry>
+      <entry>结果</entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry>否</entry>
+      <entry>GENERATED</entry>
+      <entry>GENERATED</entry>
+      <entry>发布端该列不复制。使用订阅端表生成列的值。</entry>
+     </row>
+
+     <row>
+      <entry>否</entry>
+      <entry>GENERATED</entry>
+      <entry>普通列</entry>
+      <entry>发布端该列不复制。使用订阅端普通列默认值。</entry>
+     </row>
+
+     <row>
+      <entry>否</entry>
+      <entry>GENERATED</entry>
+      <entry>--missing--</entry>
+      <entry>发布端该列不复制。不会发生任何操作。</entry>
+     </row>
+
+     <row>
+      <entry>是</entry>
+      <entry>GENERATED</entry>
+      <entry>GENERATED</entry>
+      <entry>错误。不支持。</entry>
+     </row>
+
+     <row>
+      <entry>是</entry>
+      <entry>GENERATED</entry>
+      <entry>普通列</entry>
+      <entry>发布端该列值会复制到订阅端表列。</entry>
+     </row>
+
+     <row>
+      <entry>是</entry>
+      <entry>GENERATED</entry>
+      <entry>--missing--</entry>
+      <entry>错误。该列会被报告为订阅端表缺失。</entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <warning>
+   <para>
+    目前不支持一个订阅包含多个发布，且同一张表在这些发布中使用不同列列表。
+    见 <xref linkend="logical-replication-col-lists"/>。
+   </para>
+
+   <para>
+    如果同一订阅中一个发布对该表发布生成列，而另一个发布不发布生成列，
+    也会出现同样的问题。
+   </para>
+  </warning>
+
+  <note>
+   <para>
+    如果订阅端版本早于 18，即使发布端定义了生成列，初始表同步也不会复制生成列。
+   </para>
+  </note>
+ </sect1>
+
+ <sect1 id="logical-replication-conflicts">
+  <title>冲突</title>
+
+  <para>
+   逻辑复制的行为在一点上类似于普通 DML 操作：即使订阅节点上的数据已在本地被修改，
+   传入的变更仍会更新它。如果传入数据违反了任何约束，复制就会停止，这种情况称为
+   <firstterm>冲突</firstterm>。在复制 <command>UPDATE</command> 或
+   <command>DELETE</command> 操作时，找不到目标数据也被视为
+   <firstterm>冲突</firstterm>，但不会报错，这类操作会被直接跳过。
+  </para>
+
+  <para>
+   在以下 <firstterm>冲突</firstterm> 场景中，会记录附加日志，并收集冲突统计信息
+   （显示在
+   <link linkend="monitoring-pg-stat-subscription-stats"><structname>pg_stat_subscription_stats</structname></link>
+   视图中）：
+   <variablelist>
+    <varlistentry id="conflict-insert-exists" xreflabel="insert_exists">
+     <term><literal>insert_exists</literal></term>
+     <listitem>
+      <para>
+       插入某行时违反了一个 <literal>NOT DEFERRABLE</literal> 唯一约束。
+       请注意，若要在日志中记录冲突键的来源和提交时间戳详情，订阅端应启用
+       <link linkend="guc-track-commit-timestamp"><varname>track_commit_timestamp</varname></link>。
+       这种情况下，系统会持续报错，直到手工解决该冲突。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry id="conflict-update-origin-differs" xreflabel="update_origin_differs">
+     <term><literal>update_origin_differs</literal></term>
+     <listitem>
+      <para>
+       更新一行，而该行此前已被另一来源修改。请注意，只有在订阅端启用了
+       <link linkend="guc-track-commit-timestamp"><varname>track_commit_timestamp</varname></link>
+       时才能检测到这种冲突。目前，无论本地行的来源是什么，更新都会照常应用。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry id="conflict-update-exists" xreflabel="update_exists">
+     <term><literal>update_exists</literal></term>
+     <listitem>
+      <para>
+       某行更新后的值违反了一个 <literal>NOT DEFERRABLE</literal> 唯一约束。
+       请注意，若要在日志中记录冲突键的来源和提交时间戳详情，订阅端应启用
+       <link linkend="guc-track-commit-timestamp"><varname>track_commit_timestamp</varname></link>。
+       这种情况下，系统会持续报错，直到手工解决该冲突。另请注意，在更新分区表时，
+       如果更新后的行值满足了另一个分区的约束，导致该行被插入到新分区中，而新行又
+       违反了一个 <literal>NOT DEFERRABLE</literal> 唯一约束，则可能出现
+       <literal>insert_exists</literal> 冲突。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry id="conflict-update-missing" xreflabel="update_missing">
+     <term><literal>update_missing</literal></term>
+     <listitem>
+      <para>
+       要更新的行未找到。在这种情况下，该更新会被直接跳过。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry id="conflict-delete-origin-differs" xreflabel="delete_origin_differs">
+     <term><literal>delete_origin_differs</literal></term>
+     <listitem>
+      <para>
+       删除一行，而该行此前已被另一来源修改。请注意，只有在订阅端启用了
+       <link linkend="guc-track-commit-timestamp"><varname>track_commit_timestamp</varname></link>
+       时才能检测到这种冲突。目前，无论本地行的来源是什么，删除都会照常应用。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry id="conflict-delete-missing" xreflabel="delete_missing">
+     <term><literal>delete_missing</literal></term>
+     <listitem>
+      <para>
+       要删除的行未找到。在这种情况下，该删除会被直接跳过。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry id="conflict-multiple-unique-conflicts" xreflabel="multiple_unique_conflicts">
+     <term><literal>multiple_unique_conflicts</literal></term>
+     <listitem>
+      <para>
+       插入或更新某行时违反了多个 <literal>NOT DEFERRABLE</literal> 唯一约束。
+       请注意，若要在日志中记录冲突键的来源和提交时间戳详情，请确保订阅端启用了
+       <link linkend="guc-track-commit-timestamp"><varname>track_commit_timestamp</varname></link>。
+       这种情况下，系统会持续报错，直到手工解决该冲突。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   请注意，还存在其他冲突场景，例如排他约束违规。目前，我们不会在日志中为它们
+   提供额外细节。
+  </para>
+
+  <para>
+   逻辑复制冲突的日志格式如下：
+<synopsis>
+LOG:  conflict detected on relation "<replaceable>schemaname</replaceable>.<replaceable>tablename</replaceable>": conflict=<replaceable>conflict_type</replaceable>
+DETAIL:  <replaceable class="parameter">detailed_explanation</replaceable>.
+{<replaceable class="parameter">detail_values</replaceable> [; ... ]}.
+
+<phrase>其中 <replaceable class="parameter">detail_values</replaceable> 可以是以下之一：</phrase>
+
+    <literal>Key</literal> (<replaceable>column_name</replaceable> <optional>, ...</optional>)=(<replaceable>column_value</replaceable> <optional>, ...</optional>)
+    <literal>existing local row</literal> <optional>(<replaceable>column_name</replaceable> <optional>, ...</optional>)=</optional>(<replaceable>column_value</replaceable> <optional>, ...</optional>)
+    <literal>remote row</literal> <optional>(<replaceable>column_name</replaceable> <optional>, ...</optional>)=</optional>(<replaceable>column_value</replaceable> <optional>, ...</optional>)
+    <literal>replica identity</literal> {(<replaceable>column_name</replaceable> <optional>, ...</optional>)=(<replaceable>column_value</replaceable> <optional>, ...</optional>) | full <optional>(<replaceable>column_name</replaceable> <optional>, ...</optional>)=</optional>(<replaceable>column_value</replaceable> <optional>, ...</optional>)}
+</synopsis>
+
+   日志会提供以下信息：
+   <variablelist>
+    <varlistentry>
+     <term><literal>LOG</literal></term>
+      <listitem>
+       <itemizedlist>
+        <listitem>
+         <para>
+          <replaceable>schemaname</replaceable>.<replaceable>tablename</replaceable>
+          标识发生冲突的本地关系。
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <replaceable>conflict_type</replaceable> 是发生的冲突类型
+          （例如 <literal>insert_exists</literal>、<literal>update_exists</literal>）。
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>DETAIL</literal></term>
+      <listitem>
+      <itemizedlist>
+       <listitem>
+        <para>
+         <replaceable class="parameter">detailed_explanation</replaceable> 包括
+         修改现有本地行的事务的来源、事务 ID 以及提交时间戳（如果可用）。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>Key</literal> 部分包含本地行的键值；该本地行在
+         <literal>insert_exists</literal>、<literal>update_exists</literal> 或
+         <literal>multiple_unique_conflicts</literal> 冲突中违反了唯一约束。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>existing local row</literal> 部分包含本地行；当
+         <literal>update_origin_differs</literal> 或
+         <literal>delete_origin_differs</literal> 冲突中，本地行的来源与远端行不同，
+         或者在 <literal>insert_exists</literal>、<literal>update_exists</literal>
+         或 <literal>multiple_unique_conflicts</literal> 冲突中，该键值与远端行冲突时，
+         会记录这部分内容。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>remote row</literal> 部分包含导致冲突的远端插入或更新操作中的新行。
+         注意，对于更新操作，如果某个列值未变化且已被 TOAST 化，则新行中的该列值
+         会为 null。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>replica identity</literal> 部分包含用于查找要更新或删除的现有本地行的
+         复制标识键值。如果本地关系被标记为
+         <link linkend="sql-altertable-replica-identity-full"><literal>REPLICA IDENTITY FULL</literal></link>，
+         这里也可能包含整行值。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <replaceable class="parameter">column_name</replaceable> 是列名。对于
+         <literal>existing local row</literal>、<literal>remote row</literal> 以及
+         <literal>replica identity full</literal> 这几种情况，只有当用户没有权限访问该表
+         的全部列时，才会记录列名。如果记录了列名，它们的顺序与对应列值的顺序一致。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <replaceable class="parameter">column_value</replaceable> 是列值。较大的列值
+         会被截断到 64 字节。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         请注意，在 <literal>multiple_unique_conflicts</literal> 冲突场景中，
+         会生成多条 <replaceable class="parameter">detailed_explanation</replaceable>
+         和 <replaceable class="parameter">detail_values</replaceable> 行，
+         每条都描述一个不同唯一约束对应的冲突信息。
+        </para>
+       </listitem>
+      </itemizedlist>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+  <para>
+   逻辑复制操作会以订阅所有者角色的权限执行。目标表上的权限失败会导致复制冲突；
+   目标表上启用的、且订阅所有者受其约束的
+   <link linkend="ddl-rowsecurity">行级安全</link> 也会导致复制冲突，而不考虑任何
+   策略通常是否会拒绝当前复制的 <command>INSERT</command>、
+   <command>UPDATE</command>、<command>DELETE</command> 或
+   <command>TRUNCATE</command>。未来版本的 <productname>PostgreSQL</productname>
+   可能会取消这一行级安全限制。
+  </para>
+
+  <para>
+   会产生错误的冲突会使复制停止；这类冲突必须由用户手工解决。有关冲突的详细信息
+   可以在订阅端的服务器日志中找到。
+  </para>
+
+  <para>
+   解决方法可以是修改订阅端上的数据或权限，使其不再与传入变更冲突；也可以跳过与
+   现有数据冲突的事务。当冲突导致错误时，复制不会继续，逻辑复制工作者会向订阅端
+   的服务器日志输出如下消息：
+<screen>
+ERROR:  conflict detected on relation "public.test": conflict=insert_exists
+DETAIL:  Key already exists in unique index "t_pkey", which was modified locally in transaction 740 at 2024-06-26 10:47:04.727375+08.
+Key (c)=(1); existing local row (1, 'local'); remote row (1, 'remote').
+CONTEXT:  processing remote data for replication origin "pg_16395" during "INSERT" for replication target relation "public.test" in transaction 725 finished at 0/14C0378
+</screen>
+   可以从服务器日志中找到包含违规变更的事务的 LSN 以及复制源名称
+   （在上述示例中分别是 LSN 0/14C0378 和复制源 <literal>pg_16395</literal>）。
+   可以使用
+   <link linkend="sql-altersubscription-params-skip"><command>ALTER SUBSCRIPTION ... SKIP</command></link>
+   并提供 finish LSN（即 LSN 0/14C0378）来跳过产生冲突的事务。这个 finish LSN
+   可以是该事务在发布端提交或准备完成时的 LSN。或者，也可以调用
+   <link linkend="pg-replication-origin-advance">
+   <function>pg_replication_origin_advance()</function></link> 函数来跳过该事务。
+   在使用此函数之前，需要暂时禁用订阅，可以使用
+   <link linkend="sql-altersubscription-params-disable">
+   <command>ALTER SUBSCRIPTION ... DISABLE</command></link>，或者让订阅使用
+   <link linkend="sql-createsubscription-params-with-disable-on-error"><literal>disable_on_error</literal></link>
+   选项。然后，可以使用 <function>pg_replication_origin_advance()</function> 函数，
+   传入 <parameter>node_name</parameter>（即 <literal>pg_16395</literal>）
+   以及 finish LSN 的下一个 LSN（即 0/14C0379）。当前各复制源的位置可以在
+   <link linkend="view-pg-replication-origin-status">
+   <structname>pg_replication_origin_status</structname></link> 系统视图中查看。
+   请注意，跳过整个事务也会跳过那些本来可能不违反任何约束的变更，这很容易导致
+   订阅端不一致。关于冲突行的其他细节，例如其来源和提交时间戳，也可以在日志的
+   <literal>DETAIL</literal> 行中看到。但请注意，这些信息只有在订阅端启用了
+   <link linkend="guc-track-commit-timestamp"><varname>track_commit_timestamp</varname></link>
+   时才可用。用户可以利用这些信息来决定是保留本地更改，还是采用远端变更。例如，
+   上述日志中的 <literal>DETAIL</literal> 行表明现有行是在本地被修改的。用户
+   可以手工让远端变更胜出。
+  </para>
+
+  <para>
+   当
+   <link linkend="sql-createsubscription-params-with-streaming"><literal>streaming</literal></link>
+   模式为 <literal>parallel</literal> 时，失败事务的 finish LSN 可能不会被记录。
+   这种情况下，可能需要把 streaming 模式改为 <literal>on</literal> 或
+   <literal>off</literal>，并再次触发相同的冲突，以便将失败事务的 finish LSN
+   写入服务器日志。关于 finish LSN 的用法，请参见
+   <link linkend="sql-altersubscription"><command>ALTER SUBSCRIPTION ... SKIP</command></link>。
+  </para>
+ </sect1>
+
+ <sect1 id="logical-replication-restrictions">
+  <title>限制</title>
+
+  <para>
+   逻辑复制目前有以下限制或缺失的功能。这些问题可能会在未来版本中得到解决。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     数据库模式和 DDL 命令不会被复制。初始模式可以手工使用
+     <literal>pg_dump --schema-only</literal> 复制。之后的模式更改需要手工保持同步。
+     （不过请注意，两端的模式其实不需要绝对一致。）当活动数据库中的模式定义发生变化时，
+     逻辑复制仍然具有一定鲁棒性：如果发布端修改了模式，而复制数据开始到达订阅端时
+     与表模式不匹配，复制就会报错，直到模式被更新。在很多情况下，可以通过先在订阅端
+     应用增量式的模式变更来避免间歇性错误。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     序列数据不会被复制。由序列支撑的 serial 或标识列中的数据当然会作为表的一部分
+     被复制，但序列本身在订阅端仍会显示起始值。如果订阅端被当作只读数据库使用，
+     这通常不是问题。但如果计划把订阅端数据库用作某种切换或故障切换目标，
+     那么就需要把序列更新到最新值，可以从发布端复制当前数据
+     （例如使用 <command>pg_dump</command>），也可以直接从表本身确定一个足够高的值。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     支持复制 <command>TRUNCATE</command> 命令，但在截断通过外键连接在一起的一组表时
+     必须格外小心。复制截断操作时，订阅端会截断与发布端相同的一组表，这组表可以是
+     显式指定的，也可以是通过 <literal>CASCADE</literal> 隐式收集到的，然后再减去
+     不属于该订阅的表。如果所有受影响的表都属于同一个订阅，这样可以正确工作。
+     但如果订阅端上将被截断的某些表通过外键链接到了不属于同一个订阅
+     （或根本不属于任何订阅）的表，那么在订阅端应用该截断操作就会失败。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     大对象（见 <xref linkend="largeobjects"/>）不会被复制。除了把数据存储在普通表中，
+     没有其他变通办法。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     复制只支持表，包括分区表。尝试复制其他类型的关系（例如视图、物化视图或外部表）
+     会报错。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     在分区表之间复制时，默认情况下，实际复制来源是发布端的叶子分区，因此发布端上的
+     这些分区也必须在订阅端作为有效的目标表存在。（它们既可以本身也是叶子分区，
+     也可以进一步再分区，甚至可以是独立表。）发布还可以指定，复制变更时改用分区根表
+     的标识和模式，而不是使用实际产生变更的各个叶子分区的标识和模式（见
+     <command>CREATE PUBLICATION</command> 的
+     <link linkend="sql-createpublication-params-with-publish-via-partition-root"><literal>publish_via_partition_root</literal></link>
+     参数）。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     对已发布表使用
+     <link linkend="sql-altertable-replica-identity-full"><literal>REPLICA IDENTITY FULL</literal></link>
+     时，需要注意：如果表中包含某些数据类型的属性（例如 point 或 box），而这些类型
+     没有 B-tree 或 Hash 的默认操作符类，那么 <literal>UPDATE</literal> 和
+     <literal>DELETE</literal> 操作就无法在订阅端应用。不过，可以通过确保该表具有
+     主键或已定义复制标识来规避这一限制。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+
+ <sect1 id="logical-replication-architecture">
+  <title>架构</title>
+
+  <para>
+   逻辑复制采用了与物理流复制类似的架构（见
+   <xref linkend="streaming-replication"/>）。它由 <literal>walsender</literal>
+   和 <literal>apply</literal> 进程实现。<literal>walsender</literal> 进程会对 WAL
+   执行逻辑解码（见 <xref linkend="logicaldecoding"/>），并装载标准逻辑解码输出插件
+   （<literal>pgoutput</literal>）。该插件会把从 WAL 中读取到的变更转换为逻辑复制协议
+   （见 <xref linkend="protocol-logical-replication"/>），并按照发布规范过滤数据。
+   然后，数据会通过流复制协议持续传输给应用工作进程，由它把数据映射到本地表，
+   并在收到时按正确的事务顺序应用各项变更。
+  </para>
+
+  <para>
+   订阅端数据库上的应用进程始终在
+   <link linkend="guc-session-replication-role"><varname>session_replication_role</varname></link>
+   设置为 <literal>replica</literal> 的情况下运行。这意味着默认情况下，触发器和规则
+   不会在订阅端触发。用户可以选择使用
+   <link linkend="sql-altertable"><command>ALTER TABLE</command></link> 命令以及
+   <literal>ENABLE TRIGGER</literal> 和 <literal>ENABLE RULE</literal> 子句，
+   在表上启用触发器和规则。
+  </para>
+
+  <para>
+   逻辑复制应用进程目前只会触发行触发器，不会触发语句触发器。不过，初始表同步的
+   实现方式类似于 <command>COPY</command> 命令，因此会为
+   <command>INSERT</command> 同时触发行触发器和语句触发器。
+  </para>
+
+  <sect2 id="logical-replication-snapshot">
+    <title>初始快照</title>
+    <para>
+     对现有订阅表中的初始数据，会取快照并由一种特殊应用进程的并行实例来复制。
+     这些特殊的应用进程是为每张待同步表启动的专用表同步工作者。每个表同步进程
+     都会创建自己的复制槽，并复制现有数据。复制一完成，该表内容就会对其他后端可见。
+     现有数据复制完成后，工作者会进入同步模式，通过标准逻辑复制流式发送在初始数据
+     复制期间发生的任何变更，使该表与主应用进程达到同步状态。在这一同步阶段，
+     变更会按照它们在发布端发生的顺序被应用和提交。同步完成后，该表的复制控制权
+     会交还给主应用进程，之后复制将照常继续。
+    </para>
+    <note>
+     <para>
+      发布的
+      <link linkend="sql-createpublication-params-with-publish"><literal>publish</literal></link>
+      参数只影响哪些 DML 操作会被复制。初始数据同步在复制现有表数据时不会考虑该参数。
+     </para>
+    </note>
+    <note>
+     <para>
+      如果表同步工作者在复制期间失败，应用工作者会检测到这一失败，并重新启动表同步
+      工作者以继续同步过程。这种行为确保了瞬时错误不会永久破坏复制配置。另见
+      <link linkend="guc-wal-retrieve-retry-interval"><varname>wal_retrieve_retry_interval</varname></link>。
+     </para>
+    </note>
+  </sect2>
+ </sect1>
+
+ <sect1 id="logical-replication-monitoring">
+  <title>监控</title>
+
+  <para>
+   由于逻辑复制基于与
+   <link linkend="streaming-replication">物理流复制</link> 类似的架构，
+   因此在发布节点上的监控方式也类似于对物理复制主库的监控
+   （见 <xref linkend="streaming-replication-monitoring"/>）。
+  </para>
+
+  <para>
+   与订阅相关的监控信息可在
+   <link linkend="monitoring-pg-stat-subscription"><structname>pg_stat_subscription</structname></link>
+   中查看。这个视图为每个订阅工作者包含一行。一个订阅根据其状态，可能有零个或多个
+   活跃的订阅工作者。
+  </para>
+
+  <para>
+   通常，一个已启用的订阅会有一个应用进程在运行。被禁用的订阅或已崩溃的订阅在这个
+   视图中将没有任何行。如果某张表的初始数据同步正在进行，则还会有针对这些正在同步
+   的表的额外工作者。并且，如果使用
+   <link linkend="sql-createsubscription-params-with-streaming"><literal>streaming</literal></link>
+   并以并行方式应用事务，则还可能出现额外的并行应用工作进程。
+  </para>
+ </sect1>
+
+ <sect1 id="logical-replication-security">
+  <title>安全性</title>
+
+  <para>
+   用于复制连接的角色必须具有 <literal>REPLICATION</literal> 属性
+   （或为超级用户）。如果该角色既没有 <literal>SUPERUSER</literal>，也没有
+   <literal>BYPASSRLS</literal>，则发布端的行安全性策略可能会生效。如果该角色
+   不信任所有表所有者，请在连接字符串中包含
+   <literal>options=-crow_security=off</literal>；这样一来，如果某个表所有者随后
+   添加了行安全性策略，复制将停止，而不是执行该策略。该角色的访问权限必须在
+   <filename>pg_hba.conf</filename> 中配置，并且它还必须具有
+   <literal>LOGIN</literal> 属性。
+  </para>
+
+  <para>
+   为了能够复制初始表数据，用于复制连接的角色必须对已发布的表具有
+   <literal>SELECT</literal> 权限（或者是超级用户）。
+  </para>
+
+  <para>
+   要创建发布，用户必须在数据库中具有 <literal>CREATE</literal> 权限。
+  </para>
+
+  <para>
+   要向发布中添加表，用户必须拥有该表。要向发布中添加某个模式中的全部表，用户
+   必须是超级用户。要创建一个会自动发布所有表，或自动发布某个模式中全部表的发布，
+   用户也必须是超级用户。
+  </para>
+
+  <para>
+   目前发布没有权限控制。任何订阅（只要能够连接）都可以访问任何发布。因此，
+   如果你打算向某些订阅者隐藏部分信息，例如通过行过滤器、列列表，或者通过不把整张表
+   加入发布来实现，需要注意：同一数据库中的其他发布仍可能暴露这些信息。未来版本的
+   <productname>PostgreSQL</productname> 可能会增加发布权限，以支持更细粒度的
+   访问控制。
+  </para>
+
+  <para>
+   要创建订阅，用户必须具有 <literal>pg_create_subscription</literal> 角色的权限，
+   并且对该数据库具有 <literal>CREATE</literal> 权限。
+  </para>
+
+  <para>
+   订阅应用进程在会话级别会以订阅所有者的权限运行。不过，在对某个具体表执行
+   insert、update、delete 或 truncate 操作时，它会切换角色到该表所有者，并以
+   表所有者的权限执行该操作。这意味着，订阅所有者必须能够对每个复制表的所有者执行
+   <literal>SET ROLE</literal>。
+  </para>
+
+  <para>
+   如果订阅配置了 <literal>run_as_owner = true</literal>，则不会发生用户切换。
+   取而代之的是，所有操作都将以订阅所有者的权限执行。在这种情况下，订阅所有者只需
+   具备对目标表执行 <literal>SELECT</literal>、<literal>INSERT</literal>、
+   <literal>UPDATE</literal> 和 <literal>DELETE</literal> 的权限，而不需要
+   具备对表所有者执行 <literal>SET ROLE</literal> 的权限。不过，这也意味着，
+   任何拥有正在接收复制数据的表的用户，都可以以订阅所有者的权限执行任意代码。
+   例如，他们只需在自己拥有的某张表上附加一个触发器即可。由于通常并不希望允许一个
+   角色自由取得另一个角色的权限，因此除非数据库内部的用户安全完全不重要，否则应避免
+   使用该选项。
+  </para>
+
+  <para>
+   在发布端，权限只在复制连接开始时检查一次，在读取每条变更记录时不会重新检查。
+  </para>
+
+  <para>
+   在订阅端，订阅所有者的权限会在每个事务应用时重新检查。如果某个工作者正在应用
+   事务时，订阅的所有权被并发事务更改，那么当前事务的应用仍会继续使用旧所有者的
+   权限。
+  </para>
+ </sect1>
+
+ <sect1 id="logical-replication-config">
+  <title>配置参数</title>
+
+  <para>
+   逻辑复制需要设置若干配置选项。这些选项只在复制的一侧生效。
+  </para>
+
+  <sect2 id="logical-replication-config-publisher">
+   <title>发布端</title>
+
+   <para>
+    <link linkend="guc-wal-level"><varname>wal_level</varname></link>
+    必须设置为 <literal>logical</literal>。
+   </para>
+
+   <para>
+    <link linkend="guc-max-replication-slots"><varname>max_replication_slots</varname></link>
+    必须至少设置为预期连接的订阅数量，再加上用于表同步的预留量。
+   </para>
+
+   <para>
+    逻辑复制槽还会受到
+    <link linkend="guc-idle-replication-slot-timeout"><varname>idle_replication_slot_timeout</varname></link>
+    的影响。
+   </para>
+
+   <para>
+    <link linkend="guc-max-wal-senders"><varname>max_wal_senders</varname></link>
+    应至少设置为 <varname>max_replication_slots</varname>，再加上同时连接的
+    物理副本数量。
+   </para>
+
+   <para>
+    逻辑复制 walsender 还会受到
+    <link linkend="guc-wal-sender-timeout"><varname>wal_sender_timeout</varname></link>
+    的影响。
+   </para>
+
+  </sect2>
+
+  <sect2 id="logical-replication-config-subscriber">
+   <title>订阅端</title>
+
+   <para>
+    <link linkend="guc-max-active-replication-origins"><varname>max_active_replication_origins</varname></link>
+    必须至少设置为将添加到订阅端的订阅数量，再加上用于表同步的预留量。
+   </para>
+
+   <para>
+    <link linkend="guc-max-logical-replication-workers"><varname>max_logical_replication_workers</varname></link>
+    必须至少设置为订阅数量（用于主应用工作进程），再加上用于表同步工作进程
+    和并行应用工作进程的预留量。
+   </para>
+
+   <para>
+    可能还需要调整
+    <link linkend="guc-max-worker-processes"><varname>max_worker_processes</varname></link>
+    以容纳复制工作进程，至少应为
+    （<link linkend="guc-max-logical-replication-workers"><varname>max_logical_replication_workers</varname></link>
+    + <literal>1</literal>）。注意，一些扩展和并行查询也会占用
+    <varname>max_worker_processes</varname> 的工作进程槽位。
+   </para>
+
+   <para>
+    <link linkend="guc-max-sync-workers-per-subscription"><varname>max_sync_workers_per_subscription</varname></link>
+    控制订阅初始化或新增表时初始数据复制的并行度。
+   </para>
+
+   <para>
+    <link linkend="guc-max-parallel-apply-workers-per-subscription"><varname>max_parallel_apply_workers_per_subscription</varname></link>
+    控制订阅参数 <literal>streaming = parallel</literal> 时，进行中事务流式复制的并行度。
+   </para>
+
+   <para>
+    逻辑复制工作进程还会受到
+    <link linkend="guc-wal-receiver-timeout"><varname>wal_receiver_timeout</varname></link>、
+    <link linkend="guc-wal-receiver-status-interval"><varname>wal_receiver_status_interval</varname></link>
+    和
+    <link linkend="guc-wal-retrieve-retry-interval"><varname>wal_retrieve_retry_interval</varname></link>
+    的影响。
+   </para>
+
+  </sect2>
+
+ </sect1>
+ <sect1 id="logical-replication-upgrade">
+  <title>升级</title>
+
+  <para>
+   仅当旧逻辑复制集群的所有成员都为 17.0 或更高版本时，才支持迁移
+   <glossterm linkend="glossary-logical-replication-cluster">逻辑复制集群</glossterm>。
+  </para>
+
+  <sect2 id="prepare-publisher-upgrades">
+   <title>为发布端升级做准备</title>
+
+   <para>
+    <application>pg_upgrade</application> 会尝试迁移逻辑槽。
+    这有助于避免在新发布端手工定义相同的逻辑槽。
+    仅当旧集簇版本为 17.0 或更高时才支持逻辑槽迁移。
+    17.0 之前集簇中的逻辑槽会被静默忽略。
+   </para>
+
+   <para>
+    在开始升级发布端集簇前，请通过执行
+    <link linkend="sql-altersubscription"><command>ALTER SUBSCRIPTION ... DISABLE</command></link>
+    临时禁用订阅。升级完成后再重新启用订阅。
+   </para>
+
+   <para>
+    <application>pg_upgrade</application> 升级逻辑槽有若干前置条件。
+    若不满足，将报错。
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      新集簇必须将
+      <link linkend="guc-wal-level"><varname>wal_level</varname></link>
+      设为 <literal>logical</literal>。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      新集簇中
+      <link linkend="guc-max-replication-slots"><varname>max_replication_slots</varname></link>
+      的配置值必须大于等于旧集簇中的槽数量。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      旧集簇槽引用的输出插件必须安装在新 PostgreSQL 可执行文件目录中。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      旧集簇必须已将所有事务和逻辑解码消息复制到订阅端。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      旧集簇中的所有槽都必须可用，即不存在
+      <link linkend="view-pg-replication-slots">pg_replication_slots</link>.<structfield>conflicting</structfield>
+      不为 <literal>true</literal> 的槽。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      新集簇中不能存在永久逻辑槽，即不能有
+      <link linkend="view-pg-replication-slots">pg_replication_slots</link>.<structfield>temporary</structfield>
+      为 <literal>false</literal> 的槽。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 id="prepare-subscriber-upgrades">
+   <title>为订阅端升级做准备</title>
+
+   <para>
+    在新订阅端完成
+    <link linkend="logical-replication-config-subscriber">订阅端配置</link>。
+    <application>pg_upgrade</application> 会尝试迁移订阅依赖，包括
+    <link linkend="catalog-pg-subscription-rel">pg_subscription_rel</link>
+    系统目录中的订阅表信息，以及订阅的复制源。
+    这样新订阅端上的逻辑复制可以从旧订阅端停止的位置继续。
+    仅当旧集簇版本为 17.0 或更高时才支持订阅依赖迁移。
+    17.0 之前集簇中的订阅依赖会被静默忽略。
+   </para>
+
+   <para>
+    <application>pg_upgrade</application> 升级订阅也有若干前置条件。
+    若不满足，将报错。
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      旧订阅端中所有订阅表应处于 <literal>i</literal>（initialize）
+      或 <literal>r</literal>（ready）状态。
+      可通过检查
+      <link linkend="catalog-pg-subscription-rel">pg_subscription_rel</link>.<structfield>srsubstate</structfield>
+      验证。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      旧集簇中每个订阅对应的复制源条目都必须存在。
+      可通过检查
+      <link linkend="catalog-pg-subscription">pg_subscription</link> 与
+      <link linkend="catalog-pg-replication-origin">pg_replication_origin</link>
+      系统表确认。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      新集簇中的
+      <link linkend="guc-max-active-replication-origins"><varname>max_active_replication_origins</varname></link>
+      配置值必须大于等于旧集簇中的订阅数量。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 id="upgrading-logical-replication-clusters">
+   <title>升级逻辑复制集群</title>
+
+   <para>
+    在升级订阅端时，发布端仍可执行写操作。这些变更会在订阅端升级完成后继续复制。
+   </para>
+
+   <note>
+    <para>
+     逻辑复制的限制同样适用于逻辑复制集群升级。详见
+     <xref linkend="logical-replication-restrictions"/>。
+    </para>
+    <para>
+     发布端升级的前置条件同样适用于逻辑复制集群升级。详见
+     <xref linkend="prepare-publisher-upgrades"/>。
+    </para>
+    <para>
+     订阅端升级的前置条件同样适用于逻辑复制集群升级。详见
+     <xref linkend="prepare-subscriber-upgrades"/>。
+    </para>
+   </note>
+
+   <warning>
+    <para>
+     升级逻辑复制集群需要在多个节点执行多个步骤。由于并非所有操作都是事务性的，
+     建议按 <xref linkend="backup-base-backup"/> 所述先做好备份。
+    </para>
+   </warning>
+
+   <para>
+    下列逻辑复制集群的升级步骤详见后文：
+    <itemizedlist>
+     <listitem>
+      <para>
+       按照 <xref linkend="steps-two-node-logical-replication-cluster"/>
+       的步骤升级双节点逻辑复制集群。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       按照 <xref linkend="steps-cascaded-logical-replication-cluster"/>
+       的步骤升级级联逻辑复制集群。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       按照 <xref linkend="steps-two-node-circular-logical-replication-cluster"/>
+       的步骤升级双节点环形逻辑复制集群。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <sect3 id="steps-two-node-logical-replication-cluster">
+    <title>升级双节点逻辑复制集群的步骤</title>
+     <para>
+      假设发布端位于 <literal>node1</literal>，订阅端位于 <literal>node2</literal>。
+      订阅端 <literal>node2</literal> 上有订阅
+      <literal>sub1_node1_node2</literal>，用于订阅来自 <literal>node1</literal> 的变更。
+     </para>
+
+     <procedure>
+      <step id="two-node-cluster-disable-subscriptions-node2">
+       <para>
+        在 <literal>node2</literal> 上，使用
+        <link linkend="sql-altersubscription-params-disable"><command>ALTER SUBSCRIPTION ... DISABLE</command></link>
+        禁用所有订阅来自 <literal>node1</literal> 变更的订阅，例如：
+<programlisting>
+/* node2 # */ ALTER SUBSCRIPTION sub1_node1_node2 DISABLE;
+</programlisting>
+       </para>
+      </step>
+      <step>
+       <para>
+        停止 <literal>node1</literal> 上的发布端服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data1 stop
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        使用目标新版本初始化 <literal>data1_upgraded</literal> 实例。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        将发布端 <literal>node1</literal> 升级到目标新版本，例如：
+<programlisting>
+pg_upgrade
+        --old-datadir "/opt/PostgreSQL/postgres/17/data1"
+        --new-datadir "/opt/PostgreSQL/postgres/18/data1_upgraded"
+        --old-bindir "/opt/PostgreSQL/postgres/17/bin"
+        --new-bindir "/opt/PostgreSQL/postgres/18/bin"
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        启动升级后的 <literal>node1</literal> 发布端服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data1_upgraded start -l logfile
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        停止 <literal>node2</literal> 上的订阅端服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data2 stop
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        使用目标新版本初始化 <literal>data2_upgraded</literal> 实例。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        将订阅端 <literal>node2</literal> 升级到目标新版本，例如：
+<programlisting>
+pg_upgrade
+       --old-datadir "/opt/PostgreSQL/postgres/17/data2"
+       --new-datadir "/opt/PostgreSQL/postgres/18/data2_upgraded"
+       --old-bindir "/opt/PostgreSQL/postgres/17/bin"
+       --new-bindir "/opt/PostgreSQL/postgres/18/bin"
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        启动升级后的 <literal>node2</literal> 订阅端服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data2_upgraded start -l logfile
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node2</literal> 上，创建从
+        <xref linkend="two-node-cluster-disable-subscriptions-node2"/> 到当前期间，
+        升级后的发布端 <literal>node1</literal> 新建的表，例如：
+<programlisting>
+/* node2 # */ CREATE TABLE distributors (did integer PRIMARY KEY, name varchar(40));
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node2</literal> 上，使用
+        <link linkend="sql-altersubscription-params-enable"><command>ALTER SUBSCRIPTION ... ENABLE</command></link>
+        启用所有订阅来自 <literal>node1</literal> 变更的订阅，例如：
+<programlisting>
+/* node2 # */ ALTER SUBSCRIPTION sub1_node1_node2 ENABLE;
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node2</literal> 上使用
+        <link linkend="sql-altersubscription-params-refresh-publication"><command>ALTER SUBSCRIPTION ... REFRESH PUBLICATION</command></link>
+        刷新订阅发布，例如：
+<programlisting>
+/* node2 # */ ALTER SUBSCRIPTION sub1_node1_node2 REFRESH PUBLICATION;
+</programlisting>
+       </para>
+      </step>
+     </procedure>
+
+     <note>
+      <para>
+       上述步骤中先升级发布端，再升级订阅端。也可以采用类似步骤先升级订阅端，
+       再升级发布端。
+      </para>
+     </note>
+    </sect3>
+
+    <sect3 id="steps-cascaded-logical-replication-cluster">
+     <title>升级级联逻辑复制集群的步骤</title>
+     <para>
+      假设有级联逻辑复制拓扑
+      <literal>node1</literal>-><literal>node2</literal>-><literal>node3</literal>。
+      其中 <literal>node2</literal> 订阅 <literal>node1</literal> 的变更，
+      <literal>node3</literal> 订阅 <literal>node2</literal> 的变更。
+      <literal>node2</literal> 上有订阅 <literal>sub1_node1_node2</literal>，
+      <literal>node3</literal> 上有订阅 <literal>sub1_node2_node3</literal>。
+     </para>
+
+     <procedure>
+      <step id="cascaded-cluster-disable-sub-node1-node2">
+       <para>
+        在 <literal>node2</literal> 上，使用
+        <link linkend="sql-altersubscription-params-disable"><command>ALTER SUBSCRIPTION ... DISABLE</command></link>
+        禁用所有订阅 <literal>node1</literal> 变更的订阅，例如：
+<programlisting>
+/* node2 # */ ALTER SUBSCRIPTION sub1_node1_node2 DISABLE;
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        停止 <literal>node1</literal> 上的服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data1 stop
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        使用目标新版本初始化 <literal>data1_upgraded</literal> 实例。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        将 <literal>node1</literal> 服务器升级到目标新版本，例如：
+<programlisting>
+pg_upgrade
+        --old-datadir "/opt/PostgreSQL/postgres/17/data1"
+        --new-datadir "/opt/PostgreSQL/postgres/18/data1_upgraded"
+        --old-bindir "/opt/PostgreSQL/postgres/17/bin"
+        --new-bindir "/opt/PostgreSQL/postgres/18/bin"
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        启动升级后的 <literal>node1</literal> 服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data1_upgraded start -l logfile
+</programlisting>
+       </para>
+      </step>
+
+      <step id="cascaded-cluster-disable-sub-node2-node3">
+       <para>
+        在 <literal>node3</literal> 上，使用
+        <link linkend="sql-altersubscription-params-disable"><command>ALTER SUBSCRIPTION ... DISABLE</command></link>
+        禁用所有订阅 <literal>node2</literal> 变更的订阅，例如：
+<programlisting>
+/* node3 # */ ALTER SUBSCRIPTION sub1_node2_node3 DISABLE;
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        停止 <literal>node2</literal> 上的服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data2 stop
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        使用目标新版本初始化 <literal>data2_upgraded</literal> 实例。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        将 <literal>node2</literal> 服务器升级到目标新版本，例如：
+<programlisting>
+pg_upgrade
+        --old-datadir "/opt/PostgreSQL/postgres/17/data2"
+        --new-datadir "/opt/PostgreSQL/postgres/18/data2_upgraded"
+        --old-bindir "/opt/PostgreSQL/postgres/17/bin"
+        --new-bindir "/opt/PostgreSQL/postgres/18/bin"
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        启动升级后的 <literal>node2</literal> 服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data2_upgraded start -l logfile
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node2</literal> 上，创建从
+        <xref linkend="cascaded-cluster-disable-sub-node1-node2"/> 到当前期间，
+        升级后的发布端 <literal>node1</literal> 新建的表，例如：
+<programlisting>
+/* node2 # */ CREATE TABLE distributors (did integer PRIMARY KEY, name varchar(40));
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node2</literal> 上，使用
+        <link linkend="sql-altersubscription-params-enable"><command>ALTER SUBSCRIPTION ... ENABLE</command></link>
+        启用所有订阅 <literal>node1</literal> 变更的订阅，例如：
+<programlisting>
+/* node2 # */ ALTER SUBSCRIPTION sub1_node1_node2 ENABLE;
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node2</literal> 上使用
+        <link linkend="sql-altersubscription-params-refresh-publication"><command>ALTER SUBSCRIPTION ... REFRESH PUBLICATION</command></link>
+        刷新订阅发布，例如：
+<programlisting>
+/* node2 # */ ALTER SUBSCRIPTION sub1_node1_node2 REFRESH PUBLICATION;
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        停止 <literal>node3</literal> 上的服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data3 stop
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        使用目标新版本初始化 <literal>data3_upgraded</literal> 实例。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        将 <literal>node3</literal> 服务器升级到目标新版本，例如：
+<programlisting>
+pg_upgrade
+        --old-datadir "/opt/PostgreSQL/postgres/17/data3"
+        --new-datadir "/opt/PostgreSQL/postgres/18/data3_upgraded"
+        --old-bindir "/opt/PostgreSQL/postgres/17/bin"
+        --new-bindir "/opt/PostgreSQL/postgres/18/bin"
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        启动升级后的 <literal>node3</literal> 服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data3_upgraded start -l logfile
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node3</literal> 上，创建从
+        <xref linkend="cascaded-cluster-disable-sub-node2-node3"/> 到当前期间，
+        升级后的 <literal>node2</literal> 新建的表，例如：
+<programlisting>
+/* node3 # */ CREATE TABLE distributors (did integer PRIMARY KEY, name varchar(40));
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node3</literal> 上，使用
+        <link linkend="sql-altersubscription-params-enable"><command>ALTER SUBSCRIPTION ... ENABLE</command></link>
+        启用所有订阅 <literal>node2</literal> 变更的订阅，例如：
+<programlisting>
+/* node3 # */ ALTER SUBSCRIPTION sub1_node2_node3 ENABLE;
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node3</literal> 上使用
+        <link linkend="sql-altersubscription-params-refresh-publication"><command>ALTER SUBSCRIPTION ... REFRESH PUBLICATION</command></link>
+        刷新订阅发布，例如：
+<programlisting>
+/* node3 # */ ALTER SUBSCRIPTION sub1_node2_node3 REFRESH PUBLICATION;
+</programlisting>
+       </para>
+      </step>
+     </procedure>
+    </sect3>
+
+    <sect3 id="steps-two-node-circular-logical-replication-cluster">
+     <title>升级双节点环形逻辑复制集群的步骤</title>
+     <para>
+      假设有环形逻辑复制拓扑
+      <literal>node1</literal>-><literal>node2</literal> 以及
+      <literal>node2</literal>-><literal>node1</literal>。
+      其中 <literal>node2</literal> 订阅 <literal>node1</literal> 的变更，
+      <literal>node1</literal> 订阅 <literal>node2</literal> 的变更。
+      <literal>node1</literal> 上有订阅 <literal>sub1_node2_node1</literal>，
+      <literal>node2</literal> 上有订阅 <literal>sub1_node1_node2</literal>。
+     </para>
+
+     <procedure>
+      <step id="circular-cluster-disable-sub-node2">
+       <para>
+        在 <literal>node2</literal> 上，使用
+        <link linkend="sql-altersubscription-params-disable"><command>ALTER SUBSCRIPTION ... DISABLE</command></link>
+        禁用所有订阅 <literal>node1</literal> 变更的订阅，例如：
+<programlisting>
+/* node2 # */ ALTER SUBSCRIPTION sub1_node1_node2 DISABLE;
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        停止 <literal>node1</literal> 上的服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data1 stop
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        使用目标新版本初始化 <literal>data1_upgraded</literal> 实例。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        将 <literal>node1</literal> 服务器升级到目标新版本，例如：
+<programlisting>
+pg_upgrade
+        --old-datadir "/opt/PostgreSQL/postgres/17/data1"
+        --new-datadir "/opt/PostgreSQL/postgres/18/data1_upgraded"
+        --old-bindir "/opt/PostgreSQL/postgres/17/bin"
+        --new-bindir "/opt/PostgreSQL/postgres/18/bin"
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        启动升级后的 <literal>node1</literal> 服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data1_upgraded start -l logfile
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node2</literal> 上，使用
+        <link linkend="sql-altersubscription-params-enable"><command>ALTER SUBSCRIPTION ... ENABLE</command></link>
+        启用所有订阅 <literal>node1</literal> 变更的订阅，例如：
+<programlisting>
+/* node2 # */ ALTER SUBSCRIPTION sub1_node1_node2 ENABLE;
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node1</literal> 上，创建从
+        <xref linkend="circular-cluster-disable-sub-node2"/> 到当前期间，
+        <literal>node2</literal> 新建的表，例如：
+<programlisting>
+/* node1 # */ CREATE TABLE distributors (did integer PRIMARY KEY, name varchar(40));
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node1</literal> 上使用
+        <link linkend="sql-altersubscription-params-refresh-publication"><command>ALTER SUBSCRIPTION ... REFRESH PUBLICATION</command></link>
+        刷新订阅发布，从 <literal>node2</literal> 复制初始表数据，例如：
+<programlisting>
+/* node1 # */ ALTER SUBSCRIPTION sub1_node2_node1 REFRESH PUBLICATION;
+</programlisting>
+       </para>
+      </step>
+
+      <step id="circular-cluster-disable-sub-node1">
+       <para>
+        在 <literal>node1</literal> 上，使用
+        <link linkend="sql-altersubscription-params-disable"><command>ALTER SUBSCRIPTION ... DISABLE</command></link>
+        禁用所有订阅 <literal>node2</literal> 变更的订阅，例如：
+<programlisting>
+/* node1 # */ ALTER SUBSCRIPTION sub1_node2_node1 DISABLE;
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        停止 <literal>node2</literal> 上的服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data2 stop
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        使用目标新版本初始化 <literal>data2_upgraded</literal> 实例。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        将 <literal>node2</literal> 服务器升级到目标新版本，例如：
+<programlisting>
+pg_upgrade
+        --old-datadir "/opt/PostgreSQL/postgres/17/data2"
+        --new-datadir "/opt/PostgreSQL/postgres/18/data2_upgraded"
+        --old-bindir "/opt/PostgreSQL/postgres/17/bin"
+        --new-bindir "/opt/PostgreSQL/postgres/18/bin"
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        启动升级后的 <literal>node2</literal> 服务器，例如：
+<programlisting>
+pg_ctl -D /opt/PostgreSQL/data2_upgraded start -l logfile
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node1</literal> 上，使用
+        <link linkend="sql-altersubscription-params-enable"><command>ALTER SUBSCRIPTION ... ENABLE</command></link>
+        启用所有订阅 <literal>node2</literal> 变更的订阅，例如：
+<programlisting>
+/* node1 # */ ALTER SUBSCRIPTION sub1_node2_node1 ENABLE;
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node2</literal> 上，创建从
+        <xref linkend="circular-cluster-disable-sub-node1"/> 到当前期间，
+        升级后的 <literal>node1</literal> 新建的表，例如：
+<programlisting>
+/* node2 # */ CREATE TABLE distributors (did integer PRIMARY KEY, name varchar(40));
+</programlisting>
+       </para>
+      </step>
+
+      <step>
+       <para>
+        在 <literal>node2</literal> 上使用
+        <link linkend="sql-altersubscription-params-refresh-publication"><command>ALTER SUBSCRIPTION ... REFRESH PUBLICATION</command></link>
+        刷新订阅发布，从 <literal>node1</literal> 复制初始表数据，例如：
+<programlisting>
+/* node2 # */ ALTER SUBSCRIPTION sub1_node1_node2 REFRESH PUBLICATION;
+</programlisting>
+       </para>
+      </step>
+     </procedure>
+    </sect3>
+
+   </sect2>
+ </sect1>
+
+ <sect1 id="logical-replication-quick-setup">
+
+  <title>快速设置</title>
+
+  <para>
+   首先在 <filename>postgresql.conf</filename> 中设置配置选项：
+<programlisting>
+wal_level = logical
+</programlisting>
+   对于基础设置来说，其他必需设置的默认值已经足够。
+  </para>
+
+  <para>
+   需要调整 <filename>pg_hba.conf</filename> 以允许复制
+   （这里的值取决于实际网络配置以及要用于连接的用户）：
+<programlisting>
+host     all     repuser     0.0.0.0/0     scram-sha-256
+</programlisting>
+  </para>
+
+  <para>
+   然后在发布端数据库上：
+<programlisting>
+CREATE PUBLICATION mypub FOR TABLE users, departments;
+</programlisting>
+  </para>
+
+  <para>
+   并在订阅端数据库上：
+<programlisting>
+CREATE SUBSCRIPTION mysub CONNECTION 'dbname=foo host=bar user=repuser' PUBLICATION mypub;
+</programlisting>
+  </para>
+
+  <para>
+   上述语句会启动复制过程：先同步 <literal>users</literal> 和
+   <literal>departments</literal> 表的初始内容，然后开始复制这些表上的增量变更。
+  </para>
+ </sect1>
+</chapter>

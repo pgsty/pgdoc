@@ -1,0 +1,855 @@
+<!-- doc/src/sgml/pltcl.sgml -->
+
+ <chapter id="pltcl">
+
+  <title>PL/Tcl &mdash; Tcl 过程语言</title>
+
+  <indexterm zone="pltcl">
+   <primary>PL/Tcl</primary>
+  </indexterm>
+
+  <indexterm zone="pltcl">
+   <primary>Tcl</primary>
+  </indexterm>
+
+  <para>
+   PL/Tcl 是一种适用于 <productname>PostgreSQL</productname> 数据库系统的可载入的过程语言，它允许使用 <ulink url="https://www.tcl.tk/">Tcl 语言</ulink> 来编写 <productname>PostgreSQL</productname> 函数和过程。
+  </para>
+
+  <!-- **** PL/Tcl overview **** -->
+
+  <sect1 id="pltcl-overview">
+
+   <title>概述</title>
+
+   <para>
+    PL/Tcl 提供了函数编写者在 C 语言中所具备的大部分能力，但会施加少量限制，并额外提供 Tcl 可用的强大字符串处理库。
+   </para>
+
+   <para>
+    其中一个颇具吸引力的<emphasis>良性</emphasis>限制是，所有内容都在 Tcl 解释器的安全上下文中执行。除了安全 Tcl 受限的命令集之外，只提供了少数通过 SPI 访问数据库以及通过<function>elog()</function>发出消息的命令。与 C 函数不同，PL/Tcl 不提供访问数据库服务器内部机制的方法，也不能在<productname>PostgreSQL</productname>服务器进程的权限下获得操作系统级访问。因此，可以信任非特权数据库用户使用这种语言；它不会授予他们无限制的权限。
+   </para>
+
+   <para>
+    另一项值得注意的实现限制是，Tcl 函数不能用来为新数据类型创建输入/输出函数。
+   </para>
+
+   <para>
+    有时需要编写不受安全 Tcl 限制的 Tcl 函数。例如，可能希望某个 Tcl 函数能够发送电子邮件。为处理这类情况，<application>PL/Tcl</application> 提供了一个名为<literal>PL/TclU</literal>的变体（其中 U 表示不受信任的 Tcl）。除了使用完整的 Tcl 解释器之外，它与前者是完全相同的语言。<emphasis>如果使用<application>PL/TclU</application>，就必须将其安装为一种不受信任的过程语言</emphasis>，这样就只有数据库超级用户才能在其中创建函数。<application>PL/TclU</application>函数的编写者必须确保该函数不会被用来做任何不希望发生的事情，因为它能够执行任何以数据库管理员身份登录的用户所能做的事情。
+   </para>
+
+   <para>
+    如果在安装过程的配置步骤中指定了 Tcl 支持，则<application>PL/Tcl</application>和<application>PL/TclU</application>调用处理器的共享对象代码会自动构建并安装到<productname>PostgreSQL</productname>的库目录中。要在某个特定数据库中安装<application>PL/Tcl</application>和/或<application>PL/TclU</application>，请使用<command>CREATE EXTENSION</command>命令，例如<literal>CREATE EXTENSION pltcl</literal>或<literal>CREATE EXTENSION pltclu</literal>。
+   </para>
+  </sect1>
+
+  <!-- **** PL/Tcl description **** -->
+
+   <sect1 id="pltcl-functions">
+
+    <title>PL/Tcl 函数和参数</title>
+
+    <para>
+     要用<application>PL/Tcl</application>语言创建函数，可使用标准的<xref linkend="sql-createfunction"/>语法：
+
+<programlisting>
+CREATE FUNCTION <replaceable>funcname</replaceable> (<replaceable>argument-types</replaceable>) RETURNS <replaceable>return-type</replaceable> AS $$
+    # PL/Tcl function body
+$$ LANGUAGE pltcl;
+</programlisting>
+
+     <application>PL/TclU</application>的写法相同，只是语言必须指定为<literal>pltclu</literal>。
+    </para>
+
+    <para>
+     函数体就是一段 Tcl 脚本。调用函数时，参数值会作为名为<literal>1</literal> ... <literal><replaceable>n</replaceable></literal>的变量传递给 Tcl 脚本。结果按通常方式通过<literal>return</literal>语句从 Tcl 代码中返回。对于过程，Tcl 代码的返回值会被忽略。
+    </para>
+
+    <para>
+     例如，一个返回两个整数值中较大值的函数可以定义为：
+
+<programlisting>
+CREATE FUNCTION tcl_max(integer, integer) RETURNS integer AS $$
+    if {$1 &gt; $2} {return $1}
+    return $2
+$$ LANGUAGE pltcl STRICT;
+</programlisting>
+
+     注意<literal>STRICT</literal>子句，它让我们不必考虑空输入值：如果传入的是空值，函数根本不会被调用，而是会自动返回空结果。
+    </para>
+
+    <para>
+     在非严格函数中，如果某个参数的实际值为空，对应的<literal>$<replaceable>n</replaceable></literal>变量会被设置为空串。要检测某个特定参数是否为空，可使用函数<literal>argisnull</literal>。例如，假设我们希望在<function>tcl_max</function>的两个参数中一个为空、一个非空时返回非空参数，而不是返回空值：
+
+<programlisting>
+CREATE FUNCTION tcl_max(integer, integer) RETURNS integer AS $$
+    if {[argisnull 1]} {
+        if {[argisnull 2]} { return_null }
+        return $2
+    }
+    if {[argisnull 2]} { return $1 }
+    if {$1 &gt; $2} {return $1}
+    return $2
+$$ LANGUAGE pltcl;
+</programlisting>
+    </para>
+
+    <para>
+     如上所示，要从 PL/Tcl 函数返回空值，请执行<literal>return_null</literal>。无论函数是否为严格函数，都可以这样做。
+    </para>
+
+    <para>
+     复合类型参数会作为 Tcl 数组传递给函数。数组元素名就是该复合类型的属性名。如果传入行中的某个属性为 NULL，它就不会出现在数组中。下面是一个示例：
+
+<programlisting>
+CREATE TABLE employee (
+    name text,
+    salary integer,
+    age integer
+);
+
+CREATE FUNCTION overpaid(employee) RETURNS boolean AS $$
+    if {200000.0 &lt; $1(salary)} {
+        return "t"
+    }
+    if {$1(age) &lt; 30 &amp;&amp; 100000.0 &lt; $1(salary)} {
+        return "t"
+    }
+    return "f"
+$$ LANGUAGE pltcl;
+</programlisting>
+    </para>
+
+    <para>
+     PL/Tcl 函数也可以返回复合类型结果。要做到这一点，Tcl 代码必须返回一个与预期结果类型匹配的“列名/值”对列表。凡是未在列表中出现的列名，都会作为空值返回；如果出现预期之外的列名，则会报错。下面是一个示例：
+
+<programlisting>
+CREATE FUNCTION square_cube(in int, out squared int, out cubed int) AS $$
+    return [list squared [expr {$1 * $1}] cubed [expr {$1 * $1 * $1}]]
+$$ LANGUAGE pltcl;
+</programlisting>
+    </para>
+
+    <para>
+     过程的输出参数也按同样的方式返回，例如：
+
+<programlisting>
+CREATE PROCEDURE tcl_triple(INOUT a integer, INOUT b integer) AS $$
+    return [list a [expr {$1 * 3}] b [expr {$2 * 3}]]
+$$ LANGUAGE pltcl;
+
+CALL tcl_triple(5, 10);
+</programlisting>
+    </para>
+
+    <tip>
+
+     <para>
+      可使用 Tcl 的<literal>array get</literal>命令，根据期望元组的数组表示构造结果列表。例如：
+
+<programlisting>
+CREATE FUNCTION raise_pay(employee, delta int) RETURNS employee AS $$
+    set 1(salary) [expr {$1(salary) + $2}]
+    return [array get 1]
+$$ LANGUAGE pltcl;
+</programlisting>
+     </para>
+    </tip>
+
+    <para>
+     PL/Tcl 函数也可以返回集合。要做到这一点，Tcl 代码应当对每个要返回的行调用一次<function>return_next</function>：返回标量类型时传入适当的值，返回复合类型时传入“列名/值”对的列表。下面是返回标量类型的示例：
+
+<programlisting>
+CREATE FUNCTION sequence(int, int) RETURNS SETOF int AS $$
+    for {set i $1} {$i &lt; $2} {incr i} {
+        return_next $i
+    }
+$$ LANGUAGE pltcl;
+</programlisting>
+
+     下面是返回复合类型的示例：
+
+<programlisting>
+CREATE FUNCTION table_of_squares(int, int) RETURNS TABLE (x int, x2 int) AS $$
+    for {set i $1} {$i &lt; $2} {incr i} {
+        return_next [list x $i x2 [expr {$i * $i}]]
+    }
+$$ LANGUAGE pltcl;
+</programlisting>
+    </para>
+
+   </sect1>
+
+   <sect1 id="pltcl-data">
+
+    <title>PL/Tcl 中的数据值</title>
+
+    <para>
+     提供给 PL/Tcl 函数代码的参数值，只是将输入参数转换成文本形式（就像用<command>SELECT</command>语句将它们显示出来一样）。反过来，<literal>return</literal>和<literal>return_next</literal>命令会接受任何字符串，只要它是该函数声明结果类型或组合结果类型中指定列的可接受输入格式。
+    </para>
+
+   </sect1>
+
+   <sect1 id="pltcl-global">
+
+    <title>PL/Tcl 中的全局数据</title>
+
+    <indexterm zone="pltcl-global">
+     <primary>global data</primary>
+     <secondary>in PL/Tcl</secondary>
+    </indexterm>
+
+    <para>
+     有时需要在一次函数调用结束后保留某些全局数据，供下一次调用继续使用，或者在不同函数之间共享全局数据。在 PL/Tcl 中这很容易做到，但必须理解其中的一些限制。
+    </para>
+
+    <para>
+     出于安全原因，PL/Tcl 会针对每个 SQL 角色，在该角色各自独立的 Tcl 解释器中执行其调用的函数。这样可以防止一个用户无意或恶意地干扰另一用户的 PL/Tcl 函数行为。每个这样的解释器都为任何<quote>global</quote> Tcl 变量维护各自的值。因此，当且仅当两个 PL/Tcl 函数由同一个 SQL 角色执行时，它们才会共享同一组全局变量。在某些应用中，一个会话会在多个 SQL 角色下执行代码（例如通过<literal>SECURITY DEFINER</literal>函数、使用<command>SET ROLE</command>等），这时你可能需要显式采取一些步骤，确保 PL/Tcl 函数能够共享数据。为此，应确保需要互相通信的函数由同一用户拥有，并将它们标记为<literal>SECURITY DEFINER</literal>。当然，你必须小心，确保这类函数不会被用来执行任何非预期操作。
+    </para>
+
+    <para>
+     一个会话中使用的所有 PL/TclU 函数都在同一个 Tcl 解释器中执行，而这个解释器当然不同于 PL/Tcl 函数所使用的解释器。因此，PL/TclU 函数之间会自动共享全局数据。这不被视为安全风险，因为所有 PL/TclU 函数都在相同的信任级别上执行，也就是数据库超级用户的级别。
+    </para>
+
+    <para>
+     为帮助防止 PL/Tcl 函数无意间彼此干扰，每个函数都可通过<function>upvar</function>命令访问一个全局数组。该变量的全局名称是函数的内部名称，局部名称是<literal>GD</literal>。建议将<literal>GD</literal>用于保存函数的持久私有数据。只有当你明确希望某些值在多个函数之间共享时，才应使用常规的 Tcl 全局变量。（注意<literal>GD</literal>数组只在某个特定解释器内部是全局的，因此它们不会绕过上文提到的安全限制。）
+    </para>
+
+    <para>
+     下面<function>spi_execp</function>的示例展示了<literal>GD</literal>的用法。
+    </para>
+   </sect1>
+
+   <sect1 id="pltcl-dbaccess">
+
+    <title>从 PL/Tcl 访问数据库</title>
+
+    <para>
+     在本节中，我们遵循 Tcl 的通常约定，用问号而不是方括号来表示语法摘要中的可选元素。下列命令可用于从 PL/Tcl 函数体中访问数据库：
+
+    <variablelist>
+
+     <varlistentry id="zh18-auto-pltcl-varlistentry-2">
+      <term><literal><function>spi_exec</function> <optional role="tcl">-count <replaceable>n</replaceable></optional> <optional role="tcl">-array <replaceable>name</replaceable></optional> <replaceable>command</replaceable> <optional role="tcl"><replaceable>loop-body</replaceable></optional></literal></term>
+      <listitem>
+
+       <para>
+        执行以字符串形式给出的 SQL 命令。命令出错时会引发错误。否则，<function>spi_exec</function>的返回值是该命令处理的行数（选出、插入、更新或删除的行），如果命令是实用程序语句则返回零。此外，如果命令是<command>SELECT</command>语句，则所选列的值会按下文所述放入 Tcl 变量中。
+       </para>
+
+       <para>
+        可选的<literal>-count</literal>值告诉<function>spi_exec</function>，一旦已检索到<replaceable>n</replaceable>行就停止，
+        就像查询中包含了<literal>LIMIT</literal>子句一样。
+        如果<replaceable>n</replaceable>为零，则查询会运行到结束，这与省略<literal>-count</literal>时相同。
+       </para>
+
+       <para>
+        如果命令是<command>SELECT</command>语句，则结果列的值会放入以列名命名的 Tcl 变量中。
+        如果给定了<literal>-array</literal>选项，则列值会存储在指定的关联数组元素中，
+        列名用作数组索引。此外，结果中的当前行号（从零开始计数）将存储在数组元素中，
+        该数组元素的名称为<quote><literal>.tupno</literal></quote>，除非该名称在结果中已被用作列名。
+       </para>
+
+       <para>
+        如果命令是<command>SELECT</command>语句且未给出<replaceable>loop-body</replaceable>
+        脚本，则只会把结果的第一行存入 Tcl 变量或数组元素中；其余行如果存在，会被忽略。
+        如果查询没有返回任何行，则不会存储任何内容。（可以通过检查<function>spi_exec</function>的结果来检测这种情况。）
+        例如：
+<programlisting>
+spi_exec "SELECT count(*) AS cnt FROM pg_proc"
+</programlisting>
+        会把 Tcl 变量<literal>$cnt</literal>设置为<structname>pg_proc</structname>系统目录中的行数。
+       </para>
+
+       <para>
+        如果给出了可选的<replaceable>loop-body</replaceable>参数，它是一段 Tcl 脚本，会对查询结果中的每一行执行一次。
+        （如果给定命令不是<command>SELECT</command>，则<replaceable>loop-body</replaceable>会被忽略。）
+        在每次迭代前，当前行各列的值都会被存入 Tcl 变量或数组元素中。
+        例如：
+<programlisting>
+spi_exec -array C "SELECT * FROM pg_class" {
+    elog DEBUG "have table $C(relname)"
+}
+</programlisting>
+        会为<literal>pg_class</literal>的每一行打印一条日志消息。这个特性与其他 Tcl 循环结构的工作方式类似；特别是<literal>continue</literal>和<literal>break</literal>在循环体内按通常方式工作。
+       </para>
+
+       <para>
+        如果查询结果中的某一列为空，则对应的目标变量会被<quote>unset</quote>，而不是被设值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pltcl-varlistentry-3">
+      <term><function>spi_prepare</function> <replaceable>query</replaceable> <replaceable>typelist</replaceable></term>
+      <listitem>
+
+       <para>
+        准备并保存一个查询计划以供后续执行。保存的计划会在当前会话的整个生命周期内保留。
+        <indexterm><primary>准备查询</primary>
+        <secondary>在PL/Tcl中</secondary></indexterm>
+       </para>
+
+       <para>
+        该查询可以使用参数，也就是在实际执行计划时提供值的占位符。
+        在查询字符串中，通过符号<literal>$1</literal> ... <literal>$<replaceable>n</replaceable></literal>引用参数。
+        如果查询使用了参数，则必须把参数类型名称作为 Tcl 列表给出。
+        （如果不使用参数，则给<replaceable>typelist</replaceable>写一个空列表。）
+       </para>
+
+       <para>
+        <function>spi_prepare</function>的返回值是一个查询 ID，供后续调用<function>spi_execp</function>时使用。示例参见<function>spi_execp</function>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pltcl-varlistentry-4">
+      <term><literal><function>spi_execp</function> <optional role="tcl">-count <replaceable>n</replaceable></optional> <optional role="tcl">-array <replaceable>name</replaceable></optional> <optional role="tcl">-nulls <replaceable>string</replaceable></optional> <replaceable>queryid</replaceable> <optional role="tcl"><replaceable>value-list</replaceable></optional> <optional role="tcl"><replaceable>loop-body</replaceable></optional></literal></term>
+      <listitem>
+
+       <para>
+        执行先前用<function>spi_prepare</function>准备好的查询。
+        <replaceable>queryid</replaceable>是<function>spi_prepare</function>返回的 ID。
+        如果查询引用了参数，则必须提供<replaceable>value-list</replaceable>。
+        这是参数实际值构成的 Tcl 列表。该列表的长度必须与先前提供给<function>spi_prepare</function>的参数类型列表相同。
+        如果查询没有参数，则省略<replaceable>value-list</replaceable>。
+       </para>
+
+       <para>
+        可选的<literal>-nulls</literal>值是由空格和<literal>'n'</literal>字符组成的字符串，用来告诉<function>spi_execp</function>哪些参数是空值。
+        如果给出，它的长度必须与<replaceable>value-list</replaceable>完全相同。如果未给出，则所有参数值都视为非空。
+       </para>
+
+       <para>
+        除了指定查询及其参数的方式不同之外，<function>spi_execp</function>的工作方式与<function>spi_exec</function>完全一样。
+        <literal>-count</literal>、<literal>-array</literal>和<replaceable>loop-body</replaceable>选项都相同，返回值也相同。
+       </para>
+
+       <para>
+        下面是使用已准备计划的 PL/Tcl 函数示例：
+
+<programlisting>
+CREATE FUNCTION t1_count(integer, integer) RETURNS integer AS $$
+    if {![ info exists GD(plan) ]} {
+        # prepare the saved plan on the first call
+        set GD(plan) [ spi_prepare \
+                "SELECT count(*) AS cnt FROM t1 WHERE num &gt;= \$1 AND num &lt;= \$2" \
+                [ list int4 int4 ] ]
+    }
+    spi_execp -count 1 $GD(plan) [ list $1 $2 ]
+    return $cnt
+$$ LANGUAGE pltcl;
+</programlisting>
+
+        我们需要在传给<function>spi_prepare</function>的查询字符串中加入反斜杠，
+        以确保<literal>$<replaceable>n</replaceable></literal>标记会原样传递给
+        <function>spi_prepare</function>，而不会被 Tcl 执行变量替换。
+
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pltcl-varlistentry-5">
+      <term><function>subtransaction</function> <replaceable>command</replaceable></term>
+      <listitem>
+
+       <para>
+        包含在<replaceable>command</replaceable>中的 Tcl 脚本会在 SQL 子事务内执行。
+        如果脚本返回错误，整个子事务会在将错误返回给外围 Tcl 代码之前回滚。
+        有关更多详细信息和示例，请参见<xref linkend="pltcl-subtransactions"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pltcl-varlistentry-6">
+      <term><function>quote</function> <replaceable>string</replaceable></term>
+      <listitem>
+
+       <para>
+        将给定字符串中的所有单引号和反斜杠字符都加倍。
+        这可用于安全地引用那些要插入到传给<function>spi_exec</function>或<function>spi_prepare</function>的 SQL 命令中的字符串。
+        例如，考虑如下 SQL 命令字符串：
+
+<programlisting>
+"SELECT '$val' AS ret"
+</programlisting>
+
+        其中 Tcl 变量<literal>val</literal>的实际内容是<literal>doesn't</literal>。这会得到最终命令字符串：
+
+<programlisting>
+SELECT 'doesn't' AS ret
+</programlisting>
+
+        这会在<function>spi_exec</function>或<function>spi_prepare</function>期间导致解析错误。
+        要使其正常工作，提交的命令应当包含：
+
+<programlisting>
+SELECT 'doesn''t' AS ret
+</programlisting>
+
+        在 PL/Tcl 中，可以用下面这种方式构造它：
+
+<programlisting>
+"SELECT '[ quote $val ]' AS ret"
+</programlisting>
+
+        <function>spi_execp</function>的一个优点是，你不必像这样对参数值做引用，因为这些参数永远不会作为 SQL 命令字符串的一部分被解析。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pltcl-varlistentry-7">
+
+      <term>
+       <function>elog</function> <replaceable>level</replaceable> <replaceable>msg</replaceable>
+       <indexterm>
+        <primary>elog</primary>
+        <secondary>在PL/Tcl中</secondary>
+       </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        发出日志或错误消息。可用级别包括
+        <literal>DEBUG</literal>，<literal>LOG</literal>，<literal>INFO</literal>，
+        <literal>NOTICE</literal>，<literal>WARNING</literal>，<literal>ERROR</literal>和
+        <literal>FATAL</literal>。<literal>ERROR</literal>
+        会引发错误条件；如果外围 Tcl 代码没有捕获它，
+        该错误就会传播到调用查询，导致当前事务或子事务中止。这实际上与 Tcl 的<literal>error</literal>命令相同。
+        <literal>FATAL</literal>会中止事务并导致当前会话关闭。（在 PL/Tcl 函数中使用这个错误级别可能并没有什么充分理由，但为了完整性仍提供它。）
+        其他级别只会生成不同优先级的消息。
+        某个特定优先级的消息是报告给客户端、
+        写入服务器日志，还是两者都做，由
+        <xref linkend="guc-log-min-messages"/>和
+        <xref linkend="guc-client-min-messages"/>配置变量控制。参见<xref linkend="runtime-config"/>和<xref linkend="pltcl-error-handling"/>了解更多信息。
+       </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>
+    </para>
+
+   </sect1>
+
+   <sect1 id="pltcl-trigger">
+
+    <title>PL/Tcl 中的触发器函数</title>
+
+    <indexterm>
+     <primary>trigger</primary>
+     <secondary>in PL/Tcl</secondary>
+    </indexterm>
+
+    <para>
+     触发器函数也可以用 PL/Tcl 编写。<productname>PostgreSQL</productname>要求，凡是要作为触发器调用的函数，都必须声明为无参数且返回类型为<literal>trigger</literal>。
+    </para>
+
+    <para>
+     来自触发器管理器的信息会通过下列变量传递给函数体：
+
+     <variablelist>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-19">
+       <term><varname>$TG_name</varname></term>
+       <listitem>
+        <para>
+         <command>CREATE TRIGGER</command>语句中触发器的名称。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-20">
+       <term><varname>$TG_relid</varname></term>
+       <listitem>
+        <para>
+         导致触发器函数被调用的表的对象 ID。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-21">
+       <term><varname>$TG_table_name</varname></term>
+       <listitem>
+        <para>
+         触发器函数因其而被调用的表的名称。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-22">
+       <term><varname>$TG_table_schema</varname></term>
+       <listitem>
+        <para>
+         导致触发器函数被调用的表所在的模式。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-23">
+       <term><varname>$TG_relatts</varname></term>
+       <listitem>
+        <para>
+         表列名构成的 Tcl 列表，其前面带有一个空列表元素。因此，使用<application>Tcl</application>的<function>lsearch</function>命令在该列表中查找列名时，返回的元素编号会从 1 开始表示第一列，这与<productname>PostgreSQL</productname>中列的惯常编号方式一致。（空列表元素也会出现在已删除列的位置上，这样其右侧列的属性编号仍然正确。）
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-24">
+       <term><varname>$TG_when</varname></term>
+       <listitem>
+        <para>
+         其值为字符串<literal>BEFORE</literal>、<literal>AFTER</literal>或<literal>INSTEAD OF</literal>，具体取决于触发器事件的类型。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-25">
+       <term><varname>$TG_level</varname></term>
+       <listitem>
+        <para>
+         其值为字符串<literal>ROW</literal>或<literal>STATEMENT</literal>，取决于触发器事件的类型。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-26">
+       <term><varname>$TG_op</varname></term>
+       <listitem>
+        <para>
+         其值为字符串<literal>INSERT</literal>、<literal>UPDATE</literal>、<literal>DELETE</literal>或<literal>TRUNCATE</literal>，取决于触发器事件的类型。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-27">
+       <term><varname>$NEW</varname></term>
+       <listitem>
+        <para>
+         对于<command>INSERT</command>或<command>UPDATE</command>动作，这是一个包含新表行值的关联数组；对于<command>DELETE</command>则为空。该数组以列名为索引。值为 NULL 的列不会出现在数组中。对于语句级触发器，不会设置这个变量。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-28">
+       <term><varname>$OLD</varname></term>
+       <listitem>
+        <para>
+         对于<command>UPDATE</command>或<command>DELETE</command>动作，这是一个包含旧表行值的关联数组；对于<command>INSERT</command>则为空。该数组以列名为索引。值为 NULL 的列不会出现在数组中。对于语句级触发器，不会设置这个变量。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-29">
+       <term><varname>$args</varname></term>
+       <listitem>
+        <para>
+         在<command>CREATE TRIGGER</command>语句中传给函数的参数组成的 Tcl 列表。在函数体中也可以通过<literal>$1</literal> ... <literal>$<replaceable>n</replaceable></literal>访问这些参数。
+        </para>
+       </listitem>
+      </varlistentry>
+
+     </variablelist>
+    </para>
+
+    <para>
+     触发器函数的返回值可以是字符串<literal>OK</literal>或<literal>SKIP</literal>，也可以是一个“列名/值”对列表。如果返回值是<literal>OK</literal>，引发该触发器的操作（<command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command>）会正常继续。<literal>SKIP</literal>告诉触发器管理器静默抑制针对这一行的该操作。如果返回的是列表，则表示 PL/Tcl 要向触发器管理器返回一个修改后的行；该修改后行的内容由列表中的列名和值指定。凡是未在列表中提及的列，都会被设为空值。返回修改后的行只对行级<literal>BEFORE</literal> <command>INSERT</command>或<command>UPDATE</command>触发器有意义；对于这类触发器，插入的将是修改后的行，而不是<varname>$NEW</varname>中给出的那一行。返回修改后的行对行级<literal>INSTEAD OF</literal>
+     <command>INSERT</command>或<command>UPDATE</command>触发器也有意义，在这种情况下，返回的行将被用作<command>INSERT RETURNING</command>或<command>UPDATE RETURNING</command>子句的源数据。对于行级<literal>BEFORE</literal> <command>DELETE</command>或<literal>INSTEAD OF</literal> <command>DELETE</command>触发器，返回修改后的行与返回<literal>OK</literal>效果相同，也就是操作继续。对于所有其他类型的触发器，返回值都会被忽略。
+    </para>
+
+    <tip>
+
+     <para>
+      可使用 Tcl 的<literal>array get</literal>命令，根据修改后元组的数组表示构造结果列表。
+     </para>
+    </tip>
+
+    <para>
+     下面是一个小型触发器函数示例。它让表中的某个整数值跟踪针对该行执行的更新次数。对于新插入的行，该值初始化为 0，此后每次执行更新操作时都会递增。
+
+<programlisting>
+CREATE FUNCTION trigfunc_modcount() RETURNS trigger AS $$
+    switch $TG_op {
+        INSERT {
+            set NEW($1) 0
+        }
+        UPDATE {
+            set NEW($1) $OLD($1)
+            incr NEW($1)
+        }
+        default {
+            return OK
+        }
+    }
+    return [array get NEW]
+$$ LANGUAGE pltcl;
+
+CREATE TABLE mytab (num integer, description text, modcnt integer);
+
+CREATE TRIGGER trig_mytab_modcount BEFORE INSERT OR UPDATE ON mytab
+    FOR EACH ROW EXECUTE FUNCTION trigfunc_modcount('modcnt');
+</programlisting>
+
+     注意，触发器函数本身并不知道列名；列名是通过触发器参数提供的。这使得该触发器函数可以在不同的表上重用。
+    </para>
+   </sect1>
+
+   <sect1 id="pltcl-event-trigger">
+
+    <title>PL/Tcl 中的事件触发器函数</title>
+
+    <indexterm>
+     <primary>event trigger</primary>
+     <secondary>in PL/Tcl</secondary>
+    </indexterm>
+
+    <para>
+     事件触发器函数也可以用 PL/Tcl 编写。<productname>PostgreSQL</productname>要求，凡是要作为事件触发器调用的函数，都必须声明为无参数且返回类型为<literal>event_trigger</literal>。
+    </para>
+
+    <para>
+     来自触发器管理器的信息会通过下列变量传递给函数体：
+
+     <variablelist>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-32">
+       <term><varname>$TG_event</varname></term>
+       <listitem>
+        <para>
+         触发器因其而被触发的事件名称。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-pltcl-varlistentry-33">
+       <term><varname>$TG_tag</varname></term>
+       <listitem>
+        <para>
+         触发器因其而被触发的命令标签。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </para>
+
+    <para>
+     事件触发器函数的返回值会被忽略。
+    </para>
+
+    <para>
+     下面是一个小型事件触发器函数示例。每当执行受支持的命令时，它都会简单地发出一条<literal>NOTICE</literal>消息：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION tclsnitch() RETURNS event_trigger AS $$
+  elog NOTICE "tclsnitch: $TG_event $TG_tag"
+$$ LANGUAGE pltcl;
+
+CREATE EVENT TRIGGER tcl_a_snitch ON ddl_command_start EXECUTE FUNCTION tclsnitch();
+</programlisting>
+    </para>
+   </sect1>
+
+   <sect1 id="pltcl-error-handling">
+
+    <title>PL/Tcl 中的错误处理</title>
+
+    <indexterm>
+     <primary>exceptions</primary>
+     <secondary>in PL/Tcl</secondary>
+    </indexterm>
+
+    <para>
+     PL/Tcl 函数内的 Tcl 代码，或从 PL/Tcl 函数调用的 Tcl 代码，都可能引发错误：要么是执行了某个非法操作，要么是通过 Tcl 的<function>error</function>命令或 PL/Tcl 的<function>elog</function>命令主动生成错误。在 Tcl 中，可以使用<function>catch</function>命令捕获这类错误。如果错误没有被捕获，而是一路传播到 PL/Tcl 函数执行的顶层，那么它就会在调用该函数的查询中作为 SQL 错误报告出来。
+    </para>
+
+    <para>
+     反过来，在 PL/Tcl 的<function>spi_exec</function>、<function>spi_prepare</function>和<function>spi_execp</function>命令中发生的 SQL 错误会作为 Tcl 错误报告，因此也可以被 Tcl 的<function>catch</function>命令捕获。（这些 PL/Tcl 命令中的每一个都会在子事务中运行其 SQL 操作，该子事务在出错时会回滚，因此任何部分完成的操作都会自动清理掉。）同样地，如果某个错误在未被捕获的情况下传播到顶层，它又会重新变成 SQL 错误。
+    </para>
+
+    <para>
+     Tcl 提供了一个<varname>errorCode</varname>变量，它以便于 Tcl 程序解释的形式携带关于错误的附加信息。该变量的内容采用 Tcl 列表格式，第一个词标识报告该错误的子系统或库；其后的内容则由相应子系统或库自行定义。对于由 PL/Tcl 命令报告的数据库错误，第一个词是<literal>POSTGRES</literal>，第二个词是 PostgreSQL 版本号，后续内容则是字段名/字段值对，用来提供关于该错误的详细信息。字段<varname>SQLSTATE</varname>、<varname>condition</varname>和<varname>message</varname>总是会提供（前两个分别对应<xref linkend="errcodes-appendix"/>中所示的错误代码和条件名称）。可能出现的字段包括
+     <varname>detail</varname>、<varname>hint</varname>、<varname>context</varname>、
+     <varname>schema</varname>、<varname>table</varname>、<varname>column</varname>、
+     <varname>datatype</varname>、<varname>constraint</varname>、
+     <varname>statement</varname>、<varname>cursor_position</varname>、
+     <varname>filename</varname>、<varname>lineno</varname>以及
+     <varname>funcname</varname>。
+    </para>
+
+    <para>
+     处理 PL/Tcl 的<varname>errorCode</varname>信息时，一种方便的办法是把它载入数组中，这样字段名就变成了数组下标。对应的代码可能如下所示：
+<programlisting>
+if {[catch { spi_exec $sql_command }]} {
+    if {[lindex $::errorCode 0] == "POSTGRES"} {
+        array set errorArray $::errorCode
+        if {$errorArray(condition) == "undefined_table"} {
+            # deal with missing table
+        } else {
+            # deal with some other type of SQL error
+        }
+    }
+}
+</programlisting>
+     （双冒号显式指定<varname>errorCode</varname>是一个全局变量。）
+    </para>
+   </sect1>
+
+   <sect1 id="pltcl-subtransactions">
+
+    <title>PL/Tcl 中的显式子事务</title>
+
+    <indexterm>
+     <primary>subtransactions</primary>
+     <secondary>in PL/Tcl</secondary>
+    </indexterm>
+
+    <para>
+     从<xref linkend="pltcl-error-handling"/>所述的数据库访问错误中恢复，可能会导致一种不理想的情况：某些操作在其中一个失败之前已经成功完成，而从该错误恢复之后，数据仍处于不一致状态。PL/Tcl 通过显式子事务为这个问题提供了解决方案。
+    </para>
+
+    <para>
+     考虑一个在两个账户之间执行转账的函数：
+<programlisting>
+CREATE FUNCTION transfer_funds() RETURNS void AS $$
+    if [catch {
+        spi_exec "UPDATE accounts SET balance = balance - 100 WHERE account_name = 'joe'"
+        spi_exec "UPDATE accounts SET balance = balance + 100 WHERE account_name = 'mary'"
+    } errormsg] {
+        set result [format "error transferring funds: %s" $errormsg]
+    } else {
+        set result "funds transferred successfully"
+    }
+    spi_exec "INSERT INTO operations (result) VALUES ('[quote $result]')"
+$$ LANGUAGE pltcl;
+</programlisting>
+     如果第二个<command>UPDATE</command>语句引发异常，这个函数会记录这次失败，但第一个<command>UPDATE</command>的结果仍会被提交。换句话说，资金会从 Joe 的账户中扣除，却不会转入 Mary 的账户。这是因为每个<function>spi_exec</function>都是一个独立的子事务，而其中只有一个子事务发生了回滚。
+    </para>
+
+    <para>
+     要处理这类情况，可以把多个数据库操作包裹在一个显式子事务中，使其作为整体成功完成或整体回滚。PL/Tcl 提供了<function>subtransaction</function>命令来管理这一点。我们可以把函数改写为：
+<programlisting>
+CREATE FUNCTION transfer_funds2() RETURNS void AS $$
+    if [catch {
+        subtransaction {
+            spi_exec "UPDATE accounts SET balance = balance - 100 WHERE account_name = 'joe'"
+            spi_exec "UPDATE accounts SET balance = balance + 100 WHERE account_name = 'mary'"
+        }
+    } errormsg] {
+        set result [format "error transferring funds: %s" $errormsg]
+    } else {
+        set result "funds transferred successfully"
+    }
+    spi_exec "INSERT INTO operations (result) VALUES ('[quote $result]')"
+$$ LANGUAGE pltcl;
+</programlisting>
+     注意，为达到这个目的，仍然需要使用<function>catch</function>。否则错误会传播到函数顶层，从而阻止对<structname>operations</structname>表执行期望的插入。<function>subtransaction</function>命令并不会捕获错误，它只保证在其作用域内执行的所有数据库操作，会在报告错误时一起回滚。
+    </para>
+
+    <para>
+     显式子事务会在其包含的 Tcl 代码报告任何错误时回滚，而不仅仅是在数据库访问导致错误时才回滚。因此，在<function>subtransaction</function>命令内部引发的普通 Tcl 异常也会导致子事务回滚。不过，从其中包含的 Tcl 代码中以非错误方式退出（例如由于<function>return</function>）则不会导致回滚。
+    </para>
+   </sect1>
+
+   <sect1 id="pltcl-transactions">
+
+    <title>事务管理</title>
+
+    <para>
+     在从顶层调用的过程，或者从顶层调用的匿名代码块（<command>DO</command>命令）中，可以控制事务。要提交当前事务，可调用<literal>commit</literal>命令。要回滚当前事务，可调用<literal>rollback</literal>命令。（注意，不能通过<function>spi_exec</function>或类似命令执行 SQL 命令<command>COMMIT</command>或<command>ROLLBACK</command>；必须使用这些命令来完成。）一个事务结束后，会自动启动新事务，因此没有单独的命令用于此事。
+    </para>
+
+    <para>
+     下面是一个示例：
+<programlisting>
+CREATE PROCEDURE transaction_test1()
+LANGUAGE pltcl
+AS $$
+for {set i 0} {$i &lt; 10} {incr i} {
+    spi_exec "INSERT INTO test1 (a) VALUES ($i)"
+    if {$i % 2 == 0} {
+        commit
+    } else {
+        rollback
+    }
+}
+$$;
+
+CALL transaction_test1();
+</programlisting>
+    </para>
+
+    <para>
+     当显式子事务处于活动状态时，不能结束事务。
+    </para>
+   </sect1>
+
+   <sect1 id="pltcl-config">
+
+    <title>PL/Tcl 配置</title>
+
+    <para>
+     本节列出影响<application>PL/Tcl</application>的配置参数。
+    </para>
+
+    <variablelist>
+
+     <varlistentry id="guc-pltcl-start-proc" xreflabel="pltcl.start_proc">
+
+      <term>
+       <varname>pltcl.start_proc</varname> (<type>string</type>)
+       <indexterm>
+        <primary><varname>pltcl.start_proc</varname> configuration parameter</primary>
+       </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        如果该参数被设置为非空字符串，它就指定一个无参数 PL/Tcl 函数的名称（可能带模式限定）。每当为 PL/Tcl 创建新的 Tcl 解释器时，这个函数都会被执行。这样的函数可以执行每个会话的初始化，例如装载额外的 Tcl 代码。当某个 PL/Tcl 函数在数据库会话中第一次执行时，或者由于某个 PL/Tcl 函数是由新的 SQL 角色调用而必须再创建一个解释器时，就会创建新的 Tcl 解释器。
+       </para>
+
+       <para>
+        被引用的函数必须使用<literal>pltcl</literal>语言编写，并且不得标记为<literal>SECURITY DEFINER</literal>。（这些限制可确保它运行在自己应当初始化的解释器中。）当前用户还必须拥有调用它的权限。
+       </para>
+
+       <para>
+        如果该函数因错误而失败，就会中止导致新解释器被创建的那个函数调用，并把错误传播到调用查询，进而导致当前事务或子事务中止。已经在 Tcl 中完成的任何动作都不会被撤销；不过，该解释器之后将不会再被使用。如果再次使用该语言，就会在一个全新的 Tcl 解释器中再次尝试初始化。
+       </para>
+
+       <para>
+        只有超级用户才能更改此设置。尽管可以在会话内更改该设置，但这类更改不会影响已经创建好的 Tcl 解释器。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-pltclu-start-proc" xreflabel="pltclu.start_proc">
+
+      <term>
+       <varname>pltclu.start_proc</varname> (<type>string</type>)
+       <indexterm>
+        <primary><varname>pltclu.start_proc</varname> configuration parameter</primary>
+       </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        这个参数与<varname>pltcl.start_proc</varname>完全相同，只不过它适用于 PL/TclU。被引用的函数必须使用<literal>pltclu</literal>语言编写。
+       </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>
+   </sect1>
+
+   <sect1 id="pltcl-procnames">
+
+    <title>Tcl 过程名</title>
+
+    <para>
+     在<productname>PostgreSQL</productname>中，如果函数位于不同模式中，或者参数个数或参数类型不同，就可以复用同一个函数名。不过，Tcl 要求所有过程名都必须不同。PL/Tcl 处理这一问题的方式是：在内部 Tcl 过程名中包含参数类型名，并在必要时把函数对象 ID（OID）追加到内部 Tcl 过程名后面，以确保它与同一 Tcl 解释器中所有先前已装载的函数名都不同。因此，名称相同但参数类型不同的<productname>PostgreSQL</productname>函数，也会对应不同的 Tcl 过程。这通常不是 PL/Tcl 程序员需要关心的事情，但在调试时可能会看见。
+    </para>
+
+    <para>
+     因此，再加上其他一些原因，一个 PL/Tcl 函数不能在 Tcl 内部直接调用另一个 PL/Tcl 函数。如果确实需要这样做，就必须通过 SQL 并使用<function>spi_exec</function>或相关命令来实现。
+    </para>
+
+   </sect1>
+ </chapter>

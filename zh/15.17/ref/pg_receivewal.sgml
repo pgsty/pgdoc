@@ -1,0 +1,419 @@
+<!--
+doc/src/sgml/ref/pg_receivewal.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="app-pgreceivewal">
+
+ <indexterm zone="app-pgreceivewal">
+  <primary>pg_receivewal</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle><application>pg_receivewal</application></refentrytitle>
+  <manvolnum>1</manvolnum>
+  <refmiscinfo>Application</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>pg_receivewal</refname>
+  <refpurpose>从<productname>PostgreSQL</productname>服务器流式接收预写式日志</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+  <cmdsynopsis>
+   <command>pg_receivewal</command>
+   <arg rep="repeat"><replaceable>option</replaceable></arg>
+  </cmdsynopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+
+  <title>描述</title>
+
+  <para>
+   <application>pg_receivewal</application>用于从正在运行的<productname>PostgreSQL</productname>数据库集簇流式接收预写式日志。预写式日志通过流复制协议传输，并写入本地目录中的文件。该目录可作为使用时间点恢复执行恢复时的归档位置（见<xref linkend="continuous-archiving"/>）。
+  </para>
+
+  <para>
+   <application>pg_receivewal</application>会在服务器生成预写式日志的同时实时流式接收，而不像<xref linkend="guc-archive-command"/>和<xref linkend="guc-archive-library"/>那样等待 WAL 段完成。
+   因此，使用<application>pg_receivewal</application>时无需设置<xref linkend="guc-archive-timeout"/>。
+  </para>
+
+  <para>
+   与 PostgreSQL 备库的 WAL 接收器不同，<application>pg_receivewal</application>默认只会在一个 WAL 文件关闭时才将 WAL 数据刷写到磁盘。要实时刷写 WAL 数据，必须指定<option>--synchronous</option>选项。
+   由于<application>pg_receivewal</application>不会应用 WAL，因此当<xref linkend="guc-synchronous-commit"/>等于<literal>remote_apply</literal>时，不应让它成为同步备库。
+   如果这样做，它看起来会像一台永远追不上的备库，并导致事务提交阻塞。
+   为避免这种情况，应当为<xref linkend="guc-synchronous-standby-names"/>配置合适的值，或者为<application>pg_receivewal</application>指定一个与之不匹配的<varname>application_name</varname>，或者将<varname>synchronous_commit</varname>改成<literal>remote_apply</literal>以外的值。
+  </para>
+
+  <para>
+   预写式日志通过普通的<productname>PostgreSQL</productname>连接进行流式传输，并使用复制协议。建立该连接时，必须使用具有<literal>REPLICATION</literal>权限（见<xref linkend="role-attributes"/>）的用户或超级用户，并且<filename>pg_hba.conf</filename>必须允许复制连接。服务器还必须将<xref linkend="guc-max-wal-senders"/>设置得足够高，以便至少为该流保留一个可用会话。
+  </para>
+
+  <para>
+   预写式日志流式传输的起始位置会在<application>pg_receivewal</application>启动时计算出来：
+   <orderedlist>
+    <listitem>
+     <para>
+      首先，扫描写入 WAL 段文件的目录，找到最新的已完成段文件，并将下一个 WAL 段文件的开头作为起始位置。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      如果无法用上述方法计算起始位置，并且使用了复制槽，则会额外发出<command>READ_REPLICATION_SLOT</command>命令，以获取该槽的<literal>restart_lsn</literal>作为起始位置。
+      这种方式仅在从<productname>PostgreSQL</productname> 15 及以上版本流式接收预写式日志时可用。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      如果无法用上述方法计算起始位置，则使用服务器通过<literal>IDENTIFY_SYSTEM</literal>命令报告的最新 WAL 刷写位置。
+     </para>
+    </listitem>
+   </orderedlist>
+  </para>
+
+  <para>
+   如果连接丢失，或者因非致命错误而最初无法建立，<application>pg_receivewal</application>将无限期重试该连接，并尽快重新建立流式传输。要避免这种行为，请使用<literal>-n</literal>参数。
+  </para>
+
+  <para>
+   在没有致命错误的情况下，<application>pg_receivewal</application>会一直运行，直到收到<systemitem>SIGINT</systemitem>（<keycombo action="simul"><keycap>Control</keycap><keycap>C</keycap></keycombo>）或<systemitem>SIGTERM</systemitem>信号为止。
+  </para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>选项</title>
+
+    <variablelist>
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-1">
+      <term><option>-D <replaceable class="parameter">directory</replaceable></option></term>
+      <term><option>--directory=<replaceable class="parameter">directory</replaceable></option></term>
+      <listitem>
+
+       <para>
+        用于写入输出的目录。
+       </para>
+
+       <para>
+        这个参数是必需的。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-2">
+      <term><option>-E <replaceable>lsn</replaceable></option></term>
+      <term><option>--endpos=<replaceable>lsn</replaceable></option></term>
+      <listitem>
+
+       <para>
+        当接收位置到达指定 LSN 时，自动停止复制并以正常退出状态 0 退出。
+       </para>
+
+       <para>
+        如果存在 LSN 恰好等于<replaceable>lsn</replaceable>的记录，该记录也会被处理。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-3">
+      <term><option>--if-not-exists</option></term>
+      <listitem>
+
+       <para>
+        当指定<option>--create-slot</option>且同名槽已存在时，不报错。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-4">
+      <term><option>-n</option></term>
+      <term><option>--no-loop</option></term>
+      <listitem>
+
+       <para>
+        遇到连接错误时不要循环重试，而是立即报错退出。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-5">
+      <term><option>--no-sync</option></term>
+      <listitem>
+
+       <para>
+        此选项会使<command>pg_receivewal</command>不强制将 WAL 数据刷写到磁盘。这样会更快，但也意味着如果随后发生操作系统崩溃，可能会留下损坏的 WAL 段。一般来说，此选项适合测试，但不应在生产环境中执行 WAL 归档时使用。
+       </para>
+
+       <para>
+        这个选项与<literal>--synchronous</literal>不兼容。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-6">
+      <term><option>-s <replaceable class="parameter">interval</replaceable></option></term>
+      <term><option>--status-interval=<replaceable class="parameter">interval</replaceable></option></term>
+      <listitem>
+
+       <para>
+        指定向服务器回送状态包的时间间隔（秒）。这样更便于从服务器端监视进度。值为零将完全禁用周期性状态更新，不过在服务器请求时仍会发送更新，以避免因超时而断开连接。默认值是 10 秒。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-7">
+      <term><option>-S <replaceable>slotname</replaceable></option></term>
+      <term><option>--slot=<replaceable class="parameter">slotname</replaceable></option></term>
+      <listitem>
+
+        <para>
+         要求<application>pg_receivewal</application>使用一个现有复制槽（见<xref linkend="streaming-replication-slots"/>）。使用此选项时，<application>pg_receivewal</application>会向服务器报告刷写位置，指示每个段何时已同步到磁盘，以便服务器在该段不再被需要时将其移除。
+        </para>
+
+        <para>
+         当服务器将<application>pg_receivewal</application>的复制客户端配置为同步备库时，使用复制槽会向服务器报告刷写位置，但只会在一个 WAL 文件关闭时才报告。因此，这种配置会导致主库上的事务长时间等待，实际上无法令人满意地工作。要让这种配置正确工作，还必须另外指定<literal>--synchronous</literal>选项（见下文）。
+        </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-8">
+      <term><option>--synchronous</option></term>
+      <listitem>
+
+       <para>
+        在收到 WAL 数据后立即将其刷写到磁盘。无论<literal>--status-interval</literal>如何，刷写后还会立即向服务器回送状态包。
+       </para>
+
+       <para>
+        如果服务器将<application>pg_receivewal</application>的复制客户端配置为同步备库，则应指定此选项，以确保及时向服务器发送反馈。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-9">
+      <term><option>-v</option></term>
+      <term><option>--verbose</option></term>
+      <listitem>
+
+       <para>
+        启用详细输出模式。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-10">
+      <term><option>-Z <replaceable class="parameter">level</replaceable></option></term>
+      <term><option>-Z <replaceable class="parameter">method</replaceable>[:<replaceable>detail</replaceable>]</option></term>
+      <term><option>--compress=<replaceable class="parameter">level</replaceable></option></term>
+      <term><option>--compress=<replaceable class="parameter">method</replaceable>[:<replaceable>detail</replaceable>]</option></term>
+      <listitem>
+
+       <para>
+        启用预写式日志的压缩。
+       </para>
+
+       <para>
+        压缩方法可以设置为<literal>gzip</literal>、<literal>lz4</literal>（如果<productname>PostgreSQL</productname>编译时启用了<option>--with-lz4</option>）或<literal>none</literal>（不压缩）。还可以选择指定压缩细节字符串。如果该字符串是整数，则表示压缩级别；否则应为用逗号分隔的列表，其中每一项都采用<replaceable>keyword</replaceable>或<replaceable>keyword=value</replaceable>的形式。
+        目前，唯一支持的关键字是<literal>level</literal>。
+       </para>
+
+       <para>
+        如果未指定压缩级别，则使用默认压缩级别。如果只指定级别而未指明算法，则级别大于 0 时使用<literal>gzip</literal>压缩，级别为 0 时不使用压缩。
+       </para>
+
+       <para>
+        使用<literal>gzip</literal>时，所有文件名都会自动附加<filename>.gz</filename>后缀；使用<literal>lz4</literal>时，则附加<filename>.lz4</filename>后缀。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+
+   <para>
+    下列命令行选项控制数据库连接参数。
+
+    <variablelist>
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-17">
+      <term><option>-d <replaceable class="parameter">connstr</replaceable></option></term>
+      <term><option>--dbname=<replaceable class="parameter">connstr</replaceable></option></term>
+      <listitem>
+       <para>
+        以<link linkend="libpq-connstring">连接字符串</link>的形式指定用于连接到服务器的参数；这些参数会覆盖任何冲突的命令行选项。
+       </para>
+       <para>
+        为了与其他客户端应用保持一致，该选项被称为<literal>--dbname</literal>。但由于<application>pg_receivewal</application>并不连接到集簇中的任何特定数据库，连接字符串中包含的数据库名会被服务器忽略。不过，以这种方式提供的数据库名会覆盖默认数据库名（<literal>replication</literal>），用于在<filename>~/.pgpass</filename>中查找复制连接的密码。类似地，连接到<productname>PostgreSQL</productname>时使用的中间件或代理也可能将该名称用于连接路由等目的。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-18">
+      <term><option>-h <replaceable class="parameter">host</replaceable></option></term>
+      <term><option>--host=<replaceable class="parameter">host</replaceable></option></term>
+      <listitem>
+       <para>
+        指定运行服务器的主机名。如果该值以斜杠开头，则被用作 Unix 域套接字的目录。默认值取自<envar>PGHOST</envar>环境变量（如果已设置），否则尝试 Unix 域套接字连接。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-19">
+      <term><option>-p <replaceable class="parameter">port</replaceable></option></term>
+      <term><option>--port=<replaceable class="parameter">port</replaceable></option></term>
+      <listitem>
+       <para>
+        指定服务器正在监听连接的 TCP 端口，或本地 Unix 域套接字文件扩展名。默认值取自<envar>PGPORT</envar>环境变量（如果已设置），否则使用编译时的默认值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-20">
+      <term><option>-U <replaceable>username</replaceable></option></term>
+      <term><option>--username=<replaceable class="parameter">username</replaceable></option></term>
+      <listitem>
+       <para>
+        用于连接的用户名。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-21">
+      <term><option>-w</option></term>
+      <term><option>--no-password</option></term>
+      <listitem>
+       <para>
+        绝不提示输入密码。如果服务器要求密码认证，而又无法通过<filename>.pgpass</filename>文件等其他方式获得密码，则连接尝试将会失败。此选项可用于批处理作业和脚本，因为这些场景中没有用户在场输入密码。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-22">
+      <term><option>-W</option></term>
+      <term><option>--password</option></term>
+      <listitem>
+       <para>
+        强制<application>pg_receivewal</application>在建立连接前提示输入密码。
+       </para>
+
+       <para>
+        这个选项从来都不是必需的，因为如果服务器要求密码认证，<application>pg_receivewal</application>会自动提示输入密码。不过，<application>pg_receivewal</application>需要先浪费一次连接尝试，才能发现服务器需要密码。在某些情况下，输入<option>-W</option>以避免这次额外的连接尝试是值得的。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    为了控制物理复制槽，<application>pg_receivewal</application>
+    可以执行下列两种操作之一：
+
+    <variablelist>
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-25">
+      <term><option>--create-slot</option></term>
+      <listitem>
+       <para>
+        使用<option>--slot</option>中指定的名称创建一个新的物理复制槽，然后退出。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-26">
+      <term><option>--drop-slot</option></term>
+      <listitem>
+       <para>
+        删除<option>--slot</option>中指定名称的复制槽，然后退出。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    还可以使用下列其他选项：
+
+    <variablelist>
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-29">
+       <term><option>-V</option></term>
+       <term><option>--version</option></term>
+       <listitem>
+       <para>
+       打印<application>pg_receivewal</application>的版本并退出。
+       </para>
+       </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_receivewal-varlistentry-30">
+       <term><option>-?</option></term>
+       <term><option>--help</option></term>
+       <listitem>
+       <para>
+       显示<application>pg_receivewal</application>命令行参数的帮助并退出。
+       </para>
+       </listitem>
+     </varlistentry>
+
+    </variablelist>
+   </para>
+
+ </refsect1>
+
+ <refsect1>
+
+  <title>退出状态</title>
+
+  <para>
+   当因<systemitem>SIGINT</systemitem>或<systemitem>SIGTERM</systemitem>信号终止时，<application>pg_receivewal</application>将以状态 0 退出。（这是其正常结束方式，因此不算错误。）对于致命错误或其他信号，退出状态将为非零值。
+  </para>
+
+ </refsect1>
+
+ <refsect1>
+
+  <title>环境</title>
+
+  <para>
+   与大多数其他<productname>PostgreSQL</productname>工具一样，此工具也使用<application>libpq</application>支持的环境变量（见<xref linkend="libpq-envars"/>）。
+  </para>
+
+  <para>
+   环境变量<envar>PG_COLOR</envar>指定是否在诊断消息中使用颜色。可能的值为<literal>always</literal>、<literal>auto</literal>和<literal>never</literal>。
+  </para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>注解</title>
+
+  <para>
+   当使用<application>pg_receivewal</application>而不是<xref linkend="guc-archive-command"/>或<xref linkend="guc-archive-library"/>作为主要 WAL 备份方法时，强烈建议使用复制槽。否则，服务器可以在这些预写式日志文件备份完成之前自由回收或删除它们，因为无论是<xref linkend="guc-archive-command"/>、<xref linkend="guc-archive-library"/>还是复制槽，都不会向服务器提供 WAL 流已经归档到什么位置的信息。不过请注意，如果接收端跟不上获取 WAL 数据的速度，复制槽会占满服务器的磁盘空间。
+  </para>
+
+  <para>
+   如果源集簇启用了组权限，<application>pg_receivewal</application>会在接收到的 WAL 文件上保留这些组权限。
+  </para>
+
+ </refsect1>
+
+ <refsect1>
+
+  <title>示例</title>
+
+  <para>
+   要从位于<literal>mydbserver</literal>的服务器流式接收预写式日志，并将其存储到本地目录<filename>/usr/local/pgsql/archive</filename>：
+<screen>
+<prompt>$</prompt> <userinput>pg_receivewal -h mydbserver -D /usr/local/pgsql/archive</userinput>
+</screen></para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>参见</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="app-pgbasebackup"/></member>
+  </simplelist>
+ </refsect1>
+
+</refentry>

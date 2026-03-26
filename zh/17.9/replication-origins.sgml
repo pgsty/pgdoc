@@ -1,0 +1,77 @@
+<!-- doc/src/sgml/replication-origins.sgml -->
+<chapter id="replication-origins">
+ <title>复制进度跟踪</title>
+
+ <indexterm zone="replication-origins">
+  <primary>复制进度跟踪</primary>
+ </indexterm>
+ <indexterm zone="replication-origins">
+  <primary>复制源</primary>
+ </indexterm>
+
+ <para>
+  复制源旨在让在<link linkend="logicaldecoding">逻辑解码</link>之上实现逻辑复制方案变得更容易。
+  它们为两个常见问题提供了解决方案：
+  <itemizedlist>
+   <listitem>
+    <para>如何安全地跟踪复制进度</para>
+   </listitem>
+   <listitem>
+    <para>如何根据一行数据的来源改变复制行为；例如，在双向复制拓扑中防止形成环路</para>
+   </listitem>
+  </itemizedlist>
+ </para>
+
+ <para>
+  复制源只有两个属性：名称和 ID。名称是在系统之间引用该复制源时应使用的标识，
+  它是自由形式的 <type>text</type> 值。使用它时，应尽量降低不同复制方案创建的复制源之间发生冲突的概率；
+  例如，可以在前面加上复制方案的名称作为前缀。ID 仅用于在空间效率很重要的场合避免存储较长的名称形式。
+  它绝不应在不同系统之间共享。
+ </para>
+
+ <para>
+  可以使用函数
+  <link linkend="pg-replication-origin-create"><function>pg_replication_origin_create()</function></link> 创建复制源；
+  使用
+  <link linkend="pg-replication-origin-drop"><function>pg_replication_origin_drop()</function></link> 删除复制源；
+  并可在
+  <link linkend="catalog-pg-replication-origin"><structname>pg_replication_origin</structname></link>
+  系统目录中查看它们。
+ </para>
+
+ <para>
+  构建复制方案时，一个并不简单的部分是要以安全的方式跟踪重放进度。
+  当应用进程或整个集簇崩溃时，必须能够找出数据已经成功复制到了哪里。
+  对此的一些朴素解决方案，例如每重放一个事务就更新表中的某一行，会带来运行时开销和数据库膨胀等问题。
+ </para>
+
+ <para>
+  借助复制源基础设施，可以将一个会话标记为正在重放来自远程节点的数据
+  （使用函数
+  <link linkend="pg-replication-origin-session-setup"><function>pg_replication_origin_session_setup()</function></link>）。
+  此外，还可以使用
+  <link linkend="pg-replication-origin-xact-setup"><function>pg_replication_origin_xact_setup()</function></link>
+  按事务为每个源事务配置其 <acronym>LSN</acronym> 和提交时间戳。这样做之后，复制进度就会以崩溃安全的方式持久保存。
+  所有复制源的重放进度都可以在
+  <link linkend="view-pg-replication-origin-status">
+   <structname>pg_replication_origin_status</structname>
+  </link> 视图中查看。
+  某个单独复制源的进度，例如在恢复复制时，可以通过
+  <link linkend="pg-replication-origin-progress"><function>pg_replication_origin_progress()</function></link>
+  （适用于任意复制源）或
+  <link linkend="pg-replication-origin-session-progress"><function>pg_replication_origin_session_progress()</function></link>
+  （适用于当前会话中配置的复制源）来获取。
+ </para>
+
+ <para>
+  在比恰好从一个系统复制到另一个系统更复杂的复制拓扑中，另一个问题在于很难避免再次复制已经重放过的行。
+  这既会导致复制出现环路，也会带来低效。复制源提供了一种可选机制来识别并防止这种情况。
+  当使用前一段提到的函数进行配置后，传递给输出插件回调
+  （见 <xref linkend="logicaldecoding-output-plugin"/>）的每一项变更和事务，
+  都会带上其生成会话的复制源标记。这使得输出插件可以区别对待它们，
+  例如忽略所有并非源自本地的行。此外，
+  <link linkend="logicaldecoding-output-plugin-filter-origin">
+  <function>filter_by_origin_cb</function></link> 回调还可用于根据来源过滤逻辑解码变更流。
+  虽然灵活性较低，但通过该回调进行过滤要比在输出插件中自行过滤高效得多。
+ </para>
+</chapter>

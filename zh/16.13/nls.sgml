@@ -1,0 +1,425 @@
+<!-- doc/src/sgml/nls.sgml -->
+
+<chapter id="nls">
+ <title>本地语言支持</title>
+
+ <sect1 id="nls-translator">
+  <title>给翻译者</title>
+
+  <para>
+   <productname>PostgreSQL</productname>
+   程序（服务器和客户端）可以用你所偏好的语言发出消息 &mdash;
+   前提是这些消息已经被翻译。创建和维护翻译后的消息集，需要那些精通自己语言并愿意为
+   <productname>PostgreSQL</productname> 项目作出贡献的人的帮助。做这件事完全不必是程序员。
+   本节说明如何提供帮助。
+  </para>
+
+  <sect2 id="nls-translator-requirements">
+   <title>要求</title>
+
+   <para>
+    我们不会评判你的语言能力 &mdash; 本节讨论的是软件工具。理论上，你只需要一个文本编辑器。
+    但这只有在你不打算试用自己翻译的消息时才成立，而这种情况不太可能发生。
+    配置你的源代码树时，请务必使用 <option>--enable-nls</option> 选项。
+    这还会检查 <application>libintl</application> 库和 <filename>msgfmt</filename>
+    程序，而终端用户无论如何也需要它们。要试用你的工作成果，请遵循安装说明中适用的部分。
+   </para>
+
+   <para>
+    如果你想开始一项新的翻译工作，或者想执行一次消息目录合并（后文会描述），
+    则分别需要 GNU 兼容实现的 <filename>xgettext</filename> 和
+    <filename>msgmerge</filename> 程序。今后我们会尽量做到：如果你使用打包的源码发布版，
+    就不需要 <filename>xgettext</filename> 了。（如果从 Git 工作，你仍然需要它。）
+    目前推荐使用 <application>GNU Gettext 0.10.36</application> 或更高版本。
+   </para>
+
+   <para>
+    你本地的 gettext 实现应该自带文档。其中有些内容可能与下文重复，
+    但要了解更多细节，你应当去查阅那些文档。
+   </para>
+  </sect2>
+
+  <sect2 id="nls-translator-concepts">
+   <title>概念</title>
+
+   <para>
+    原始（英语）消息及其（可能存在的）译文对应项，以成对形式保存在
+    <firstterm>消息目录</firstterm>中；每个程序以及每种目标语言各有一份消息目录
+    （尽管相关程序可以共享同一个消息目录）。消息目录有两种文件格式：第一种是 <quote>PO</quote>
+    文件（Portable Object，可移植对象），它是带有特殊语法的纯文本文件，由翻译者编辑。
+    第二种是 <quote>MO</quote> 文件（Machine Object，机器对象），它是根据相应的 PO 文件生成的二进制文件，
+    在国际化后的程序运行时使用。翻译者不需要处理 MO 文件；事实上几乎没有人需要。
+   </para>
+
+   <para>
+    消息目录文件的扩展名，毫不意外地是 <filename>.po</filename> 或
+    <filename>.mo</filename>。基本名则视情况而定，要么是其所对应的程序名，
+    要么是该文件所对应的语言。这多少有些令人困惑。例子包括 <filename>psql.po</filename>
+    （psql 的 PO 文件）或 <filename>fr.mo</filename>（法语的 MO 文件）。
+   </para>
+
+   <para>
+    PO 文件的格式示例如下：
+<programlisting>
+# comment
+
+msgid "original string"
+msgstr "translated string"
+
+msgid "more original"
+msgstr "another translated"
+"string can be broken up like this"
+
+...
+</programlisting>
+    msgid 行是从程序源代码中提取出来的。（并非一定如此，但这是最常见的做法。）
+    msgstr 行起初为空，由翻译者填入有意义的字符串。字符串可以包含 C 风格的转义字符，
+    也可以像上例那样跨多行延续。（下一行必须从行首开始。）
+   </para>
+
+   <para>
+    # 字符引入注释。如果 # 字符后面紧跟空白，那么这就是由翻译者维护的注释。
+    也可能存在自动注释，即 # 后紧跟非空白字符的注释。这些注释由各种处理 PO 文件的工具维护，
+    目的是帮助翻译者。
+<programlisting>
+#. automatic comment
+#: filename.c:1023
+#, flags, flags
+</programlisting>
+    #. 风格的注释是从使用该消息的源文件中提取出来的。程序员可能已经为翻译者插入了信息，
+    例如期望的对齐方式。#: 注释指出该消息在源代码中使用的精确位置。
+    翻译者不必查看程序源代码，但如果对正确译法有疑问，也可以去看。#, 注释包含以某种方式描述该消息的标志。
+    目前有两种标志：如果某条消息可能因程序源代码的更改而过期，则会设置 <literal>fuzzy</literal>。
+    翻译者随后可以核实这一点，并在可能时移除 fuzzy 标志。注意，fuzzy 消息不会提供给终端用户。
+    另一个标志是 <literal>c-format</literal>，它表示该消息是一个
+    <function>printf</function> 风格的格式模板。这意味着译文也应该是一个格式字符串，
+    并具有相同数量和类型的占位符。有一些工具会据此验证格式字符串，它们就是根据 c-format 标志来检查的。
+   </para>
+  </sect2>
+
+  <sect2 id="nls-translator-message-catalogs">
+   <title>创建和维护消息目录</title>
+
+   <para>
+    好，那么该如何创建一个 <quote>空白</quote> 消息目录呢？首先，进入包含你想翻译其消息的程序的目录。
+    如果那里有一个 <filename>nls.mk</filename> 文件，就说明这个程序已经为翻译做好准备了。
+   </para>
+
+   <para>
+    如果已经有一些 <filename>.po</filename> 文件，那么就说明已经有人做过部分翻译工作。
+    这些文件命名为 <filename><replaceable>language</replaceable>.po</filename>，
+    其中 <replaceable>language</replaceable> 是
+    <ulink url="https://www.loc.gov/standards/iso639-2/php/English_list.php">
+    ISO 639-1 两字母语言代码（小写）</ulink>，例如法语对应 <filename>fr.po</filename>。
+    如果某种语言确实需要进行多套翻译工作，这些文件也可以命名为
+    <filename><replaceable>language</replaceable>_<replaceable>region</replaceable>.po</filename>，
+    其中 <replaceable>region</replaceable> 是
+    <ulink url="https://www.iso.org/iso-3166-country-codes.html">
+    ISO 3166-1 两字母国家代码（大写）</ulink>，例如巴西葡萄牙语对应
+    <filename>pt_BR.po</filename>。如果你找到了自己想要的语言，就可以直接开始编辑那个文件。
+   </para>
+
+   <para>
+    如果你需要开始一项新的翻译工作，先运行以下命令：
+<programlisting>
+make init-po
+</programlisting>
+    这会创建一个 <filename><replaceable>progname</replaceable>.pot</filename> 文件。
+    （<filename>.pot</filename> 用来与已经 <quote>投入使用</quote> 的 PO 文件区分开来；
+    <literal>T</literal> 代表 <quote>template</quote>。）
+    把这个文件复制为 <filename><replaceable>language</replaceable>.po</filename> 并进行编辑。
+    为了让系统知道新语言已经可用，还要编辑 <filename>po/LINGUAS</filename> 文件，
+    在已经列出的语言旁边添加该语言（或语言加国家）代码，例如：
+<programlisting>
+de fr
+</programlisting>
+    （当然也可能有其他语言。）
+   </para>
+
+   <para>
+    随着底层程序或库发生变化，程序员可能会修改或增加消息。这种情况下你不需要从头开始。
+    相反，请运行以下命令：
+<programlisting>
+make update-po
+</programlisting>
+    它会创建一个新的空白消息目录文件（也就是你最初使用的那个 pot 文件），
+    并将它与现有的 PO 文件合并。如果合并算法对某条消息拿不准，
+    就会像上文所述那样把它标记为 <quote>fuzzy</quote>。新的 PO 文件会以
+    <filename>.po.new</filename> 作为扩展名保存。
+   </para>
+  </sect2>
+
+  <sect2 id="nls-translator-editing-po">
+   <title>编辑 PO 文件</title>
+
+   <para>
+    PO 文件可以用普通文本编辑器编辑。也有一些专门的 PO 文件编辑器，
+    可以借助翻译专用功能帮助完成这一过程。Emacs 里（不出意外地）有一个 PO 模式，
+    相当有用。
+   </para>
+
+   <para>
+    翻译者只应修改 msgstr 指令后引号之间的内容、添加注释，以及调整 fuzzy 标志。
+   </para>
+
+   <para>
+    PO 文件不必完全填满。如果没有可用译文（或译文为空），软件会自动回退到原始字符串。
+    把不完整的翻译提交到源码树中也没有问题；这样别人就有机会接手你的工作。不过，
+    完成一次合并之后，建议优先清除 fuzzy 条目。记住，fuzzy 条目不会被安装；
+    它们只用来作为可能正确译文的参考。
+   </para>
+
+   <para>
+    编辑译文时要记住以下几点：
+    <itemizedlist>
+     <listitem>
+      <para>
+       务必确保如果原文以换行结束，译文也同样以换行结束。制表符等也是如此。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       如果原文是一个 <function>printf</function> 格式字符串，译文也必须如此。
+       译文还需要按相同顺序保留相同的格式说明符。有时语言自身的规则会让这一点变得不可能，
+       或者至少很别扭。在这种情况下，你可以像下面这样修改格式说明符：
+<programlisting>
+msgstr "Die Datei %2$s hat %1$u Zeichen."
+</programlisting>
+       这样一来，第一个占位符实际上会使用参数列表中的第二个参数。
+       <literal><replaceable>digits</replaceable>$</literal> 必须紧跟在 % 后面，
+       位于其他任何格式修饰符之前。（这个特性确实存在于 <function>printf</function>
+       函数族中。你以前可能没听说过它，因为在消息国际化之外，它几乎没有用武之地。）
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       如果原始字符串包含语言错误，就报告它（或者你自己在程序源代码中修正它），
+       然后照常翻译。等程序源代码更新之后，修正过的字符串就可以被合并进来。
+       如果原始字符串包含事实性错误，就报告它（或者你自己修正它），并且不要翻译它。
+       相反，你可以在 PO 文件里为该字符串加上一条注释。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       保持原始字符串的风格和语气。特别是，那些不是完整句子的消息
+       （<literal>cannot open file %s</literal>）通常不应以大写字母开头
+       （如果你的语言区分大小写），也不应以句号结尾（如果你的语言使用标点符号）。
+       阅读 <xref linkend="error-style-guide"/> 可能会有帮助。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       如果你不知道某条消息是什么意思，或者它有歧义，就到开发者邮件列表里提问。
+       很可能说英语的终端用户也同样看不懂它，或者会觉得它有歧义，因此最好直接改进那条消息。
+      </para>
+     </listitem>
+
+    </itemizedlist>
+   </para>
+  </sect2>
+
+ </sect1>
+
+
+ <sect1 id="nls-programmer">
+  <title>给程序员</title>
+
+  <sect2 id="nls-mechanics">
+   <title>实现机制</title>
+
+  <para>
+   本节描述如何在 <productname>PostgreSQL</productname> 发行版中的程序或库里实现本地语言支持。
+   目前它只适用于 C 程序。
+  </para>
+
+  <procedure>
+   <title>为程序添加 NLS 支持</title>
+
+   <step>
+    <para>
+     把下面的代码插入到该程序的启动序列中：
+<programlisting>
+#ifdef ENABLE_NLS
+#include &lt;locale.h&gt;
+#endif
+
+...
+
+#ifdef ENABLE_NLS
+setlocale(LC_ALL, "");
+bindtextdomain("<replaceable>progname</replaceable>", LOCALEDIR);
+textdomain("<replaceable>progname</replaceable>");
+#endif
+</programlisting>
+     （其中 <replaceable>progname</replaceable> 实际上可以自由选择。）
+    </para>
+   </step>
+
+   <step>
+    <para>
+     凡是遇到可能需要翻译的消息，都需要插入对 <function>gettext()</function> 的调用。例如：
+<programlisting>
+fprintf(stderr, "panic level %d\n", lvl);
+</programlisting>
+     将改成：
+<programlisting>
+fprintf(stderr, gettext("panic level %d\n"), lvl);
+</programlisting>
+     （如果没有配置 NLS 支持，<symbol>gettext</symbol> 会被定义成一个空操作。）
+    </para>
+
+    <para>
+     这样往往会增加很多杂乱内容。一个常用的简写是：
+<programlisting>
+#define _(x) gettext(x)
+</programlisting>
+     如果该程序的大部分通信都是通过一个或少数几个函数完成的，例如后端中的
+     <function>ereport()</function>，另一种可行的解决办法是让这个函数在内部对所有输入字符串调用
+     <function>gettext</function>。
+    </para>
+   </step>
+
+   <step>
+    <para>
+     在程序源代码所在目录中添加一个 <filename>nls.mk</filename> 文件。
+     这个文件会作为 makefile 读取。这里需要设置以下变量：
+
+     <variablelist>
+      <varlistentry>
+       <term><varname>CATALOG_NAME</varname></term>
+
+       <listitem>
+        <para>
+         程序名，即 <function>textdomain()</function> 调用中提供的名称。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry>
+       <term><varname>GETTEXT_FILES</varname></term>
+
+       <listitem>
+        <para>
+         包含可翻译字符串的文件列表，也就是那些使用 <function>gettext</function>
+         或其他替代方案标记过的文件。最终，这会包含该程序几乎所有的源文件。
+         如果这个列表太长，可以让第一个 <quote>文件</quote> 是一个 <literal>+</literal>，
+         第二个词则是一个文件名，该文件每行包含一个文件名。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry>
+       <term><varname>GETTEXT_TRIGGERS</varname></term>
+
+       <listitem>
+        <para>
+         为翻译者生成消息目录的工具需要知道哪些函数调用包含可翻译字符串。
+         默认只认识 <function>gettext()</function> 调用。如果你使用了 <function>_</function>
+         或其他标识符，就需要在这里列出它们。如果可翻译字符串不是第一个参数，
+         条目就需要写成 <literal>func:2</literal> 这样的形式（表示第二个参数）。
+         如果你有一个支持复数形式消息的函数，条目应写成 <literal>func:1,2</literal>
+         这样（分别标识单数和复数消息参数）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </para>
+   </step>
+
+   <step>
+    <para>
+     添加一个 <filename>po/LINGUAS</filename> 文件，用于保存已提供翻译的列表；起初为空。
+    </para>
+   </step>
+  </procedure>
+
+  <para>
+   构建系统会自动处理消息目录的构建和安装。
+  </para>
+  </sect2>
+
+  <sect2 id="nls-guidelines">
+   <title>消息编写指南</title>
+
+  <para>
+   下面列出一些便于翻译的消息编写指南。
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      不要像下面这样在运行时拼接句子：
+<programlisting>
+printf("Files were %s.\n", flag ? "copied" : "removed");
+</programlisting>
+      句子中的词序在其他语言里可能完全不同。另外，即使你记得对每个片段都调用
+      <function>gettext()</function>，这些片段分开来看也可能难以妥善翻译。
+      最好稍微重复一点代码，让每条待翻译消息都成为一个语义完整的整体。
+      只有数字、文件名之类的运行时变量才应该在运行时插入消息文本中。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      出于类似的原因，下面这样也行不通：
+<programlisting>
+printf("copied %d file%s", n, n!=1 ? "s" : "");
+</programlisting>
+      因为它假定了复数形式的构造方式。如果你以为可以这样解决：
+<programlisting>
+if (n==1)
+    printf("copied 1 file");
+else
+    printf("copied %d files", n):
+</programlisting>
+      那就会失望了。有些语言的复数形式不止两种，而且规则相当特殊。
+      通常最好从设计上彻底避开这个问题，例如这样：
+<programlisting>
+printf("number of copied files: %d", n);
+</programlisting>
+     </para>
+
+     <para>
+      如果你确实想构造一条正确处理复数的消息，也有相应支持，只是有点别扭。
+      在 <function>ereport()</function> 中生成主错误消息或详细错误消息时，
+      可以写成这样：
+<programlisting>
+errmsg_plural("copied %d file",
+              "copied %d files",
+              n,
+              n)
+</programlisting>
+      第一个参数是适用于英语单数形式的格式字符串，第二个参数是适用于英语复数形式的格式字符串，
+      第三个参数是决定使用哪种复数形式的整数控制值。后续参数会像往常一样按照格式字符串进行格式化。
+      （通常，这个复数控制值本身也会是要格式化的值之一，所以必须写两次。）
+      在英语中，只需要区分 <replaceable>n</replaceable> 是否为 1；
+      而在其他语言中，可能存在许多不同的复数形式。翻译者会把这两个英语形式视为一组，
+      并有机会提供多个替代字符串，再根据运行时的 <replaceable>n</replaceable> 值选择合适的那个。
+     </para>
+
+     <para>
+      如果你需要对一条不是直接用于 <function>errmsg</function> 或
+      <function>errdetail</function> 报告的消息做复数处理，就必须使用底层函数
+      <function>ngettext</function>。参见 gettext 文档。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      如果你想向翻译者传达某些信息，例如一条消息应如何与其他输出对齐，
+      就在该字符串出现之前放置一个以 <literal>translator</literal> 开头的注释，例如：
+<programlisting>
+/* translator: This message is not what it seems to be. */
+</programlisting>
+      这些注释会被复制到消息目录文件中，这样翻译者就能看到它们。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+  </sect2>
+ </sect1>
+
+</chapter>

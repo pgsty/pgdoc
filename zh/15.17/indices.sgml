@@ -1,0 +1,964 @@
+<!-- doc/src/sgml/indices.sgml -->
+
+<chapter id="indexes">
+ <title>索引</title>
+
+ <indexterm zone="indexes">
+  <primary>索引</primary>
+ </indexterm>
+
+ <para>
+  索引是增强数据库性能的一种常见方式。索引允许数据库服务器比没有索引时更快地找到并检索特定行。但索引也会给整个数据库系统带来额外开销，因此应当合理使用。
+ </para>
+
+
+ <sect1 id="indexes-intro">
+  <title>简介</title>
+
+  <para>
+   假设我们有一个类似如下的表：
+<programlisting>
+CREATE TABLE test1 (
+    id integer,
+    content varchar
+);
+</programlisting>
+   并且应用会发出很多如下形式的查询：
+<programlisting>
+SELECT content FROM test1 WHERE id = <replaceable>constant</replaceable>;
+</programlisting>
+   如果没有预先准备，系统就必须逐行扫描整个<structname>test1</structname>表，以找出所有匹配项。如果<structname>test1</structname>中有很多行，而这种查询只会返回很少几行（甚至可能一行也没有，或者只有一行），这显然是低效的办法。但是如果系统被要求维护一个基于<structfield>id</structfield>列的索引，它就可以用更高效的方法定位匹配行。例如，它可能只需要在一棵搜索树中向下走几层。
+  </para>
+
+  <para>
+   大多数非小说类书籍也采用了类似的方法：读者经常查找的术语和概念会被收集到书末按字母顺序排列的索引中。感兴趣的读者可以相对快速地浏览索引并翻到相应页面，而不必通读整本书才能找到自己感兴趣的内容。正如作者需要预判读者可能查找哪些条目一样，数据库程序员也需要预见哪些索引会有用。
+  </para>
+
+  <para>
+   如前所述，下列命令可用于在<structfield>id</structfield>列上创建索引：
+<programlisting>
+CREATE INDEX test1_id_index ON test1 (id);
+</programlisting>
+   <structname>test1_id_index</structname>这个名字可以自由选择，但最好选一个以后仍能让你记住该索引用途的名字。
+  </para>
+
+  <para>
+   要删除索引，使用<command>DROP INDEX</command>命令。索引可以在任何时候添加到表上，也可以在任何时候从表上删除。
+  </para>
+
+  <para>
+   一旦创建了索引，就无需再进行额外干预：系统会在表被修改时更新索引，并且会在它认为这样做比顺序扫描表更高效时，在查询中使用该索引。不过，你可能仍需要定期运行<command>ANALYZE</command>命令来更新统计信息，以便查询规划器作出更有根据的决策。关于如何判断某个索引是否被使用，以及规划器何时和为何可能选择<emphasis>不</emphasis>使用索引，可参见<xref linkend="performance-tips"/>。
+  </para>
+
+  <para>
+   索引还可以让带有搜索条件的<command>UPDATE</command>和<command>DELETE</command>命令受益。索引也可以用于连接搜索。因此，定义在连接条件组成列上的索引也能显著加速带连接的查询。
+  </para>
+
+  <para>
+   一般来说，<productname>PostgreSQL</productname>索引可用于优化包含一个或多个如下形式<literal>WHERE</literal>或<literal>JOIN</literal>子句的查询：
+
+<synopsis>
+<replaceable>indexed-column</replaceable> <replaceable>indexable-operator</replaceable> <replaceable>comparison-value</replaceable>
+</synopsis>
+
+   其中，<replaceable>indexed-column</replaceable>是索引所定义在其上的列或表达式。<replaceable>indexable-operator</replaceable>是该索引针对该列所用<firstterm>操作符类</firstterm>中的一个操作符（下文会进一步说明）。而<replaceable>comparison-value</replaceable>可以是任何非易失且不引用索引所属表的表达式。
+  </para>
+
+  <para>
+   在某些情况下，查询规划器可以从其他 SQL 构造中提取出这种形式的可索引子句。一个简单示例是，如果原始子句是
+
+<synopsis>
+<replaceable>comparison-value</replaceable> <replaceable>operator</replaceable> <replaceable>indexed-column</replaceable>
+</synopsis>
+
+   那么如果原始<replaceable>operator</replaceable>有一个可交换操作符，并且该操作符属于该索引的操作符类，就可以把它翻转成可索引的形式。
+  </para>
+
+  <para>
+   在大表上创建索引可能需要很长时间。默认情况下，<productname>PostgreSQL</productname>允许在创建索引期间并行执行读取（<command>SELECT</command>语句），但写入（<command>INSERT</command>、<command>UPDATE</command>、<command>DELETE</command>）会被阻塞，直到索引构建完成。在生产环境中，这往往不可接受。可以允许在创建索引时并行写入，但有若干注意事项需要了解，详见<xref linkend="sql-createindex-concurrently"/>。
+  </para>
+
+  <para>
+   索引创建之后，系统还必须使其与表保持同步。这会给数据操作增加开销。索引还可能阻止创建<link linkend="storage-hot">堆内元组</link>。因此，那些在查询中很少使用或从不使用的索引应当被移除。
+  </para>
+ </sect1>
+
+
+ <sect1 id="indexes-types">
+  <title>索引类型</title>
+
+  <para>
+   <productname>PostgreSQL</productname>提供了多种索引类型：B-tree、Hash、GiST、SP-GiST、GIN、BRIN，以及扩展<link
+   linkend="bloom">bloom</link>。每种索引类型都采用不同的算法，分别最适合不同类型的可索引子句。默认情况下，<link linkend="sql-createindex"><command>CREATE
+   INDEX</command></link>命令创建的是 B-tree 索引，它适用于最常见的场景。其他索引类型则通过写出关键字<literal>USING</literal>并跟上索引类型名称来选择。例如，要创建一个 Hash 索引：
+<programlisting>
+CREATE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable> USING HASH (<replaceable>column</replaceable>);
+</programlisting>
+  </para>
+
+  <sect2 id="indexes-types-btree">
+   <title>B-Tree</title>
+
+   <indexterm>
+    <primary>index</primary>
+    <secondary>B-Tree</secondary>
+   </indexterm>
+   <indexterm>
+    <primary>B-Tree</primary>
+    <see>index</see>
+   </indexterm>
+
+  <para>
+   B-树能够处理可以按某种顺序排序的数据上的等值查询和范围查询。特别是，只要已索引列参与了下列任一操作符的比较，<productname>PostgreSQL</productname>查询规划器就会考虑使用 B-树索引：
+
+<synopsis>
+&lt; &nbsp; &lt;= &nbsp; = &nbsp; &gt;= &nbsp; &gt;
+</synopsis>
+
+   与这些操作符组合等价的构造，例如<literal>BETWEEN</literal>和<literal>IN</literal>，也可以通过 B-树索引搜索来实现。此外，索引列上的<literal>IS NULL</literal>或<literal>IS NOT
+   NULL</literal>条件也可以配合 B-树索引使用。
+  </para>
+
+  <para>
+   如果模式是常量，并且锚定在字符串起始位置，优化器也可以对涉及模式匹配操作符<literal>LIKE</literal>和<literal>~</literal>的查询使用 B-树索引，例如<literal>col LIKE
+   'foo%'</literal>或<literal>col ~ '^foo'</literal>，但不能用于<literal>col LIKE '%bar'</literal>。不过，如果你的数据库没有使用 C 区域设置，就需要以一个特殊操作符类来创建该索引，才能支持模式匹配查询的索引化，详见下文<xref linkend="indexes-opclass"/>。B-树索引也可以用于<literal>ILIKE</literal>和<literal>~*</literal>，但前提是模式以非字母字符开头，也就是不会受到大小写转换影响的字符。
+  </para>
+
+  <para>
+   B-树索引还可以用于按排序顺序取回数据。这并不总是比简单扫描再排序更快，但通常会很有帮助。
+  </para>
+  </sect2>
+
+  <sect2 id="indexes-types-hash">
+   <title>Hash</title>
+
+   <indexterm>
+    <primary>index</primary>
+    <secondary>hash</secondary>
+   </indexterm>
+   <indexterm>
+    <primary>hash</primary>
+    <see>index</see>
+   </indexterm>
+
+  <para>
+   Hash 索引存储从索引列值派生出的 32 位哈希码。因此，这类索引只能处理简单的等值比较。只要已索引列参与的是使用等号操作符的比较，查询规划器就会考虑使用 Hash 索引：
+
+<synopsis>
+=
+</synopsis>
+  </para>
+  </sect2>
+
+  <sect2 id="indexes-type-gist">
+   <title>GiST</title>
+
+   <indexterm>
+    <primary>index</primary>
+    <secondary>GiST</secondary>
+   </indexterm>
+   <indexterm>
+    <primary>GiST</primary>
+    <see>index</see>
+   </indexterm>
+
+  <para>
+   GiST 索引并不是某一种单独的索引，而是一种基础设施，可在其中实现许多不同的索引策略。因此，GiST 索引可使用哪些具体操作符，取决于所采用的索引策略（即<firstterm>操作符类</firstterm>）。例如，<productname>PostgreSQL</productname>标准发布版中包含了若干二维几何数据类型的 GiST 操作符类，它们支持使用下列操作符的索引化查询：
+
+<synopsis>
+&lt;&lt; &nbsp; &amp;&lt; &nbsp; &amp;&gt; &nbsp; &gt;&gt; &nbsp; &lt;&lt;| &nbsp; &amp;&lt;| &nbsp; |&amp;&gt; &nbsp; |&gt;&gt; &nbsp; @&gt; &nbsp; &lt;@ &nbsp; ~= &nbsp; &amp;&amp;
+</synopsis>
+
+   （这些操作符的含义见<xref linkend="functions-geometry"/>。）标准发布版自带的 GiST 操作符类记录在<xref linkend="gist-builtin-opclasses-table"/>中。还有许多其他 GiST 操作符类可在<literal>contrib</literal>集合或独立项目中获得。更多信息见<xref linkend="gist"/>。
+  </para>
+
+  <para>
+   GiST 索引还能够优化<quote>最近邻</quote>搜索，例如：
+<programlisting><![CDATA[
+SELECT * FROM places ORDER BY location <-> point '(101,456)' LIMIT 10;
+]]>
+</programlisting>
+   这会找出距离给定目标点最近的十个地点。是否能做到这一点，同样取决于所使用的具体操作符类。在<xref linkend="gist-builtin-opclasses-table"/>中，可以按这种方式使用的操作符列在<quote>Ordering Operators</quote>这一列中。
+  </para>
+  </sect2>
+
+  <sect2 id="indexes-type-spgist">
+   <title>SP-GiST</title>
+
+   <indexterm>
+    <primary>index</primary>
+    <secondary>SP-GiST</secondary>
+   </indexterm>
+   <indexterm>
+    <primary>SP-GiST</primary>
+    <see>index</see>
+   </indexterm>
+
+  <para>
+   与 GiST 一样，SP-GiST 索引也提供一种支持多种搜索的基础设施。SP-GiST 允许实现大量不同的、非平衡的、基于磁盘的数据结构，例如四叉树、k-d 树和基数树（trie）。例如，<productname>PostgreSQL</productname>标准发布版中包含了用于二维点的 SP-GiST 操作符类，它支持使用下列操作符的索引化查询：
+
+<synopsis>
+&lt;&lt; &nbsp; &gt;&gt; &nbsp; ~= &nbsp; &lt;@ &nbsp; &lt;&lt;| &nbsp; |&gt;&gt;
+</synopsis>
+
+   （这些操作符的含义见<xref linkend="functions-geometry"/>。）标准发布版自带的 SP-GiST 操作符类记录在<xref linkend="spgist-builtin-opclasses-table"/>中。更多信息见<xref linkend="spgist"/>。
+  </para>
+
+  <para>
+   与 GiST 一样，SP-GiST 支持<quote>最近邻</quote>搜索。对于支持距离排序的 SP-GiST 操作符类，相应操作符列在<xref linkend="spgist-builtin-opclasses-table"/>的<quote>Ordering Operators</quote>列中。
+  </para>
+  </sect2>
+
+  <sect2 id="indexes-types-gin">
+   <title>GIN</title>
+
+   <indexterm>
+    <primary>index</primary>
+    <secondary>GIN</secondary>
+   </indexterm>
+   <indexterm>
+    <primary>GIN</primary>
+    <see>index</see>
+   </indexterm>
+
+  <para>
+   GIN 索引是<quote>倒排索引</quote>，适用于包含多个组成值的数据值，例如数组。倒排索引会为每个组成值保存单独的项，因此能够高效处理测试特定组成值是否存在的查询。
+  </para>
+
+  <para>
+   与 GiST 和 SP-GiST 一样，GIN 也能支持多种不同的用户定义索引策略，GIN 索引可使用哪些具体操作符同样取决于索引策略。例如，<productname>PostgreSQL</productname>标准发布版中包含一个用于数组的 GIN 操作符类，它支持使用下列操作符的索引化查询：
+
+<synopsis>
+&lt;@ &nbsp; @&gt; &nbsp; = &nbsp; &amp;&amp;
+</synopsis>
+
+   （这些操作符的含义见<xref linkend="functions-array"/>。）标准发布版自带的 GIN 操作符类记录在<xref linkend="gin-builtin-opclasses-table"/>中。还有许多其他 GIN 操作符类可在<literal>contrib</literal>集合或独立项目中获得。更多信息见<xref linkend="gin"/>。
+  </para>
+  </sect2>
+
+  <sect2 id="indexes-types-brin">
+   <title>BRIN</title>
+
+   <indexterm>
+    <primary>index</primary>
+    <secondary>BRIN</secondary>
+   </indexterm>
+   <indexterm>
+    <primary>BRIN</primary>
+    <see>index</see>
+   </indexterm>
+
+  <para>
+   BRIN 索引（Block Range INdexes 的缩写）存储的是关于表中连续物理块范围内所保存值的摘要信息。因此，它最适用于那些列值与表行物理顺序高度相关的列。与 GiST、SP-GiST 和 GIN 一样，BRIN 也可以支持多种不同的索引策略，而 BRIN 索引可使用哪些具体操作符取决于所采用的索引策略。对于具有线性排序顺序的数据类型，每个块范围上被索引的数据对应于该列值的最小值和最大值。这支持使用下列操作符的索引化查询：
+
+<synopsis>
+&lt; &nbsp; &lt;= &nbsp; = &nbsp; &gt;= &nbsp; &gt;
+</synopsis>
+
+   标准发布版自带的 BRIN 操作符类记录在<xref linkend="brin-builtin-opclasses-table"/>中。更多信息见<xref linkend="brin"/>。
+  </para>
+  </sect2>
+ </sect1>
+
+
+ <sect1 id="indexes-multicolumn">
+  <title>多列索引</title>
+
+  <indexterm zone="indexes-multicolumn">
+   <primary>index</primary>
+   <secondary>multicolumn</secondary>
+  </indexterm>
+
+  <para>
+   一个索引可以定义在表的多个列上。例如，如果你有一个如下形式的表：
+<programlisting>
+CREATE TABLE test2 (
+  major int,
+  minor int,
+  name varchar
+);
+</programlisting>
+   （假设你把<filename class="directory">/dev</filename>目录保存在数据库里……）并且经常发出如下查询：
+<programlisting>
+SELECT name FROM test2 WHERE major = <replaceable>constant</replaceable> AND minor = <replaceable>constant</replaceable>;
+</programlisting>
+   那么将<structfield>major</structfield>和<structfield>minor</structfield>两列一起建一个索引可能是合适的，例如：
+<programlisting>
+CREATE INDEX test2_mm_idx ON test2 (major, minor);
+</programlisting>
+  </para>
+
+  <para>
+   当前，只有 B-tree、GiST、GIN 和 BRIN 索引类型支持多键列索引。能否有多个键列，与索引中能否添加<literal>INCLUDE</literal>列无关。索引最多可以有 32 列，包括<literal>INCLUDE</literal>列。（这个限制在构建<productname>PostgreSQL</productname>时可以修改；参见文件<filename>pg_config_manual.h</filename>。）
+  </para>
+
+  <para>
+   多列 B-树索引可以用于涉及索引任意列子集的查询条件，但当对前导（最左）列存在约束时，索引效率最高。精确的规则是：对前导列的等值约束，再加上第一个没有等值约束列上的任意不等约束，总会被用来限制被扫描的索引范围。这些列右侧列上的约束会在索引中进行检查，因此总能减少访问表本体的次数，但不一定会减少必须扫描的索引范围。如果 B-树索引扫描能够有效应用跳过扫描优化，那么它在通过反复的索引搜索遍历索引时，会利用每一列约束。这可能减少需要读取的索引部分，即便一个或多个列（位于查询谓词中最低有效索引列之前）缺少常规的等值约束。跳过扫描的工作方式是内部生成一个动态的等值约束，使其匹配索引列中的每个可能值（不过这只适用于某个列缺少来自查询谓词的等值约束，且生成的约束能够与查询谓词中较后列的约束联合使用时）。
+  </para>
+
+  <para>
+   例如，给定一个<literal>(x, y)</literal>上的索引和查询条件<literal>WHERE y = 7700</literal>，B-树索引扫描可能能够应用跳过扫描优化。这通常发生在查询规划器预计：针对每个可能的<literal>N</literal>反复执行<literal>WHERE x = N AND y = 7700</literal>搜索（或者针对索引中实际存储的每个<literal>x</literal>值），在当前表上可用索引的前提下，这是最快的方法。一般来说，只有当不同的<literal>x</literal>值很少，以致规划器预计扫描能跳过索引的大部分内容时，才会采用这种方法（因为大多数叶子页都不可能包含相关元组）。如果不同的<literal>x</literal>值很多，那么就必须扫描整个索引，因此在大多数情况下，规划器会更倾向于顺序扫描表而不是使用该索引。
+  </para>
+
+  <para>
+   在至少具有一部分来自查询谓词的有用约束的 B-树扫描中，跳过扫描优化也可以被选择性地应用。例如，给定一个<literal>(a, b, c)</literal>上的索引和查询条件<literal>WHERE a = 5 AND b &gt;= 42 AND c &lt; 77</literal>，该索引可能必须从第一个<literal>a</literal> = 5 且<literal>b</literal> = 42 的条目扫描，一直到最后一个<literal>a</literal> = 5 的条目。<literal>c</literal> &gt;= 77 的索引项永远不需要在表层面进行过滤，但是否值得在索引内部跳过它们，则未必。发生跳过时，扫描会启动一次新的索引搜索，把自身从当前<literal>a</literal> = 5 且<literal>b</literal> = N 分组的末尾重新定位（也就是索引中第一个<literal>a = 5 AND b = N AND c &gt;= 77</literal>元组出现的位置），移动到下一个这类分组的起始位置（也就是索引中第一个<literal>a = 5 AND b = N + 1</literal>元组出现的位置）。
+  </para>
+
+  <para>
+   多列 GiST 索引可以用于涉及索引任意列子集的查询条件。附加列上的条件会限制索引返回的项，但决定索引需要扫描多少内容的，最重要的仍是第一列上的条件。如果第一列只有很少几个不同值，即使其他列有很多不同值，GiST 索引也会相对低效。
+  </para>
+
+  <para>
+   多列 GIN 索引可以用于涉及索引任意列子集的查询条件。与 B-树或 GiST 不同，无论查询条件使用的是哪一列索引列，GIN 的索引搜索效果都一样。
+  </para>
+
+  <para>
+   多列 BRIN 索引可以用于涉及索引任意列子集的查询条件。和 GIN 一样、不同于 B-树或 GiST，无论查询条件使用的是哪一列索引列，索引搜索效果都一样。在单个表上使用多个 BRIN 索引，而不是使用一个多列 BRIN 索引的唯一理由，是需要不同的<literal>pages_per_range</literal>存储参数。
+  </para>
+
+  <para>
+   当然，每一列都必须配合适合该索引类型的操作符使用；涉及其他操作符的子句不会被考虑。
+  </para>
+
+  <para>
+   多列索引应谨慎使用。在大多数情况下，单列索引已经足够，而且更省空间、也更省时间。除非表的使用方式极其程式化，否则超过三列的索引通常不会有帮助。关于不同索引配置优缺点的讨论，还可参见<xref linkend="indexes-bitmap-scans"/>和<xref linkend="indexes-index-only-scans"/>。
+  </para>
+ </sect1>
+
+
+ <sect1 id="indexes-ordering">
+  <title>索引和<literal>ORDER BY</literal></title>
+
+  <indexterm zone="indexes-ordering">
+   <primary>index</primary>
+   <secondary>and <literal>ORDER BY</literal></secondary>
+  </indexterm>
+
+  <para>
+   除了简单地找到查询要返回的行之外，索引还可能能够以某种特定排序顺序交付这些行。这使得查询中的<literal>ORDER BY</literal>要求无需额外排序步骤即可满足。在<productname>PostgreSQL</productname>当前支持的索引类型中，只有 B-tree 能产生有序输出，其他索引类型返回匹配行的顺序则未指定，并且依赖具体实现。
+  </para>
+
+  <para>
+   规划器在满足<literal>ORDER BY</literal>要求时，会考虑两种方案：扫描一个与该要求匹配的可用索引，或者按物理顺序扫描表再显式排序。对于需要扫描表中很大一部分内容的查询，显式排序通常会比使用索引更快，因为它遵循顺序访问模式，需要的磁盘 I/O 更少。只有在只需取出少量行时，索引才更有价值。一个重要的特例是<literal>ORDER BY</literal>与<literal>LIMIT</literal> <replaceable>n</replaceable>组合使用：显式排序必须处理所有数据才能找出最前面的<replaceable>n</replaceable>行，而如果有一个与<literal>ORDER BY</literal>匹配的索引，就可以直接取回前<replaceable>n</replaceable>行，而完全不必扫描剩余数据。
+  </para>
+
+  <para>
+   默认情况下，B-树索引按升序存储其项，并将空值放在最后（在其他方面相等的项之间，表 TID 会被视为一个决胜列）。这意味着，对列<literal>x</literal>上的索引进行前向扫描，会产生满足<literal>ORDER BY x</literal>的输出（更完整地说，是<literal>ORDER BY x ASC NULLS LAST</literal>）。索引也可以反向扫描，从而产生满足<literal>ORDER BY x DESC</literal>的输出（更完整地说，是<literal>ORDER BY x DESC NULLS FIRST</literal>，因为<literal>NULLS FIRST</literal>是<literal>ORDER BY DESC</literal>的默认行为）。
+  </para>
+
+  <para>
+   你可以在创建 B-树索引时通过指定<literal>ASC</literal>、<literal>DESC</literal>、<literal>NULLS FIRST</literal>和/或<literal>NULLS LAST</literal>选项来调整索引的排序方式，例如：
+<programlisting>
+CREATE INDEX test2_info_nulls_low ON test2 (info NULLS FIRST);
+CREATE INDEX test3_desc_index ON test3 (id DESC NULLS LAST);
+</programlisting>
+   一个按升序且空值在前存储的索引，根据扫描方向不同，可以满足<literal>ORDER BY x ASC NULLS FIRST</literal>或<literal>ORDER BY x DESC NULLS LAST</literal>。
+  </para>
+
+  <para>
+   你可能会疑惑，既然借助两个选项再加上反向扫描的可能性就能覆盖所有<literal>ORDER BY</literal>变体，为什么还要提供四个选项。对于单列索引，这些选项确实是冗余的，但对于多列索引它们就可能很有用。考虑一个<literal>(x, y)</literal>上的两列索引：前向扫描时它能满足<literal>ORDER BY x, y</literal>，反向扫描时能满足<literal>ORDER BY x DESC, y DESC</literal>。但应用也可能经常需要<literal>ORDER BY x ASC, y DESC</literal>。普通索引无法产生这种顺序，而如果把索引定义成<literal>(x ASC, y DESC)</literal>或<literal>(x DESC, y ASC)</literal>，就可以做到。
+  </para>
+
+  <para>
+   显然，具有非默认排序方式的索引是一项相当专门的特性，但在某些查询上它们有时能带来巨大的加速。是否值得维护这样的索引，取决于你需要这种特殊排序的查询出现得有多频繁。
+  </para>
+ </sect1>
+
+
+ <sect1 id="indexes-bitmap-scans">
+  <title>组合多个索引</title>
+
+  <indexterm zone="indexes-bitmap-scans">
+   <primary>index</primary>
+   <secondary>combining multiple indexes</secondary>
+  </indexterm>
+
+  <indexterm zone="indexes-bitmap-scans">
+   <primary>bitmap scan</primary>
+  </indexterm>
+
+  <para>
+   单次索引扫描只能利用那些在索引列上使用了该索引操作符类中操作符、并且彼此以<literal>AND</literal>连接的查询子句。例如，给定一个<literal>(a, b)</literal>上的索引，查询条件<literal>WHERE a = 5 AND b = 6</literal>可以使用该索引，而<literal>WHERE a = 5 OR b = 6</literal>这样的查询就不能直接使用该索引。
+  </para>
+
+  <para>
+   幸运的是，<productname>PostgreSQL</productname>能够组合多个索引（包括同一个索引的多次使用），以处理单次索引扫描无法实现的情况。系统可以在多个索引扫描之间形成<literal>AND</literal>和<literal>OR</literal>条件。例如，<literal>WHERE x = 42 OR x = 47 OR x = 53 OR x = 99</literal>这样的查询，可以拆分成对<literal>x</literal>上的一个索引进行四次独立扫描，每次扫描使用一个查询子句。然后将这些扫描的结果做 OR 运算以得到最终结果。另一个例子是，如果我们在<literal>x</literal>和<literal>y</literal>上分别有索引，那么<literal>WHERE x = 5 AND y = 6</literal>这样的查询，其一种可能实现方式就是分别用两个索引处理相应条件，然后将索引结果做 AND 运算，以确定结果行。
+  </para>
+
+  <para>
+   为了组合多个索引，系统会扫描每个所需索引，并在内存中准备一个<firstterm>位图</firstterm>，给出满足该索引条件的表行位置。然后按查询需要对这些位图进行 AND 和 OR 运算。最后，再访问并返回实际的表行。表行是按物理顺序访问的，因为位图就是这样布局的；这意味着原始索引中的任何排序都会丢失，所以如果查询带有<literal>ORDER
+   BY</literal>子句，就需要单独的排序步骤。也正因为如此，再加上每多一次索引扫描都会增加额外时间，规划器有时会选择使用简单的单一索引扫描，即使还有其他本来也可以利用的索引。
+  </para>
+
+  <para>
+   除了最简单的应用之外，通常会有多种可能有用的索引组合，数据库开发者必须权衡决定提供哪些索引。有时多列索引最好，但有时创建独立索引并依赖索引组合功能会更合适。例如，如果你的工作负载包含一组查询：有时只涉及列<literal>x</literal>，有时只涉及列<literal>y</literal>，有时同时涉及两列，那么你可以选择分别在<literal>x</literal>和<literal>y</literal>上创建两个独立索引，并依赖索引组合来处理同时使用两列的查询。你也可以创建一个<literal>(x, y)</literal>上的多列索引。对于同时涉及两列的查询，这个索引通常会比索引组合更高效，但正如<xref linkend="indexes-multicolumn"/>中所讨论的，它对于只涉及<literal>y</literal>的查询就没那么有用了。具体能有多大用处，取决于 B-树索引跳过扫描优化的效果；如果<literal>x</literal>的不同值不超过几百个，跳过扫描会让针对特定<literal>y</literal>值的搜索仍然具有相当不错的效率。再加上一个<literal>(x, y)</literal>上的多列索引和一个单独的<literal>y</literal>索引，也可能工作得相当好。对于只涉及<literal>x</literal>的查询，多列索引也可以使用，但它会比单独的<literal>x</literal>索引更大，因此更慢。最后一种选择是同时创建这三个索引，但这大概只有在该表被搜索的频率远高于被更新的频率，并且三类查询都很常见时才合理。如果其中一种查询远没有另外两种常见，那么你大概只需创建最适合常见查询类型的两个索引即可。
+  </para>
+
+ </sect1>
+
+
+ <sect1 id="indexes-unique">
+  <title>唯一索引</title>
+
+  <indexterm zone="indexes-unique">
+   <primary>index</primary>
+   <secondary>unique</secondary>
+  </indexterm>
+
+  <para>
+   索引还可以用于强制列值唯一，或者强制多个列组合值唯一。
+<synopsis>
+CREATE UNIQUE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable> (<replaceable>column</replaceable> <optional>, ...</optional>) <optional> NULLS <optional> NOT </optional> DISTINCT </optional>;
+</synopsis>
+   当前，只有 B-树索引可以声明为唯一。
+  </para>
+
+  <para>
+   当一个索引被声明为唯一时，就不允许存在多个具有相同索引值的表行。默认情况下，唯一列中的空值不被视为相等，因此该列中可以有多个空值。<literal>NULLS NOT DISTINCT</literal>选项会改变这一点，使索引将空值视为相等。多列唯一索引只会拒绝那种在多行中所有索引列都相等的情况。
+  </para>
+
+  <para>
+   当为表定义唯一约束或主键时，<productname>PostgreSQL</productname>会自动创建一个唯一索引。该索引覆盖构成主键或唯一约束的列（必要时是多列索引），并且正是它在强制执行该约束。
+  </para>
+
+  <note>
+   <para>
+    无需手工在唯一列上创建索引；那样做只会重复自动创建的索引。
+   </para>
+  </note>
+ </sect1>
+
+
+ <sect1 id="indexes-expressional">
+  <title>表达式索引</title>
+
+  <indexterm zone="indexes-expressional">
+   <primary>index</primary>
+   <secondary sortas="expressions">on expressions</secondary>
+  </indexterm>
+
+  <para>
+   索引列不一定非得是底层表中的某一列，也可以是一个由表中一列或多列计算得到的函数或标量表达式。这个特性有助于基于计算结果来快速访问表。
+  </para>
+
+  <para>
+   例如，进行大小写不敏感比较的一种常见方式，是使用<function>lower</function>函数：
+<programlisting>
+SELECT * FROM test1 WHERE lower(col1) = 'value';
+</programlisting>
+   如果为<literal>lower(col1)</literal>函数的结果定义了索引，这个查询就可以使用该索引：
+<programlisting>
+CREATE INDEX test1_lower_col1_idx ON test1 (lower(col1));
+</programlisting>
+  </para>
+
+  <para>
+   如果我们把这个索引声明为<literal>UNIQUE</literal>，那么它不仅会阻止创建那些<literal>col1</literal>值仅在大小写上不同的行，也会阻止创建<literal>col1</literal>值完全相同的行。因此，表达式索引可用于强制那些无法定义为简单唯一约束的约束。
+  </para>
+
+  <para>
+   再例如，如果你经常执行如下查询：
+<programlisting>
+SELECT * FROM people WHERE (first_name || ' ' || last_name) = 'John Smith';
+</programlisting>
+   那么创建一个如下索引可能是值得的：
+<programlisting>
+CREATE INDEX people_names ON people ((first_name || ' ' || last_name));
+</programlisting>
+  </para>
+
+  <para>
+   正如第二个示例所示，<command>CREATE INDEX</command>命令的语法通常要求对索引表达式写上圆括号。当表达式只是一个函数调用时，则可以像第一个示例那样省略这些圆括号。
+  </para>
+
+  <para>
+   维护索引表达式的代价相对较高，因为每次插入一行以及每次<link linkend="storage-hot">非 HOT 更新</link>都必须计算派生表达式。不过，在使用索引搜索时，索引表达式<emphasis>不会</emphasis>被重新计算，因为它们已经存储在索引中。在上面的两个示例里，系统看到的查询只是<literal>WHERE indexedcolumn = 'constant'</literal>，因此搜索速度与其他简单索引查询相同。因此，当检索速度比插入和更新速度更重要时，表达式索引会很有用。
+  </para>
+ </sect1>
+
+
+ <sect1 id="indexes-partial">
+  <title>部分索引</title>
+
+  <indexterm zone="indexes-partial">
+   <primary>index</primary>
+   <secondary>partial</secondary>
+  </indexterm>
+
+  <para>
+   <firstterm>部分索引</firstterm>是建立在表的一个子集上的索引；这个子集由一个条件表达式定义（称为部分索引的<firstterm>谓词</firstterm>）。索引中只包含满足该谓词的表行的项。部分索引是一种专门特性，但有几种场景下它会很有用。
+  </para>
+
+  <para>
+   使用部分索引的一个主要原因是避免索引常见值。由于搜索常见值的查询（即占全部表行百分之几以上的值）反正也不会使用索引，因此完全没有必要把这些行保留在索引里。这会减小索引尺寸，从而加快那些确实会使用该索引的查询。它也会加快很多表更新操作，因为索引并不需要在所有情况下都更新。<xref linkend="indexes-partial-ex1"/>展示了这种思路的一种可能应用。
+  </para>
+
+  <example id="indexes-partial-ex1">
+   <title>建立一个部分索引以排除常见值</title>
+
+   <para>
+    假设你把 Web 服务器访问日志存储在数据库中。大多数访问来自你所在组织的 IP 地址范围，但也有一些来自其他地方（例如使用拨号连接的员工）。如果你按 IP 搜索时主要关心外部访问，那么你大概没有必要为对应于组织内子网的 IP 范围建索引。
+   </para>
+
+   <para>
+    假设有一个如下表：
+<programlisting>
+CREATE TABLE access_log (
+    url varchar,
+    client_ip inet,
+    ...
+);
+</programlisting>
+   </para>
+
+   <para>
+    要创建一个适合这个例子的部分索引，可使用如下命令：
+<programlisting>
+CREATE INDEX access_log_client_ip_ix ON access_log (client_ip)
+WHERE NOT (client_ip &gt; inet '192.168.100.0' AND
+           client_ip &lt; inet '192.168.100.255');
+</programlisting>
+   </para>
+
+   <para>
+    一个可以使用该索引的典型查询是：
+<programlisting>
+SELECT *
+FROM access_log
+WHERE url = '/index.html' AND client_ip = inet '212.78.10.32';
+</programlisting>
+    这里查询中的 IP 地址落在部分索引覆盖的范围内。下面这个查询则不能使用该部分索引，因为它使用了一个被索引排除掉的 IP 地址：
+<programlisting>
+SELECT *
+FROM access_log
+WHERE url = '/index.html' AND client_ip = inet '192.168.100.23';
+</programlisting>
+   </para>
+
+   <para>
+    请注意，这类部分索引要求常见值事先可知，因此最适合用于数据分布不会变化的场景。也可以偶尔重建这类索引以适应新的数据分布，但那会增加维护工作量。
+   </para>
+  </example>
+
+  <para>
+   部分索引的另一种可能用途，是把典型查询工作负载不感兴趣的值排除在索引之外，如<xref
+   linkend="indexes-partial-ex2"/>所示。这样会得到与上面相同的好处，但也意味着这些<quote>不感兴趣</quote>的值无法通过该索引访问，即使在那种情况下索引扫描可能是有利的。显然，为这种场景建立部分索引需要大量的谨慎和实验。
+  </para>
+
+  <example id="indexes-partial-ex2">
+   <title>建立一个部分索引以排除不感兴趣的值</title>
+
+   <para>
+    如果你有一张表，其中同时包含已开账单和未开账单的订单，而未开账单订单只占整张表的一小部分，却是最常被访问的那些行，那么你可以通过只为未开账单的行创建索引来提升性能。创建该索引的命令如下：
+<programlisting>
+CREATE INDEX orders_unbilled_index ON orders (order_nr)
+    WHERE billed is not true;
+</programlisting>
+   </para>
+
+   <para>
+    一个可能会使用该索引的查询是：
+<programlisting>
+SELECT * FROM orders WHERE billed is not true AND order_nr &lt; 10000;
+</programlisting>
+    不过，这个索引也可以用于那些完全不涉及<structfield>order_nr</structfield>的查询，例如：
+<programlisting>
+SELECT * FROM orders WHERE billed is not true AND amount &gt; 5000.00;
+</programlisting>
+    这不像在<structfield>amount</structfield>列上建立部分索引那样高效，因为系统必须扫描整个索引。不过，如果未开账单的订单相对较少，那么即使只是用这个部分索引来找出未开账单订单，也可能是值得的。
+   </para>
+
+   <para>
+    请注意，下面这个查询不能使用该索引：
+<programlisting>
+SELECT * FROM orders WHERE order_nr = 3501;
+</programlisting>
+    因为订单 3501 可能属于已开账单订单，也可能属于未开账单订单。
+   </para>
+  </example>
+
+  <para>
+   <xref linkend="indexes-partial-ex2"/>也说明了：索引列和谓词中使用的列不必一致。<productname>PostgreSQL</productname>支持带任意谓词的部分索引，只要其中只涉及正在建立索引的那张表的列。不过要记住，谓词必须与那些希望从该索引受益的查询中使用的条件相匹配。更准确地说，只有当系统能够识别出查询的<literal>WHERE</literal>条件在数学上蕴含该索引的谓词时，部分索引才能用于该查询。<productname>PostgreSQL</productname>并没有一个复杂的定理证明器，来识别那些写法不同但数学上等价的表达式。（不仅构建这样一个通用定理证明器极其困难，而且它很可能也会慢到失去实际用途。）系统可以识别简单的不等式蕴含，例如<quote>x &lt; 1</quote>蕴含<quote>x &lt; 2</quote>；否则，谓词条件必须与查询<literal>WHERE</literal>条件的某一部分完全匹配，否则索引不会被识别为可用。匹配发生在查询规划阶段，而不是运行时。因此，参数化查询子句无法与部分索引配合工作。例如，一个带参数的预备查询可能写成<quote>x &lt; ?</quote>，而对于参数的所有可能取值，它都不可能蕴含<quote>x &lt; 2</quote>。
+  </para>
+
+  <para>
+   部分索引的第三种可能用途，甚至不要求索引被查询使用。这里的思路是像<xref
+   linkend="indexes-partial-ex3"/>那样，在表的一个子集上创建唯一索引。这样就能在满足索引谓词的那些行之间强制唯一性，而不会约束不满足谓词的行。
+  </para>
+
+  <example id="indexes-partial-ex3">
+   <title>建立一个部分唯一索引</title>
+
+   <para>
+    假设我们有一张描述测试结果的表。我们希望确保对于给定的<literal>subject</literal>和<literal>target</literal>组合，只有一条<quote>成功</quote>记录，但可以有任意多条<quote>失败</quote>记录。实现方法之一如下：
+<programlisting>
+CREATE TABLE tests (
+    subject text,
+    target text,
+    success boolean,
+    ...
+);
+
+CREATE UNIQUE INDEX tests_success_constraint ON tests (subject, target)
+    WHERE success;
+</programlisting>
+    当成功测试很少而失败测试很多时，这是一种特别高效的方法。也可以通过创建一个带<literal>IS NULL</literal>限制的唯一部分索引，来让某一列只允许出现一个空值。
+   </para>
+
+  </example>
+
+  <para>
+   最后，部分索引还可以用来影响系统的查询计划选择。同样，分布异常的数据集可能导致系统在实际上不应该使用索引的时候选择使用它。在这种情况下，可以把索引建成对那个有问题的查询不可用。通常，<productname>PostgreSQL</productname>会对索引使用作出合理选择（例如，它会在检索常见值时避免使用索引，因此前面的例子实际上只是节省索引空间，而不是为了避免使用索引所必需的），如果出现明显错误的计划选择，那就应当提交 bug 报告。
+  </para>
+
+  <para>
+   请记住，建立部分索引意味着你至少与查询规划器一样了解情况，尤其是你知道索引何时可能是有利的。形成这种认识需要经验，以及对<productname>PostgreSQL</productname>中索引工作方式的理解。在大多数情况下，部分索引相比普通索引的优势都很小。有些场景下它们甚至会适得其反，如<xref
+   linkend="indexes-partial-ex4"/>所示。
+  </para>
+
+  <example id="indexes-partial-ex4">
+   <title>不要把部分索引当作分区的替代品</title>
+
+   <para>
+    你可能会想创建一大组互不重叠的部分索引，例如
+
+<programlisting>
+CREATE INDEX mytable_cat_1 ON mytable (data) WHERE category = 1;
+CREATE INDEX mytable_cat_2 ON mytable (data) WHERE category = 2;
+CREATE INDEX mytable_cat_3 ON mytable (data) WHERE category = 3;
+...
+CREATE INDEX mytable_cat_<replaceable>N</replaceable> ON mytable (data) WHERE category = <replaceable>N</replaceable>;
+</programlisting>
+
+    这是个坏主意！几乎可以肯定，你最好建立一个单独的非部分索引，例如：
+
+<programlisting>
+CREATE INDEX mytable_cat_data ON mytable (category, data);
+</programlisting>
+
+    （把 category 列放在前面，原因见<xref linkend="indexes-multicolumn"/>。）虽然在这个较大的索引中搜索，可能要比在较小索引中搜索多下降几层树，但这几乎肯定仍然比规划器为了从这些部分索引中选出合适的一个所付出的代价更低。问题的核心在于，系统并不了解这些部分索引之间的关系，因此会费力地逐个测试它们，看它们是否适用于当前查询。
+   </para>
+
+   <para>
+    如果你的表大到单个索引确实不是好主意，那么你应该考虑改用分区（见<xref linkend="ddl-partitioning"/>）。借助这种机制，系统能够理解这些表和索引彼此不重叠，因此有可能获得好得多的性能。
+   </para>
+  </example>
+
+  <para>
+   关于部分索引的更多信息可参见<xref
+   linkend="ston89b"/>、<xref linkend="olson93"/>和<xref
+   linkend="seshadri95"/>。
+  </para>
+ </sect1>
+
+
+ <sect1 id="indexes-index-only-scans">
+  <title>仅索引扫描和覆盖索引</title>
+
+  <indexterm zone="indexes-index-only-scans">
+   <primary>索引</primary>
+   <secondary>仅索引扫描</secondary>
+  </indexterm>
+  <indexterm zone="indexes-index-only-scans">
+   <primary>仅索引扫描</primary>
+  </indexterm>
+  <indexterm zone="indexes-index-only-scans">
+   <primary>索引</primary>
+   <secondary>覆盖</secondary>
+  </indexterm>
+  <indexterm zone="indexes-index-only-scans">
+   <primary>覆盖索引</primary>
+  </indexterm>
+
+  <para>
+   <productname>PostgreSQL</productname>中的所有索引都是<firstterm>二级</firstterm>索引，也就是说，每个索引都与表的主数据区分开存储（在<productname>PostgreSQL</productname>术语中，这个主数据区称为表的<firstterm>堆</firstterm>）。这意味着，在普通索引扫描中，每次取回一行都需要同时从索引和堆中取数据。此外，尽管满足某个可索引<literal>WHERE</literal>条件的索引项通常在索引中彼此接近，但它们引用的表行却可能分布在堆中的任何位置。因此，索引扫描的堆访问部分会涉及大量对堆的随机访问，这可能很慢，尤其是在传统旋转介质上。（正如<xref linkend="indexes-bitmap-scans"/>中所述，位图扫描试图通过按排序顺序进行堆访问来缓解这项成本，但那也只能缓解到一定程度。）
+  </para>
+
+  <para>
+   为了解决这个性能问题，<productname>PostgreSQL</productname>支持<firstterm>仅索引扫描</firstterm>，它可以仅凭索引而不访问堆来回答查询。基本思路是直接从每个索引项中返回值，而不是再去查对应的堆项。要使用这种方法，有两个根本限制：
+
+   <orderedlist>
+    <listitem>
+     <para>
+      索引类型必须支持仅索引扫描。B-树索引总是支持。GiST 和 SP-GiST 索引对某些操作符类支持仅索引扫描，但对另一些则不支持。其他索引类型则完全不支持。底层要求是，索引必须实际存储原始数据值，或者至少能够重建出每个索引项对应的原始数据值。反例是 GIN 索引，它不能支持仅索引扫描，因为每个索引项通常只保存原始数据值的一部分。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      查询只能引用存储在索引中的列。例如，给定一个表，它有列<literal>x</literal>、<literal>y</literal>和<literal>z</literal>，而索引建立在<literal>x</literal>和<literal>y</literal>上，那么下面这些查询可以使用仅索引扫描：
+<programlisting>
+SELECT x, y FROM tab WHERE x = 'key';
+SELECT x FROM tab WHERE x = 'key' AND y &lt; 42;
+</programlisting>
+      但下面这些查询则不能：
+<programlisting>
+SELECT x, z FROM tab WHERE x = 'key';
+SELECT x FROM tab WHERE x = 'key' AND z &lt; 42;
+</programlisting>
+      （表达式索引和部分索引会让这条规则变得更复杂，下文会讨论。）
+     </para>
+    </listitem>
+   </orderedlist>
+  </para>
+
+  <para>
+   如果这两个基本要求满足，那么查询所需的所有数据值都能从索引中取得，因此从物理上说仅索引扫描是可行的。不过，在<productname>PostgreSQL</productname>中，任何表扫描还有一个额外要求：它必须验证每个取回的行对该查询的 MVCC 快照是否<quote>可见</quote>，如<xref linkend="mvcc"/>所述。可见性信息并不保存在索引项中，而只保存在堆项中；因此乍看之下，似乎每次取回行无论如何都要访问堆。这在表行最近被修改过时的确如此。然而，对于很少变化的数据，这个问题有办法绕开。<productname>PostgreSQL</productname>会跟踪表堆中每个页面是否其中所有行都已经足够老，以至于对当前和未来所有事务都可见。这个信息保存在该表的<firstterm>可见性映射</firstterm>中的一个位里。仅索引扫描在找到候选索引项后，会检查对应堆页面的可见性映射位。如果该位已设置，那么这行就已知可见，数据可以直接返回而无需进一步工作。如果没有设置，就必须访问堆项来判断该行是否可见，这样相对标准索引扫描就没有性能优势。即使在成功的情况下，这种做法也是用访问可见性映射来替代访问堆；但由于可见性映射比它描述的堆小四个数量级，访问它所需的物理 I/O 要少得多。在大多数场景下，可见性映射始终都会缓存于内存中。
+  </para>
+
+  <para>
+   简而言之，尽管满足那两个基本要求时就有可能使用仅索引扫描，但只有当表中相当一部分堆页的<quote>全部可见</quote>（all-visible）映射位已被设置时，它才会带来收益。不过，很多表都会有相当大一部分行长期不变，因此这种扫描方式在实践中非常有用。
+  </para>
+
+  <para>
+   <indexterm>
+    <primary><literal>INCLUDE</literal></primary>
+    <secondary>in index definitions</secondary>
+   </indexterm>
+   为了有效利用仅索引扫描特性，你可以选择创建一个<firstterm>覆盖索引</firstterm>，也就是专门设计来包含某一类高频查询所需列的索引。由于查询通常需要取回的列不止是用于搜索的那些列，<productname>PostgreSQL</productname>允许你创建一种索引，其中某些列只是<quote>负载</quote>，而不是搜索键的一部分。这是通过添加一个<literal>INCLUDE</literal>子句列出这些额外列来实现的。例如，如果你经常运行如下查询：
+<programlisting>
+SELECT y FROM tab WHERE x = 'key';
+</programlisting>
+   传统上，为了加速这类查询，通常会只在<literal>x</literal>上创建一个索引。但如果将索引定义为：
+<programlisting>
+CREATE INDEX tab_x_y ON tab(x) INCLUDE (y);
+</programlisting>
+   那么这些查询就可以以仅索引扫描的方式完成，因为<literal>y</literal>可以直接从索引中取得，而不必访问堆。
+  </para>
+
+  <para>
+   由于列<literal>y</literal>不是索引搜索键的一部分，因此它不必属于该索引能够处理的数据类型；它只是被存储在索引中，而不会被索引机制解释。此外，如果该索引是唯一索引，即
+<programlisting>
+CREATE UNIQUE INDEX tab_x_y ON tab(x) INCLUDE (y);
+</programlisting>
+   那么唯一性条件只作用于列<literal>x</literal>，而不作用于<literal>x</literal>和<literal>y</literal>的组合。（<literal>INCLUDE</literal>子句也可以写在<literal>UNIQUE</literal>和<literal>PRIMARY KEY</literal>约束中，作为建立这种索引的另一种语法。）
+  </para>
+
+  <para>
+   向索引中添加非键负载列时，明智的做法是保持保守，尤其是宽列。如果某个索引元组超过该索引类型允许的最大尺寸，数据插入就会失败。无论如何，非键列都会复制索引对应表中的数据并让索引膨胀，因此可能拖慢搜索。另外请记住，除非表变化足够缓慢，以至于仅索引扫描很可能无需访问堆，否则把负载列包含在索引中并没有太大意义。如果反正必须访问堆元组，那么顺便从那里取出该列的值也不会增加额外成本。其他限制包括：当前不支持把表达式作为包含列；并且当前只有 B-树、GiST 和 SP-GiST 索引支持包含列。
+  </para>
+
+  <para>
+   在<productname>PostgreSQL</productname>还没有<literal>INCLUDE</literal>特性之前，人们有时会通过把负载列写成普通索引列来制作覆盖索引，也就是写成：
+<programlisting>
+CREATE INDEX tab_x_y ON tab(x, y);
+</programlisting>
+   即便他们从没打算把<literal>y</literal>作为<literal>WHERE</literal>子句的一部分来使用。只要这些额外列位于尾部，这样做就没问题；如果把它们放到前导位置，则出于<xref linkend="indexes-multicolumn"/>中解释的原因，是不明智的。不过，这种方法无法支持你希望索引对键列强制唯一性的场景。
+  </para>
+
+  <para>
+   <firstterm>后缀截断</firstterm>总会从 B-Tree 上层移除非键列。作为负载列，它们从不会被用于指导索引扫描。截断过程还会在剩余键列前缀已经足以描述最低 B-Tree 层上的元组时，移除一个或多个尾随键列。实践中，不带<literal>INCLUDE</literal>子句的覆盖索引通常也会避免在上层存储那些实际上只是负载的列。不过，把负载列显式定义为非键列，能<emphasis>可靠地</emphasis>让上层中的元组保持较小。
+  </para>
+
+  <para>
+   原则上，仅索引扫描也可以和表达式索引一起使用。例如，给定一个<literal>f(x)</literal>上的索引，其中<literal>x</literal>是表的一列，那么按理说应该可以把
+<programlisting>
+SELECT f(x) FROM tab WHERE f(x) &lt; 1;
+</programlisting>
+   执行成一次仅索引扫描；如果<literal>f()</literal>是一个计算代价很高的函数，这会非常有吸引力。不过，<productname>PostgreSQL</productname>的规划器目前在这种情况上还不够聪明。它只会在查询所需的所有<emphasis>列</emphasis>都能从索引取得时，才认为查询可能通过仅索引扫描执行。在这个例子里，除了在<literal>f(x)</literal>这个上下文中，<literal>x</literal>本身并不需要，但规划器意识不到这一点，因此得出无法做仅索引扫描的结论。如果仅索引扫描看起来足够值得，可以通过把<literal>x</literal>作为包含列加进去来绕过这一点，例如：
+<programlisting>
+CREATE INDEX tab_f_x ON tab (f(x)) INCLUDE (x);
+</programlisting>
+   还有一个额外注意事项：如果目标是避免重新计算<literal>f(x)</literal>，那么规划器不一定会把那些不在可索引<literal>WHERE</literal>子句中的<literal>f(x)</literal>用法与索引列匹配起来。对于上面展示的简单查询，它通常能做对，但对于涉及连接的查询则未必。未来版本的<productname>PostgreSQL</productname>可能会修复这些不足。
+  </para>
+
+  <para>
+   部分索引与仅索引扫描之间也有有趣的相互作用。考虑<xref linkend="indexes-partial-ex3"/>中展示的这个部分索引：
+<programlisting>
+CREATE UNIQUE INDEX tests_success_constraint ON tests (subject, target)
+    WHERE success;
+</programlisting>
+   原则上，我们可以在这个索引上做仅索引扫描，以满足如下查询：
+<programlisting>
+SELECT target FROM tests WHERE subject = 'some-subject' AND success;
+</programlisting>
+   但这里有个问题：<literal>WHERE</literal>子句引用了<literal>success</literal>，而它并不能作为索引的结果列取得。尽管如此，仍然可能做仅索引扫描，因为执行计划在运行时不需要重新检查<literal>WHERE</literal>子句的这一部分：索引中找到的所有项都必然满足<literal>success = true</literal>，因此计划里无需显式检查它。<productname>PostgreSQL</productname> 9.6 及更高版本能够识别这种情况，并允许生成仅索引扫描；更早的版本则不能。
+  </para>
+ </sect1>
+
+
+ <sect1 id="indexes-opclass">
+  <title>操作符类和操作符族</title>
+
+  <indexterm zone="indexes-opclass">
+   <primary>operator class</primary>
+  </indexterm>
+
+  <indexterm zone="indexes-opclass">
+   <primary>operator family</primary>
+  </indexterm>
+
+  <para>
+   一个索引定义可以为索引的每一列指定一个<firstterm>操作符类</firstterm>。
+<synopsis>
+CREATE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable> (<replaceable>column</replaceable> <replaceable>opclass</replaceable> [ ( <replaceable>opclass_options</replaceable> ) ] <optional><replaceable>sort options</replaceable></optional> <optional>, ...</optional>);
+</synopsis>
+   操作符类标识该索引在该列上要使用哪些操作符。例如，类型<type>int4</type>上的一个 B-树索引会使用<literal>int4_ops</literal>类；这个操作符类包含对<type>int4</type>值进行比较所需的函数。实践中，列数据类型的默认操作符类通常已经足够。之所以存在操作符类，主要是因为对某些数据类型来说，可能存在多种有意义的索引行为。例如，我们可能希望按绝对值排序一种复数数据类型，也可能希望按实部排序。我们可以通过为该数据类型定义两个操作符类，并在创建索引时选择合适的那个来做到这一点。操作符类决定了基础排序顺序（之后还可以通过添加排序选项<literal>COLLATE</literal>、<literal>ASC</literal>/<literal>DESC</literal>和/或<literal>NULLS FIRST</literal>/<literal>NULLS LAST</literal>来修改）。
+  </para>
+
+  <para>
+   除了默认操作符类之外，还有一些内置操作符类：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      操作符类<literal>text_pattern_ops</literal>、<literal>varchar_pattern_ops</literal>和<literal>bpchar_pattern_ops</literal>分别支持类型<type>text</type>、<type>varchar</type>和<type>char</type>上的 B-树索引。它们与默认操作符类的区别在于，值是严格按字符逐个比较，而不是按照区域设置相关的排序规则比较。因此，当数据库未使用标准<quote>C</quote>区域设置时，这些操作符类适用于涉及模式匹配表达式（<literal>LIKE</literal>或 POSIX 正则表达式）的查询。例如，你可以像这样为一个<type>varchar</type>列建立索引：
+<programlisting>
+CREATE INDEX test_index ON test_table (col varchar_pattern_ops);
+</programlisting>
+      注意，如果你希望涉及普通<literal>&lt;</literal>、<literal>&lt;=</literal>、<literal>&gt;</literal>或<literal>&gt;=</literal>比较的查询也能使用索引，那么还应该再创建一个使用默认操作符类的索引。这类查询不能使用<literal><replaceable>xxx</replaceable>_pattern_ops</literal>操作符类。（不过普通等值比较是可以使用这些操作符类的。）同一列上可以创建多个使用不同操作符类的索引。如果你使用的是 C 区域设置，则不需要<literal><replaceable>xxx</replaceable>_pattern_ops</literal>操作符类，因为带默认操作符类的索引在 C 区域设置下就可以用于模式匹配查询。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+
+  <para>
+    下面的查询会显示所有已定义的操作符类：
+
+<programlisting>
+SELECT am.amname AS index_method,
+       opc.opcname AS opclass_name,
+       opc.opcintype::regtype AS indexed_type,
+       opc.opcdefault AS is_default
+    FROM pg_am am, pg_opclass opc
+    WHERE opc.opcmethod = am.oid
+    ORDER BY index_method, opclass_name;
+</programlisting>
+  </para>
+
+  <para>
+   操作符类其实只是一个更大结构的子集，这个结构称为<firstterm>操作符族</firstterm>。当若干数据类型具有相似行为时，定义跨数据类型操作符并让索引支持它们，往往会很有用。为此，每种类型对应的操作符类都必须归入同一个操作符族。跨类型操作符属于该族，但不与该族中任何单独一个类关联。
+  </para>
+
+  <para>
+    前一个查询的扩展版本会显示每个操作符类所属的操作符族：
+<programlisting>
+SELECT am.amname AS index_method,
+       opc.opcname AS opclass_name,
+       opf.opfname AS opfamily_name,
+       opc.opcintype::regtype AS indexed_type,
+       opc.opcdefault AS is_default
+    FROM pg_am am, pg_opclass opc, pg_opfamily opf
+    WHERE opc.opcmethod = am.oid AND
+          opc.opcfamily = opf.oid
+    ORDER BY index_method, opclass_name;
+</programlisting>
+  </para>
+
+  <para>
+    下面这个查询会显示所有已定义的操作符族，以及每个族中包含的全部操作符：
+<programlisting>
+SELECT am.amname AS index_method,
+       opf.opfname AS opfamily_name,
+       amop.amopopr::regoperator AS opfamily_operator
+    FROM pg_am am, pg_opfamily opf, pg_amop amop
+    WHERE opf.opfmethod = am.oid AND
+          amop.amopfamily = opf.oid
+    ORDER BY index_method, opfamily_name, opfamily_operator;
+</programlisting>
+  </para>
+
+  <tip>
+   <para>
+    <xref linkend="app-psql"/>提供了<command>\dAc</command>、<command>\dAf</command>和<command>\dAo</command>命令，它们给出了这些查询稍微更复杂一些的版本。
+   </para>
+  </tip>
+ </sect1>
+
+
+ <sect1 id="indexes-collations">
+  <title>索引和排序规则</title>
+
+  <para>
+   每个索引列只能支持一种排序规则。如果你需要关心多种排序规则，就可能需要多个索引。
+  </para>
+
+  <para>
+   考虑以下语句：
+<programlisting>
+CREATE TABLE test1c (
+    id integer,
+    content varchar COLLATE "x"
+);
+
+CREATE INDEX test1c_content_index ON test1c (content);
+</programlisting>
+   该索引会自动使用底层列的排序规则。因此，下面这种形式的查询：
+<programlisting>
+SELECT * FROM test1c WHERE content &gt; <replaceable>constant</replaceable>;
+</programlisting>
+   可以使用该索引，因为比较默认会使用该列的排序规则。不过，这个索引不能加速涉及其他排序规则的查询。因此，如果你也关心如下形式的查询：
+<programlisting>
+SELECT * FROM test1c WHERE content &gt; <replaceable>constant</replaceable> COLLATE "y";
+</programlisting>
+   那么可以额外创建一个支持<literal>"y"</literal>排序规则的索引，例如：
+<programlisting>
+CREATE INDEX test1c_content_y_index ON test1c (content COLLATE "y");
+</programlisting>
+  </para>
+ </sect1>
+
+
+ <sect1 id="indexes-examine">
+  <title>检查索引使用情况</title>
+
+  <indexterm zone="indexes-examine">
+   <primary>index</primary>
+   <secondary>examining usage</secondary>
+  </indexterm>
+
+  <para>
+   尽管<productname>PostgreSQL</productname>中的索引不需要维护或调优，但检查真实查询工作负载到底实际使用了哪些索引，仍然很重要。检查某个单独查询的索引使用情况，可以使用<xref linkend="sql-explain"/>命令；它在这方面的应用见<xref linkend="using-explain"/>。也可以像<xref linkend="monitoring-stats"/>中描述的那样，在运行中的服务器上收集索引使用的总体统计信息。
+  </para>
+
+  <para>
+   很难给出一个确定应该创建哪些索引的通用流程。前面各节的示例已经展示了若干典型情形。通常需要做大量实验。下面这部分会给出一些相关提示：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     一定要先运行<xref linkend="sql-analyze"/>。这个命令会收集表中值分布的统计信息。估计查询会返回多少行，需要这些信息；而规划器要为每种可能的查询计划分配现实的代价，也需要这些信息。如果没有真实统计信息，系统就会假定一些默认值，而这些默认值几乎肯定并不准确。因此，在没有运行<command>ANALYZE</command>的情况下去检查应用的索引使用情况，基本上是徒劳的。更多信息见<xref linkend="vacuum-for-statistics"/>和<xref linkend="autovacuum"/>。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     用真实数据做实验。使用测试数据来设置索引，只会告诉你测试数据需要什么索引，仅此而已。
+    </para>
+
+    <para>
+     特别要避免使用非常小的测试数据集。虽然在 100000 行里选 1000 行可能适合用索引，但在 100 行里选 1 行几乎不适合，因为这 100 行大概都能放进一个磁盘页，而没有任何计划能比顺序取一个磁盘页更快。
+    </para>
+
+    <para>
+     另外，在编造测试数据时也要小心；如果应用尚未投入生产，这往往无法避免。非常相似、完全随机、或者按排序顺序插入的值，都会让统计信息偏离真实数据应有的分布。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     当索引没有被使用时，强制使用它们对测试会很有帮助。有一些运行时参数可以关闭不同的计划类型（见<xref linkend="runtime-config-query-enable"/>）。例如，关闭顺序扫描（<varname>enable_seqscan</varname>）和嵌套循环连接（<varname>enable_nestloop</varname>）这两种最基本的计划，就会迫使系统使用不同的计划。如果系统仍然选择顺序扫描或嵌套循环连接，那么索引未被使用很可能有更根本的原因，例如查询条件并不匹配该索引。（前面各节已经解释了什么样的查询可以使用什么样的索引。）
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     如果强制使用索引后确实使用了索引，那么就有两种可能：要么系统是对的，使用索引确实不合适；要么查询计划的代价估计并未反映现实。因此，你应该分别在有索引和无索引的情况下对查询计时。<command>EXPLAIN ANALYZE</command>命令在这里会很有帮助。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     如果发现代价估计是错的，那么又有两种可能。总成本是根据每个计划节点的逐行成本乘以该计划节点的选择率估计计算出来的。计划节点的估计成本可以通过运行时参数来调整（见<xref
+     linkend="runtime-config-query-constants"/>）。而选择率估计不准确，则是因为统计信息不足。可以尝试通过调整统计信息收集参数来改进这一点（见<xref
+     linkend="sql-altertable"/>）。
+    </para>
+
+    <para>
+     如果你无法把这些成本调得更合适，那么可能就不得不退而求其次，显式强制使用索引。你也可能希望联系<productname>PostgreSQL</productname>开发者来研究这个问题。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+</chapter>

@@ -1,0 +1,786 @@
+<!-- doc/src/sgml/backup.sgml -->
+
+<chapter id="backup">
+ <title>备份和恢复</title>
+
+ <indexterm zone="backup"><primary>backup</primary></indexterm>
+
+ <para>
+  与任何保存重要数据的系统一样，<productname>PostgreSQL</productname>数据库也应定期备份。虽然其过程基本简单，但清楚理解其底层技术和前提假设非常重要。
+ </para>
+
+ <para>
+  备份<productname>PostgreSQL</productname>数据主要有三种根本不同的方法：
+  <itemizedlist>
+   <listitem><para><acronym>SQL</acronym>转储</para></listitem>
+   <listitem><para>文件系统级备份</para></listitem>
+   <listitem><para>持续归档</para></listitem>
+  </itemizedlist>
+  每种方法都有各自的优缺点，下面各节将依次讨论。
+ </para>
+
+ <sect1 id="backup-dump">
+  <title><acronym>SQL</acronym>转储</title>
+
+  <para>
+   这种转储方法的思路是生成一个包含 SQL 命令的文件；将其重新送回服务器后，服务器就会把数据库重建为转储时的状态。<productname>PostgreSQL</productname>为此提供了工具程序<xref linkend="app-pgdump"/>。该命令的基本用法是：
+<synopsis>
+pg_dump <replaceable class="parameter">dbname</replaceable> &gt; <replaceable class="parameter">dumpfile</replaceable>
+</synopsis>
+   如前所示，<application>pg_dump</application>把结果写到标准输出。稍后我们会看到这一点有何用处。虽然上述命令会创建一个文本文件，但<application>pg_dump</application>也可以创建其他格式的文件，从而支持并行处理以及对对象恢复进行更细粒度的控制。
+  </para>
+
+  <para>
+   <application>pg_dump</application>是一个普通的<productname>PostgreSQL</productname>客户端应用程序（尽管它实现得相当巧妙）。这意味着你可以从任何能够访问该数据库的远程主机执行这种备份过程。但请记住，<application>pg_dump</application>并不会以特殊权限运行。特别是，它必须对你想要备份的所有表具有读权限，因此若要备份整个数据库，几乎总是必须以数据库超级用户身份运行它。（如果你没有足够权限备份整个数据库，仍然可以使用诸如<option>-n <replaceable>schema</replaceable></option>或<option>-t <replaceable>table</replaceable></option>的选项来备份你有权访问的那部分数据库。）
+  </para>
+
+  <para>
+   要指定<application>pg_dump</application>应连接哪个数据库服务器，请使用命令行选项<option>-h <replaceable>host</replaceable></option>和<option>-p <replaceable>port</replaceable></option>。默认主机是本地主机，或者由环境变量<envar>PGHOST</envar>指定的主机。类似地，默认端口由环境变量<envar>PGPORT</envar>指定；如果未设置，则采用编译时内置的默认值。（方便的是，服务器通常也会使用同样的内置默认值。）
+  </para>
+
+  <para>
+   和其他<productname>PostgreSQL</productname>客户端应用程序一样，<application>pg_dump</application>默认会以与当前操作系统用户名相同的数据库用户名进行连接。若要覆盖这一点，可以指定<option>-U</option>选项，或者设置环境变量<envar>PGUSER</envar>。请记住，<application>pg_dump</application>连接同样受常规客户端认证机制约束（见<xref linkend="client-authentication"/>）。
+  </para>
+
+  <para>
+   与后文介绍的其他备份方法相比，<application>pg_dump</application>的一个重要优点在于，<application>pg_dump</application>的输出通常可以重新装入较新版本的<productname>PostgreSQL</productname>，而文件级备份和持续归档都高度依赖具体的服务器版本。<application>pg_dump</application>也是在不同机器体系结构之间迁移数据库时唯一可行的方法，例如从 32 位服务器迁移到 64 位服务器。
+  </para>
+
+  <para>
+   由<application>pg_dump</application>创建的转储在内部是一致的，也就是说，该转储表示的是<application>pg_dump</application>开始运行时的数据库快照。<application>pg_dump</application>在工作期间不会阻塞数据库上的其他操作。（例外是那些需要独占锁的操作，例如大多数形式的<command>ALTER TABLE</command>。）
+  </para>
+
+  <sect2 id="backup-dump-restore">
+   <title>恢复转储</title>
+
+   <para>
+    由<application>pg_dump</application>创建的文本文件是为<application>psql</application>程序在默认设置下读取而设计的。恢复文本转储的一般命令形式是：
+<synopsis>
+psql -X <replaceable class="parameter">dbname</replaceable> &lt; <replaceable class="parameter">dumpfile</replaceable>
+</synopsis>
+    其中<replaceable class="parameter">dumpfile</replaceable>是<application>pg_dump</application>命令输出的文件。数据库<replaceable class="parameter">dbname</replaceable>不会由该命令创建，因此你必须先从<literal>template0</literal>创建它，然后再执行<application>psql</application>（例如，使用<literal>createdb -T template0 <replaceable class="parameter">dbname</replaceable></literal>）。为确保<application>psql</application>以默认设置运行，请使用<option>-X</option>（<option>--no-psqlrc</option>）选项。<application>psql</application>也支持与<application>pg_dump</application>类似的选项，用于指定要连接的数据库服务器以及所使用的用户名。更多信息参见<xref linkend="app-psql"/>参考页。
+   </para>
+
+   <para>
+    非文本格式的转储应当使用<xref linkend="app-pgrestore"/>工具恢复。
+   </para>
+
+   <para>
+    在恢复 SQL 转储之前，所有拥有对象或者在被转储数据库中曾被授予对象权限的用户都必须已经存在。否则，恢复将无法以原有所有权和/或权限重新创建这些对象。（有时这正是你想要的，但通常不是。）
+   </para>
+
+   <para>
+    默认情况下，<application>psql</application>脚本在遇到 SQL 错误后仍会继续执行。你可能希望让<application>psql</application>在设置了<literal>ON_ERROR_STOP</literal>变量的情况下运行，以改变这一行为，并让<application>psql</application>在发生 SQL 错误时以退出状态码 3 退出：
+<programlisting>
+psql -X --set ON_ERROR_STOP=on <replaceable>dbname</replaceable> &lt; <replaceable>dumpfile</replaceable>
+</programlisting>
+    无论如何，你最终只会得到一个部分恢复的数据库。另一种做法是指定将整个转储作为单个事务恢复，这样恢复要么全部完成，要么全部回滚。可以通过把<option>-1</option>或<option>--single-transaction</option>命令行选项传给<application>psql</application>来启用这种模式。使用这种模式时要注意，即便是一个很小的错误，也可能回滚一个已经运行了许多小时的恢复过程。不过，这仍可能比在部分恢复后手工清理一个复杂数据库更可取。
+   </para>
+
+   <para>
+    <application>pg_dump</application>和<application>psql</application>能够写入或读取管道，这使得可以把数据库直接从一台服务器转储到另一台服务器，例如：
+<programlisting>
+pg_dump -h <replaceable>host1</replaceable> <replaceable>dbname</replaceable> | psql -X -h <replaceable>host2</replaceable> <replaceable>dbname</replaceable>
+</programlisting>
+   </para>
+
+   <important>
+    <para>
+     <application>pg_dump</application>生成的转储是以<literal>template0</literal>为基准的。这意味着通过<literal>template1</literal>增加的任何语言、过程等也都会被<application>pg_dump</application>转储。因此，恢复时如果你使用的是定制过的<literal>template1</literal>，就必须像上面的例子那样，从<literal>template0</literal>创建空数据库。
+    </para>
+   </important>
+
+   <para>
+    恢复完备份后，最好对每个数据库运行<link linkend="sql-analyze"><command>ANALYZE</command></link>，这样查询优化器就能拥有有用的统计信息；更多信息见<xref linkend="vacuum-for-statistics"/>和<xref linkend="autovacuum"/>。关于如何高效地将大量数据装入<productname>PostgreSQL</productname>，请参见<xref linkend="populate"/>。
+   </para>
+  </sect2>
+
+  <sect2 id="backup-dump-all">
+   <title>使用<application>pg_dumpall</application></title>
+
+   <para>
+    <application>pg_dump</application>一次只转储一个数据库，而且不会转储角色或表空间的信息（因为这些是整个集簇级别的，而不是每个数据库各自的）。为了方便地转储整个数据库集簇的全部内容，提供了<xref linkend="app-pg-dumpall"/>程序。<application>pg_dumpall</application>会备份给定集簇中的每个数据库，并保留角色定义和表空间定义等集簇范围的数据。该命令的基本用法是：
+<synopsis>
+pg_dumpall &gt; <replaceable>dumpfile</replaceable>
+</synopsis>
+    生成的转储可以用<application>psql</application>恢复：
+<synopsis>
+psql -X -f <replaceable class="parameter">dumpfile</replaceable> postgres
+</synopsis>
+    （实际上，可以指定任意一个现有数据库名作为起点，但如果要装载到一个空集簇中，通常应使用<literal>postgres</literal>。）恢复<application>pg_dumpall</application>转储时始终需要数据库超级用户权限，因为恢复角色和表空间信息必须使用该权限。如果使用了表空间，请确保转储中的表空间路径适合新的安装。
+   </para>
+
+   <para>
+    <application>pg_dumpall</application>的工作方式是先发出重新创建角色、表空间和空数据库的命令，然后针对每个数据库调用<application>pg_dump</application>。这意味着每个数据库本身都是内部一致的，但不同数据库的快照并不同步。
+   </para>
+
+   <para>
+    集簇范围的数据也可以单独使用<application>pg_dumpall</application>的<option>--globals-only</option>选项进行转储。如果你对各个数据库分别运行<application>pg_dump</application>命令，而又希望对整个集簇进行完整备份，这一步就是必需的。
+   </para>
+  </sect2>
+
+  <sect2 id="backup-dump-large">
+   <title>处理大型数据库</title>
+
+   <para>
+    某些操作系统对文件大小有上限，这会在创建大型<application>pg_dump</application>输出文件时带来问题。幸运的是，<application>pg_dump</application>可以把输出写到标准输出，因此你可以利用标准 Unix 工具绕过这个潜在问题。有几种可行方法：
+   </para>
+
+   <formalpara>
+    <title>使用压缩转储。</title>
+    <para>
+     你可以使用自己喜欢的压缩程序，例如<application>gzip</application>：
+
+<programlisting>
+pg_dump <replaceable class="parameter">dbname</replaceable> | gzip &gt; <replaceable class="parameter">filename</replaceable>.gz
+</programlisting>
+
+     恢复时：
+
+<programlisting>
+gunzip -c <replaceable class="parameter">filename</replaceable>.gz | psql <replaceable class="parameter">dbname</replaceable>
+</programlisting>
+
+     或者：
+
+<programlisting>
+cat <replaceable class="parameter">filename</replaceable>.gz | gunzip | psql <replaceable class="parameter">dbname</replaceable>
+</programlisting>
+    </para>
+   </formalpara>
+
+   <formalpara>
+    <title>使用<command>split</command>。</title>
+    <para>
+     <command>split</command>命令允许你把输出分割成文件系统可接受大小的较小文件。例如，要切分为 2 GB 的块：
+
+<programlisting>
+pg_dump <replaceable class="parameter">dbname</replaceable> | split -b 2G - <replaceable class="parameter">filename</replaceable>
+</programlisting>
+
+     恢复时：
+
+<programlisting>
+cat <replaceable class="parameter">filename</replaceable>* | psql <replaceable class="parameter">dbname</replaceable>
+</programlisting>
+
+     如果使用 GNU <application>split</application>，也可以把它和<application>gzip</application>结合起来：
+
+<programlisting>
+pg_dump <replaceable class="parameter">dbname</replaceable> | split -b 2G --filter='gzip > $FILE.gz'
+</programlisting>
+
+     恢复时可使用<command>zcat</command>。
+    </para>
+   </formalpara>
+
+   <formalpara>
+    <title>使用<application>pg_dump</application>的自定义转储格式。</title>
+    <para>
+     如果构建<productname>PostgreSQL</productname>所用的系统安装了<application>zlib</application>压缩库，自定义转储格式会在向输出文件写入数据时对其进行压缩。这会产生与使用<command>gzip</command>大致相同大小的转储文件，但额外的优点是其中的表可以有选择地恢复。下面的命令使用自定义转储格式转储数据库：
+
+<programlisting>
+pg_dump -Fc <replaceable class="parameter">dbname</replaceable> &gt; <replaceable class="parameter">filename</replaceable>
+</programlisting>
+
+     自定义格式的转储不是供<application>psql</application>执行的脚本，而必须通过<application>pg_restore</application>恢复，例如：
+
+<programlisting>
+pg_restore -d <replaceable class="parameter">dbname</replaceable> <replaceable class="parameter">filename</replaceable>
+</programlisting>
+
+     详细信息见<xref linkend="app-pgdump"/>和<xref linkend="app-pgrestore"/>参考页。
+    </para>
+   </formalpara>
+
+   <para>
+    对于非常大的数据库，你可能需要把<command>split</command>与前两种方法之一结合使用。
+   </para>
+
+   <formalpara>
+    <title>使用<application>pg_dump</application>的并行转储特性。</title>
+    <para>
+     为了加快大型数据库的转储速度，你可以使用<application>pg_dump</application>的并行模式。这会同时转储多个表。你可以通过<command>-j</command>参数控制并行度。并行转储只支持“目录”归档格式。
+
+<programlisting>
+pg_dump -j <replaceable class="parameter">num</replaceable> -F d -f <replaceable class="parameter">out.dir</replaceable> <replaceable class="parameter">dbname</replaceable>
+</programlisting>
+
+     你可以使用<command>pg_restore -j</command>并行恢复转储。这对于任何“自定义”或“目录”模式的归档都有效，无论它是否是用<command>pg_dump -j</command>创建的。
+    </para>
+   </formalpara>
+  </sect2>
+ </sect1>
+
+ <sect1 id="backup-file">
+  <title>文件系统级备份</title>
+
+  <para>
+   另一种备份策略是直接复制<productname>PostgreSQL</productname>用来存储数据库数据的文件；<xref linkend="creating-cluster"/>解释了这些文件的位置。你可以使用自己喜欢的任何方法进行文件系统备份，例如：
+
+<programlisting>
+tar -cf backup.tar /usr/local/pgsql/data
+</programlisting>
+  </para>
+
+  <para>
+   不过，这种方法有两个限制，使得它并不实用，至少也不如<application>pg_dump</application>方法：
+
+   <orderedlist>
+    <listitem>
+     <para>
+      为了得到可用的备份，数据库服务器<emphasis>必须</emphasis>关闭。像禁止所有连接这样的折中办法<emphasis>不起作用</emphasis>（部分原因是<command>tar</command>和类似工具不会对文件系统状态执行原子快照，另一部分原因是服务器内部也存在缓冲）。有关停止服务器的信息见<xref linkend="server-shutdown"/>。不言而喻，恢复数据前也必须关闭服务器。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      如果你已经深入了解数据库文件系统布局的细节，可能会想尝试仅通过某些表或数据库各自的文件或目录来备份或恢复它们。这是<emphasis>行不通</emphasis>的，因为这些文件中的信息离开记录所有事务提交状态的提交日志文件<filename>pg_xact/*</filename>就无法使用。一个表文件只有和这些信息一起才可用。当然，也不可能只恢复一个表以及相关的<filename>pg_xact</filename>数据，因为那会让数据库集簇中的其他所有表都无法使用。因此，文件系统备份只适用于整个数据库集簇的完整备份与恢复。
+     </para>
+    </listitem>
+   </orderedlist>
+  </para>
+
+  <para>
+   另一种文件系统备份方法是对数据目录制作一个<quote>一致快照</quote>，前提是文件系统支持该功能（并且你愿意相信其实现是正确的）。典型流程是：对包含数据库的卷制作一个<quote>冻结快照</quote>，然后从该快照把整个数据目录（不是其中一部分，见上文）复制到备份设备，再释放这个冻结快照。即使数据库服务器正在运行，这种方法也能工作。不过，以这种方式创建的备份会把数据库文件保存为一种仿佛服务器没有被正确关闭的状态；因此，当你基于备份数据启动数据库服务器时，它会认为前一个服务器实例发生了崩溃，并重放 WAL 日志。这不是问题；只要意识到这一点即可（并且务必把 WAL 文件也包含在备份中）。你可以在获取快照之前执行一次<command>CHECKPOINT</command>，以缩短恢复时间。
+  </para>
+
+  <para>
+   如果数据库分布在多个文件系统上，就可能根本无法对所有卷获得完全同步的冻结快照。例如，如果数据文件和 WAL 日志位于不同磁盘，或者表空间位于不同文件系统上，就可能无法使用快照备份，因为这些快照<emphasis>必须</emphasis>同时获取。在这种情况下，在信任一致快照技术之前，一定要非常仔细地阅读文件系统文档。
+  </para>
+
+  <para>
+   如果无法获得同时的快照，一种选择是将数据库服务器关闭足够长的时间，以建立所有冻结快照。另一种选择是执行持续归档基础备份（<xref linkend="backup-base-backup"/>），因为这种备份不受备份期间文件系统变化的影响。这要求只在备份过程中启用持续归档；恢复则使用持续归档恢复（<xref linkend="backup-pitr-recovery"/>）。
+  </para>
+
+  <para>
+   另一种选择是使用<application>rsync</application>进行文件系统备份。做法是先在数据库服务器运行时执行一次<application>rsync</application>，然后将数据库服务器关闭足够长的时间，再执行一次<command>rsync --checksum</command>。（之所以需要<option>--checksum</option>，是因为<command>rsync</command>对文件修改时间的粒度只有 1 秒。）第二次<application>rsync</application>会比第一次更快，因为它需要传输的数据相对较少，而最终结果会因为服务器已经关闭而保持一致。这种方法可以在最小停机时间下完成文件系统备份。
+  </para>
+
+  <para>
+   注意，文件系统备份通常会比 SQL 转储更大。（例如，<application>pg_dump</application>不需要转储索引内容，只需转储重建索引的命令。）不过，进行文件系统备份可能更快。
+  </para>
+ </sect1>
+
+ <sect1 id="continuous-archiving">
+  <title>持续归档和时间点恢复（PITR）</title>
+
+  <indexterm zone="backup">
+   <primary>continuous archiving</primary>
+  </indexterm>
+
+  <indexterm zone="backup">
+   <primary>point-in-time recovery</primary>
+  </indexterm>
+
+  <indexterm zone="backup">
+   <primary>PITR</primary>
+  </indexterm>
+
+  <para>
+   在任何时候，<productname>PostgreSQL</productname>都会维护一个<firstterm>预写式日志</firstterm>（WAL），它位于集簇数据目录的<filename>pg_wal/</filename>子目录中。该日志记录对数据库数据文件所做的每一次修改。这个日志首先是为崩溃安全而存在：如果系统崩溃，可以通过<quote>重放</quote>自上次检查点以来的日志记录，将数据库恢复到一致状态。不过，日志的存在也使第三种数据库备份策略成为可能：我们可以把文件系统级备份与 WAL 文件备份结合起来。如果需要恢复，就先恢复文件系统备份，再重放已备份的 WAL 文件，使系统回到当前状态。与前两种方法相比，这种方法管理起来更复杂，但它有一些显著优点：
+  <itemizedlist>
+   <listitem>
+    <para>
+     我们不需要一个完全一致的文件系统备份作为起点。备份中的任何内部不一致性都会通过日志重放纠正（这与崩溃恢复期间发生的事情并没有本质不同）。因此，我们不需要文件系统快照能力，只需要<application>tar</application>或类似的归档工具。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     由于我们可以把任意长的一串 WAL 文件串联起来进行重放，只要持续归档 WAL 文件，就可以实现连续备份。这对于大型数据库尤其有价值，因为此时频繁进行完整备份可能并不方便。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     不必把 WAL 记录一直重放到最后。我们可以在任意位置停止重放，并得到数据库在当时的一致快照。因此，这项技术支持<firstterm>时间点恢复</firstterm>：可以把数据库恢复到自基础备份之后任意时刻的状态。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     如果我们持续把这一串 WAL 文件输送给另一台已经装载了同一基础备份文件的机器，就得到了一个<firstterm>温备</firstterm>系统：我们随时都可以启用第二台机器，而它将拥有数据库几乎是最新的副本。
+    </para>
+   </listitem>
+  </itemizedlist>
+  </para>
+
+  <note>
+   <para>
+    <application>pg_dump</application>和<application>pg_dumpall</application>不会生成文件系统级备份，因此不能作为持续归档方案的一部分使用。这类转储是<emphasis>逻辑</emphasis>备份，不包含 WAL 重放所需的足够信息。
+   </para>
+  </note>
+
+  <para>
+   和普通文件系统备份技术一样，这种方法只能支持整个数据库集簇的恢复，而不支持其中某个子集的恢复。此外，它需要大量归档存储：基础备份可能很庞大，繁忙系统也会产生大量必须归档的 WAL 流量。尽管如此，在很多需要高可靠性的场景中，它仍是首选的备份技术。
+  </para>
+
+  <para>
+   要想利用持续归档（许多数据库厂商也称之为<quote>在线备份</quote>）成功恢复，你需要一串连续的已归档 WAL 文件，其时间至少要追溯到备份的开始时刻。因此，入门时应在进行第一次基础备份<emphasis>之前</emphasis>就建立并测试好归档 WAL 文件的流程。下面先讨论归档 WAL 文件的机制。
+  </para>
+
+  <sect2 id="backup-archiving-wal">
+   <title>设置 WAL 归档</title>
+
+   <para>
+    从抽象意义上说，一个运行中的<productname>PostgreSQL</productname>系统会产生一串无限长的 WAL 记录序列。系统在物理上把该序列划分为 WAL <firstterm>段文件</firstterm>，通常每个 16MB（段大小可在<application>initdb</application>期间修改）。这些段文件会被赋予数字名称，以反映它们在抽象 WAL 序列中的位置。不使用 WAL 归档时，系统通常只创建少量段文件，然后通过把不再需要的段文件重命名为更高的段号来<quote>回收</quote>它们。系统假定内容早于最后一个检查点的段文件已不再有价值，因此可以被回收。
+   </para>
+
+   <para>
+    在归档 WAL 数据时，我们需要在每个段文件写满后捕获其内容，并在该段文件被回收重用之前把数据保存到某处。根据应用场景和可用硬件的不同，<quote>把数据保存到某处</quote>可以有很多不同的方法：可以把段文件复制到另一台机器上的 NFS 挂载目录，把它们写到磁带机中（确保你有办法识别每个文件的原始文件名），把它们批量打包后刻录到 CD 上，或者采用完全不同的方式。为了给数据库管理员提供灵活性，<productname>PostgreSQL</productname>尽量不对归档方式作任何假设。相反，<productname>PostgreSQL</productname>允许管理员指定一个 shell 命令或一个归档库，以便把已完成的段文件复制到它应去的地方。这既可以只是一个使用<literal>cp</literal>的 shell 命令，也可以调用一个复杂的 C 函数，全由你决定。
+   </para>
+
+   <para>
+    要启用 WAL 归档，请将配置参数<xref linkend="guc-wal-level"/>设置为<literal>replica</literal>或更高，将<xref linkend="guc-archive-mode"/>设置为<literal>on</literal>，并在<xref linkend="guc-archive-command"/>配置参数中指定要使用的 shell 命令，或者在<xref linkend="guc-archive-library"/>配置参数中指定要使用的库。实际上，这些设置通常都会放在<filename>postgresql.conf</filename>文件中。
+   </para>
+
+   <para>
+    在<varname>archive_command</varname>中，<literal>%p</literal>会被替换为待归档文件的路径名，而<literal>%f</literal>只会被替换为文件名。（该路径名相对于当前工作目录，也就是集簇的数据目录。）如果需要在命令中嵌入实际的<literal>%</literal>字符，请使用<literal>%%</literal>。最简单而有用的命令类似如下：
+<programlisting>
+archive_command = 'test ! -f /mnt/server/archivedir/%f &amp;&amp; cp %p /mnt/server/archivedir/%f'  # Unix
+archive_command = 'copy "%p" "C:\\server\\archivedir\\%f"'  # Windows
+</programlisting>
+    它会把可归档的 WAL 段复制到目录<filename>/mnt/server/archivedir</filename>中。（这只是一个示例，不是推荐做法，而且未必适用于所有平台。）在替换了<literal>%p</literal>和<literal>%f</literal>参数之后，实际执行的命令可能类似于：
+<programlisting>
+test ! -f /mnt/server/archivedir/00000001000000A900000065 &amp;&amp; cp pg_wal/00000001000000A900000065 /mnt/server/archivedir/00000001000000A900000065
+</programlisting>
+    对每个新的待归档文件都会生成一条类似的命令。
+   </para>
+
+   <para>
+    归档命令会以运行<productname>PostgreSQL</productname>服务器的同一操作系统用户身份执行。由于这一系列被归档的 WAL 文件实际上包含了数据库中的几乎全部内容，因此你应确保归档数据不会被他人窥探；例如，把它归档到一个不向组或所有用户开放读权限的目录中。
+   </para>
+
+   <para>
+    重要的是，归档命令只有在成功时才返回零退出状态。收到零结果后，<productname>PostgreSQL</productname>会认为该文件已经成功归档，并会将其删除或回收。相反，非零状态会告诉<productname>PostgreSQL</productname>该文件尚未归档；系统会周期性重试，直到成功为止。
+   </para>
+
+   <para>
+    另一种归档方式是把自定义归档模块用作<varname>archive_library</varname>。由于这类模块是用<literal>C</literal>编写的，创建自己的模块可能比编写 shell 命令需要更多工作。不过，归档模块可能比通过 shell 归档更高效，而且可以访问许多有用的服务器资源。有关归档模块的更多信息，见<xref linkend="archive-modules"/>。
+   </para>
+
+   <para>
+    当归档命令被信号终止（用于服务器关闭流程的<systemitem>SIGTERM</systemitem>除外），或者 shell 因退出状态大于 125 的错误（例如命令未找到）而失败，或者归档函数发出<literal>ERROR</literal>或<literal>FATAL</literal>时，归档器进程会中止，并由 postmaster 重新启动。在这种情况下，失败不会记录到<xref linkend="pg-stat-archiver-view"/>中。
+   </para>
+
+   <para>
+    归档命令和归档库通常都应设计为拒绝覆盖任何已存在的归档文件。这是一项重要的安全特性，可在管理员出错时保护归档的完整性（例如把两台不同服务器的输出发送到同一个归档目录）。建议测试你打算使用的归档库，以确保它不会覆盖已有文件。
+   </para>
+
+   <para>
+    在少数情况下，<productname>PostgreSQL</productname>可能会尝试重新归档一个此前已经归档过的 WAL 文件。例如，如果系统在服务器把归档成功持久记录下来之前崩溃，服务器在重启后会再次尝试归档该文件（前提是归档仍然启用）。当归档命令或归档库遇到一个已存在的文件时，如果该文件与待归档 WAL 文件内容完全相同，且先前归档的文件已经完全持久化到存储，则前者应分别返回零状态或<literal>true</literal>。如果已存在文件的内容与正在归档的 WAL 文件不同，则归档命令或归档库<emphasis>必须</emphasis>分别返回非零状态或<literal>false</literal>。
+   </para>
+
+   <para>
+    上面给出的 Unix 示例命令通过单独加入一个<command>test</command>步骤，避免覆盖已有归档。在某些 Unix 平台上，<command>cp</command>提供了诸如<option>-i</option>之类的开关，也可以更简洁地实现同样目的，但在你确认它会返回正确的退出状态之前，不应依赖这些开关。（尤其是 GNU <command>cp</command>在使用<option>-i</option>且目标文件已存在时会返回状态零，这<emphasis>不是</emphasis>我们想要的行为。）
+   </para>
+
+   <para>
+    在设计归档方案时，请考虑如果归档命令或归档库因为某些环节需要操作员干预，或者归档空间耗尽而反复失败，会发生什么。例如，如果你在没有自动换带器的情况下向磁带写入数据，那么磁带满了以后，在更换磁带之前将无法继续归档。你应确保任何错误情况或对人工操作员的请求都能得到适当报告，以便问题能够比较快地解决。在问题解决之前，<filename>pg_wal/</filename>目录会继续堆积 WAL 段文件。（如果包含<filename>pg_wal/</filename>的文件系统被写满，<productname>PostgreSQL</productname>将执行 PANIC 关闭。不会丢失已提交的事务，但在释放出一些空间之前，数据库会一直离线。）
+   </para>
+
+   <para>
+    归档命令或归档库的速度并不重要，只要它能跟上服务器生成 WAL 数据的平均速度即可。即使归档过程稍有滞后，正常操作也会继续。如果归档明显落后，灾难发生时可能丢失的数据量就会增加。这还意味着<filename>pg_wal/</filename>目录会包含大量尚未归档的段文件，最终可能耗尽可用磁盘空间。建议监控归档过程，确保它按你的预期工作。
+   </para>
+
+   <para>
+    在编写归档命令或归档库时，应假定待归档文件名最长可达 64 个字符，并且可以包含 ASCII 字母、数字和点号的任意组合。无需保留原始相对路径（<literal>%p</literal>），但必须保留文件名（<literal>%f</literal>）。
+   </para>
+
+   <para>
+    注意，虽然 WAL 归档允许你恢复对<productname>PostgreSQL</productname>数据库中数据所做的任何修改，但它不会恢复对配置文件（即<filename>postgresql.conf</filename>、<filename>pg_hba.conf</filename>和<filename>pg_ident.conf</filename>）的修改，因为这些文件是手工编辑的，而不是通过 SQL 操作修改的。你可能希望把配置文件放在常规文件系统备份过程能够覆盖的位置。关于如何重定位配置文件，见<xref linkend="runtime-config-file-locations"/>。
+   </para>
+
+   <para>
+    归档命令或归档函数只会在完整的 WAL 段上被调用。因此，如果服务器产生的 WAL 流量很小（或者存在低谷期），事务完成到其被安全写入归档存储之间可能会有很长延迟。为了限制未归档数据可能有多旧，你可以设置<xref linkend="guc-archive-timeout"/>，强制服务器至少隔这么长时间切换到一个新的 WAL 段文件。注意，由强制切换而提前归档的文件长度仍与装满的文件相同。因此，把<varname>archive_timeout</varname>设得很短并不明智，这会使归档存储膨胀。<varname>archive_timeout</varname>设为大约 1 分钟通常是合理的。
+   </para>
+
+   <para>
+    此外，如果你希望确保一个刚刚完成的事务尽快被归档，可以使用<function>pg_switch_wal</function>手工强制一次段切换。其他与 WAL 管理相关的实用函数列在<xref linkend="functions-admin-backup-table"/>中。
+   </para>
+
+   <para>
+    当<varname>wal_level</varname>为<literal>minimal</literal>时，某些 SQL 命令会像<xref linkend="populate-pitr"/>中所述那样被优化为避免 WAL 记录。如果在执行这些语句期间启用了归档或流复制，WAL 将不包含归档恢复所需的足够信息。（崩溃恢复不受影响。）因此，<varname>wal_level</varname>只能在服务器启动时更改。然而，<varname>archive_command</varname>和<varname>archive_library</varname>可以通过重新加载配置文件来更改。如果你通过 shell 进行归档并希望暂时停止归档，一种办法是将<varname>archive_command</varname>设置为空字符串（<literal>''</literal>）。这会导致 WAL 文件在<filename>pg_wal/</filename>中累积，直到重新建立可用的<varname>archive_command</varname>。
+   </para>
+  </sect2>
+
+  <sect2 id="backup-base-backup">
+   <title>进行基础备份</title>
+
+   <para>
+    执行基础备份最简单的方法是使用<xref linkend="app-pgbasebackup"/>工具。它可以把基础备份创建为普通文件或 tar 归档。如果需要比<xref linkend="app-pgbasebackup"/>提供的更高灵活性，也可以使用低级 API 制作基础备份（见<xref linkend="backup-lowlevel-base-backup"/>）。
+   </para>
+
+   <para>
+    不必过于担心制作基础备份所需的时间。不过，如果你平时在关闭<varname>full_page_writes</varname>的情况下运行服务器，可能会注意到备份运行期间性能下降，因为在备份模式下<varname>full_page_writes</varname>实际上会被强制开启。
+   </para>
+
+   <para>
+    要让该备份可用，你需要保留在文件系统备份期间以及之后生成的所有 WAL 段文件。为帮助完成这件事，基础备份过程会创建一个<firstterm>备份历史文件</firstterm>，并立即将其存入 WAL 归档区域。该文件以文件系统备份所需的第一个 WAL 段文件命名。例如，如果起始 WAL 文件是<literal>0000000100001234000055CD</literal>，备份历史文件的名称将类似于<literal>0000000100001234000055CD.007C9330.backup</literal>。（文件名第二部分表示该 WAL 文件中的一个精确位置，通常可以忽略。）一旦你已经安全归档了文件系统备份以及备份期间使用到的 WAL 段文件（如备份历史文件所指定），所有名称在数值上更小的已归档 WAL 段就不再是恢复该文件系统备份所必需的，可以删除。不过，你仍应考虑保留多个备份集，以绝对确保能够恢复数据。
+   </para>
+
+   <para>
+    备份历史文件只是一个很小的文本文件。它包含你提供给<xref linkend="app-pgbasebackup"/>的标签字符串，以及备份的起止时间和起止 WAL 段。如果你用该标签标识了关联的备份文件，那么已归档的历史文件就足以告诉你应恢复哪个备份文件。
+   </para>
+
+   <para>
+    由于你必须保留自上一次基础备份以来的所有已归档 WAL 文件，基础备份之间的间隔通常应根据你愿意为已归档 WAL 文件投入多少存储空间来决定。你还应考虑在确实需要恢复时，你愿意花多长时间进行恢复，因为系统必须重放所有这些 WAL 段；如果距离上次基础备份已经过去很久，这可能会花费一些时间。
+   </para>
+  </sect2>
+
+  <sect2 id="backup-incremental-backup">
+   <title>进行增量备份</title>
+
+   <para>
+    你可以使用<xref linkend="app-pgbasebackup"/>，通过指定<literal>--incremental</literal>选项进行增量备份。作为<literal>--incremental</literal>的参数，必须提供来自同一服务器较早一次备份的备份清单。生成的备份中，非关系文件会被完整包含，而某些关系文件则可能被较小的增量文件取代，这些文件只包含自较早备份以来发生变化的块，以及重建该文件当前版本所需的足够元数据。
+   </para>
+
+   <para>
+    为了找出需要备份哪些块，服务器使用 WAL 汇总，这些汇总存储在数据目录中的<literal>pg_wal/summaries</literal>目录内。如果所需的汇总文件不存在，尝试执行增量备份将会失败。该目录中存在的汇总必须覆盖从前一次备份起始 LSN 到当前备份起始 LSN 之间的所有 LSN。由于服务器是在确定当前备份起始 LSN 后才去查找 WAL 汇总，因此所需的汇总文件可能不会立刻出现在磁盘上，但服务器会等待缺失文件出现。这对于 WAL 汇总进程落后的情况也有帮助。然而，如果所需文件已经被移除，或者 WAL 汇总进程追赶得不够快，增量备份就会失败。
+   </para>
+
+   <para>
+    恢复增量备份时，不仅需要增量备份本身，还必须具有所有更早的备份，以便提供增量备份中省略的那些块。关于这项要求的更多信息见<xref linkend="app-pgcombinebackup"/>。请注意，当集簇的校验和状态发生变化时，使用<literal>pg_combinebackup</literal>会受到限制；参见<link linkend="app-pgcombinebackup-limitations">pg_combinebackup limitations</link>。
+   </para>
+
+   <para>
+    请注意，使用完整备份的所有要求同样适用于增量备份。例如，你仍然需要在文件系统备份期间及之后生成的所有 WAL 段文件，以及任何相关的 WAL 历史文件。你仍然需要创建<literal>recovery.signal</literal>（或<literal>standby.signal</literal>），并按照<xref linkend="backup-pitr-recovery" />所述执行恢复。恢复时需要更早的备份以及使用<literal>pg_combinebackup</literal>，是在这些要求之外额外增加的条件。请记住，<application>PostgreSQL</application>没有内置机制来判断哪些备份仍然需要作为恢复后续增量备份的基础。你必须自己跟踪完整备份与增量备份之间的关系，并确保在恢复后续增量备份可能还需要它们时，不要删除较早的备份。
+   </para>
+
+   <para>
+    增量备份通常只对相对较大的数据库有意义，因为其中相当一部分数据不变，或者变化缓慢。对于小数据库，忽略增量备份的存在而直接进行完整备份会更简单，也更容易管理。对于所有数据都被频繁修改的大数据库，增量备份也不会比完整备份小多少。
+   </para>
+
+   <para>
+    只有当恢复重放会从比它所依赖的前一次备份更晚的检查点开始时，增量备份才有可能进行。如果你在主库上进行增量备份，这个条件总能满足，因为每次备份都会触发新的检查点。在后备机上，重放从最近的重启点开始。因此，如果自前一次备份以来活动很少，可能尚未创建新的重启点，后备服务器上的增量备份就可能失败。
+   </para>
+  </sect2>
+
+  <sect2 id="backup-lowlevel-base-backup">
+   <title>使用低级 API 进行基础备份</title>
+   <para>
+    除了使用<xref linkend="app-pgbasebackup"/>进行完整或增量基础备份之外，你还可以使用低级 API 制作基础备份。这个过程比<application>pg_basebackup</application>方法多几个步骤，但相对简单。极其重要的是，这些步骤必须按顺序执行，并且在进行下一步之前必须确认当前步骤已经成功。
+   </para>
+    <para>
+     多个备份可以并发运行（无论是通过该备份 API 启动的，还是通过<xref linkend="app-pgbasebackup"/>启动的）。
+    </para>
+    <para>
+  <orderedlist>
+   <listitem>
+    <para>
+     确保 WAL 归档已启用并正常工作。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     以具有执行<function>pg_backup_start</function>权限的用户身份连接到服务器（连接哪个数据库并不重要）（超级用户，或者在该函数上被授予<literal>EXECUTE</literal>权限的用户），并发出以下命令：
+<programlisting>
+SELECT pg_backup_start(label => 'label', fast => false);
+</programlisting>
+     其中<literal>label</literal>是你想用来唯一标识此次备份操作的任意字符串。调用<function>pg_backup_start</function>的连接必须保持到备份结束，否则备份会自动中止。
+    </para>
+
+    <para>
+     在线备份总是从一个检查点的开始处启动。默认情况下，<function>pg_backup_start</function>会等待下一个按计划执行的检查点完成，这可能需要很长时间（见配置参数<xref linkend="guc-checkpoint-timeout"/>和<xref linkend="guc-checkpoint-completion-target"/>）。这通常更可取，因为它能把对运行系统的影响降到最低。如果你希望尽快开始备份，可将<literal>true</literal>作为第二个参数传给<function>pg_backup_start</function>；它会请求立即执行检查点，并尽可能快地完成，尽可能多地使用 I/O。
+    </para>
+
+   </listitem>
+   <listitem>
+    <para>
+     使用任何方便的文件系统备份工具执行备份，例如<application>tar</application>或<application>cpio</application>（不要使用<application>pg_dump</application>或<application>pg_dumpall</application>）。在此过程中既没有必要，也不希望停止数据库的正常运行。关于执行此备份时需要注意的事项，见<xref linkend="backup-lowlevel-base-backup-data"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     在与之前相同的连接中，发出以下命令：
+<programlisting>
+SELECT * FROM pg_backup_stop(wait_for_archive => true);
+</programlisting>
+     这会终止备份模式。在主库上，它还会自动切换到下一个 WAL 段。在后备机上，无法自动切换 WAL 段，因此你可能希望在主库上运行<function>pg_switch_wal</function>手工执行切换。进行该切换是为了使在备份区间内写入的最后一个 WAL 段文件准备好进行归档。
+    </para>
+    <para>
+     <function>pg_backup_stop</function>会返回一行，包含三个值。其中第二个字段应写入备份根目录下名为<filename>backup_label</filename>的文件中。第三个字段除非为空，否则应写入名为<filename>tablespace_map</filename>的文件中。这些文件对备份能否正常工作至关重要，必须逐字节原样写入，不能做任何修改，这可能意味着需要以二进制模式打开文件。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     一旦备份期间活跃的 WAL 段文件都已归档，备份就完成了。由<function>pg_backup_stop</function>第一个返回值标识的文件，是形成完整备份文件集所需的最后一个段。在主库上，如果启用了<varname>archive_mode</varname>且<literal>wait_for_archive</literal>参数为<literal>true</literal>，则<function>pg_backup_stop</function>在最后一个段归档前不会返回。在后备机上，只有当<varname>archive_mode</varname>为<literal>always</literal>时，<function>pg_backup_stop</function>才会等待。由于你已经配置好了<varname>archive_command</varname>或<varname>archive_library</varname>，这些文件的归档会自动进行。多数情况下这会很快完成，但仍建议监控归档系统，确保没有延迟。如果归档进程因归档命令或归档库失败而落后，它会持续重试，直到归档成功并且备份完成。如果你希望对<function>pg_backup_stop</function>的执行设置时间限制，请设置合适的<varname>statement_timeout</varname>值，但要注意如果<function>pg_backup_stop</function>因此终止，备份可能无效。
+    </para>
+    <para>
+     如果备份过程本身会监控并确保备份所需的所有 WAL 段文件都已成功归档，则可以把<literal>wait_for_archive</literal>参数（默认值为 true）设置为 false，使<function>pg_backup_stop</function>在停止备份记录写入 WAL 后立即返回。默认情况下，<function>pg_backup_stop</function>会等待直到所有 WAL 都已归档，这可能需要一段时间。必须谨慎使用此选项：如果没有正确监控 WAL 归档，备份可能不包含全部 WAL 文件，因此会是不完整且无法恢复的。
+    </para>
+   </listitem>
+  </orderedlist>
+    </para>
+   <sect3 id="backup-lowlevel-base-backup-data">
+   <title>备份数据目录</title>
+   <para>
+    某些文件系统备份工具在复制过程中，如果它们试图复制的文件发生变化，就会发出警告或错误。对活动数据库进行基础备份时，这种情况是正常的，并不表示出错。不过，你需要确保能够把这类提示与真正的错误区分开来。例如，某些版本的<application>rsync</application>会针对<quote>vanished source files</quote>返回单独的退出码，你可以编写一个驱动脚本，把这一退出码视为非错误情况。此外，某些版本的 GNU <application>tar</application>在文件被<application>tar</application>复制时如果发生截断，会返回与致命错误无法区分的错误码。幸运的是，GNU <application>tar</application> 1.16 及之后版本在备份过程中如果文件被更改会以 1 退出，而其他错误则以 2 退出。对于 GNU <application>tar</application> 1.23 及之后版本，可以使用警告选项<literal>--warning=no-file-changed --warning=no-file-removed</literal>隐藏相关警告信息。
+   </para>
+
+   <para>
+    务必确认你的备份包含数据库集簇目录（例如<filename>/usr/local/pgsql/data</filename>）下的全部文件。如果你使用的表空间不位于该目录之下，也要记得把它们包括进来（并确保备份把符号链接作为链接归档，否则恢复时会破坏表空间）。
+   </para>
+
+   <para>
+    不过，备份中应省略集簇<filename>pg_wal/</filename>子目录内的文件。这个小调整很值得，因为它能降低恢复时出错的风险。如果<filename>pg_wal/</filename>是一个指向集簇目录外某处的符号链接，就很容易做到这一点，而出于性能原因，这本来也是一种常见配置。你也可能想排除<filename>postmaster.pid</filename>和<filename>postmaster.opts</filename>，它们记录的是正在运行的<application>postmaster</application>的信息，而不是最终使用此备份的<application>postmaster</application>的信息。（这些文件可能会让<application>pg_ctl</application>感到困惑。）
+   </para>
+
+   <para>
+    通常也最好省略集簇<filename>pg_replslot/</filename>目录中的文件，以免主库上的复制槽成为备份的一部分。否则，之后用该备份创建后备机时，可能导致该后备机上的 WAL 文件无限期保留；如果启用了热后备反馈，也可能导致主库膨胀，因为使用这些复制槽的客户端仍会连接到并更新主库上的槽，而不是后备机上的槽。即使该备份只是用来创建新的主库，复制这些复制槽通常也没有多大意义，因为等新主库上线时，这些槽的内容很可能已经严重过时。
+   </para>
+
+   <para>
+    目录<filename>pg_dynshmem/</filename>、<filename>pg_notify/</filename>、<filename>pg_serial/</filename>、<filename>pg_snapshots/</filename>、<filename>pg_stat_tmp/</filename>和<filename>pg_subtrans/</filename>的内容（但不包括这些目录本身）都可以从备份中省略，因为它们会在 postmaster 启动时初始化。
+   </para>
+
+   <para>
+    任何以<filename>pgsql_tmp</filename>开头的文件或目录都可以从备份中省略。这些文件会在 postmaster 启动时被删除，而这些目录也会在需要时重新创建。
+   </para>
+
+   <para>
+    只要发现名为<filename>pg_internal.init</filename>的文件，就可以把它从备份中省略。这些文件包含关系缓存数据，而它们在恢复时总会被重新构建。
+   </para>
+
+   <para>
+    备份标签文件包含你提供给<function>pg_backup_start</function>的标签字符串、执行<function>pg_backup_start</function>的时间以及起始 WAL 文件的名称。因此，在发生混淆时，可以查看备份文件内容，精确确定该备份文件来自哪一次备份会话。表空间映射文件包含目录<filename>pg_tblspc/</filename>中存在的符号链接名称，以及每个符号链接的完整路径。这些文件不仅仅是给你参考；它们的存在及其内容对于系统恢复过程的正确运行至关重要。
+   </para>
+
+   <para>
+    服务器停止时也可以进行备份。在这种情况下，你显然无法使用<function>pg_backup_start</function>或<function>pg_backup_stop</function>，因此只能自己追踪各个备份的身份以及相关 WAL 文件最早需要追溯到哪里。通常最好还是遵循上面的持续归档过程。
+   </para>
+   </sect3>
+  </sect2>
+
+  <sect2 id="backup-pitr-recovery">
+   <title>使用持续归档备份进行恢复</title>
+
+   <para>
+    现在，最坏的情况发生了，你需要通过备份进行恢复。步骤如下：
+  <orderedlist>
+   <listitem>
+    <para>
+     如果服务器仍在运行，就先停止它。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     如果你有足够空间，请把整个集簇数据目录以及所有表空间复制到临时位置，以备后续需要。注意，这一预防措施要求系统有足够空闲空间来保存现有数据库的两份副本。如果空间不够，至少也应保存集簇<filename>pg_wal</filename>子目录中的内容，因为其中可能包含系统停机前尚未归档的 WAL 文件。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     删除集簇数据目录下以及所有正在使用的表空间根目录下的现有文件和子目录。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     如果你正在恢复完整备份，可以把数据库文件直接恢复到目标目录中。务必确保它们以正确的所有者（数据库系统用户，而不是<literal>root</literal>！）和正确的权限恢复。如果使用了表空间，还应验证<filename>pg_tblspc/</filename>中的符号链接是否已正确恢复。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     如果你正在恢复增量备份，则需要把该增量备份以及它直接或间接依赖的所有较早备份都恢复到执行恢复的那台机器上。这些备份必须放在单独的目录中，而不是你希望最终运行服务器的目标目录中。完成后，使用<xref linkend="app-pgcombinebackup"/>从完整备份和所有后续增量备份中提取数据，并向目标目录写出一份合成的完整备份。和上面一样，验证权限以及表空间链接是否正确。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     删除<filename>pg_wal/</filename>中现有的所有文件；这些文件来自文件系统备份，因此很可能已经过时而不是最新的。如果你根本没有归档<filename>pg_wal/</filename>，那么就以正确权限重新创建它，并注意如果它原先是符号链接，就要重新把它设置成符号链接。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     如果你手头还有第 2 步中保存下来的未归档 WAL 段文件，请把它们复制到<filename>pg_wal/</filename>中。（最好复制，而不是移动，这样一旦出问题需要重来时，你手里仍然保留着未修改的原始文件。）
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     在<filename>postgresql.conf</filename>中设置恢复配置参数（见<xref linkend="runtime-config-wal-archive-recovery"/>），并在集簇数据目录中创建<filename>recovery.signal</filename>文件。在确认恢复成功之前，你也可能希望临时修改<filename>pg_hba.conf</filename>，以防止普通用户连接。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     启动服务器。服务器将进入恢复模式，并开始读取它所需的已归档 WAL 文件。如果恢复因外部错误而中止，可以直接重新启动服务器，它会继续恢复。恢复过程完成后，服务器会删除<filename>recovery.signal</filename>（以防止以后意外再次进入恢复模式），然后开始正常的数据库操作。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     检查数据库内容，确认你已经恢复到期望状态。如果不是，就回到第 1 步。如果一切正常，就把<filename>pg_hba.conf</filename>恢复为正常设置，让用户重新连接。
+    </para>
+   </listitem>
+  </orderedlist>
+   </para>
+
+   <para>
+    这一切的关键在于设置一个恢复配置，描述你希望如何恢复，以及恢复应运行到什么位置。其中绝对必须指定的一项是<varname>restore_command</varname>，它告诉<productname>PostgreSQL</productname>如何检索已归档的 WAL 文件段。像<varname>archive_command</varname>一样，它也是一个 shell 命令字符串。它可以包含<literal>%f</literal>，会被替换为所需 WAL 文件的名称；也可以包含<literal>%p</literal>，会被替换为复制该 WAL 文件时要使用的路径名。（该路径名相对于当前工作目录，也就是集簇的数据目录。）如果需要在命令中嵌入实际的<literal>%</literal>字符，请写成<literal>%%</literal>。最简单而有用的命令类似如下：
+<programlisting>
+restore_command = 'cp /mnt/server/archivedir/%f %p'
+</programlisting>
+    它会从目录<filename>/mnt/server/archivedir</filename>中复制先前归档的 WAL 段。当然，你也可以使用复杂得多的方案，甚至写一个 shell 脚本来要求操作员装载合适的磁带。
+   </para>
+
+   <para>
+    重要的是，该命令在失败时必须返回非零退出状态。系统<emphasis>会</emphasis>调用该命令来请求归档中不存在的文件；遇到这种情况时，它就应返回非零值。这不是一种错误情况。例外是，如果该命令被信号终止（用于数据库服务器关闭的<systemitem>SIGTERM</systemitem>除外），或者因 shell 错误（如命令未找到）而失败，那么恢复将中止，服务器也不会启动。
+   </para>
+
+   <para>
+    被请求的文件并不全都是 WAL 段文件；你还应预期会收到对带有<literal>.history</literal>后缀文件的请求。另外请注意，<literal>%p</literal>路径的基本文件名会与<literal>%f</literal>不同；不要指望它们可以互换使用。
+   </para>
+
+   <para>
+    在归档中找不到的 WAL 段会转而在<filename>pg_wal/</filename>中查找；这使得可以使用最近尚未归档的段。不过，凡是归档中可用的段，都会优先于<filename>pg_wal/</filename>中的文件使用。
+   </para>
+
+   <para>
+    通常，恢复会处理完所有可用的 WAL 段，从而把数据库恢复到当前时间点（或者在可用 WAL 段所允许的情况下尽可能接近当前时间点）。因此，一次正常恢复通常会以一条<quote>file not found</quote>消息结束，具体错误文本取决于你选择的<varname>restore_command</varname>。在恢复开始时，你也可能看到一条针对类似<filename>00000001.history</filename>文件的错误消息。这同样是正常的，在简单恢复场景中并不表示有问题；相关讨论见<xref linkend="backup-timelines"/>。
+   </para>
+
+   <para>
+    如果你希望恢复到过去的某个时间点（例如恢复到那位初级 DBA 删掉你的主事务表之前），只需指定所需的<link linkend="runtime-config-wal-recovery-target">停止点</link>即可。这个停止点也称为<quote>恢复目标</quote>，可以通过日期/时间、命名恢复点或者某个特定事务 ID 完成时刻来指定。在目前的实现下，只有日期/时间和命名恢复点这两种方式真正比较实用，因为没有工具能够帮助你足够准确地识别应使用哪个事务 ID。
+   </para>
+
+   <note>
+     <para>
+      停止点必须晚于基础备份的结束时间，也就是<function>pg_backup_stop</function>的结束时间。你不能用某次基础备份恢复到该备份仍在进行中的时间点。（若要恢复到这样的时间点，必须回到更早的一次基础备份，再从那里向前滚动。）
+     </para>
+   </note>
+
+   <para>
+    如果恢复过程中发现了损坏的 WAL 数据，恢复会在该点停止，服务器也不会启动。在这种情况下，可以从头重新执行恢复，并指定一个位于损坏点之前的<quote>恢复目标</quote>，使恢复能够正常完成。如果恢复因外部原因失败，例如系统崩溃或 WAL 归档变得不可访问，那么只需重新启动恢复，它几乎会从上次失败的位置继续。恢复重启的工作方式很像正常运行时的检查点：服务器会周期性地把自身状态强制写盘，然后更新<filename>pg_control</filename>文件，表明已处理过的 WAL 数据无需再次扫描。
+   </para>
+
+  </sect2>
+
+  <sect2 id="backup-timelines">
+   <title>时间线</title>
+
+  <indexterm zone="backup">
+   <primary>timelines</primary>
+  </indexterm>
+
+   <para>
+    把数据库恢复到过去某个时间点的能力，会带来一些复杂性，颇有点像关于时间旅行和平行宇宙的科幻小说。例如，在数据库的原始历史中，假设你在星期二晚上 5:15 删掉了一张关键表，但直到星期三中午才意识到自己的错误。于是你拿出备份，把系统恢复到星期二晚上 5:14，并重新上线运行。在数据库宇宙的<emphasis>这条</emphasis>历史中，你从未删掉那张表。但如果你后来发现这并不是个好主意，并且想回到原始历史中的星期三上午某个时间点，就办不到了，因为在数据库重新上线运行期间，它可能已经覆盖了某些 WAL 段文件，而这些文件本来能把你带回到现在想回去的那个时刻。因此，为了避免这种情况，你需要把时间点恢复之后生成的那一串 WAL 记录，与数据库原始历史中生成的那些 WAL 记录区分开来。
+   </para>
+
+   <para>
+    为了解决这个问题，<productname>PostgreSQL</productname>引入了<firstterm>时间线</firstterm>的概念。每当一次归档恢复完成时，系统都会创建一条新的时间线，用来标识此次恢复之后生成的 WAL 记录序列。时间线 ID 是 WAL 段文件名的一部分，因此新的时间线不会覆盖先前时间线产生的 WAL 数据。例如，在 WAL 文件名<filename>0000000100001234000055CD</filename>中，开头的<literal>00000001</literal>就是十六进制表示的时间线 ID。（注意，在服务器日志消息等其他场合，时间线 ID 通常以十进制打印。）
+   </para>
+
+   <para>
+    实际上，完全可以归档许多不同的时间线。虽然这看起来像是个没什么用的特性，但它往往能救命。设想这样一种情况：你不太确定应恢复到哪个时间点，因此不得不通过反复试验做几次时间点恢复，直到找到从旧历史分叉出去的最佳位置。如果没有时间线，这个过程很快就会变成一团无法管理的混乱。有了时间线，你可以恢复到<emphasis>任何</emphasis>先前状态，包括那些你早先已经放弃的时间线分支上的状态。
+   </para>
+
+   <para>
+    每当创建一条新的时间线时，<productname>PostgreSQL</productname>都会创建一个<quote>时间线历史</quote>文件，记录它是从哪条时间线、在何时分叉出来的。当从包含多条时间线的归档中恢复时，这些历史文件对于系统选取正确的 WAL 段文件是必需的。因此，它们会像 WAL 段文件一样被归档到 WAL 归档区域。历史文件只是很小的文本文件，因此长期保存它们既便宜也合适（而段文件通常很大）。如果你愿意，还可以在历史文件中加入注释，记录创建这条时间线的方式和原因。当你因实验而积累出一批错综复杂的时间线时，这类注释会特别有价值。
+   </para>
+
+   <para>
+    恢复的默认行为是恢复到归档中找到的最新时间线。如果你希望恢复到执行基础备份时的当前时间线，或者恢复到某个指定的子时间线（也就是说，你想回到某个本身就是在一次恢复尝试之后才产生的状态），就需要指定<literal>current</literal>，或者在<xref linkend="guc-recovery-target-timeline"/>中指定目标时间线 ID。你不能恢复到那些在基础备份之前就已经分叉出去的时间线。
+   </para>
+  </sect2>
+
+  <sect2 id="backup-tips">
+   <title>建议和示例</title>
+
+   <para>
+    这里给出一些配置持续归档的建议。
+   </para>
+
+    <sect3 id="backup-standalone">
+     <title>单机热备份</title>
+
+     <para>
+      可以利用<productname>PostgreSQL</productname>的备份设施生成单机热备份。这些备份不能用于时间点恢复，但它们的制作和恢复通常都比<application>pg_dump</application>转储快得多。（它们也比<application>pg_dump</application>转储大得多，因此在某些情况下速度优势可能会被抵消。）
+     </para>
+
+     <para>
+      和基础备份一样，生成单机热备份最简单的方法是使用<xref linkend="app-pgbasebackup"/>工具。如果在调用它时包含<literal>-X</literal>参数，使用该备份所需的全部预写式日志都会自动包含在备份中，恢复该备份时也不需要额外动作。
+     </para>
+    </sect3>
+
+    <sect3 id="compressed-archive-logs">
+     <title>压缩的归档日志</title>
+
+     <para>
+      如果归档存储的大小是个问题，你可以使用<application>gzip</application>来压缩归档文件：
+<programlisting>
+archive_command = 'gzip &lt; %p &gt; /mnt/server/archivedir/%f.gz'
+</programlisting>
+      那么在恢复时就需要使用<application>gunzip</application>：
+<programlisting>
+restore_command = 'gunzip &lt; /mnt/server/archivedir/%f.gz &gt; %p'
+</programlisting>
+     </para>
+    </sect3>
+
+    <sect3 id="backup-scripts">
+     <title><varname>archive_command</varname>脚本</title>
+
+     <para>
+      很多人选择使用脚本来定义自己的<varname>archive_command</varname>，这样<filename>postgresql.conf</filename>中的配置项就会显得非常简单：
+<programlisting>
+archive_command = 'local_backup_script.sh "%p" "%f"'
+</programlisting>
+      只要你希望在归档过程中使用不止一条命令，就建议使用单独的脚本文件。这样一来，所有复杂性都可以在脚本内部管理，而脚本可以使用诸如<application>bash</application>或<application>perl</application>之类的常见脚本语言编写。
+     </para>
+
+     <para>
+      脚本中可能需要解决的需求示例包括：
+      <itemizedlist>
+       <listitem>
+        <para>
+         将数据复制到安全的异地数据存储
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         把 WAL 文件成批处理，使其每三个小时传输一次，而不是每生成一个就传一次
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         与其他备份和恢复软件对接
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         与监控软件对接以报告错误
+        </para>
+       </listitem>
+      </itemizedlist>
+     </para>
+
+     <tip>
+      <para>
+       使用<varname>archive_command</varname>脚本时，最好启用<xref linkend="guc-logging-collector"/>。脚本写到<systemitem>stderr</systemitem>的任何消息都会出现在数据库服务器日志中，这样一来，当复杂配置失败时就更容易诊断。
+      </para>
+     </tip>
+    </sect3>
+  </sect2>
+
+  <sect2 id="continuous-archiving-caveats">
+   <title>注意事项</title>
+
+   <para>
+    在撰写本文时，持续归档技术还存在若干局限。这些问题很可能会在未来版本中得到修复：
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     如果在进行基础备份时执行了<link linkend="sql-createdatabase"><command>CREATE DATABASE</command></link>命令，而该<command>CREATE DATABASE</command>所复制的模板数据库又在基础备份尚未结束时被修改，那么恢复时可能会把这些修改也传播到新建数据库中。这当然并不理想。为避免这种风险，最好在进行基础备份时不要修改任何模板数据库。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <link linkend="sql-createtablespace"><command>CREATE TABLESPACE</command></link>命令会以字面绝对路径写入 WAL，因此重放时会按相同的绝对路径创建表空间。如果 WAL 在另一台机器上重放，这可能并不理想。即使 WAL 在同一台机器上、但重放到新的数据目录中，也可能有危险：重放仍会覆盖原表空间的内容。为避免此类潜在陷阱，最佳做法是在创建或删除表空间后重新执行一次基础备份。
+    </para>
+   </listitem>
+  </itemizedlist>
+   </para>
+
+   <para>
+    还应注意，默认的<acronym>WAL</acronym>格式相当臃肿，因为它包含许多磁盘页面快照。这些页面快照是为支持崩溃恢复而设计的，因为我们可能需要修复部分写入的磁盘页。根据你的系统硬件和软件情况，部分写入的风险可能小到可以忽略；在这种情况下，可以通过<xref linkend="guc-full-page-writes"/>参数关闭页面快照，从而显著减少已归档 WAL 文件的总量。（在这样做之前，请先阅读<xref linkend="wal"/>中的说明和警告。）关闭页面快照并不妨碍把 WAL 用于 PITR 操作。未来一个可能的开发方向，是在<varname>full_page_writes</varname>开启的情况下，通过去除不必要的页面副本来压缩归档 WAL 数据。在此之前，管理员可以考虑尽可能增大检查点间隔相关参数，以减少 WAL 中包含的页面快照数量。
+   </para>
+  </sect2>
+ </sect1>
+
+</chapter>

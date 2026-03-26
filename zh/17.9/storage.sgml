@@ -1,0 +1,990 @@
+<!-- doc/src/sgml/storage.sgml -->
+
+<chapter id="storage">
+
+<title>数据库物理存储</title>
+
+<para>
+本章概述 <productname>PostgreSQL</productname> 数据库所使用的物理存储格式。
+</para>
+
+<sect1 id="storage-file-layout">
+
+<title>数据库文件布局</title>
+
+<para>
+本节从文件和目录的层次描述存储格式。
+</para>
+
+<para>
+传统上，数据库集簇所使用的配置文件和数据文件都存放在集簇的数据目录中，
+这个目录通常称为 <varname>PGDATA</varname>（名字来自可用于定义它的环境变量）。
+<varname>PGDATA</varname> 的一个常见位置是
+<filename>/var/lib/pgsql/data</filename>。同一台机器上可以存在多个由不同服务器实例
+管理的集簇。
+</para>
+
+<para>
+<varname>PGDATA</varname> 目录包含若干子目录和控制文件，如
+<xref linkend="pgdata-contents-table"/> 所示。除这些必需项之外，集簇配置文件
+<filename>postgresql.conf</filename>、<filename>pg_hba.conf</filename> 和
+<filename>pg_ident.conf</filename> 传统上也存放在 <varname>PGDATA</varname>
+中，不过也可以把它们放在其他地方。
+</para>
+
+<table tocentry="1" id="pgdata-contents-table">
+<title><varname>PGDATA</varname> 的内容</title>
+<tgroup cols="2">
+<thead>
+<row>
+<entry>
+项
+</entry>
+<entry>描述</entry>
+</row>
+</thead>
+
+<tbody>
+
+<row>
+ <entry><filename>PG_VERSION</filename></entry>
+ <entry>包含 <productname>PostgreSQL</productname> 主版本号的文件</entry>
+</row>
+
+<row>
+ <entry><filename>base</filename></entry>
+ <entry>包含各数据库子目录的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>current_logfiles</filename></entry>
+ <entry>记录日志收集器当前正在写入的日志文件的文件</entry>
+</row>
+
+<row>
+ <entry><filename>global</filename></entry>
+ <entry>包含集簇范围内表的子目录，例如
+ <structname>pg_database</structname></entry>
+</row>
+
+<row>
+ <entry><filename>pg_commit_ts</filename></entry>
+ <entry>包含事务提交时间戳数据的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_dynshmem</filename></entry>
+ <entry>包含动态共享内存子系统所用文件的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_logical</filename></entry>
+ <entry>包含逻辑解码状态数据的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_multixact</filename></entry>
+ <entry>包含多事务状态数据的子目录
+  （用于共享行锁）</entry>
+</row>
+
+<row>
+ <entry><filename>pg_notify</filename></entry>
+ <entry>包含 LISTEN/NOTIFY 状态数据的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_replslot</filename></entry>
+ <entry>包含复制槽数据的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_serial</filename></entry>
+ <entry>包含已提交可串行化事务信息的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_snapshots</filename></entry>
+ <entry>包含导出快照的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_stat</filename></entry>
+ <entry>包含统计子系统永久文件的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_stat_tmp</filename></entry>
+ <entry>包含统计子系统临时文件的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_subtrans</filename></entry>
+ <entry>包含子事务状态数据的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_tblspc</filename></entry>
+ <entry>包含指向表空间的符号链接的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_twophase</filename></entry>
+ <entry>包含预备事务状态文件的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_wal</filename></entry>
+ <entry>包含 WAL（预写式日志）文件的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>pg_xact</filename></entry>
+ <entry>包含事务提交状态数据的子目录</entry>
+</row>
+
+<row>
+ <entry><filename>postgresql.auto.conf</filename></entry>
+ <entry>用于存储通过
+<command>ALTER SYSTEM</command> 设置的配置参数的文件</entry>
+</row>
+
+<row>
+ <entry><filename>postmaster.opts</filename></entry>
+ <entry>记录服务器上次启动时所用命令行选项的文件</entry>
+</row>
+
+<row>
+ <entry><filename>postmaster.pid</filename></entry>
+ <entry>记录当前 postmaster 进程 ID（PID）、
+  集簇数据目录路径、
+  postmaster 启动时间戳、
+  端口号、
+  Unix 域套接字目录路径（可能为空）、
+  第一个有效的 listen_address（IP 地址或 <literal>*</literal>，若未监听 TCP 则为空），
+  以及共享内存段 ID 的锁文件
+  （服务器关闭后该文件不存在）</entry>
+</row>
+
+</tbody>
+</tgroup>
+</table>
+
+<para>
+对于集簇中的每个数据库，<varname>PGDATA</varname><filename>/base</filename>
+中都有一个子目录，其名称是该数据库在 <structname>pg_database</structname>
+中的 OID。这个子目录是该数据库文件的默认位置；特别是，它的系统目录就存放在这里。
+</para>
+
+<para>
+ 请注意，下面各节描述的是内置 <literal>heap</literal>
+ <link linkend="tableam">表访问方法</link>以及内置
+ <link linkend="indexam">索引访问方法</link>的行为。由于
+ <productname>PostgreSQL</productname> 具有可扩展性，其他访问方法的行为可能不同。
+</para>
+
+<para>
+每个表和索引都存储在单独的文件中。对于普通关系，这些文件以表或索引的
+<firstterm>filenode</firstterm> 编号命名，该编号可在
+<structname>pg_class</structname>.<structfield>relfilenode</structfield>
+中找到。但对于临时关系，文件名的形式为
+<literal>t<replaceable>BBB</replaceable>_<replaceable>FFF</replaceable></literal>，
+其中 <replaceable>BBB</replaceable> 是创建该文件的后端进程号，
+<replaceable>FFF</replaceable> 是 filenode 编号。无论哪种情况，除了主文件
+（也称主分支）之外，每个表和索引还有一个
+<firstterm>空闲空间映射</firstterm>（见 <xref linkend="storage-fsm"/>），
+用于存储该关系可用空闲空间的信息。空闲空间映射存放在以 filenode 编号加上
+<literal>_fsm</literal> 后缀命名的文件中。表还拥有
+<firstterm>可见性映射</firstterm>，存放在带有 <literal>_vm</literal>
+后缀的分支中，用于跟踪哪些页面已知不含死元组。可见性映射在
+<xref linkend="storage-vm"/> 中有进一步说明。不记录日志的表和索引还有第三个分支，
+称为初始化分支，存放在带有 <literal>_init</literal> 后缀的分支中
+（见 <xref linkend="storage-init"/>）。
+</para>
+
+<caution>
+<para>
+请注意，虽然表的 filenode 往往与其 OID 相同，但这<emphasis>并非</emphasis>
+必然如此；有些操作，例如 <command>TRUNCATE</command>、
+<command>REINDEX</command>、<command>CLUSTER</command> 以及某些形式的
+<command>ALTER TABLE</command>，会在保留 OID 的同时改变 filenode。
+不要假定 filenode 和表 OID 一定相同。此外，对于某些系统目录（包括
+<structname>pg_class</structname> 本身），
+<structname>pg_class</structname>.<structfield>relfilenode</structfield>
+中存放的是零。这些目录的实际 filenode 编号保存在更底层的数据结构中，
+可以使用 <function>pg_relation_filenode()</function> 函数取得。
+</para>
+</caution>
+
+<para>
+当表或索引超过 1 GB 时，会被划分成若干个 1 GB 大小的
+<firstterm>段</firstterm>。第一段的文件名与 filenode 相同，后续各段则命名为
+filenode.1、filenode.2，依此类推。这样的安排避免了在文件大小受限的平台上出现问题。
+（实际上，1 GB 只是默认段大小。段大小可以通过配置选项
+<option>--with-segsize</option> 在构建 <productname>PostgreSQL</productname>
+时调整。）
+原则上，空闲空间映射和可见性映射分支也可能需要多个段，不过在实践中这不太可能发生。
+</para>
+
+<para>
+如果一个表包含可能具有很大条目的列，它就会有关联的
+<firstterm>TOAST</firstterm> 表，用于对那些大到无法直接保存在表行中的字段值
+进行线外存储。<structname>pg_class</structname>.<structfield>reltoastrelid</structfield>
+会把该表关联到其 <acronym>TOAST</acronym> 表（如果存在的话）。更多信息见
+<xref linkend="storage-toast"/>。
+</para>
+
+<para>
+表和索引的内容将在 <xref linkend="storage-page-layout"/> 中进一步讨论。
+</para>
+
+<para>
+表空间使情况变得更复杂。每个用户定义的表空间都在
+<varname>PGDATA</varname><filename>/pg_tblspc</filename> 目录中有一个符号链接，
+指向其物理表空间目录（即该表空间的 <command>CREATE TABLESPACE</command>
+命令中指定的位置）。该符号链接以表空间的 OID 命名。在物理表空间目录中，
+有一个名称依赖于 <productname>PostgreSQL</productname> 服务器版本的子目录，
+例如 <literal>PG_9.0_201008051</literal>。（使用这个子目录的原因是，为了让数据库的
+后续版本可以在不发生冲突的情况下复用同一个
+<command>CREATE TABLESPACE</command> 位置值。）在这个版本相关的子目录中，
+对于每个在该表空间中拥有对象的数据库，都有一个以该数据库 OID 命名的子目录。
+表和索引就使用 filenode 命名方案存储在该目录中。
+<literal>pg_default</literal> 表空间不通过 <filename>pg_tblspc</filename>
+访问，而是对应于 <varname>PGDATA</varname><filename>/base</filename>。
+同样，<literal>pg_global</literal> 表空间也不通过
+<filename>pg_tblspc</filename> 访问，而是对应于
+<varname>PGDATA</varname><filename>/global</filename>。
+</para>
+
+<para>
+<function>pg_relation_filepath()</function> 函数会显示任意关系的完整路径
+（相对于 <varname>PGDATA</varname>）。它常可用作记住上述众多规则的替代方法。
+但请记住，该函数只给出该关系主分支第一段的名字，若要找出与该关系关联的所有文件，
+你可能还需要追加段号以及/或者 <literal>_fsm</literal>、<literal>_vm</literal>
+或 <literal>_init</literal>。
+</para>
+
+<para>
+临时文件（用于诸如排序的数据多于内存可容纳量之类的操作）会创建在
+<varname>PGDATA</varname><filename>/base/pgsql_tmp</filename> 中；或者创建在表空间目录下的
+<filename>pgsql_tmp</filename> 子目录中，如果为其指定的是不同于
+<literal>pg_default</literal> 的表空间。临时文件的名称形式为
+<filename>pgsql_tmp<replaceable>PPP</replaceable>.<replaceable>NNN</replaceable></filename>，
+其中 <replaceable>PPP</replaceable> 是所属后端的 PID，
+<replaceable>NNN</replaceable> 用来区分该后端的不同临时文件。
+</para>
+
+</sect1>
+
+<sect1 id="storage-toast">
+
+<title>TOAST</title>
+
+    <indexterm>
+     <primary>TOAST</primary>
+    </indexterm>
+    <indexterm><primary>切片面包</primary><see>TOAST</see></indexterm>
+
+<para>
+本节概述超长属性存储技术（<acronym>TOAST</acronym>, The
+Oversized-Attribute Storage Technique）。
+</para>
+
+<para>
+<productname>PostgreSQL</productname> 使用固定页面大小（通常为 8 kB），并且不允许
+元组跨越多个页面。因此，无法直接存储非常大的字段值。为克服这一限制，大字段值会被
+压缩并且/或者拆分成多个物理行。这个过程对用户是透明的，而且对大部分后端代码的影响
+很小。这项技术被亲切地称为 <acronym>TOAST</acronym>（或者
+<quote>自切片面包问世以来最棒的东西</quote>）。<acronym>TOAST</acronym>
+基础设施也被用于改进内存中大型数据值的处理。
+</para>
+
+<para>
+只有某些数据类型支持 <acronym>TOAST</acronym>，因为没有必要让那些不可能产生大字段值的
+数据类型承担这部分额外开销。要支持 <acronym>TOAST</acronym>，数据类型必须具有变长
+（<firstterm>varlena</firstterm>）表示形式，在通常情况下，任何已存储值的第一个四字节字
+都包含该值以字节计的总长度（包括其自身）。<acronym>TOAST</acronym> 对该数据类型表示形式的
+其余部分没有约束。统称为 <firstterm><acronym>TOAST</acronym> 化值</firstterm> 的特殊表示形式，
+是通过修改或重新解释这个初始长度字来工作的。因此，支持可 <acronym>TOAST</acronym> 数据类型的
+C 级函数，必须小心处理可能已经 <acronym>TOAST</acronym> 化的输入值：在被
+<firstterm>去 TOAST 化</firstterm>之前，一个输入值未必真正由四字节长度字和内容组成。
+（通常是在对输入值做任何处理之前调用 <function>PG_DETOAST_DATUM</function>，
+但在某些情况下也可以采用更高效的方法。详见 <xref linkend="xtypes-toast"/>。）
+</para>
+
+<para>
+<acronym>TOAST</acronym> 会占用 varlena 长度字中的两个位
+（在大端机器上是最高位，在小端机器上是最低位），从而把任何可
+<acronym>TOAST</acronym> 数据类型值的逻辑大小限制为 1 GB
+（2<superscript>30</superscript> - 1 字节）。当这两个位都为零时，
+该值就是这种数据类型的普通、未经 <acronym>TOAST</acronym> 处理的值，长度字的其余位
+给出该 datum 的总大小（包括长度字），以字节计。当最高位或最低位被置位时，
+该值使用的不是通常的四字节头部，而是单字节头部；该字节的其余位给出 datum
+的总大小（包括长度字节），以字节计。这样既能高效存储短于 127 字节的值，
+又仍然允许数据类型在需要时增长到 1 GB。带单字节头部的值不按任何特定边界对齐，
+而带四字节头部的值至少按四字节边界对齐；省去这部分对齐填充后，相对于短值而言，
+可以显著节省空间。作为特殊情况，如果单字节头部的其余位全为零
+（对于自包含长度而言这是不可能的），则该值是一个指向线外数据的指针，
+它可能有下面将描述的几种形式。这样一种 <firstterm>TOAST 指针</firstterm> 的类型和大小，
+由 datum 第二个字节中存储的编码决定。最后，当最高位或最低位为零、但相邻的一位被置位时，
+该 datum 的内容已被压缩，使用前必须先解压。在这种情况下，四字节长度字的其余位给出的
+是压缩后 datum 的总大小，而不是原始数据的大小。请注意，线外数据也可能被压缩，
+但 varlena 头部不会告诉你是否发生了压缩，这一点要由 <acronym>TOAST</acronym>
+指针的内容来说明。
+</para>
+
+<para>
+无论是线内压缩数据还是线外压缩数据，其所用的压缩技术都可以通过设置
+<literal>COMPRESSION</literal> 列选项来按列选择，该选项可在
+<command>CREATE TABLE</command> 或 <command>ALTER TABLE</command> 中指定。
+对未显式设置的列，会在插入数据时参考参数
+<xref linkend="guc-default-toast-compression"/> 的值。
+</para>
+
+<para>
+如前所述，<acronym>TOAST</acronym> 指针 datum 有多种类型。最早、也最常见的一种，
+是指向存储在 <firstterm><acronym>TOAST</acronym> 表</firstterm>中的线外数据的指针，
+该表与包含该 <acronym>TOAST</acronym> 指针 datum 本身的表相关联，但与之分离存储。
+当一个要存储到磁盘上的元组过大而无法原样存储时，
+这些<firstterm>磁盘上的</firstterm>指针 datum 会由
+<acronym>TOAST</acronym> 管理代码（位于
+<filename>access/common/toast_internals.c</filename>）创建。更多细节见
+<xref linkend="storage-toast-ondisk"/>。另一种情况是，
+<acronym>TOAST</acronym> 指针 datum 可以包含指向内存中其他位置的线外数据的指针。
+这类 datum 必然是短命的，永远不会出现在磁盘上，但它们对于避免大型数据值的复制和
+冗余处理非常有用。更多细节见 <xref linkend="storage-toast-inmemory"/>。
+</para>
+
+<sect2 id="storage-toast-ondisk">
+ <title>线外、磁盘上的 TOAST 存储</title>
+
+<para>
+如果一个表的任意列是可 <acronym>TOAST</acronym> 的，该表就会有关联的
+<acronym>TOAST</acronym> 表，其 OID 存放在表的
+<structname>pg_class</structname>.<structfield>reltoastrelid</structfield>
+项中。磁盘上的 <acronym>TOAST</acronym> 化值保存在该
+<acronym>TOAST</acronym> 表中，下文会更详细地描述。
+</para>
+
+<para>
+线外值会被划分成最多 <symbol>TOAST_MAX_CHUNK_SIZE</symbol> 字节的块
+（如果启用了压缩，则在压缩之后再分块；默认情况下该值的选取方式是让四个块行
+可以装入一页，因此大约是 2000 字节）。每个块都作为独立的一行，存储在所属表的
+<acronym>TOAST</acronym> 表中。每个 <acronym>TOAST</acronym> 表都有
+<structfield>chunk_id</structfield> 列（标识某个特定
+<acronym>TOAST</acronym> 化值的 OID）、<structfield>chunk_seq</structfield> 列
+（该块在其值内的序号）以及 <structfield>chunk_data</structfield> 列
+（该块的实际数据）。在 <structfield>chunk_id</structfield> 和
+<structfield>chunk_seq</structfield> 上建立的唯一索引可提供快速检索。因此，一个表示
+线外、磁盘上的 <acronym>TOAST</acronym> 化值的指针 datum，需要存储要查找的
+<acronym>TOAST</acronym> 表的 OID，以及该特定值的 OID（即其
+<structfield>chunk_id</structfield>）。为方便起见，指针 datum 还会存储逻辑 datum 大小
+（原始未压缩数据长度）、物理存储大小（如果应用了压缩，这两者会不同），以及所用的
+压缩方法（如果有）。再加上 varlena 头部字节，磁盘上的
+<acronym>TOAST</acronym> 指针 datum 的总大小因此恒为 18 字节，与所表示值的实际大小无关。
+</para>
+
+<para>
+<acronym>TOAST</acronym> 管理代码只有在要存入表中的行值宽于
+<symbol>TOAST_TUPLE_THRESHOLD</symbol> 字节（通常为 2 kB）时才会被触发。
+<acronym>TOAST</acronym> 代码会压缩并且/或者把字段值移到线外，直到该行值短于
+<symbol>TOAST_TUPLE_TARGET</symbol> 字节（通常也为 2 kB，但可调整），
+或者已经无法再获得更多收益。在 UPDATE 操作中，未更改字段的值通常会原样保留；
+因此，如果更新一行时其线外值都没有变化，便不会产生 <acronym>TOAST</acronym> 成本。
+</para>
+
+<para>
+<acronym>TOAST</acronym> 管理代码识别四种在磁盘上存储可
+<acronym>TOAST</acronym> 列的不同策略：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <literal>PLAIN</literal> 既不允许压缩，也不允许线外存储。
+      这是不可 <acronym>TOAST</acronym> 数据类型列唯一可能的策略。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>EXTENDED</literal> 同时允许压缩和线外存储。
+      这是大多数可 <acronym>TOAST</acronym> 数据类型的默认策略。
+      系统会先尝试压缩，如果行仍然过大，再使用线外存储。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>EXTERNAL</literal> 允许线外存储，但不允许压缩。
+      使用 <literal>EXTERNAL</literal> 会让宽 <type>text</type> 和
+      <type>bytea</type> 列上的子串操作更快（代价是占用更多存储空间），
+      因为在值未压缩时，这些操作经过优化，只需提取线外值中所需的部分。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>MAIN</literal> 允许压缩，但不允许线外存储。
+      （实际上，对于这类列，仍然可能进行线外存储，但只有在别无他法、
+      必须这样做才能让行足够小以放入页面时，才会把它作为最后手段。）
+     </para>
+    </listitem>
+   </itemizedlist>
+
+每种可 <acronym>TOAST</acronym> 数据类型都会为该类型的列指定默认策略，但某个表列的策略
+可以通过 <link linkend="sql-altertable"><command>ALTER TABLE ... SET STORAGE</command></link>
+来修改。
+</para>
+
+<para>
+<symbol>TOAST_TUPLE_TARGET</symbol> 也可以针对每个表通过
+<link linkend="sql-altertable"><command>ALTER TABLE ... SET (toast_tuple_target = N)</command></link>
+进行调整。
+</para>
+
+<para>
+与允许行值跨页之类更直接的方法相比，这种方案有不少优点。假定查询通常是通过与
+相对较小的键值比较来限定的，执行器的大部分工作都会只使用主行项完成。
+<acronym>TOAST</acronym> 化属性的大值只有在结果集发送给客户端时才会被取出
+（前提是它们确实被选中了）。因此，主表会小得多，其更多的行能够装入共享缓冲区缓存，
+这是没有线外存储时做不到的。排序集也会缩小，因此排序更常能够完全在内存中完成。
+一个小测试表明，一个包含典型 HTML 页面及其 URL 的表，其总存储量（包括
+<acronym>TOAST</acronym> 表）大约只有原始数据大小的一半，而主表只包含全部数据的
+大约 10%（URL 以及一些较小的 HTML 页面）。与未进行
+<acronym>TOAST</acronym> 处理的对照表相比，运行时没有差异；在那个对照表中，
+所有 HTML 页面都被裁剪到 7 kB 以内以便放得下。
+</para>
+
+</sect2>
+
+<sect2 id="storage-toast-inmemory">
+ <title>线外、内存中的 TOAST 存储</title>
+
+<para>
+<acronym>TOAST</acronym> 指针可以指向不在磁盘上、而位于当前服务器进程内存中其他位置的数据。
+这类指针显然不可能长期存在，但仍然很有用。目前有两个子情况：
+指向<firstterm>间接</firstterm>数据的指针，以及指向<firstterm>展开</firstterm>数据的指针。
+</para>
+
+<para>
+间接 <acronym>TOAST</acronym> 指针只是简单地指向某处内存中存放的一个非间接 varlena 值。
+这一情况最初只是作为概念验证而创建，但目前在逻辑解码期间会用到它，以避免可能不得不
+创建超过 1 GB 的物理元组（把所有线外字段值都拉入元组就可能导致这种情况）。这种机制
+的用途有限，因为创建该指针 datum 的一方必须完全负责确保被引用数据在指针可能存在的
+整个期间都保持有效，而且系统并没有任何基础设施来帮助做到这一点。
+</para>
+
+<para>
+展开的 <acronym>TOAST</acronym> 指针对那些磁盘表示形式并不特别适合计算用途的复杂数据类型
+很有用。以标准的 <productname>PostgreSQL</productname> 数组 varlena 表示为例，它包含维度
+信息、一个空值位图（如果存在空元素），然后依次保存所有元素的值。当元素类型本身也是变长
+时，定位第 <replaceable>N</replaceable> 个元素的唯一办法就是扫描它前面的所有元素。
+这种表示形式因其紧凑性而适合磁盘存储，但对于数组计算而言，一种<quote>展开</quote>或
+<quote>解构</quote>的表示会更好，因为其中所有元素的起始位置都已识别出来。
+<acronym>TOAST</acronym> 指针机制通过允许按引用传递的 Datum 指向标准 varlena 值
+（即磁盘表示）或者指向内存中某处展开表示的 <acronym>TOAST</acronym> 指针，来满足这一需要。
+这种展开表示的具体细节由数据类型自行决定，不过它必须具有标准头部，并满足
+<filename>src/include/utils/expandeddatum.h</filename> 中给出的其他 API 要求。
+处理该数据类型的 C 级函数可以选择支持任一种表示。不知道展开表示、但只是对输入应用
+<function>PG_DETOAST_DATUM</function> 的函数，会自动获得传统的 varlena 表示；
+因此，对展开表示的支持可以逐步引入，一次增加一个函数即可。
+</para>
+
+<para>
+指向展开值的 <acronym>TOAST</acronym> 指针还可进一步分为
+<firstterm>可读写（read-write）</firstterm>和
+<firstterm>只读（read-only）</firstterm>指针。无论哪种方式，被指向的表示是相同的；
+但收到可读写指针的函数可以原地修改所引用的值，而收到只读指针的函数则不可以，
+如果它想生成该值的修改版本，必须先创建一个副本。
+这种区分以及一些相关约定，使得在查询执行期间可以避免不必要的展开值复制。
+</para>
+
+<para>
+对于所有类型的内存中 <acronym>TOAST</acronym> 指针，
+<acronym>TOAST</acronym> 管理代码都会确保这类指针 datum 不会意外地被存储到磁盘上。
+内存中的 <acronym>TOAST</acronym> 指针在存储前会自动展开为普通的线内 varlena 值，
+然后如果承载它的元组否则会过大，可能还会进一步转换为磁盘上的
+<acronym>TOAST</acronym> 指针。
+</para>
+
+</sect2>
+
+</sect1>
+
+<sect1 id="storage-fsm">
+
+<title>空闲空间映射</title>
+
+<indexterm>
+ <primary>空闲空间映射</primary>
+</indexterm>
+<indexterm><primary>FSM</primary><see>空闲空间映射</see></indexterm>
+
+<para>
+每个堆关系和索引关系（哈希索引除外）都有一个空闲空间映射
+（<acronym>FSM</acronym>），用于跟踪该关系中的可用空间。
+它与主关系数据并列存放在一个独立的关系分支中，其名称由该关系的 filenode 编号加上
+<literal>_fsm</literal> 后缀构成。例如，如果某关系的 filenode 是 12345，
+那么 <acronym>FSM</acronym> 就存储在名为 <filename>12345_fsm</filename>
+的文件中，与主关系文件位于同一目录。
+</para>
+
+<para>
+空闲空间映射被组织成一棵由 <acronym>FSM</acronym> 页面构成的树。最底层的
+<acronym>FSM</acronym> 页面存储每个堆页面（或索引页面）上的可用空闲空间，
+每个这样的页面用一个字节表示。上层页面则聚合来自下层的信息。
+</para>
+
+<para>
+每个 <acronym>FSM</acronym> 页面内部都有一棵二叉树，以数组形式存储，每个节点占一个字节。
+每个叶子节点表示一个堆页面或下层 <acronym>FSM</acronym> 页面。每个非叶子节点中保存其子节点值
+中较大的那个，因此叶子节点中的最大值会保存在根节点。
+</para>
+
+<para>
+请参见 <filename>src/backend/storage/freespace/README</filename>，
+了解 <acronym>FSM</acronym> 的结构以及如何更新和搜索它的更多细节。
+<xref linkend="pgfreespacemap"/> 模块可用于检查空闲空间映射中存储的信息。
+</para>
+
+</sect1>
+
+<sect1 id="storage-vm">
+
+<title>可见性映射</title>
+
+<indexterm>
+ <primary>可见性映射</primary>
+</indexterm>
+<indexterm><primary>VM</primary><see>可见性映射</see></indexterm>
+
+<para>
+每个堆关系都有一个可见性映射（VM），用于跟踪哪些页面只包含已知对所有活动事务都可见的
+元组；它还会跟踪哪些页面只包含已冻结的元组。它与主关系数据并列存放在一个独立的关系分支中，
+名称由关系的 filenode 编号加上 <literal>_vm</literal> 后缀构成。例如，如果某关系的
+filenode 是 12345，那么 VM 会存储在名为 <filename>12345_vm</filename> 的文件中，
+与主关系文件位于同一目录。请注意，索引没有 VM。
+</para>
+
+<para>
+可见性映射为每个堆页面存储两个位。第一位若被置位，表示该页面是全部可见（all-visible），
+换句话说，该页面不包含任何需要被清理的元组。这些信息还可以被
+<link linkend="indexes-index-only-scans"><firstterm>仅索引扫描</firstterm></link>
+用来只依据索引元组回答查询。第二位若被置位，则表示页面上的所有元组都已经被冻结。
+这意味着，即使是防回卷清理也不必重新访问该页面。
+</para>
+
+<para>
+这个映射是保守的，也就是说，只要某个位被置位，我们就能确定相应条件确实成立；
+但如果某个位没有置位，该条件既可能为真，也可能不为真。可见性映射位只会由
+VACUUM 设置，但页面上的任何数据修改操作都会把它们清除。
+</para>
+
+<para>
+<xref linkend="pgvisibility"/> 模块可用于检查可见性映射中存储的信息。
+</para>
+
+</sect1>
+
+<sect1 id="storage-init">
+
+<title>初始化分支</title>
+
+<indexterm>
+ <primary>初始化分支</primary>
+</indexterm>
+
+<para>
+每个不记录日志的表以及该表上的每个索引，都有一个初始化分支。初始化分支是一个适当类型的
+空表或空索引。当不记录日志的表因崩溃而必须重置为空时，初始化分支会被复制覆盖到主分支上，
+而其他分支都会被擦除（它们会在需要时自动重建）。
+</para>
+
+</sect1>
+
+<sect1 id="storage-page-layout">
+
+<title>数据库页面布局</title>
+
+<para>
+本节概述 <productname>PostgreSQL</productname> 表和索引内部所使用的页面格式。<footnote>
+  <para>
+    实际上，表访问方法和索引访问方法都不要求必须使用这种页面格式。
+    <literal>heap</literal> 表访问方法始终使用这种格式。现有的所有索引方法也都使用这种
+    基本格式，但索引元页中保存的数据通常并不遵循项布局规则。
+  </para>
+</footnote>
+序列和 <acronym>TOAST</acronym> 表的格式与普通表相同。
+</para>
+
+<para>
+在下面的说明中，假定一个 <firstterm>字节</firstterm> 包含 8 个位。另外，
+术语 <firstterm>项</firstterm> 指的是存储在页面上的单个数据值。在表中，项是一行；
+在索引中，项是一条索引条目。
+</para>
+
+<para>
+每个表和索引都存储为固定大小的<firstterm>页面</firstterm>数组
+（通常为 8 kB，不过在编译服务器时可以选择不同的页面大小）。在表中，所有页面在逻辑上
+都是等价的，因此某个特定项（行）可以存放在任意页面中。在索引中，第一页通常保留为
+<firstterm>元页</firstterm>，用于保存控制信息；并且根据索引访问方法的不同，索引中
+还可能存在不同类型的页面。
+</para>
+
+<para>
+<xref linkend="page-table"/> 展示了页面的总体布局。每个页面包含五个部分。
+</para>
+
+<table tocentry="1" id="page-table">
+<title>总体页面布局</title>
+<titleabbrev>页面布局</titleabbrev>
+<tgroup cols="2">
+<thead>
+<row>
+<entry>
+项
+</entry>
+<entry>描述</entry>
+</row>
+</thead>
+
+<tbody>
+
+<row>
+ <entry>PageHeaderData</entry>
+ <entry>长度为 24 字节。包含页面的一般信息，包括空闲空间指针。</entry>
+</row>
+
+<row>
+<entry>ItemIdData</entry>
+<entry>指向实际项的项标识符数组。每个条目都是一个（偏移量、长度）对。每项 4 字节。</entry>
+</row>
+
+<row>
+<entry>空闲空间</entry>
+<entry>尚未分配的空间。新的项标识符从该区域起始处分配，新的项从末尾处分配。</entry>
+</row>
+
+<row>
+<entry>项</entry>
+<entry>项本身。</entry>
+</row>
+
+<row>
+<entry>特殊空间</entry>
+<entry>索引访问方法特有的数据。不同方法存储不同数据。普通表中为空。</entry>
+</row>
+
+</tbody>
+</tgroup>
+</table>
+
+ <para>
+
+  每个页面的前 24 个字节由页头（<structname>PageHeaderData</structname>）组成。
+  它的格式详见 <xref linkend="pageheaderdata-table"/>。第一个字段跟踪与该页面有关的最新
+  WAL 记录。第二个字段在启用了 <xref linkend="app-initdb-data-checksums"/> 时
+  包含页面校验和。接下来是一个 2 字节字段，包含标志位。随后是三个 2 字节整数字段
+  （<structfield>pd_lower</structfield>、<structfield>pd_upper</structfield>
+  和 <structfield>pd_special</structfield>）。它们分别保存从页面起始位置到
+  未分配空间起始位置、未分配空间结束位置以及特殊空间起始位置的字节偏移量。
+  页头接下来的 2 个字节 <structfield>pd_pagesize_version</structfield>
+  同时存储页面大小和版本指示器。从 <productname>PostgreSQL</productname> 8.3 起，
+  版本号为 4；<productname>PostgreSQL</productname> 8.1 和 8.2 使用版本号 3；
+  <productname>PostgreSQL</productname> 8.0 使用版本号 2；
+  <productname>PostgreSQL</productname> 7.3 和 7.4 使用版本号 1；
+  更早版本使用版本号 0。（这些版本中的大多数，其基本页面布局和页头格式并未改变，
+  但堆行头部的布局发生过变化。）页面大小字段基本上只是用于交叉检查；
+  一个安装中并不支持同时存在多种页面大小。最后一个字段是一个提示，用于显示对页面进行
+  剪枝是否可能有利：它跟踪页面上最老的、尚未剪枝的 XMAX。
+
+ </para>
+
+ <table tocentry="1" id="pageheaderdata-table">
+ <title>PageHeaderData 布局</title>
+ <titleabbrev>PageHeaderData 布局</titleabbrev>
+ <tgroup cols="4">
+ <thead>
+  <row>
+   <entry>字段</entry>
+   <entry>类型</entry>
+   <entry>长度</entry>
+   <entry>描述</entry>
+  </row>
+ </thead>
+ <tbody>
+  <row>
+   <entry>pd_lsn</entry>
+   <entry>PageXLogRecPtr</entry>
+   <entry>8 字节</entry>
+   <entry>LSN：上次修改此页面的 WAL 记录最后一个字节之后的下一个字节</entry>
+  </row>
+  <row>
+   <entry>pd_checksum</entry>
+   <entry>uint16</entry>
+   <entry>2 字节</entry>
+   <entry>页面校验和</entry>
+  </row>
+  <row>
+   <entry>pd_flags</entry>
+   <entry>uint16</entry>
+   <entry>2 字节</entry>
+   <entry>标志位</entry>
+  </row>
+  <row>
+   <entry>pd_lower</entry>
+   <entry>LocationIndex</entry>
+   <entry>2 字节</entry>
+   <entry>到空闲空间起始位置的偏移量</entry>
+  </row>
+  <row>
+   <entry>pd_upper</entry>
+   <entry>LocationIndex</entry>
+   <entry>2 字节</entry>
+   <entry>到空闲空间结束位置的偏移量</entry>
+  </row>
+  <row>
+   <entry>pd_special</entry>
+   <entry>LocationIndex</entry>
+   <entry>2 字节</entry>
+   <entry>到特殊空间起始位置的偏移量</entry>
+  </row>
+  <row>
+   <entry>pd_pagesize_version</entry>
+   <entry>uint16</entry>
+   <entry>2 字节</entry>
+   <entry>页面大小和布局版本号信息</entry>
+  </row>
+  <row>
+   <entry>pd_prune_xid</entry>
+   <entry>TransactionId</entry>
+   <entry>4 字节</entry>
+   <entry>页面上最老的未剪枝 XMAX，若无则为零</entry>
+  </row>
+ </tbody>
+ </tgroup>
+ </table>
+
+ <para>
+  所有细节都可以在
+  <filename>src/include/storage/bufpage.h</filename> 中找到。
+ </para>
+
+ <para>
+  页头之后是项标识符（<type>ItemIdData</type>），每个需要四个字节。
+  一个项标识符包含项起始位置的字节偏移量、其字节长度，以及若干影响解释方式的属性位。
+  新的项标识符会根据需要从未分配空间的起始处分配。当前已有多少个项标识符，可以通过查看
+  <structfield>pd_lower</structfield> 得知；分配新标识符时它会增加。因为一个项标识符在被释放之前永远不会移动，
+  所以即使项本身为了压缩空闲空间而在页面内移动，其索引仍然可以被长期用来引用该项。
+  事实上，每个指向项的指针（<type>ItemPointer</type>，也称 <type>CTID</type>）
+  在 <productname>PostgreSQL</productname> 中都由页号和项标识符索引构成。
+
+ </para>
+
+ <para>
+
+  项本身存储在从未分配空间末尾开始、向后分配的区域中。其确切结构取决于表要包含什么内容。
+  表和序列都使用一种名为 <type>HeapTupleHeaderData</type> 的结构，如下所述。
+
+ </para>
+
+ <para>
+
+  最后一部分是<quote>特殊部分</quote>，其中可以存放访问方法希望保存的任何内容。例如，
+  B-树索引会在这里保存指向页面左、右兄弟的链接，以及其他一些与索引结构相关的数据。
+  普通表完全不使用特殊部分（通过将 <structfield>pd_special</structfield> 设为页面大小来表示）。
+
+ </para>
+
+ <para>
+  <xref linkend="storage-page-layout-figure"/> 展示了这些部分在页面中的布局方式。
+ </para>
+
+ <figure id="storage-page-layout-figure">
+  <title>页面布局</title>
+  <mediaobject>
+   <imageobject>
+    <imagedata fileref="images/pagelayout.svg" format="SVG" width="100%"/>
+   </imageobject>
+  </mediaobject>
+ </figure>
+
+ <sect2 id="storage-tuple-layout">
+
+ <title>表行布局</title>
+
+ <para>
+
+  所有表行的结构都相同。它们都有一个固定大小的头部（在大多数机器上占 23 字节），
+  后面跟着可选的空值位图、可选的对象 ID 字段以及用户数据。头部的详细格式见
+  <xref linkend="heaptupleheaderdata-table"/>。实际用户数据（行的各列）从
+  <structfield>t_hoff</structfield> 指示的偏移位置开始，它必须始终是该平台
+  MAXALIGN 对齐单位的整数倍。只有当 <firstterm>HEAP_HASNULL</firstterm> 位在
+  <structfield>t_infomask</structfield> 中被置位时，空值位图才存在。若存在，它紧随固定头部之后，
+  并占用足够多的字节，以便为每个数据列提供一位
+  （也就是说，其位数等于 <structfield>t_infomask2</structfield> 中的属性个数）。
+  在这个位图中，1 表示非空，0 表示空值。当位图不存在时，假定所有列都非空。
+  只有当 <firstterm>HEAP_HASOID_OLD</firstterm> 位在
+  <structfield>t_infomask</structfield> 中被置位时，对象 ID 才存在。若存在，它位于
+  <structfield>t_hoff</structfield> 边界之前。为了让 <structfield>t_hoff</structfield>
+  成为 MAXALIGN 的整数倍所需的任何填充，都会出现在空值位图与对象 ID 之间。
+  （这又反过来保证了对象 ID 的对齐是合适的。）
+
+ </para>
+
+ <table tocentry="1" id="heaptupleheaderdata-table">
+ <title>HeapTupleHeaderData 布局</title>
+ <titleabbrev>HeapTupleHeaderData 布局</titleabbrev>
+ <tgroup cols="4">
+ <thead>
+  <row>
+   <entry>字段</entry>
+   <entry>类型</entry>
+   <entry>长度</entry>
+   <entry>描述</entry>
+  </row>
+ </thead>
+ <tbody>
+  <row>
+   <entry>t_xmin</entry>
+   <entry>TransactionId</entry>
+   <entry>4 字节</entry>
+   <entry>插入 XID 标记</entry>
+  </row>
+  <row>
+   <entry>t_xmax</entry>
+   <entry>TransactionId</entry>
+   <entry>4 字节</entry>
+   <entry>删除 XID 标记</entry>
+  </row>
+  <row>
+   <entry>t_cid</entry>
+   <entry>CommandId</entry>
+   <entry>4 字节</entry>
+   <entry>插入和/或删除 CID 标记（与 t_xvac 重叠）</entry>
+  </row>
+  <row>
+   <entry>t_xvac</entry>
+   <entry>TransactionId</entry>
+   <entry>4 字节</entry>
+   <entry>VACUUM 操作移动某个行版本时的 XID</entry>
+  </row>
+  <row>
+   <entry>t_ctid</entry>
+   <entry>ItemPointerData</entry>
+   <entry>6 字节</entry>
+   <entry>本行版本或更新行版本的当前 TID</entry>
+  </row>
+  <row>
+   <entry>t_infomask2</entry>
+   <entry>uint16</entry>
+   <entry>2 字节</entry>
+   <entry>属性个数以及各种标志位</entry>
+  </row>
+  <row>
+   <entry>t_infomask</entry>
+   <entry>uint16</entry>
+   <entry>2 字节</entry>
+   <entry>各种标志位</entry>
+  </row>
+  <row>
+   <entry>t_hoff</entry>
+   <entry>uint8</entry>
+   <entry>1 字节</entry>
+   <entry>到用户数据的偏移量</entry>
+  </row>
+ </tbody>
+ </tgroup>
+ </table>
+
+ <para>
+   所有细节都可以在
+   <filename>src/include/access/htup_details.h</filename> 中找到。
+ </para>
+
+ <para>
+
+  要解释实际数据，必须借助从其他表中获得的信息，其中大部分来自
+  <structname>pg_attribute</structname>。识别字段位置所需的关键值是
+  <structfield>attlen</structfield> 和 <structfield>attalign</structfield>。
+  除非所有字段都是定宽且没有空值，否则没有办法直接取得某个特定属性。
+  所有这些技巧都封装在 <firstterm>heap_getattr</firstterm>、
+  <firstterm>fastgetattr</firstterm> 和 <firstterm>heap_getsysattr</firstterm>
+  这些函数中。
+
+ </para>
+ <para>
+
+  读取数据时，需要依次检查每个属性。首先根据空值位图判断该字段是否为 NULL。
+  如果是，就继续下一个。然后确认对齐是否正确。如果字段是定宽字段，那么它的所有字节
+  都是直接摆放的；如果它是变长字段（attlen = -1），情况就会稍复杂一些。所有变长
+  数据类型都共享一个通用头部结构 <type>struct varlena</type>，其中包含已存储值的
+  总长度以及一些标志位。根据这些标志，数据可能是线内存储的，也可能位于
+  <acronym>TOAST</acronym> 表中；它也可能是经过压缩的（见
+  <xref linkend="storage-toast"/>）。
+
+ </para>
+ </sect2>
+</sect1>
+
+<sect1 id="storage-hot">
+
+ <title>堆内元组（<acronym>HOT</acronym>）</title>
+
+ <para>
+  为了支持高并发，<productname>PostgreSQL</productname> 使用
+  <link linkend="mvcc-intro">多版本并发控制</link>（<acronym>MVCC</acronym>）来存储行。
+  不过，<acronym>MVCC</acronym> 对更新查询也有一些缺点。具体来说，更新需要向表中加入
+  新的行版本。这还可能要求为每个被更新的行新增索引条目，而移除旧的行版本及其索引条目
+  可能代价很高。
+ </para>
+
+ <para>
+  为了帮助降低更新的开销，<productname>PostgreSQL</productname> 提供了一种名为
+  堆内元组（<acronym>HOT</acronym>）的优化。该优化在以下情况下可行：
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     更新不会修改被该表索引引用的任何列，摘要索引除外。核心
+     <productname>PostgreSQL</productname> 发行版中唯一的摘要索引方法是
+     <link linkend="brin">BRIN</link>。
+     </para>
+   </listitem>
+   <listitem>
+    <para>
+     包含旧行的页面上有足够的空闲空间容纳更新后的行。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  在这种情况下，堆内元组提供两项优化：
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     不需要新增用于表示更新后行的新索引条目，不过摘要索引仍可能需要更新。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     当一行被多次更新时，除最旧和最新版本之外的行版本，都可以在日常操作期间被完全移除，
+     包括在执行 <command>SELECT</command> 时，而不必依赖周期性的清理操作。
+     （索引始终引用原始行版本的
+     <link linkend="storage-page-layout">页面项标识符</link>。与该行版本关联的
+     元组数据会被删除，其项标识符会转换成一个重定向，指向某个并发事务仍可能可见的
+     最旧版本。对任何人都不再可见的中间行版本会被完全移除，而相关的页面项标识符
+     则可重新利用。）
+    </para>
+   </listitem>
+  </itemizedlist>
+ </para>
+
+<para>
+  要提高页面拥有足够空间进行 <acronym>HOT</acronym> 更新的可能性，你可以降低表的
+  <link linkend="reloption-fillfactor"><literal>fillfactor</literal></link>。即使不这样做，
+  <acronym>HOT</acronym> 更新也仍然会发生，因为新行会自然迁移到新页面，而那些具有足够
+  空闲空间容纳新行版本的现有页面也会被利用。系统视图
+  <link linkend="monitoring-pg-stat-all-tables-view">pg_stat_all_tables</link>
+  可以用来监控 HOT 更新和非 HOT 更新的发生情况。
+ </para>
+</sect1>
+
+</chapter>

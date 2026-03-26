@@ -1,0 +1,124 @@
+<!--
+doc/src/sgml/ref/prepare_transaction.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-prepare-transaction">
+ <indexterm zone="sql-prepare-transaction">
+  <primary>PREPARE TRANSACTION</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>PREPARE TRANSACTION</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>PREPARE TRANSACTION</refname>
+  <refpurpose>为两阶段提交准备当前事务</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+<synopsis>
+PREPARE TRANSACTION <replaceable class="parameter">transaction_id</replaceable>
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>描述</title>
+
+  <para>
+   <command>PREPARE TRANSACTION</command>为两阶段提交准备当前事务。执行此命令后，该事务将不再与当前会话相关联；相反，它的状态会被完整地存储到磁盘上，因此即使在请求提交之前数据库发生崩溃，它也极有可能成功提交。
+  </para>
+
+  <para>
+   事务进入预备状态后，稍后可以分别使用<link linkend="sql-commit-prepared"><command>COMMIT PREPARED</command></link>或<link linkend="sql-rollback-prepared"><command>ROLLBACK PREPARED</command></link>来提交或回滚。发出这些命令的不必是执行原始事务的那个会话，任何会话都可以这样做。
+  </para>
+
+  <para>
+   从发出该命令的会话来看，<command>PREPARE TRANSACTION</command>颇似<command>ROLLBACK</command>：执行之后，将不再有活动的当前事务，并且该预备事务的效果也不再可见。（如果该事务随后被提交，这些效果会再次可见。）
+  </para>
+
+  <para>
+   如果<command>PREPARE TRANSACTION</command>因任何原因失败，它就等同于执行了一次<command>ROLLBACK</command>：当前事务会被取消。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>参数</title>
+
+  <variablelist>
+   <varlistentry>
+    <term><replaceable class="parameter">transaction_id</replaceable></term>
+    <listitem>
+     <para>
+      一个任意标识符，后续可通过它在<command>COMMIT PREPARED</command>或<command>ROLLBACK PREPARED</command>中标识该事务。该标识符必须写成字符串字面值，长度必须小于 200 字节，并且不能与当前任何已处于预备状态的事务标识符相同。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>注解</title>
+
+  <para>
+   <command>PREPARE TRANSACTION</command>并非供应用程序或交互式会话使用。它的目的是让外部事务管理器能够跨多个数据库或其他事务性资源执行原子性的全局事务。除非是在编写事务管理器，否则通常不应使用<command>PREPARE TRANSACTION</command>。
+  </para>
+
+  <para>
+   该命令必须在事务块内部使用。请用<link linkend="sql-begin"><command>BEGIN</command></link>启动事务块。
+  </para>
+
+  <para>
+   当前不允许将执行过以下任一操作的事务置为预备状态：涉及临时表或会话临时命名空间的操作、创建任何<literal>WITH HOLD</literal>游标，或执行过<command>LISTEN</command>、<command>UNLISTEN</command>或<command>NOTIFY</command>。这些特性与当前会话绑定得过于紧密，因此在要进入预备状态的事务中没有意义。
+  </para>
+
+  <para>
+   如果该事务曾用<command>SET</command>修改过任何运行时参数（且未使用<literal>LOCAL</literal>选项），那么这些效果在执行<command>PREPARE TRANSACTION</command>之后仍会保留，并且不会受到后续任何<command>COMMIT PREPARED</command>或<command>ROLLBACK PREPARED</command>的影响。因此，仅就这一点而言，<command>PREPARE TRANSACTION</command>的行为更像<command>COMMIT</command>而不是<command>ROLLBACK</command>。
+  </para>
+
+  <para>
+   当前所有处于预备状态的事务都列在<link linkend="view-pg-prepared-xacts"><structname>pg_prepared_xacts</structname></link>系统视图中。
+  </para>
+
+  <caution>
+   <para>
+    让事务长时间停留在预备状态并不明智。这会妨碍<command>VACUUM</command>回收存储空间，在极端情况下甚至可能导致数据库为防止事务 ID 回卷而关闭（见<xref linkend="vacuum-for-wraparound"/>）。还要记住，该事务会继续持有它原本持有的所有锁。此功能的预期用法是：一旦外部事务管理器确认其他数据库也已准备好提交，就尽快提交或回滚该预备事务。
+   </para>
+
+   <para>
+    如果没有设置外部事务管理器来跟踪预备事务并确保它们能被及时结束，最好将<xref linkend="guc-max-prepared-transactions"/>设为零，从而禁用预备事务功能。这样可以防止意外创建预备事务，而这些事务随后可能被遗忘并最终引发问题。
+   </para>
+  </caution>
+ </refsect1>
+
+ <refsect1 id="sql-prepare-transaction-examples">
+  <title>示例</title>
+  <para>
+   为两阶段提交准备当前事务，并使用<literal>foobar</literal>作为事务标识符：
+
+<programlisting>
+PREPARE TRANSACTION 'foobar';
+</programlisting></para>
+ </refsect1>
+
+ <refsect1>
+  <title>兼容性</title>
+
+  <para>
+   <command>PREPARE TRANSACTION</command>是<productname>PostgreSQL</productname>扩展。它供外部事务管理系统使用，其中有些系统受标准约束（例如 X/Open XA），但这些系统的 SQL 侧并未标准化。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>另见</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="sql-commit-prepared"/></member>
+   <member><xref linkend="sql-rollback-prepared"/></member>
+  </simplelist>
+ </refsect1>
+
+</refentry>

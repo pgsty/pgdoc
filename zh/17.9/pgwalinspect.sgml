@@ -1,0 +1,261 @@
+<!-- doc/src/sgml/pgwalinspect.sgml -->
+
+<sect1 id="pgwalinspect" xreflabel="pg_walinspect">
+ <title>pg_walinspect &mdash; WAL 的底层检查</title>
+
+ <indexterm zone="pgwalinspect">
+  <primary>pg_walinspect</primary>
+ </indexterm>
+
+ <para>
+  <filename>pg_walinspect</filename>模块提供一组 SQL 函数，
+  允许在底层检查正在运行的 <productname>PostgreSQL</productname>
+  数据库集簇的预写式日志内容，
+  这对于调试、分析、报表或教学用途很有帮助。
+  它与<xref linkend="pgwaldump"/>类似，但可通过 SQL 访问，而不是通过独立工具。
+ </para>
+
+ <para>
+  该模块的所有函数都基于服务器当前时间线 ID 提供 WAL 信息。
+ </para>
+
+ <note>
+  <para>
+   <filename>pg_walinspect</filename>函数通常使用一个 LSN 参数，
+   用来指定某条已知且感兴趣的 WAL 记录<emphasis>起始</emphasis>位置。
+   不过，某些函数（例如
+   <function><link linkend="pg-logical-emit-message">pg_logical_emit_message</link></function>）
+   返回的是刚插入那条记录<emphasis>之后</emphasis>的 LSN。
+  </para>
+ </note>
+ <tip>
+  <para>
+   所有显示某个 LSN 范围内记录信息的
+   <filename>pg_walinspect</filename>函数，
+   也接受大于服务器当前 LSN 的<replaceable>end_lsn</replaceable>参数。
+   使用一个<quote>来自未来</quote>的<replaceable>end_lsn</replaceable>不会引发错误。
+  </para>
+  <para>
+   便捷做法是将<literal>FFFFFFFF/FFFFFFFF</literal>
+   （最大合法<type>pg_lsn</type>值）作为<replaceable>end_lsn</replaceable>参数。
+   这等价于传入与服务器当前 LSN 相同的<replaceable>end_lsn</replaceable>。
+  </para>
+ </tip>
+ <para>
+  默认情况下，这些函数仅允许超级用户和
+  <literal>pg_read_server_files</literal>角色成员使用。
+  超级用户可通过<command>GRANT</command>向其他用户授予访问权限。
+ </para>
+
+ <sect2 id="pgwalinspect-funcs">
+  <title>通用函数</title>
+
+  <variablelist>
+   <varlistentry id="pgwalinspect-funcs-pg-get-wal-record-info">
+    <term>
+     <function>pg_get_wal_record_info(in_lsn pg_lsn) returns record</function>
+    </term>
+
+    <listitem>
+     <para>
+      获取位于<replaceable>in_lsn</replaceable>处或其后的某条 WAL 记录的信息。
+      例如：
+<screen>
+postgres=# SELECT * FROM pg_get_wal_record_info('0/E419E28');
+-[ RECORD 1 ]----+-------------------------------------------------
+start_lsn        | 0/E419E28
+end_lsn          | 0/E419E68
+prev_lsn         | 0/E419D78
+xid              | 0
+resource_manager | Heap2
+record_type      | VACUUM
+record_length    | 58
+main_data_length | 2
+fpi_length       | 0
+description      | nunused: 5, unused: [1, 2, 3, 4, 5]
+block_ref        | blkref #0: rel 1663/16385/1249 fork main blk 364
+</screen>
+     </para>
+     <para>
+      如果<replaceable>in_lsn</replaceable>不是某条 WAL 记录的起始位置，
+      则改为显示下一条有效 WAL 记录的信息。
+      若不存在下一条有效 WAL 记录，则函数报错。
+     </para>
+    </listitem>
+   </varlistentry>
+
+    <varlistentry id="pgwalinspect-funcs-pg-get-wal-records-info">
+    <term>
+     <function>
+      pg_get_wal_records_info(start_lsn pg_lsn, end_lsn pg_lsn)
+      returns setof record
+     </function>
+    </term>
+
+    <listitem>
+     <para>
+      获取<replaceable>start_lsn</replaceable>与<replaceable>end_lsn</replaceable>
+      之间所有有效 WAL 记录的信息。
+      每条 WAL 记录返回一行。例如：
+<screen>
+postgres=# SELECT * FROM pg_get_wal_records_info('0/1E913618', '0/1E913740') LIMIT 1;
+-[ RECORD 1 ]----+--------------------------------------------------------------
+start_lsn        | 0/1E913618
+end_lsn          | 0/1E913650
+prev_lsn         | 0/1E9135A0
+xid              | 0
+resource_manager | Standby
+record_type      | RUNNING_XACTS
+record_length    | 50
+main_data_length | 24
+fpi_length       | 0
+description      | nextXid 33775 latestCompletedXid 33774 oldestRunningXid 33775
+block_ref        |
+</screen>
+     </para>
+     <para>
+      若<replaceable>start_lsn</replaceable>不可用，函数会报错。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="pgwalinspect-funcs-pg-get-wal-block-info">
+    <term>
+     <function>pg_get_wal_block_info(start_lsn pg_lsn, end_lsn pg_lsn, show_data boolean DEFAULT true) returns setof record</function>
+    </term>
+
+    <listitem>
+     <para>
+      获取<replaceable>start_lsn</replaceable>到<replaceable>end_lsn</replaceable>
+      范围内所有有效 WAL 记录中每个块引用的信息，仅返回包含一个或多个块引用的记录。
+      每条 WAL 记录中的每个块引用返回一行。
+      例如：
+<screen>
+postgres=# SELECT * FROM pg_get_wal_block_info('0/1230278', '0/12302B8');
+-[ RECORD 1 ]-----+-----------------------------------
+start_lsn         | 0/1230278
+end_lsn           | 0/12302B8
+prev_lsn          | 0/122FD40
+block_id          | 0
+reltablespace     | 1663
+reldatabase       | 1
+relfilenode       | 2658
+relforknumber     | 0
+relblocknumber    | 11
+xid               | 341
+resource_manager  | Btree
+record_type       | INSERT_LEAF
+record_length     | 64
+main_data_length  | 2
+block_data_length | 16
+block_fpi_length  | 0
+block_fpi_info    |
+description       | off: 46
+block_data        | \x00002a00070010402630000070696400
+block_fpi_data    |
+</screen>
+     </para>
+     <para>
+      上例中的 WAL 记录只包含一个块引用，
+      但许多 WAL 记录会包含多个块引用。
+      <function>pg_get_wal_block_info</function>输出的每一行，
+      其<replaceable>start_lsn</replaceable>与<replaceable>block_id</replaceable>
+      值的组合都保证唯一。
+     </para>
+     <para>
+      这里展示的大部分信息与使用相同参数时
+      <function>pg_get_wal_records_info</function>的输出一致。
+      不过，<function>pg_get_wal_block_info</function>会把每条 WAL 记录中的信息拆解为展开形式：
+      对每个块引用输出一行，因此某些细节是在块引用级别而不是整条记录级别进行跟踪。
+      这种结构适合配合跟踪单个块随时间变化的查询使用。
+      需要注意，不含块引用的记录（如<literal>COMMIT</literal> WAL 记录）
+      不会返回任何行，因此<function>pg_get_wal_block_info</function>
+      实际返回的行数可能<emphasis>少于</emphasis>
+      <function>pg_get_wal_records_info</function>。
+     </para>
+     <para>
+      <structfield>reltablespace</structfield>、
+      <structfield>reldatabase</structfield>和
+      <structfield>relfilenode</structfield>字段分别引用
+      <link linkend="catalog-pg-tablespace"><structname>pg_tablespace</structname></link>.<structfield>oid</structfield>、
+      <link linkend="catalog-pg-database"><structname>pg_database</structname></link>.<structfield>oid</structfield>
+      以及
+      <link linkend="catalog-pg-class"><structname>pg_class</structname></link>.<structfield>relfilenode</structfield>。
+      <structfield>relforknumber</structfield>字段表示该块引用在关系中的分支编号；
+      详见<filename>common/relpath.h</filename>。
+     </para>
+     <tip>
+      <para>
+       <function>pg_filenode_relation</function>函数（见
+       <xref linkend="functions-admin-dblocation"/>）
+       可帮助确定在最初执行时被修改的是哪个关系。
+      </para>
+     </tip>
+     <para>
+      客户端可以避免物化块数据所带来的开销，
+      这可能使函数执行显著加快。
+      当<replaceable>show_data</replaceable>为<literal>false</literal>时，
+      会省略<structfield>block_data</structfield>和
+      <structfield>block_fpi_data</structfield>值
+      （也就是说，返回的所有行中<structfield>block_data</structfield>和
+      <structfield>block_fpi_data</structfield>这两个<literal>OUT</literal>
+      参数均为<literal>NULL</literal>）。
+      显然，这项优化只适用于查询确实不需要块数据的场景。
+     </para>
+     <para>
+      若<replaceable>start_lsn</replaceable>不可用，函数会报错。
+     </para>
+    </listitem>
+   </varlistentry>
+
+    <varlistentry id="pgwalinspect-funcs-pg-get-wal-stats">
+    <term>
+     <function>
+      pg_get_wal_stats(start_lsn pg_lsn, end_lsn pg_lsn, per_record boolean DEFAULT false)
+      returns setof record
+     </function>
+    </term>
+
+    <listitem>
+     <para>
+      获取<replaceable>start_lsn</replaceable>与
+      <replaceable>end_lsn</replaceable>之间所有有效 WAL 记录的统计信息。
+      默认按每种<replaceable>resource_manager</replaceable>类型返回一行。
+      当<replaceable>per_record</replaceable>设为<literal>true</literal>时，
+      则按每种<replaceable>record_type</replaceable>返回一行。
+      例如：
+<screen>
+postgres=# SELECT * FROM pg_get_wal_stats('0/1E847D00', '0/1E84F500')
+           WHERE count > 0 AND
+                 "resource_manager/record_type" = 'Transaction'
+           LIMIT 1;
+-[ RECORD 1 ]----------------+-------------------
+resource_manager/record_type | Transaction
+count                        | 2
+count_percentage             | 8
+record_size                  | 875
+record_size_percentage       | 41.23468426013195
+fpi_size                     | 0
+fpi_size_percentage          | 0
+combined_size                | 875
+combined_size_percentage     | 2.8634072910530795
+</screen>
+     </para>
+     <para>
+      若<replaceable>start_lsn</replaceable>不可用，函数会报错。
+     </para>
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+ </sect2>
+
+ <sect2 id="pgwalinspect-author">
+  <title>作者</title>
+
+  <para>
+   Bharath Rupireddy <email>bharath.rupireddyforpostgres@gmail.com</email>
+  </para>
+ </sect2>
+
+</sect1>

@@ -1,0 +1,2042 @@
+<!-- doc/src/sgml/queries.sgml -->
+
+<chapter id="queries">
+
+ <title>查询</title>
+
+ <indexterm zone="queries">
+  <primary>查询</primary>
+ </indexterm>
+
+ <indexterm zone="queries">
+  <primary>SELECT</primary>
+ </indexterm>
+
+ <para>
+  前面的章节解释了如何创建表、如何用数据填充它们，以及如何操纵这些数据。现在我们终于可以讨论如何从数据库中检索数据了。
+ </para>
+
+ <sect1 id="queries-overview">
+
+  <title>概述</title>
+
+  <para>
+   从数据库中检索数据的过程或用于检索数据的命令称为<firstterm>查询</firstterm>。在 SQL 中，使用<link linkend="sql-select"><command>SELECT</command></link>命令来指定查询。<command>SELECT</command>命令的一般语法是
+<synopsis>
+<optional>WITH <replaceable>with_queries</replaceable></optional> SELECT <replaceable>select_list</replaceable> FROM <replaceable>table_expression</replaceable> <optional><replaceable>sort_specification</replaceable></optional>
+</synopsis>
+   下面几节将介绍选择列表、表表达式和排序规范的细节。由于<literal>WITH</literal>查询属于高级特性，因此放在最后讨论。
+  </para>
+
+  <para>
+   一种简单查询的形式如下：
+<programlisting>
+SELECT * FROM table1;
+</programlisting>
+  假设存在一个名为<literal>table1</literal>的表，则这条命令会从<literal>table1</literal>中检索所有行以及所有用户定义列。（具体的检索方式取决于客户端应用。例如，<application>psql</application>程序会在屏幕上显示一个 ASCII 形式的表格，而客户端库则会提供从查询结果中提取单个值的函数。）选择列表说明<literal>*</literal>表示表表达式所提供的全部列。选择列表也可以只选择部分可用列，或者利用这些列进行计算。例如，如果<literal>table1</literal>有名为<literal>a</literal>、<literal>b</literal>和<literal>c</literal>的列（还可能有其他列），那么可以写出下面的查询：
+<programlisting>
+SELECT a, b + c FROM table1;
+</programlisting>
+  （假设<literal>b</literal>和<literal>c</literal>都是数值数据类型）。有关更多细节请参见<xref linkend="queries-select-lists"/>。
+ </para>
+
+ <para>
+  <literal>FROM table1</literal>是一种简单的表表达式：它只读取一个表。通常，表表达式可以是由基本表、连接和子查询组成的复杂结构。不过，你也可以完全省略表表达式，把<command>SELECT</command>命令当成计算器来使用：
+<programlisting>
+SELECT 3 * 4;
+</programlisting>
+  如果选择列表中的表达式会返回变化的结果，这种用法就更有用了。例如，你可以这样调用函数：
+<programlisting>
+SELECT random();
+</programlisting>
+  </para>
+ </sect1>
+
+ <sect1 id="queries-table-expressions">
+
+  <title>表表达式</title>
+
+  <indexterm zone="queries-table-expressions">
+   <primary>表表达式</primary>
+  </indexterm>
+
+  <para>
+   <firstterm>表表达式</firstterm>用于计算出一个表。表表达式包含一个<literal>FROM</literal>子句，后面可以根据需要跟上<literal>WHERE</literal>、<literal>GROUP BY</literal>和<literal>HAVING</literal>子句。最简单的表表达式只是引用磁盘上的一个表，即所谓的基本表；但也可以使用更复杂的表达式，以多种方式修改或组合基本表。
+  </para>
+
+  <para>
+   表表达式中可选的<literal>WHERE</literal>、<literal>GROUP BY</literal>和<literal>HAVING</literal>子句指定了一个连续转换的流水线，这些转换作用于由<literal>FROM</literal>子句派生出的表。所有这些转换都会生成一个虚拟表，该表提供的各行会传递给选择列表，以计算查询的输出行。
+  </para>
+
+  <sect2 id="queries-from">
+
+   <title><literal>FROM</literal>子句</title>
+
+   <para>
+    <link linkend="sql-from"><literal>FROM</literal></link>子句根据一个以逗号分隔的表引用列表，从一个或多个其他表派生出一个表。
+<synopsis>
+FROM <replaceable>table_reference</replaceable> <optional>, <replaceable>table_reference</replaceable> <optional>, ...</optional></optional>
+</synopsis>
+
+    表引用可以是表名（可能带有模式限定），也可以是派生表，例如子查询、<literal>JOIN</literal>结构，或这些形式的复杂组合。如果在<literal>FROM</literal>子句中列出了多个表引用，那么这些表会被交叉连接（也就是形成它们各行的笛卡尔积，见下文）。<literal>FROM</literal>列表的结果是一个中间虚拟表，该表随后可以再经过<literal>WHERE</literal>、<literal>GROUP BY</literal>和<literal>HAVING</literal>子句指定的转换，并最终成为整个表表达式的结果。
+   </para>
+
+   <indexterm>
+    <primary>ONLY</primary>
+   </indexterm>
+
+   <para>
+    当表引用命名的是表继承层次中的父表时，除非在表名前加上关键字<literal>ONLY</literal>，否则该表引用不仅会产生该表中的行，还会产生其所有后代表中的行。不过，这种引用只会产生该命名表中出现的列 &mdash; 子表中新增的列会被忽略。
+   </para>
+
+   <para>
+    也可以不在表名前写<literal>ONLY</literal>，而是在表名后面写上<literal>*</literal>，显式指定要包含后代表。如今继续使用这种语法并没有实际理由，因为包含后代表现在本来就是默认行为。不过，为了兼容旧版本，仍然支持这种语法。
+   </para>
+
+   <sect3 id="queries-join">
+
+    <title>连接表</title>
+
+    <indexterm zone="queries-join">
+     <primary>连接</primary>
+    </indexterm>
+
+    <para>
+     一个连接表是根据特定的连接类型的规则从两个其它表（真实表或生成表）中派生的表。目前支持内连接、外连接和交叉连接。一个连接表的一般语法是：
+<synopsis>
+<replaceable>T1</replaceable> <replaceable>join_type</replaceable> <replaceable>T2</replaceable> <optional> <replaceable>join_condition</replaceable> </optional>
+</synopsis>
+     所有类型的连接都可以被链在一起或者嵌套：<replaceable>T1</replaceable>和<replaceable>T2</replaceable>都可以是连接表。在<literal>JOIN</literal>子句周围可以使用圆括号来控制连接顺序。如果不使用圆括号，<literal>JOIN</literal>子句会从左至右嵌套。
+    </para>
+
+    <variablelist>
+
+     <title>连接类型</title>
+
+     <varlistentry id="zh18-auto-queries-varlistentry-1">
+
+      <term>交叉连接
+
+      <indexterm>
+       <primary>连接</primary>
+       <secondary>交叉</secondary>
+      </indexterm>
+
+      <indexterm>
+       <primary>交叉连接</primary>
+      </indexterm>
+      </term>
+
+      <listitem>
+
+<synopsis>
+<replaceable>T1</replaceable> CROSS JOIN <replaceable>T2</replaceable>
+</synopsis>
+
+       <para>
+        对来自于<replaceable>T1</replaceable>和<replaceable>T2</replaceable>的行的每一种可能的组合（即笛卡尔积），连接表将包含这样一行：它由所有<replaceable>T1</replaceable>里面的列后面跟着所有<replaceable>T2</replaceable>里面的列构成。如果两个表分别有 N 和 M 行，连接表将有 N * M 行。
+       </para>
+
+       <para>
+        <literal>FROM <replaceable>T1</replaceable> CROSS JOIN <replaceable>T2</replaceable></literal>等效于<literal>FROM <replaceable>T1</replaceable> INNER JOIN <replaceable>T2</replaceable> ON TRUE</literal>（见下文）。它也等效于<literal>FROM <replaceable>T1</replaceable>,<replaceable>T2</replaceable></literal>。
+        <note>
+        <para>
+         当出现两个以上的表时，后一种等价关系并不严格成立，因为<literal>JOIN</literal>的绑定强于逗号。例如<literal>FROM <replaceable>T1</replaceable> CROSS JOIN <replaceable>T2</replaceable> INNER JOIN <replaceable>T3</replaceable> ON <replaceable>condition</replaceable></literal>和<literal>FROM <replaceable>T1</replaceable>,<replaceable>T2</replaceable> INNER JOIN <replaceable>T3</replaceable> ON <replaceable>condition</replaceable></literal>并不完全相同，因为第一种情况中的<replaceable>condition</replaceable>可以引用<replaceable>T1</replaceable>，而第二种情况中则不行。
+        </para>
+        </note>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-queries-varlistentry-2">
+
+      <term>限定连接
+
+      <indexterm>
+       <primary>连接</primary>
+       <secondary>外</secondary>
+      </indexterm>
+
+      <indexterm>
+       <primary>外连接</primary>
+      </indexterm>
+      </term>
+
+      <listitem>
+
+<synopsis>
+<replaceable>T1</replaceable> { <optional>INNER</optional> | { LEFT | RIGHT | FULL } <optional>OUTER</optional> } JOIN <replaceable>T2</replaceable> ON <replaceable>boolean_expression</replaceable>
+<replaceable>T1</replaceable> { <optional>INNER</optional> | { LEFT | RIGHT | FULL } <optional>OUTER</optional> } JOIN <replaceable>T2</replaceable> USING ( <replaceable>join column list</replaceable> )
+<replaceable>T1</replaceable> NATURAL { <optional>INNER</optional> | { LEFT | RIGHT | FULL } <optional>OUTER</optional> } JOIN <replaceable>T2</replaceable>
+</synopsis>
+
+       <para>
+        <literal>INNER</literal>和<literal>OUTER</literal>在所有形式中都是可选的。<literal>INNER</literal>是默认值；<literal>LEFT</literal>、<literal>RIGHT</literal>和<literal>FULL</literal>表示外连接。
+       </para>
+
+       <para>
+        <firstterm>连接条件</firstterm>在<literal>ON</literal>或<literal>USING</literal>子句中指定， 或者用关键字<literal>NATURAL</literal>隐含地指定。连接条件决定来自两个源表中的哪些行是<quote>匹配</quote>的，这些我们将在后文详细解释。
+       </para>
+
+       <para>
+        可能的限定连接类型有：
+
+       <variablelist>
+        <varlistentry id="zh18-auto-queries-varlistentry-7">
+         <term><literal>INNER JOIN</literal></term>
+
+         <listitem>
+          <para>
+           对于 T1 的每一行 R1，生成的连接表都有一行对应 T2 中的每一个满足和 R1 的连接条件的行。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-queries-varlistentry-8">
+         <term><literal>LEFT OUTER JOIN</literal>
+         <indexterm>
+          <primary>连接</primary>
+          <secondary>左</secondary>
+         </indexterm>
+
+         <indexterm>
+          <primary>左连接</primary>
+         </indexterm>
+         </term>
+
+         <listitem>
+          <para>
+           首先，执行一次内连接。然后，为 T1 中每一个无法在连接条件上匹配 T2 里任何一行的行返回一个连接行，该连接行中 T2 的列用空值补齐。因此，生成的连接表里为来自 T1 的每一行都至少包含一行。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-queries-varlistentry-9">
+         <term><literal>RIGHT OUTER JOIN</literal>
+         <indexterm>
+          <primary>连接</primary>
+          <secondary>右</secondary>
+         </indexterm>
+
+         <indexterm>
+          <primary>右连接</primary>
+         </indexterm>
+         </term>
+
+         <listitem>
+          <para>
+           首先，执行一次内连接。然后，为 T2 中每一个无法在连接条件上匹配 T1 里任何一行的行返回一个连接行，该连接行中 T1 的列用空值补齐。因此，生成的连接表里为来自 T2 的每一行都至少包含一行。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-queries-varlistentry-10">
+         <term><literal>FULL OUTER JOIN</literal></term>
+
+         <listitem>
+          <para>
+           首先，执行一次内连接。然后，为 T1 中每一个无法在连接条件上匹配 T2 里任何一行的行返回一个连接行，该连接行中 T2 的列用空值补齐。同样，为 T2 中每一个无法在连接条件上匹配 T1 里任何一行的行返回一个连接行，该连接行中 T1 的列用空值补齐。
+          </para>
+         </listitem>
+        </varlistentry>
+       </variablelist>
+       </para>
+
+       <para>
+       <literal>ON</literal>子句是最常见的连接条件的形式：它接收一个和<literal>WHERE</literal>子句里用的一样的布尔值表达式。 如果两个分别来自<replaceable>T1</replaceable>和<replaceable>T2</replaceable>的行在<literal>ON</literal>表达式上运算的结果为真，那么它们就算是匹配的行。
+       </para>
+
+       <para>
+        <literal>USING</literal>是个缩写符号，它允许你利用特殊的情况：连接的两端都具有相同的连接列名。它接受共享列名的一个逗号分隔列表，并且为其中每一个共享列构造一个包含等值比较的连接条件。例如用<literal>USING (a, b)</literal>连接<replaceable>T1</replaceable>和<replaceable>T2</replaceable>会产生连接条件<literal>ON <replaceable>T1</replaceable>.a = <replaceable>T2</replaceable>.a AND <replaceable>T1</replaceable>.b = <replaceable>T2</replaceable>.b</literal>。
+       </para>
+
+       <para>
+        更进一步，<literal>JOIN USING</literal>的输出会废除冗余列：不需要把匹配上的列都打印出来，因为它们必须具有相等的值。不过<literal>JOIN ON</literal>会先产生来自<replaceable>T1</replaceable>的所有列，后面跟上所有来自<replaceable>T2</replaceable>的列；而<literal>JOIN USING</literal>会先为列出的每一个列对产生一个输出列，然后先跟上来自<replaceable>T1</replaceable>的剩余列，最后跟上来自<replaceable>T2</replaceable>的剩余列。
+       </para>
+
+       <para>
+        <indexterm>
+         <primary>连接</primary>
+         <secondary>自然</secondary>
+        </indexterm>
+        <indexterm>
+         <primary>自然连接</primary>
+        </indexterm>
+        最后，<literal>NATURAL</literal>是<literal>USING</literal>的一种缩写形式：它会形成一个<literal>USING</literal>列表，其中包含两个输入表中共同出现的所有列名。和<literal>USING</literal>一样，这些列在输出表中只出现一次。如果没有公共列名，<literal>NATURAL JOIN</literal>的行为就与<literal>CROSS JOIN</literal>相同。
+       </para>
+
+       <note>
+
+        <para>
+         对于被连接的关系发生列变化的情况，<literal>USING</literal>相当安全，因为只有列出的列才会被合并。<literal>NATURAL</literal>的风险则大得多，因为只要任一关系的模式变更导致出现新的同名列，连接就会把这个新列也纳入合并。
+        </para>
+       </note>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+
+    <para>
+     综合起来看，假设我们有表<literal>t1</literal>：
+<programlisting>
+ num | name
+-----+------
+   1 | a
+   2 | b
+   3 | c
+</programlisting>
+     和<literal>t2</literal>：
+<programlisting>
+ num | value
+-----+-------
+   1 | xxx
+   3 | yyy
+   5 | zzz
+</programlisting>
+     然后我们用不同的连接方式可以获得各种结果：
+<screen>
+<prompt>=&gt;</prompt> <userinput>SELECT * FROM t1 CROSS JOIN t2;</userinput>
+ num | name | num | value
+-----+------+-----+-------
+   1 | a    |   1 | xxx
+   1 | a    |   3 | yyy
+   1 | a    |   5 | zzz
+   2 | b    |   1 | xxx
+   2 | b    |   3 | yyy
+   2 | b    |   5 | zzz
+   3 | c    |   1 | xxx
+   3 | c    |   3 | yyy
+   3 | c    |   5 | zzz
+(9 rows)
+
+<prompt>=&gt;</prompt> <userinput>SELECT * FROM t1 INNER JOIN t2 ON t1.num = t2.num;</userinput>
+ num | name | num | value
+-----+------+-----+-------
+   1 | a    |   1 | xxx
+   3 | c    |   3 | yyy
+(2 rows)
+
+<prompt>=&gt;</prompt> <userinput>SELECT * FROM t1 INNER JOIN t2 USING (num);</userinput>
+ num | name | value
+-----+------+-------
+   1 | a    | xxx
+   3 | c    | yyy
+(2 rows)
+
+<prompt>=&gt;</prompt> <userinput>SELECT * FROM t1 NATURAL INNER JOIN t2;</userinput>
+ num | name | value
+-----+------+-------
+   1 | a    | xxx
+   3 | c    | yyy
+(2 rows)
+
+<prompt>=&gt;</prompt> <userinput>SELECT * FROM t1 LEFT JOIN t2 ON t1.num = t2.num;</userinput>
+ num | name | num | value
+-----+------+-----+-------
+   1 | a    |   1 | xxx
+   2 | b    |     |
+   3 | c    |   3 | yyy
+(3 rows)
+
+<prompt>=&gt;</prompt> <userinput>SELECT * FROM t1 LEFT JOIN t2 USING (num);</userinput>
+ num | name | value
+-----+------+-------
+   1 | a    | xxx
+   2 | b    |
+   3 | c    | yyy
+(3 rows)
+
+<prompt>=&gt;</prompt> <userinput>SELECT * FROM t1 RIGHT JOIN t2 ON t1.num = t2.num;</userinput>
+ num | name | num | value
+-----+------+-----+-------
+   1 | a    |   1 | xxx
+   3 | c    |   3 | yyy
+     |      |   5 | zzz
+(3 rows)
+
+<prompt>=&gt;</prompt> <userinput>SELECT * FROM t1 FULL JOIN t2 ON t1.num = t2.num;</userinput>
+ num | name | num | value
+-----+------+-----+-------
+   1 | a    |   1 | xxx
+   2 | b    |     |
+   3 | c    |   3 | yyy
+     |      |   5 | zzz
+(4 rows)
+</screen>
+    </para>
+
+    <para>
+     用<literal>ON</literal>指定的连接条件也可以包含与连接不直接相关的条件。这种功能可能对某些查询很有用，但是需要我们仔细想清楚。例如：
+<screen>
+<prompt>=&gt;</prompt> <userinput>SELECT * FROM t1 LEFT JOIN t2 ON t1.num = t2.num AND t2.value = 'xxx';</userinput>
+ num | name | num | value
+-----+------+-----+-------
+   1 | a    |   1 | xxx
+   2 | b    |     |
+   3 | c    |     |
+(3 rows)
+</screen>
+     注意把限制放在<literal>WHERE</literal>子句中会产生不同的结果：
+<screen>
+<prompt>=&gt;</prompt> <userinput>SELECT * FROM t1 LEFT JOIN t2 ON t1.num = t2.num WHERE t2.value = 'xxx';</userinput>
+ num | name | num | value
+-----+------+-----+-------
+   1 | a    |   1 | xxx
+(1 row)
+</screen>
+     这是因为放在<literal>ON</literal>子句中的约束会在连接<emphasis>之前</emphasis>处理，而放在<literal>WHERE</literal>子句中的约束则会在连接<emphasis>之后</emphasis>处理。这对内连接无关紧要，但对外连接影响很大。
+    </para>
+   </sect3>
+
+   <sect3 id="queries-table-aliases">
+
+    <title>表和列别名</title>
+
+    <indexterm zone="queries-table-aliases">
+     <primary>别名</primary>
+     <secondary>在FROM子句中</secondary>
+    </indexterm>
+
+    <indexterm>
+     <primary>标签</primary>
+     <see>别名</see>
+    </indexterm>
+
+    <para>
+     你可以给表以及复杂的表引用指定一个临时名字，以便在查询的其余部分引用该派生表。这被称为<firstterm>表别名</firstterm>。
+    </para>
+
+    <para>
+     要创建一个表别名，我们可以写：
+<synopsis>
+FROM <replaceable>table_reference</replaceable> AS <replaceable>alias</replaceable>
+</synopsis>
+     或者
+<synopsis>
+FROM <replaceable>table_reference</replaceable> <replaceable>alias</replaceable>
+</synopsis>
+     <literal>AS</literal>关键字只是可选的语法噪音。<replaceable>alias</replaceable>可以是任意标识符。
+    </para>
+
+    <para>
+     表别名的典型应用是给长表名赋予比较短的标识符， 好让连接子句更易读。例如：
+<programlisting>
+SELECT * FROM some_very_long_table_name s JOIN another_fairly_long_name a ON s.id = a.num;
+</programlisting>
+    </para>
+
+    <para>
+     到这里，别名成为当前查询的表引用的新名称 &mdash; 我们不再能够用该表最初的名字引用它了。因此，下面的用法是不合法的：
+<programlisting>
+SELECT * FROM my_table AS m WHERE my_table.a &gt; 5;    -- 错误
+</programlisting>
+    </para>
+
+    <para>
+     表别名主要用于简化符号，但是当把一个表连接到它自身时必须使用别名，例如：
+<programlisting>
+SELECT * FROM people AS mother JOIN people AS child ON mother.id = child.mother_id;
+</programlisting>
+    </para>
+
+    <para>
+     圆括弧用于解决歧义。在下面的示例中，第一个语句将把别名<literal>b</literal>赋给<literal>my_table</literal>的第二个实例，但是第二个语句把别名赋给连接的结果：
+<programlisting>
+SELECT * FROM my_table AS a CROSS JOIN my_table AS b ...
+SELECT * FROM (my_table AS a CROSS JOIN my_table) AS b ...
+</programlisting>
+    </para>
+
+    <para>
+     另外一种给表指定别名的形式是给表的列赋予临时名字，就像给表本身指定别名一样：
+<synopsis>
+FROM <replaceable>table_reference</replaceable> <optional>AS</optional> <replaceable>alias</replaceable> ( <replaceable>column1</replaceable> <optional>, <replaceable>column2</replaceable> <optional>, ...</optional></optional> )
+</synopsis>
+     如果指定的列别名比表里实际的列少，那么剩下的列就没有被重命名。这种语法对于自连接或子查询特别有用。
+    </para>
+
+    <para>
+     如果用这些形式中的任何一种给一个<literal>JOIN</literal>子句的输出附加了一个别名， 那么该别名就在<literal>JOIN</literal>的作用下隐去了其原始的名字。例如：
+<programlisting>
+SELECT a.* FROM my_table AS a JOIN your_table AS b ON ...
+</programlisting>
+     是合法 SQL，但是：
+<programlisting>
+SELECT a.* FROM (my_table AS a JOIN your_table AS b ON ...) AS c
+</programlisting>
+     是不合法的：表别名<literal>a</literal>在别名<literal>c</literal>外面是看不到的。
+    </para>
+   </sect3>
+
+   <sect3 id="queries-subqueries">
+
+    <title>子查询</title>
+
+    <indexterm zone="queries-subqueries">
+     <primary>子查询</primary>
+    </indexterm>
+
+    <para>
+     指定派生表的子查询必须用圆括号括起来。它们可以指定表别名，也可以可选地指定列别名（参见<xref linkend="queries-table-aliases"/>）。例如：
+<programlisting>
+FROM (SELECT * FROM table1) AS alias_name
+</programlisting>
+    </para>
+
+    <para>
+     这个示例等效于<literal>FROM table1 AS alias_name</literal>。更有趣的情况是在子查询里面有分组或聚合的时候， 子查询不能被简化为一个简单的连接。
+    </para>
+
+    <para>
+     一个子查询也可以是一个<command>VALUES</command>列表：
+<programlisting>
+FROM (VALUES ('anne', 'smith'), ('bob', 'jones'), ('joe', 'blow'))
+     AS names(first, last)
+</programlisting>
+     同样，表别名是可选的。为<command>VALUES</command>列表中的列分配别名也是可选的，但这是一个好习惯。更多信息可参见<xref linkend="queries-values"/>。
+    </para>
+
+    <para>
+     根据 SQL 标准，子查询必须提供表别名。<productname>PostgreSQL</productname> 允许省略 <literal>AS</literal> 和别名，但在可能移植到其他系统的 SQL 代码中，显式写出别名是更好的做法。
+    </para>
+   </sect3>
+
+   <sect3 id="queries-tablefunctions">
+
+    <title>表函数</title>
+
+    <indexterm zone="queries-tablefunctions"><primary>表函数</primary></indexterm>
+
+    <indexterm zone="queries-tablefunctions">
+     <primary>函数</primary>
+     <secondary>在FROM子句中</secondary>
+    </indexterm>
+
+    <para>
+     表函数是那些生成行集合的函数，这些行可以由基本数据类型（标量类型）组成，也可以由复合数据类型（表行）组成。它们在查询的<literal>FROM</literal>子句中用法类似于表、视图或子查询。表函数返回的列可以像表、视图或子查询的列一样，出现在<literal>SELECT</literal>、<literal>JOIN</literal>或<literal>WHERE</literal>子句中。
+    </para>
+
+    <para>
+     也可以使用<literal>ROWS FROM</literal>语法把多个表函数组合起来，并以并行列的形式返回结果；这种情况下，结果行数等于返回行数最多的那个函数的结果行数，较小的结果会用空值填充到相同长度。
+    </para>
+
+<synopsis>
+<replaceable>function_call</replaceable> <optional>WITH ORDINALITY</optional> <optional><optional>AS</optional> <replaceable>table_alias</replaceable> <optional>(<replaceable>column_alias</replaceable> <optional>, ... </optional>)</optional></optional>
+ROWS FROM( <replaceable>function_call</replaceable> <optional>, ... </optional> ) <optional>WITH ORDINALITY</optional> <optional><optional>AS</optional> <replaceable>table_alias</replaceable> <optional>(<replaceable>column_alias</replaceable> <optional>, ... </optional>)</optional></optional>
+</synopsis>
+
+    <para>
+     如果指定了<literal>WITH ORDINALITY</literal>子句，一个额外的
+     <type>bigint</type>类型的列将会被增加到函数的结果列中。这个列对
+     函数结果集的行进行编号，编号从 1 开始（这是对 SQL 标准语法
+     <literal>UNNEST ... WITH ORDINALITY</literal>的一般化）。默认情
+     况下，序数列被称为<literal>ordinality</literal>，但也可以通过使用一个
+     <literal>AS</literal>子句给它分配一个不同的列名。
+    </para>
+
+    <para>
+     调用特殊的表函数<literal>UNNEST</literal>可以使用任意数量的数组参数，
+     它会返回对应的列数，就好像在每一个参数上单独调用
+     <literal>UNNEST</literal>（<xref linkend="functions-array"/>）并且使用
+     <literal>ROWS FROM</literal>结构把它们组合起来。
+    </para>
+
+<synopsis>
+UNNEST( <replaceable>array_expression</replaceable> <optional>, ... </optional> ) <optional>WITH ORDINALITY</optional> <optional><optional>AS</optional> <replaceable>table_alias</replaceable> <optional>(<replaceable>column_alias</replaceable> <optional>, ... </optional>)</optional></optional>
+</synopsis>
+
+    <para>
+     如果没有指定<replaceable>table_alias</replaceable>，该函数名将被用作
+     表名。在<literal>ROWS FROM()</literal>结构的情况中，会使用第一个函数名。
+    </para>
+
+    <para>
+     如果没有提供列的别名，那么对于一个返回基数据类型的函数，列名也与该函数
+     名相同。对于一个返回复合类型的函数，结果列会从该类型的属性得到名称。
+    </para>
+
+    <para>
+     示例：
+<programlisting>
+CREATE TABLE foo (fooid int, foosubid int, fooname text);
+
+CREATE FUNCTION getfoo(int) RETURNS SETOF foo AS $$
+    SELECT * FROM foo WHERE fooid = $1;
+$$ LANGUAGE SQL;
+
+SELECT * FROM getfoo(1) AS t1;
+
+SELECT * FROM foo
+    WHERE foosubid IN (
+                        SELECT foosubid
+                        FROM getfoo(foo.fooid) z
+                        WHERE z.fooid = foo.fooid
+                      );
+
+CREATE VIEW vw_getfoo AS SELECT * FROM getfoo(1);
+
+SELECT * FROM vw_getfoo;
+</programlisting>
+    </para>
+
+    <para>
+     有时候，定义一个能够根据调用方式返回不同列集合的表函数很有用。为支持这一点，表函数可以被声明为返回不带<literal>OUT</literal>参数的伪类型<type>record</type>。当此类函数在查询中使用时，必须在查询本身中指定预期的行结构，这样系统才能知道如何分析和规划该查询。这种语法如下：
+    </para>
+
+<synopsis>
+<replaceable>function_call</replaceable> <optional>AS</optional> <replaceable>alias</replaceable> (<replaceable>column_definition</replaceable> <optional>, ... </optional>)
+<replaceable>function_call</replaceable> AS <optional><replaceable>alias</replaceable></optional> (<replaceable>column_definition</replaceable> <optional>, ... </optional>)
+ROWS FROM( ... <replaceable>function_call</replaceable> AS (<replaceable>column_definition</replaceable> <optional>, ... </optional>) <optional>, ... </optional> )
+</synopsis>
+
+    <para>
+     在不使用<literal>ROWS FROM()</literal>语法时，
+     <replaceable>column_definition</replaceable>列表会取代原本可附加到
+     <literal>FROM</literal>项上的列别名列表，列定义中的名称就起到列别名的作用。
+     在使用<literal>ROWS FROM()</literal>语法时，
+     可以为每一个成员函数单独附着一个
+     <replaceable>column_definition</replaceable>列表；或者在只有一个成员
+     函数并且没有<literal>WITH ORDINALITY</literal>子句的情况下，可以在
+     <literal>ROWS FROM()</literal>后面写一个
+     <replaceable>column_definition</replaceable>列表来取代一个列别名列表。
+    </para>
+
+    <para>
+     考虑下面的示例：
+<programlisting>
+SELECT *
+    FROM dblink('dbname=mydb', 'SELECT proname, prosrc FROM pg_proc')
+      AS t1(proname name, prosrc text)
+    WHERE proname LIKE 'bytea%';
+</programlisting>
+     <xref linkend="contrib-dblink-function"/>函数（<xref linkend="dblink"/>模块的一部分）执行远程查询。它被声明为返回<type>record</type>，因为它可能用于任意类型的查询。实际的列集必须在调用它的查询中指定，这样分析器才知道像<literal>*</literal>这样的写法应当扩展成什么。
+    </para>
+
+    <para>
+     此示例使用<literal>ROWS FROM</literal>：
+<programlisting>
+SELECT *
+FROM ROWS FROM
+    (
+        json_to_recordset('[{"a":40,"b":"foo"},{"a":"100","b":"bar"}]')
+            AS (a INTEGER, b TEXT),
+        generate_series(1, 3)
+    ) AS x (p, q, s)
+ORDER BY p;
+
+  p  |  q  | s
+-----+-----+---
+  40 | foo | 1
+ 100 | bar | 2
+     |     | 3
+</programlisting>
+     它把两个函数组合成一个<literal>FROM</literal>目标。<function>json_to_recordset()</function>被指定返回两列，第一列为<type>integer</type>，第二列为<type>text</type>。<function>generate_series()</function>的结果则直接使用。<literal>ORDER BY</literal>子句会把列值按整数排序。
+    </para>
+   </sect3>
+
+   <sect3 id="queries-lateral">
+
+    <title><literal>LATERAL</literal>子查询</title>
+
+    <indexterm zone="queries-lateral">
+     <primary>LATERAL</primary>
+     <secondary>在FROM子句中</secondary>
+    </indexterm>
+
+    <para>
+     可以在出现于<literal>FROM</literal>中的子查询前放置关键词<literal>LATERAL</literal>。这允许它们引用前面的<literal>FROM</literal>项提供的列（如果没有<literal>LATERAL</literal>，每一个子查询将被独立计算，并且因此不能被其他<literal>FROM</literal>项交叉引用）。
+    </para>
+
+    <para>
+     出现在<literal>FROM</literal>中的表函数的前面也可以被放上关键词<literal>LATERAL</literal>，但对于函数该关键词是可选的，在任何情况下函数的参数都可以包含对前面的<literal>FROM</literal>项提供的列的引用。
+    </para>
+
+    <para>
+     <literal>LATERAL</literal>项可以出现在<literal>FROM</literal>列表的顶层，也可以出现在<literal>JOIN</literal>树中。在后一种情况下，它还可以引用其所在<literal>JOIN</literal>左侧的任何项。
+    </para>
+
+    <para>
+     当<literal>FROM</literal>项包含<literal>LATERAL</literal>交叉引用时，求值过程如下：对于提供被引用列的<literal>FROM</literal>项中的每一行，或者对于多个<literal>FROM</literal>项共同提供这些列时对应的每一组行，都会用该行或该组行中的列值来计算<literal>LATERAL</literal>项。得到的结果行再像通常那样与生成它们的行做连接。对于源表中的每一行或每一组行，这一过程都会重复。
+    </para>
+
+    <para>
+     <literal>LATERAL</literal>的一个简单示例：
+<programlisting>
+SELECT * FROM foo, LATERAL (SELECT * FROM bar WHERE bar.id = foo.bar_id) ss;
+</programlisting>
+     这不是非常有用，因为它和一种更简单的形式得到的结果完全一样：
+<programlisting>
+SELECT * FROM foo, bar WHERE bar.id = foo.bar_id;
+</programlisting>
+     在必须要使用交叉引用列来计算那些即将要被连接的行时，<literal>LATERAL</literal>是最有用的。一种常用的应用是为一个返回集合的函数提供一个参数值。例如，假设<function>vertices(polygon)</function>返回一个多边形的顶点集合，我们可以这样标识存储在一个表中的多边形中靠近的顶点：
+<programlisting>
+SELECT p1.id, p2.id, v1, v2
+FROM polygons p1, polygons p2,
+     LATERAL vertices(p1.poly) v1,
+     LATERAL vertices(p2.poly) v2
+WHERE (v1 &lt;-&gt; v2) &lt; 10 AND p1.id != p2.id;
+</programlisting>
+     这个查询也可以被写成：
+<programlisting>
+SELECT p1.id, p2.id, v1, v2
+FROM polygons p1 CROSS JOIN LATERAL vertices(p1.poly) v1,
+     polygons p2 CROSS JOIN LATERAL vertices(p2.poly) v2
+WHERE (v1 &lt;-&gt; v2) &lt; 10 AND p1.id != p2.id;
+</programlisting>
+     或者写成其他几种等价的形式。（正如前面提到的，这个示例中的<literal>LATERAL</literal>关键字并非必需，但这里写出来是为了更清楚。）
+    </para>
+
+    <para>
+     把<literal>LEFT JOIN</literal>用于<literal>LATERAL</literal>子查询往往特别方便，这样即使<literal>LATERAL</literal>子查询没有为源行产生任何结果行，源行也仍会出现在结果中。例如，如果<function>get_product_names()</function>返回某个制造商生产的产品名称，而我们表中的某些制造商当前没有生产任何产品，就可以像下面这样找出它们：
+<programlisting>
+SELECT m.name
+FROM manufacturers m LEFT JOIN LATERAL get_product_names(m.id) pname ON true
+WHERE pname IS NULL;
+</programlisting>
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 id="queries-where">
+
+   <title><literal>WHERE</literal>子句</title>
+
+   <indexterm zone="queries-where">
+    <primary>WHERE</primary>
+   </indexterm>
+
+   <para>
+    <link linkend="sql-where"><literal>WHERE</literal></link>子句的语法是
+<synopsis>
+WHERE <replaceable>search_condition</replaceable>
+</synopsis>
+    这里的<replaceable>search_condition</replaceable>是任意返回一个<type>boolean</type>类型值的值表达式（参阅<xref linkend="sql-expressions"/>）。
+   </para>
+
+   <para>
+    在完成<literal>FROM</literal>子句的处理之后，生成的虚拟表中的每一行都会根据搜索条件进行检查。如果条件结果为真，该行就会保留在输出表中；否则（也就是说，如果结果为假或空）就会被丢弃。搜索条件通常至少会引用<literal>FROM</literal>子句生成的表中的某一列；这并非必须，但若不引用这些列，<literal>WHERE</literal>子句通常就没什么用了。
+   </para>
+
+   <note>
+
+    <para>
+     内连接的连接条件既可以写在<literal>WHERE</literal>子句也可以写在<literal>JOIN</literal>子句里。例如，这些表表达式是等效的：
+<programlisting>
+FROM a, b WHERE a.id = b.id AND b.val &gt; 5
+</programlisting>
+     和：
+<programlisting>
+FROM a INNER JOIN b ON (a.id = b.id) WHERE b.val &gt; 5
+</programlisting>
+     或者可能还有：
+<programlisting>
+FROM a NATURAL JOIN b WHERE b.val &gt; 5
+</programlisting>
+     选择其中哪一种主要只是风格问题。<literal>FROM</literal>子句中的<literal>JOIN</literal>语法虽然属于 SQL 标准，但在其他 SQL 数据库管理系统中可能没有那么容易移植。对于外连接则没有选择：它们必须放在<literal>FROM</literal>子句中完成。外连接的<literal>ON</literal>或<literal>USING</literal>子句与<literal>WHERE</literal>条件<emphasis>并不</emphasis>等价，因为它除了会在最终结果中移除行之外，还会为不匹配的输入行增加结果行。
+    </para>
+   </note>
+
+   <para>
+    这里是一些<literal>WHERE</literal>子句的示例：
+<programlisting>
+SELECT ... FROM fdt WHERE c1 &gt; 5
+
+SELECT ... FROM fdt WHERE c1 IN (1, 2, 3)
+
+SELECT ... FROM fdt WHERE c1 IN (SELECT c1 FROM t2)
+
+SELECT ... FROM fdt WHERE c1 IN (SELECT c3 FROM t2 WHERE c2 = fdt.c1 + 10)
+
+SELECT ... FROM fdt WHERE c1 BETWEEN (SELECT c3 FROM t2 WHERE c2 = fdt.c1 + 10) AND 100
+
+SELECT ... FROM fdt WHERE EXISTS (SELECT c1 FROM t2 WHERE c2 &gt; fdt.c1)
+</programlisting>
+    在上面的示例中，<literal>fdt</literal>是从<literal>FROM</literal>子句派生出来的表。不符合<literal>WHERE</literal>子句搜索条件的行会从<literal>fdt</literal>中被剔除。请注意，这里把标量子查询当作值表达式来使用。和其他查询一样，子查询中也可以使用复杂的表表达式。同时还要注意，子查询中也引用了<literal>fdt</literal>。只有当<literal>c1</literal>同时也是子查询输入表的某个列名时，才必须把它写成<literal>fdt.c1</literal>。不过，即使不是必须的，限定列名通常也能使语句更清晰。这个示例展示了外层查询的列名作用域如何扩展到其内层查询中。
+   </para>
+  </sect2>
+
+  <sect2 id="queries-group">
+
+   <title><literal>GROUP BY</literal>和<literal>HAVING</literal>子句</title>
+
+   <indexterm zone="queries-group">
+    <primary>GROUP BY</primary>
+   </indexterm>
+
+   <indexterm zone="queries-group">
+    <primary>分组</primary>
+   </indexterm>
+
+   <para>
+    通过<literal>WHERE</literal>过滤之后，派生出来的输入表还可以使用<literal>GROUP BY</literal>子句进行分组，并通过<literal>HAVING</literal>子句排除某些分组行。
+   </para>
+
+<synopsis>
+SELECT <replaceable>select_list</replaceable>
+    FROM ...
+    <optional>WHERE ...</optional>
+    GROUP BY <replaceable>grouping_column_reference</replaceable> <optional>, <replaceable>grouping_column_reference</replaceable></optional>...
+</synopsis>
+
+   <para>
+    <link linkend="sql-groupby"><literal>GROUP BY</literal></link>子句用于把表中在所列列上具有相同值的行归为一组。列出的顺序无关紧要。这样做的效果是把每组具有共同值的行合并成一个组行，用来代表该组中的所有行。这既可以消除输出中的冗余，也可以计算适用于这些组的聚合。例如：
+<screen>
+<prompt>=&gt;</prompt> <userinput>SELECT * FROM test1;</userinput>
+ x | y
+---+---
+ a | 3
+ c | 2
+ b | 5
+ a | 1
+(4 rows)
+
+<prompt>=&gt;</prompt> <userinput>SELECT x FROM test1 GROUP BY x;</userinput>
+ x
+---
+ a
+ b
+ c
+(3 rows)
+</screen>
+   </para>
+
+   <para>
+    在第二个查询里，我们不能写成<literal>SELECT * FROM test1 GROUP BY x</literal>， 因为列<literal>y</literal>里没有哪个值可以和每个组相关联起来。被分组的列可以在选择列表中引用是因为它们在每个组都有单一的值。
+   </para>
+
+   <para>
+    通常，如果一个表被分了组，那么没有在<literal>GROUP BY</literal>中列出的列都不能被引用，除非在聚合表达式中被引用。 一个用聚合表达式的示例是：
+<screen>
+<prompt>=&gt;</prompt> <userinput>SELECT x, sum(y) FROM test1 GROUP BY x;</userinput>
+ x | sum
+---+-----
+ a |   4
+ b |   5
+ c |   2
+(3 rows)
+</screen>
+    这里的<literal>sum</literal>是一个聚合函数，它在整个组上计算出一个单一值。有关可用的聚合函数的更多信息可以在<xref linkend="functions-aggregate"/>。
+   </para>
+
+   <tip>
+
+    <para>
+     不带聚合表达式的分组实际上是在计算某一列的不同值集合。这也可以用<literal>DISTINCT</literal>子句实现（参阅<xref linkend="queries-distinct"/>）。
+    </para>
+   </tip>
+
+   <para>
+    这里是另外一个示例：它计算每种产品的总销售额（而不是所有产品的总销售额）：
+<programlisting>
+SELECT product_id, p.name, (sum(s.units) * p.price) AS sales
+    FROM products p LEFT JOIN sales s USING (product_id)
+    GROUP BY product_id, p.name, p.price;
+</programlisting>
+    在这个示例里，列<literal>product_id</literal>、<literal>p.name</literal>和<literal>p.price</literal>必须在<literal>GROUP BY</literal>子句里， 因为它们都在查询的选择列表里被引用到（但见下文）。列<literal>s.units</literal>不必在<literal>GROUP BY</literal>列表里，因为它只是在一个聚合表达式（<literal>sum(...)</literal>）里使用，它代表一组产品的销售额。对于每种产品，这个查询都返回一个该产品的所有销售额的总和行。
+   </para>
+
+   <indexterm><primary>函数依赖</primary></indexterm>
+
+   <para>
+    如果 products 表的设计使得<literal>product_id</literal>是主键，那么在上面的示例中只按<literal>product_id</literal>分组就足够了，因为名称和价格都<firstterm>函数依赖</firstterm>于产品 ID，因此对于每个产品 ID 分组该返回哪个名称和价格值不会有歧义。
+   </para>
+
+   <para>
+    在严格的 SQL 里，<literal>GROUP BY</literal>只能对源表的列进行分组，但<productname>PostgreSQL</productname>把这个扩展为也允许<literal>GROUP BY</literal>去根据选择列表中的列分组。也允许对值表达式进行分组，而不仅是简单的列名。
+   </para>
+
+   <indexterm>
+    <primary>HAVING</primary>
+   </indexterm>
+
+   <para>
+    如果一个表已经用<literal>GROUP BY</literal>子句分了组，而你只对其中某些组感兴趣，那么就可以使用<literal>HAVING</literal>子句。它很像<literal>WHERE</literal>子句，用于从结果中删除某些组。其语法是：
+<synopsis>
+SELECT <replaceable>select_list</replaceable> FROM ... <optional>WHERE ...</optional> GROUP BY ... HAVING <replaceable>boolean_expression</replaceable>
+</synopsis>
+    在<literal>HAVING</literal>子句中的表达式可以引用分组的表达式和未分组的表达式（后者必须涉及一个聚合函数）。
+   </para>
+
+   <para>
+    示例：
+<screen>
+<prompt>=&gt;</prompt> <userinput>SELECT x, sum(y) FROM test1 GROUP BY x HAVING sum(y) &gt; 3;</userinput>
+ x | sum
+---+-----
+ a |   4
+ b |   5
+(2 rows)
+
+<prompt>=&gt;</prompt> <userinput>SELECT x, sum(y) FROM test1 GROUP BY x HAVING x &lt; 'c';</userinput>
+ x | sum
+---+-----
+ a |   4
+ b |   5
+(2 rows)
+</screen>
+   </para>
+
+   <para>
+    再次，一个更现实的示例：
+<programlisting>
+SELECT product_id, p.name, (sum(s.units) * (p.price - p.cost)) AS profit
+    FROM products p LEFT JOIN sales s USING (product_id)
+    WHERE s.date &gt; CURRENT_DATE - INTERVAL '4 weeks'
+    GROUP BY product_id, p.name, p.price, p.cost
+    HAVING sum(p.price * s.units) &gt; 5000;
+</programlisting>
+    在上面的示例里，<literal>WHERE</literal>子句通过一个未分组的列来选择数据行（该表达式仅对最近四周内发生的销售为真），而<literal>HAVING</literal>子句则把输出限制为总销售收入超过 5000 的组。请注意，聚合表达式不必在查询的所有部分都完全相同。
+   </para>
+
+   <para>
+    如果一个查询包含聚合函数调用，但没有<literal>GROUP BY</literal>子句，分组仍然会发生：结果是一个单一组行（如果该单一组行随后又被<literal>HAVING</literal>消除，则可能根本没有结果行）。如果查询包含<literal>HAVING</literal>子句，即使没有任何聚合函数调用或<literal>GROUP BY</literal>子句，情况也是如此。
+   </para>
+  </sect2>
+
+  <sect2 id="queries-grouping-sets">
+
+   <title><literal>GROUPING SETS</literal>、<literal>CUBE</literal>和<literal>ROLLUP</literal></title>
+
+   <indexterm zone="queries-grouping-sets">
+    <primary>GROUPING SETS</primary>
+   </indexterm>
+
+   <indexterm zone="queries-grouping-sets">
+    <primary>CUBE</primary>
+   </indexterm>
+
+   <indexterm zone="queries-grouping-sets">
+    <primary>ROLLUP</primary>
+   </indexterm>
+
+   <para>
+    使用<firstterm>分组集</firstterm>的概念可以实现比上述更加复杂的分组操作。由
+    <literal>FROM</literal>和<literal>WHERE</literal>子句选出的数据被按照每一个指定
+    的分组集单独分组，按照简单<literal>GROUP BY</literal>子句对每一个分组计算
+    聚合，然后返回结果。例如：
+<screen>
+<prompt>=&gt;</prompt> <userinput>SELECT * FROM items_sold;</userinput>
+ brand | size | sales
+-------+------+-------
+ Foo   | L    |  10
+ Foo   | M    |  20
+ Bar   | M    |  15
+ Bar   | L    |  5
+(4 rows)
+
+<prompt>=&gt;</prompt> <userinput>SELECT brand, size, sum(sales) FROM items_sold GROUP BY GROUPING SETS ((brand), (size), ());</userinput>
+ brand | size | sum
+-------+------+-----
+ Foo   |      |  30
+ Bar   |      |  20
+       | L    |  15
+       | M    |  35
+       |      |  50
+(5 rows)
+</screen>
+   </para>
+
+   <para>
+    <literal>GROUPING SETS</literal>的每一个子列表可以指定一个或者多个列或者表达式，
+    它们将按照直接出现在<literal>GROUP BY</literal>子句中同样的方式被解释。一个空的
+    分组集表示所有的行都要被聚合到一个单一分组（即使没有输入行存在也会被输出）
+    中，这就像前面所说的没有<literal>GROUP BY</literal>子句的聚合函数的情况一样。
+   </para>
+
+   <para>
+    对于分组列或表达式没有出现在其中的分组集的结果行，对分组列或表达式的引用会
+    被空值所替代。要区分一个特定的输出行来自于哪个分组，请见
+    <xref linkend="functions-grouping-table"/>。
+   </para>
+
+   <para>
+    PostgreSQL 中提供了一种简化方法来指定两种常用类型的分组集。下面形式的子句
+<programlisting>
+ROLLUP ( <replaceable>e1</replaceable>, <replaceable>e2</replaceable>, <replaceable>e3</replaceable>, ... )
+</programlisting>
+    表示给定的表达式列表及其所有前缀（包括空列表），因此它等效于
+<programlisting>
+GROUPING SETS (
+    ( <replaceable>e1</replaceable>, <replaceable>e2</replaceable>, <replaceable>e3</replaceable>, ... ),
+    ...
+    ( <replaceable>e1</replaceable>, <replaceable>e2</replaceable> ),
+    ( <replaceable>e1</replaceable> ),
+    ( )
+)
+</programlisting>
+    这通常被用来分析历史数据，例如按部门、区和公司范围计算的总薪水。
+   </para>
+
+   <para>
+    下面形式的子句
+<programlisting>
+CUBE ( <replaceable>e1</replaceable>, <replaceable>e2</replaceable>, ... )
+</programlisting>
+    表示给定的列表及其可能的子集（即幂集）。因此
+<programlisting>
+CUBE ( a, b, c )
+</programlisting>
+    等效于
+<programlisting>
+GROUPING SETS (
+    ( a, b, c ),
+    ( a, b    ),
+    ( a,    c ),
+    ( a       ),
+    (    b, c ),
+    (    b    ),
+    (       c ),
+    (         )
+)
+</programlisting>
+   </para>
+
+   <para>
+    <literal>CUBE</literal>或<literal>ROLLUP</literal>子句中的元素可以是表达式或者
+    圆括号中的元素子列表。在后一种情况下，为了生成各个分组集，这些子列表会被当作单一单元处理。例如：
+<programlisting>
+CUBE ( (a, b), (c, d) )
+</programlisting>
+    等效于
+<programlisting>
+GROUPING SETS (
+    ( a, b, c, d ),
+    ( a, b       ),
+    (       c, d ),
+    (            )
+)
+</programlisting>
+    并且
+<programlisting>
+ROLLUP ( a, (b, c), d )
+</programlisting>
+    等效于
+<programlisting>
+GROUPING SETS (
+    ( a, b, c, d ),
+    ( a, b, c    ),
+    ( a          ),
+    (            )
+)
+</programlisting>
+   </para>
+
+   <para>
+    <literal>CUBE</literal>和<literal>ROLLUP</literal>可以被直接用在
+    <literal>GROUP BY</literal>子句中，也可以被嵌套在一个
+    <literal>GROUPING SETS</literal>子句中。如果一个
+    <literal>GROUPING SETS</literal>子句被嵌套在另一个同类子句中，
+    效果和把内层子句的所有元素直接写在外层子句中一样。
+   </para>
+
+   <para>
+    如果在一个<literal>GROUP BY</literal>子句中指定了多个分组项，那么最终的
+    分组集列表是这些项的笛卡尔积。例如：
+<programlisting>
+GROUP BY a, CUBE (b, c), GROUPING SETS ((d), (e))
+</programlisting>
+    等效于
+<programlisting>
+GROUP BY GROUPING SETS (
+    (a, b, c, d), (a, b, c, e),
+    (a, b, d),    (a, b, e),
+    (a, c, d),    (a, c, e),
+    (a, d),       (a, e)
+)
+</programlisting>
+   </para>
+
+   <para>
+      <indexterm zone="queries-grouping-sets">
+       <primary>ALL</primary>
+       <secondary>GROUP BY ALL</secondary>
+      </indexterm>
+      <indexterm zone="queries-grouping-sets">
+       <primary>DISTINCT</primary>
+       <secondary>GROUP BY DISTINCT</secondary>
+      </indexterm>
+       当一次指定多个分组项时，最终的分组集合可能包含重复项。例如：
+  <programlisting>
+  GROUP BY ROLLUP (a, b), ROLLUP (a, c)
+  </programlisting>
+      等同于
+  <programlisting>
+  GROUP BY GROUPING SETS (
+      (a, b, c),
+      (a, b),
+      (a, b),
+      (a, c),
+      (a),
+      (a),
+      (a, c),
+      (a),
+      ()
+  )
+  </programlisting>
+      如果这些重复项是不希望出现的，可以在<literal>GROUP BY</literal>上直接使用<literal>DISTINCT</literal>子句来删除它们。因此：
+  <programlisting>
+  GROUP BY <emphasis>DISTINCT</emphasis> ROLLUP (a, b), ROLLUP (a, c)
+  </programlisting>
+      等同于
+  <programlisting>
+  GROUP BY GROUPING SETS (
+      (a, b, c),
+      (a, b),
+      (a, c),
+      (a),
+      ()
+  )
+  </programlisting>
+	      这与使用<literal>SELECT DISTINCT</literal>并不相同，因为输出行仍然可能包含重复项。如果任何一个未分组的列包含 NULL，那么它将无法与对该列分组时所使用的 NULL 区分开来。
+     </para>
+
+  <note>
+
+   <para>
+    在表达式中，结构<literal>(a, b)</literal>通常会被识别为一个<link linkend="sql-syntax-row-constructors">行构造器</link>。在
+    <literal>GROUP BY</literal>子句中，这不会在表达式的顶层应用，并且
+    <literal>(a, b)</literal>会按照上面所说的被解析为一个表达式的列表。如果出于
+    某种原因你在分组表达式中<emphasis>需要</emphasis>一个行构造器，请使用
+    <literal>ROW(a, b)</literal>。
+   </para>
+  </note>
+  </sect2>
+
+  <sect2 id="queries-window">
+
+   <title>窗口函数处理</title>
+
+   <indexterm zone="queries-window">
+    <primary>窗口函数</primary>
+    <secondary>执行顺序</secondary>
+   </indexterm>
+
+   <para>
+    如果查询包含任何窗口函数（见<xref linkend="tutorial-window"/>、<xref linkend="functions-window"/>和<xref linkend="syntax-window-functions"/>），这些函数将在任何分组、聚合和<literal>HAVING</literal>过滤被执行之后被计算。也就是说如果查询使用了任何聚合、<literal>GROUP BY</literal>或<literal>HAVING</literal>，则窗口函数看到的行是分组行而不是来自于<literal>FROM</literal>/<literal>WHERE</literal>的原始表行。
+   </para>
+
+   <para>
+    当使用多个窗口函数时，在窗口定义中具有等价<literal>PARTITION BY</literal>和<literal>ORDER BY</literal>子句的所有窗口函数都保证会看到相同的输入行顺序，即使<literal>ORDER BY</literal>不能唯一确定该顺序。但是，对于具有不同<literal>PARTITION BY</literal>或<literal>ORDER BY</literal>定义的函数，其计算顺序不作保证（在这种情况下，多个窗口函数计算过程之间通常需要排序步骤，并且该排序不保证保留那些在其<literal>ORDER BY</literal>看来等价的行的相对顺序）。
+   </para>
+
+   <para>
+    目前，窗口函数总是要求输入数据预先排好序，因此查询输出总会按照某个窗口函数的<literal>PARTITION BY</literal>/<literal>ORDER BY</literal>子句排序。不过，不建议依赖这一点。如果你希望确保结果按特定方式排序，请显式使用顶层的<literal>ORDER BY</literal>子句。
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="queries-select-lists">
+
+  <title>选择列表</title>
+
+  <indexterm>
+   <primary>SELECT</primary>
+   <secondary>选择列表</secondary>
+  </indexterm>
+
+  <para>
+   如前面几节所示，<command>SELECT</command>命令中的表表达式会构造出一个中间虚拟表，其中可能涉及组合表和视图、消除行、分组等操作。这个表随后交由<firstterm>选择列表</firstterm>处理。选择列表决定中间表中的哪些<emphasis>列</emphasis>会实际输出。
+  </para>
+
+  <sect2 id="queries-select-list-items">
+
+   <title>选择列表项</title>
+
+   <indexterm>
+    <primary>*</primary>
+   </indexterm>
+
+   <para>
+    最简单的选择列表是<literal>*</literal>，它会输出表表达式生成的所有列。否则，选择列表就是一个逗号分隔的值表达式列表（定义见<xref linkend="sql-expressions"/>）。例如，它可以是一个列名列表：
+<programlisting>
+SELECT a, b, c FROM ...
+</programlisting>
+     列名<literal>a</literal>、<literal>b</literal>和<literal>c</literal>要么是<literal>FROM</literal>子句中所引用表的实际列名，要么是像<xref linkend="queries-table-aliases"/>所述为它们指定的别名。选择列表中可用的名字空间与<literal>WHERE</literal>子句相同；如果使用了分组，则与<literal>HAVING</literal>子句相同。
+   </para>
+
+   <para>
+    如果超过一个表有同样的列名，那么你还必须给出表名字，如：
+<programlisting>
+SELECT tbl1.a, tbl2.a, tbl1.b FROM ...
+</programlisting>
+    在使用多个表时，要求一个特定表的所有列也是有用的：
+<programlisting>
+SELECT tbl1.*, tbl2.a FROM ...
+</programlisting>
+    更多有关<replaceable>table_name</replaceable><literal>.*</literal>记号的内容请参考<xref linkend="rowtypes-usage"/>。
+   </para>
+
+   <para>
+    如果在选择列表中使用任意值表达式，那么从概念上说，它会在返回表中增加一个新的虚拟列。该值表达式会对每个结果行计算一次，并用该行中的值替换其中的列引用。不过，选择列表中的表达式并不一定要引用<literal>FROM</literal>子句表表达式中的列；例如，它也可以是任意常量算术表达式。
+   </para>
+  </sect2>
+
+  <sect2 id="queries-column-labels">
+
+   <title>列标签</title>
+
+   <indexterm zone="queries-column-labels">
+    <primary>别名</primary>
+    <secondary>在选择列表中</secondary>
+   </indexterm>
+
+   <para>
+    选择列表中的项可以被赋予名字，以供后续处理使用，例如在<literal>ORDER BY</literal>子句中引用，或者供客户端应用显示。例如：
+<programlisting>
+SELECT a AS value, b + c AS sum FROM ...
+</programlisting>
+   </para>
+
+   <para>
+    如果没有使用<literal>AS</literal>指定输出列名，系统就会分配一个默认列名。对于简单的列引用，它就是被引用列的名字；对于函数调用，它就是函数的名字；对于复杂表达式，系统则会生成一个通用名称。
+   </para>
+
+   <para>
+    <literal>AS</literal>关键词通常是可选的，但在某些情况下，如果想要的列名与<productname>PostgreSQL</productname>关键词相匹配，你必须写上<literal>AS</literal>或双引号的列名，以避免歧义。(<xref linkend="sql-keywords-appendix"/>显示了哪些关键词需要用<literal>AS</literal>作为列标签)。例如，<literal>FROM</literal>就是这样的一个关键词，所以下面的语句是行不通的：
+<programlisting>
+SELECT a from, b + c AS sum FROM ...
+</programlisting>
+    但是以下任意一种会起作用：
+<programlisting>
+SELECT a AS from, b + c AS sum FROM ...
+SELECT a "from", b + c AS sum FROM ...
+</programlisting>
+    为了防止未来可能的关键词增加，我们推荐总是写<literal>AS</literal>或者用双引号修饰输出列名以保证最大的安全性。
+   </para>
+
+   <note>
+
+    <para>
+     输出列的命名和在<literal>FROM</literal>子句里的命名是不一样的 （参阅<xref linkend="queries-table-aliases"/>）。 它实际上允许你对同一个列命名两次，但是在选择列表中分配的名字是要传递下去的名字。
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 id="queries-distinct">
+   <title><literal>DISTINCT</literal></title>
+
+   <indexterm zone="queries-distinct">
+       <primary>ALL</primary>
+       <secondary>SELECT ALL</secondary>
+   </indexterm>
+
+   <indexterm zone="queries-distinct">
+    <primary>DISTINCT</primary>
+    <secondary>SELECT DISTINCT</secondary>
+   </indexterm>
+
+   <indexterm zone="queries-distinct">
+    <primary>重复</primary>
+   </indexterm>
+
+   <para>
+    在处理完选择列表之后，结果表还可以选择性地删除重复行。我们可以直接在<literal>SELECT</literal>后面写上<literal>DISTINCT</literal>关键字来指定：
+<synopsis>
+SELECT DISTINCT <replaceable>select_list</replaceable> ...
+</synopsis>
+    （如果不用<literal>DISTINCT</literal>，则可以用<literal>ALL</literal>关键字来显式指定保留所有行这一默认行为。）
+   </para>
+
+   <indexterm>
+    <primary>空值</primary>
+    <secondary sortas="DISTINCT">在 DISTINCT 中</secondary>
+   </indexterm>
+
+   <para>
+    显然，如果两行至少在一个列值上不同，就认为它们是不同的。空值在这种比较中被认为是相等的。
+   </para>
+
+   <para>
+    另外，我们还可以用任意表达式来判断什么行可以被认为是可区分的：
+<synopsis>
+SELECT DISTINCT ON (<replaceable>expression</replaceable> <optional>, <replaceable>expression</replaceable> ...</optional>) <replaceable>select_list</replaceable> ...
+</synopsis>
+    这里的<replaceable>expression</replaceable>是一个对所有行求值的任意值表达式。如果某一组行在这些表达式上的值都相等，那么它们就会被视为重复行，因此只保留该组中的第一行。请注意，某一组里的<quote>第一行</quote>是不可预测的，除非查询在足够多的列上进行了排序，以保证到达<literal>DISTINCT</literal>过滤器的行顺序是唯一的。（<literal>DISTINCT ON</literal>的处理发生在<literal>ORDER BY</literal>排序之后。）
+   </para>
+
+   <para>
+    <literal>DISTINCT ON</literal>子句不是 SQL 标准的一部分，有时会被认为风格不佳，因为它的结果可能具有不确定性。通过审慎使用<literal>GROUP BY</literal>以及<literal>FROM</literal>中的子查询，可以避免使用这种结构，但它往往是最方便的替代方案。
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="queries-union">
+
+  <title>组合查询（<literal>UNION</literal>、<literal>INTERSECT</literal>、<literal>EXCEPT</literal>）</title>
+
+  <indexterm zone="queries-union">
+   <primary>UNION</primary>
+  </indexterm>
+
+  <indexterm zone="queries-union">
+   <primary>INTERSECT</primary>
+  </indexterm>
+
+  <indexterm zone="queries-union">
+   <primary>EXCEPT</primary>
+  </indexterm>
+
+  <indexterm zone="queries-union">
+   <primary>集合并</primary>
+  </indexterm>
+
+  <indexterm zone="queries-union">
+   <primary>集合交</primary>
+  </indexterm>
+
+  <indexterm zone="queries-union">
+   <primary>集合差</primary>
+  </indexterm>
+
+  <indexterm zone="queries-union">
+   <primary>集合操作</primary>
+  </indexterm>
+
+  <para>
+   两个查询的结果可以用集合操作并、交、差进行组合。语法是
+<synopsis>
+<replaceable>query1</replaceable> UNION <optional>ALL</optional> <replaceable>query2</replaceable>
+<replaceable>query1</replaceable> INTERSECT <optional>ALL</optional> <replaceable>query2</replaceable>
+<replaceable>query1</replaceable> EXCEPT <optional>ALL</optional> <replaceable>query2</replaceable>
+</synopsis>
+   <replaceable>query1</replaceable>和<replaceable>query2</replaceable>都是可以使用以上所有特性的查询。
+  </para>
+
+  <para>
+   <literal>UNION</literal>有效地把<replaceable>query2</replaceable>的结果附加到<replaceable>query1</replaceable>的结果上（不过我们不能保证这就是这些行实际被返回的顺序）。此外，它将删除结果中所有重复的行， 就象<literal>DISTINCT</literal>做的那样，除非你使用了<literal>UNION ALL</literal>。
+  </para>
+
+  <para>
+   <literal>INTERSECT</literal>返回那些同时存在于<replaceable>query1</replaceable>和<replaceable>query2</replaceable>的结果中的行，除非声明了<literal>INTERSECT ALL</literal>， 否则所有重复行都被消除。
+  </para>
+
+  <para>
+   <literal>EXCEPT</literal>返回所有在<replaceable>query1</replaceable>结果中但不在<replaceable>query2</replaceable>结果中的行。（这有时被称为两个查询的<firstterm>差</firstterm>。）同样，除非使用了<literal>EXCEPT ALL</literal>，否则重复行都会被消除。
+  </para>
+
+  <para>
+   为了计算两个查询的并、交、差，这两个查询必须是<quote>并操作兼容的</quote>，也就意味着它们都返回同样数量的列， 并且对应的列有兼容的数据类型，如<xref linkend="typeconv-union-case"/>中描述的那样。
+  </para>
+
+  <para>
+     集合操作可以组合使用，例如：
+  <synopsis>
+  <replaceable>query1</replaceable> UNION <replaceable>query2</replaceable> EXCEPT <replaceable>query3</replaceable>
+  </synopsis>
+     等价于：
+  <synopsis>
+  (<replaceable>query1</replaceable> UNION <replaceable>query2</replaceable>) EXCEPT <replaceable>query3</replaceable>
+  </synopsis>
+  如这里所示，你可以使用括号控制求值顺序。如果没有括号，<literal>UNION</literal>和<literal>EXCEPT</literal>按从左到右结合，但<literal>INTERSECT</literal>的绑定强于这两个操作符。因此
+  <synopsis>
+  <replaceable>query1</replaceable> UNION <replaceable>query2</replaceable> INTERSECT <replaceable>query3</replaceable>
+  </synopsis>
+     意思是
+  <synopsis>
+  <replaceable>query1</replaceable> UNION (<replaceable>query2</replaceable> INTERSECT <replaceable>query3</replaceable>)
+  </synopsis>
+  你也可以用括号包裹一个单独的<replaceable>query</replaceable>。如果<replaceable>query</replaceable>需要使用后续部分中讨论的任何子句（例如<literal>LIMIT</literal>），那么这一点非常重要。没有括号，将会得到语法错误，否则子句将被解析为适用于集合操作的输出，而不是它的输入之一。例如，
+  <synopsis>
+  SELECT a FROM b UNION SELECT x FROM y LIMIT 10
+  </synopsis>
+     是可以接受的，但它的意思是
+  <synopsis>
+  (SELECT a FROM b UNION SELECT x FROM y) LIMIT 10
+  </synopsis>
+     不是
+  <synopsis>
+  SELECT a FROM b UNION (SELECT x FROM y LIMIT 10)
+  </synopsis>
+    </para>
+ </sect1>
+
+ <sect1 id="queries-order">
+
+  <title>行排序（<literal>ORDER BY</literal>）</title>
+
+  <indexterm zone="queries-order">
+   <primary>排序</primary>
+  </indexterm>
+
+  <indexterm zone="queries-order">
+   <primary>ORDER BY</primary>
+  </indexterm>
+
+  <para>
+   当一个查询生成输出表之后（也就是处理完选择列表之后），还可以选择对其排序。如果没有选择排序，行将按未指定的顺序返回。这时的实际顺序取决于扫描和连接计划类型以及磁盘上的物理顺序，但绝不能依赖这些因素。只有显式选择排序步骤，才能保证特定的输出顺序。
+  </para>
+
+  <para>
+   <literal>ORDER BY</literal>子句指定了排序顺序：
+<synopsis>
+SELECT <replaceable>select_list</replaceable>
+    FROM <replaceable>table_expression</replaceable>
+    ORDER BY <replaceable>sort_expression1</replaceable> <optional>ASC | DESC</optional> <optional>NULLS { FIRST | LAST }</optional>
+             <optional>, <replaceable>sort_expression2</replaceable> <optional>ASC | DESC</optional> <optional>NULLS { FIRST | LAST }</optional> ...</optional>
+</synopsis>
+   排序表达式可以是任何在查询选择列表中合法的表达式。例如：
+<programlisting>
+SELECT a, b FROM table1 ORDER BY a + b, c;
+</programlisting>
+   当指定了多个表达式时，后面的值将用于对那些在前面值上相等的行继续排序。每个表达式后面都可以选择性地写上<literal>ASC</literal>或<literal>DESC</literal>关键字，以指定升序或降序排序方向。<literal>ASC</literal>是默认值。升序会把较小的值排在前面，而<quote>较小</quote>是由<literal>&lt;</literal>操作符定义的。类似地，降序则由<literal>&gt;</literal>操作符定义。
+    <footnote>
+     <para>
+      事实上，<productname>PostgreSQL</productname>会使用该表达式数据类型的<firstterm>默认 B-树操作符类</firstterm>来决定<literal>ASC</literal>和<literal>DESC</literal>的排序顺序。按惯例，数据类型会被设置成由<literal>&lt;</literal>和<literal>&gt;</literal>操作符来对应这种排序顺序，不过用户定义数据类型的设计者也可以选择不同的做法。
+     </para>
+    </footnote>
+  </para>
+
+  <para>
+   <literal>NULLS FIRST</literal>和<literal>NULLS LAST</literal>选项可用于决定空值在排序顺序中是位于非空值之前还是之后。默认情况下，空值排序时被认为大于任何非空值；也就是说，在<literal>DESC</literal>顺序下默认是<literal>NULLS FIRST</literal>，否则默认是<literal>NULLS LAST</literal>。
+  </para>
+
+  <para>
+   注意顺序选项是对每一个排序列独立考虑的。例如<literal>ORDER BY x, y DESC</literal>表示<literal>ORDER BY x ASC, y DESC</literal>，而和<literal>ORDER BY x DESC, y DESC</literal>不同。
+  </para>
+
+  <para>
+   一个<replaceable>sort_expression</replaceable>也可以是列标签或者一个输出列的编号，如：
+<programlisting>
+SELECT a + b AS sum, c FROM table1 ORDER BY sum;
+SELECT a, max(b) FROM table1 GROUP BY a ORDER BY 1;
+</programlisting>
+   两者都会按第一个输出列排序。注意，输出列名必须单独出现，也就是说它不能被用在表达式中 &mdash; 例如，这是<emphasis>不</emphasis>正确的：
+<programlisting>
+SELECT a + b AS sum, c FROM table1 ORDER BY sum + c;          -- 错误
+</programlisting>
+   该限制是为了减少混淆。如果一个<literal>ORDER BY</literal>项是一个单一名字并且匹配一个输出列名或者一个表表达式的列，仍然会出现混淆。在这种情况中输出列将被使用。只有在你使用<literal>AS</literal>来重命名一个输出列来匹配某些其他表列的名字时，这才会导致混淆。
+  </para>
+
+  <para>
+   <literal>ORDER BY</literal>可以被应用于<literal>UNION</literal>、<literal>INTERSECT</literal>或<literal>EXCEPT</literal>组合的结果，但是在这种情况中它只被允许根据输出列名或编号排序，而不能根据表达式排序。
+  </para>
+ </sect1>
+
+ <sect1 id="queries-limit">
+
+  <title><literal>LIMIT</literal>和<literal>OFFSET</literal></title>
+
+  <indexterm zone="queries-limit">
+   <primary>LIMIT</primary>
+  </indexterm>
+
+  <indexterm zone="queries-limit">
+   <primary>OFFSET</primary>
+  </indexterm>
+
+  <para>
+   <literal>LIMIT</literal>和<literal>OFFSET</literal>允许你只检索查询剩余部分产生的行的一部分：
+<synopsis>
+SELECT <replaceable>select_list</replaceable>
+    FROM <replaceable>table_expression</replaceable>
+    <optional> ORDER BY ... </optional>
+    <optional> LIMIT { <replaceable class="parameter">count</replaceable> | ALL } </optional>
+    <optional> OFFSET <replaceable class="parameter">start</replaceable> </optional>
+</synopsis>
+  </para>
+
+  <para>
+   如果给出了一个限制计数，那么会返回数量不超过该限制的行（但可能更少些，因为查询本身可能生成的行数就比较少）。<literal>LIMIT ALL</literal>的效果和省略<literal>LIMIT</literal>子句一样，就像是<literal>LIMIT</literal>带有 NULL 参数一样。
+  </para>
+
+  <para>
+   <literal>OFFSET</literal>说明在开始返回结果行之前要跳过多少行。<literal>OFFSET 0</literal>的效果与省略<literal>OFFSET</literal>子句相同，<literal>OFFSET</literal>带有 NULL 参数时也是如此。
+  </para>
+
+  <para>
+   如果<literal>OFFSET</literal>和<literal>LIMIT</literal>都出现，那么在开始返回<literal>LIMIT</literal>行之前，会先跳过<literal>OFFSET</literal>行。
+  </para>
+
+  <para>
+   如果使用<literal>LIMIT</literal>，那么用一个<literal>ORDER BY</literal>子句把结果行约束成一个唯一的顺序是很重要的。否则你就会拿到一个不可预料的该查询的行的子集。你要的可能是第十到第二十行，但以什么顺序的第十到第二十？除非你指定了<literal>ORDER BY</literal>，否则顺序是不知道的。
+  </para>
+
+  <para>
+   查询优化器在生成查询计划时会考虑<literal>LIMIT</literal>，因此如果你给定<literal>LIMIT</literal>和<literal>OFFSET</literal>，那么你很可能收到不同的规划（产生不同的行顺序）。因此，使用不同的<literal>LIMIT</literal>/<literal>OFFSET</literal>值选择查询结果的不同子集<emphasis>将生成不一致的结果</emphasis>，除非你用<literal>ORDER BY</literal>强制一个可预测的顺序。这并非bug， 这是一个很自然的结果，因为 SQL 没有许诺把查询的结果按照任何特定的顺序发出，除非用了<literal>ORDER BY</literal>来约束顺序。
+  </para>
+
+  <para>
+   被<literal>OFFSET</literal>子句跳过的行仍然需要在服务器内部计算；因此，较大的<literal>OFFSET</literal>可能效率不高。
+  </para>
+ </sect1>
+
+ <sect1 id="queries-values">
+
+  <title><literal>VALUES</literal>列表</title>
+
+  <indexterm zone="queries-values">
+   <primary>VALUES</primary>
+  </indexterm>
+
+  <para>
+   <literal>VALUES</literal>提供了一种生成<quote>常量表</quote>的方法，这种表可以在查询中使用，而不必真的在磁盘上创建并填充一个表。语法是：
+<synopsis>
+VALUES ( <replaceable class="parameter">expression</replaceable> [, ...] ) [, ...]
+</synopsis>
+   每个用圆括号括起来的表达式列表都会生成表中的一行。各个列表必须具有相同数量的元素（即表中的列数），并且每个列表中对应位置的项必须具有兼容的数据类型。结果中每一列的实际数据类型按照与<literal>UNION</literal>相同的规则确定（参见<xref linkend="typeconv-union-case"/>）。
+  </para>
+
+  <para>
+   一个示例：
+<programlisting>
+VALUES (1, 'one'), (2, 'two'), (3, 'three');
+</programlisting>
+
+   将会返回一个有两列三行的表。它实际上等效于：
+<programlisting>
+SELECT 1 AS column1, 'one' AS column2
+UNION ALL
+SELECT 2, 'two'
+UNION ALL
+SELECT 3, 'three';
+</programlisting>
+
+   在默认情况下，<productname>PostgreSQL</productname>将<literal>column1</literal>、<literal>column2</literal>等名字分配给一个<literal>VALUES</literal>表的列。这些列名不是由SQL标准指定的，并且不同的数据库系统的做法也不同，因此通常最好使用表别名列表来重写这些默认的名字，像这样：
+<programlisting>
+=&gt; SELECT * FROM (VALUES (1, 'one'), (2, 'two'), (3, 'three')) AS t (num,letter);
+ num | letter
+-----+--------
+   1 | one
+   2 | two
+   3 | three
+(3 rows)
+</programlisting>
+  </para>
+
+  <para>
+   从语法上说，后面跟有表达式列表的<literal>VALUES</literal>列表被视为等同于
+<synopsis>
+SELECT <replaceable>select_list</replaceable> FROM <replaceable>table_expression</replaceable>
+</synopsis>
+   一样，并且可以出现在<literal>SELECT</literal>能出现的任何地方。例如，你可以把它用作<literal>UNION</literal>的一部分，或者附加一个<replaceable>sort_specification</replaceable>（<literal>ORDER BY</literal>、<literal>LIMIT</literal>和/或<literal>OFFSET</literal>）给它。<literal>VALUES</literal>最常见的用途是作为一个<command>INSERT</command>命令的数据源，以及作为一个子查询。
+  </para>
+
+  <para>
+   更多信息请见<xref linkend="sql-values"/>。
+  </para>
+
+ </sect1>
+
+ <sect1 id="queries-with">
+
+  <title><literal>WITH</literal>查询（公共表表达式）</title>
+
+  <indexterm zone="queries-with">
+   <primary>WITH</primary>
+   <secondary>在 SELECT 中</secondary>
+  </indexterm>
+
+  <indexterm>
+   <primary>公共表表达式</primary>
+   <see>WITH</see>
+  </indexterm>
+
+  <para>
+   <literal>WITH</literal>提供了一种为更大查询编写辅助语句的方法。这些语句通常被称为公共表表达式或<acronym>CTE</acronym>，可以视为仅在单个查询期间存在的临时表定义。<literal>WITH</literal>子句中的每个辅助语句都可以是<command>SELECT</command>、<command>INSERT</command>、<command>UPDATE</command>、<command>DELETE</command>或<command>MERGE</command>；而<literal>WITH</literal>子句本身则附加到一个主语句上，该主语句同样可以是<command>SELECT</command>、<command>INSERT</command>、<command>UPDATE</command>、<command>DELETE</command>或<command>MERGE</command>。
+  </para>
+
+ <sect2 id="queries-with-select">
+
+   <title><literal>WITH</literal>中的<command>SELECT</command></title>
+
+  <para>
+   <literal>WITH</literal>中<command>SELECT</command>的基本价值在于把复杂查询分解成更简单的部分。一个示例如下：
+
+<programlisting>
+WITH regional_sales AS (
+    SELECT region, SUM(amount) AS total_sales
+    FROM orders
+    GROUP BY region
+), top_regions AS (
+    SELECT region
+    FROM regional_sales
+    WHERE total_sales &gt; (SELECT SUM(total_sales)/10 FROM regional_sales)
+)
+SELECT region,
+       product,
+       SUM(quantity) AS product_units,
+       SUM(amount) AS product_sales
+FROM orders
+WHERE region IN (SELECT region FROM top_regions)
+GROUP BY region, product;
+</programlisting>
+
+   该查询只显示高销售区域中各产品的销售总额。<literal>WITH</literal>子句定义了两个辅助语句<structname>regional_sales</structname>和<structname>top_regions</structname>，其中<structname>regional_sales</structname>的输出被<structname>top_regions</structname>使用，而<structname>top_regions</structname>的输出又被主<command>SELECT</command>查询使用。这个示例也可以不借助<literal>WITH</literal>来编写，但那就需要两层嵌套的子<command>SELECT</command>，可读性会稍差一些。
+  </para>
+ </sect2>
+
+ <sect2 id="queries-with-recursive">
+
+  <title>递归查询</title>
+
+  <para>
+   <indexterm>
+    <primary>RECURSIVE</primary>
+    <secondary>在公共表表达式中</secondary>
+   </indexterm>
+   可选的<literal>RECURSIVE</literal>修饰符会让<literal>WITH</literal>从单纯的语法便利变成一种在标准 SQL 中无法通过其他方式实现某些功能的特性。通过使用<literal>RECURSIVE</literal>，<literal>WITH</literal>查询可以引用自己的输出。下面这个查询是一个非常简单的示例，它计算从 1 到 100 的整数之和：
+
+<programlisting>
+WITH RECURSIVE t(n) AS (
+    VALUES (1)
+  UNION ALL
+    SELECT n+1 FROM t WHERE n &lt; 100
+)
+SELECT sum(n) FROM t;
+</programlisting>
+
+   递归<literal>WITH</literal>查询的一般形式总是先写一个<firstterm>非递归项</firstterm>，再写<literal>UNION</literal>（或<literal>UNION ALL</literal>），然后写一个<firstterm>递归项</firstterm>；其中只有递归项可以包含对查询自身输出的引用。这样的查询执行过程如下：
+  </para>
+
+  <procedure>
+
+   <title>递归查询求值</title>
+
+   <step performance="required">
+
+    <para>
+     计算非递归项。对<literal>UNION</literal>（但不对<literal>UNION ALL</literal>），抛弃重复行。把所有剩余的行包括在递归查询的结果中，并且也把它们放在一个临时的<firstterm>工作表</firstterm>中。
+    </para>
+   </step>
+
+   <step performance="required">
+
+    <para>
+     只要工作表不为空，重复下列步骤：
+    </para>
+    <substeps>
+     <step performance="required">
+
+      <para>
+       计算递归项，用当前工作表的内容替换递归自引用。对<literal>UNION</literal>（不是<literal>UNION ALL</literal>），抛弃重复行以及那些与之前结果行重复的行。将剩下的所有行包括在递归查询的结果中，并且也把它们放在一个临时的<firstterm>中间表</firstterm>中。
+      </para>
+     </step>
+
+     <step performance="required">
+
+      <para>
+       用中间表的内容替换工作表的内容，然后清空中间表。
+      </para>
+     </step>
+    </substeps>
+   </step>
+  </procedure>
+
+  <note>
+
+   <para>
+    虽然<literal>RECURSIVE</literal>允许递归指定查询，但在内部这样的查询是迭代评估的。
+   </para>
+  </note>
+
+  <para>
+   在上面的示例中，工作表在每一步都只有一行，并且在连续步骤中依次取值 1 到 100。到了第 100 步，由于<literal>WHERE</literal>子句不再产生输出，因此查询终止。
+  </para>
+
+  <para>
+   递归查询通常用于处理层次结构或树形结构数据。下面这个查询是一个有用的示例：给定一个只显示直接包含关系的表，找出某个产品的所有直接和间接子部件：
+
+<programlisting>
+WITH RECURSIVE included_parts(sub_part, part, quantity) AS (
+    SELECT sub_part, part, quantity FROM parts WHERE part = 'our_product'
+  UNION ALL
+    SELECT p.sub_part, p.part, p.quantity * pr.quantity
+    FROM included_parts pr, parts p
+    WHERE p.part = pr.sub_part
+)
+SELECT sub_part, SUM(quantity) as total_quantity
+FROM included_parts
+GROUP BY sub_part
+</programlisting>
+  </para>
+
+  <sect3 id="queries-with-search">
+
+   <title>搜索顺序</title>
+
+   <para>
+    当使用递归查询计算树遍历时，你可能希望把结果按深度优先或广度优先顺序排列。这可以通过在其他数据列旁边额外计算一个排序列，并在最后据此对结果排序来实现。请注意，这实际上并不能控制查询求值访问各行的先后顺序；在 SQL 中，这一行为始终依赖于具体实现。这种方法只是为事后排列结果提供了一种方便方式。
+   </para>
+
+   <para>
+    为了生成深度优先顺序，可以为每个结果行计算一个到目前为止已访问行的数组。例如，考虑下面这个使用<structfield>link</structfield>字段搜索表<structname>tree</structname>的查询：
+  <programlisting>
+  WITH RECURSIVE search_tree(id, link, data) AS (
+      SELECT t.id, t.link, t.data
+      FROM tree t
+    UNION ALL
+      SELECT t.id, t.link, t.data
+      FROM tree t, search_tree st
+      WHERE t.id = st.link
+  )
+  SELECT * FROM search_tree;
+  </programlisting>
+
+    要增加深度优先的排序信息，可以这样写：
+
+  <programlisting>
+  WITH RECURSIVE search_tree(id, link, data, <emphasis>path</emphasis>) AS (
+      SELECT t.id, t.link, t.data, <emphasis>ARRAY[t.id]</emphasis>
+      FROM tree t
+    UNION ALL
+      SELECT t.id, t.link, t.data, <emphasis>path || t.id</emphasis>
+      FROM tree t, search_tree st
+      WHERE t.id = st.link
+  )
+  SELECT * FROM search_tree <emphasis>ORDER BY path</emphasis>;
+  </programlisting>
+   </para>
+
+   <para>
+    在更一般的情形下，如果需要使用多个字段来标识一行，就要使用行数组。例如，如果我们需要跟踪<structfield>f1</structfield>和<structfield>f2</structfield>字段：
+
+  <programlisting>
+  WITH RECURSIVE search_tree(id, link, data, <emphasis>path</emphasis>) AS (
+      SELECT t.id, t.link, t.data, <emphasis>ARRAY[ROW(t.f1, t.f2)]</emphasis>
+      FROM tree t
+    UNION ALL
+      SELECT t.id, t.link, t.data, <emphasis>path || ROW(t.f1, t.f2)</emphasis>
+      FROM tree t, search_tree st
+      WHERE t.id = st.link
+  )
+  SELECT * FROM search_tree <emphasis>ORDER BY path</emphasis>;
+  </programlisting>
+   </para>
+
+   <tip>
+
+    <para>
+     在通常只需要跟踪一个字段的情况下，可以省略<literal>ROW()</literal>语法。这样就能使用简单数组而不是复合类型数组，从而提高效率。
+    </para>
+   </tip>
+
+   <para>
+    为了生成广度优先顺序，可以添加一个用于跟踪搜索深度的列，例如：
+
+  <programlisting>
+  WITH RECURSIVE search_tree(id, link, data, <emphasis>depth</emphasis>) AS (
+      SELECT t.id, t.link, t.data, <emphasis>0</emphasis>
+      FROM tree t
+    UNION ALL
+      SELECT t.id, t.link, t.data, <emphasis>depth + 1</emphasis>
+      FROM tree t, search_tree st
+      WHERE t.id = st.link
+  )
+  SELECT * FROM search_tree <emphasis>ORDER BY depth</emphasis>;
+  </programlisting>
+    若要得到稳定排序，可把数据列作为二级排序列附加进去。
+   </para>
+
+   <tip>
+
+    <para>
+     递归查询求值算法会按广度优先搜索顺序生成输出。不过，这只是一个实现细节，未必适合依赖。每一层内部各行的顺序肯定是未定义的，因此无论如何通常都需要显式排序。
+    </para>
+   </tip>
+
+   <para>
+    有内置语法可以计算深度优先或广度优先的排序列。例如：
+  <programlisting>
+  WITH RECURSIVE search_tree(id, link, data) AS (
+      SELECT t.id, t.link, t.data
+      FROM tree t
+    UNION ALL
+      SELECT t.id, t.link, t.data
+      FROM tree t, search_tree st
+      WHERE t.id = st.link
+  ) <emphasis>SEARCH DEPTH FIRST BY id SET ordercol</emphasis>
+  SELECT * FROM search_tree ORDER BY ordercol;
+
+  WITH RECURSIVE search_tree(id, link, data) AS (
+      SELECT t.id, t.link, t.data
+      FROM tree t
+    UNION ALL
+      SELECT t.id, t.link, t.data
+      FROM tree t, search_tree st
+      WHERE t.id = st.link
+  ) <emphasis>SEARCH BREADTH FIRST BY id SET ordercol</emphasis>
+  SELECT * FROM search_tree ORDER BY ordercol;
+  </programlisting>
+    这种语法在内部会扩展为与上面手写形式类似的内容。<literal>SEARCH</literal>子句指定是要进行深度优先还是广度优先搜索、要跟踪哪些列用于排序，以及哪个列名将保存可供排序使用的结果数据。该列会被隐式添加到 CTE 的输出行中。
+   </para>
+  </sect3>
+
+  <sect3 id="queries-with-cycle">
+
+   <title>环检测</title>
+
+  <para>
+   在使用递归查询时，务必要确保查询的递归部分最终不会再返回元组，否则查询就会无限循环。有时把<literal>UNION ALL</literal>改成<literal>UNION</literal>，通过丢弃与先前输出行重复的行，就可以达到这个目的。不过，循环往往并不表现为整行完全重复；有时只需要检查一个或几个字段，就能判断是否再次到达了同一个点。处理这种情况的标准方法，是计算一个包含已访问值的数组。例如，考虑下面这个使用<structfield>link</structfield>字段搜索表<structname>graph</structname>的查询：
+
+<programlisting>
+WITH RECURSIVE search_graph(id, link, data, depth) AS (
+    SELECT g.id, g.link, g.data, 0
+    FROM graph g
+  UNION ALL
+    SELECT g.id, g.link, g.data, sg.depth + 1
+    FROM graph g, search_graph sg
+    WHERE g.id = sg.link
+)
+SELECT * FROM search_graph;
+</programlisting>
+
+   如果<structfield>link</structfield>关系中包含环，这个查询就会循环。因为我们需要输出<quote>depth</quote>，仅仅把<literal>UNION ALL</literal>改成<literal>UNION</literal>并不能消除循环。相反，当我们沿着某条特定链接路径搜索时，需要识别自己是否再次到达了同一行。可以给这个容易产生循环的查询增加两个列<structfield>is_cycle</structfield>和<structfield>path</structfield>：
+
+<programlisting>
+WITH RECURSIVE search_graph(id, link, data, depth, <emphasis>is_cycle, path</emphasis>) AS (
+    SELECT g.id, g.link, g.data, 0,
+      <emphasis>false,
+      ARRAY[g.id]</emphasis>
+    FROM graph g
+  UNION ALL
+    SELECT g.id, g.link, g.data, sg.depth + 1,
+      <emphasis>g.id = ANY(path),
+      path || g.id</emphasis>
+    FROM graph g, search_graph sg
+    WHERE g.id = sg.link <emphasis>AND NOT is_cycle</emphasis>
+)
+SELECT * FROM search_graph;
+</programlisting>
+
+   除了用于阻止循环之外，这个数组值本身也常常很有用，因为它表示了到达任意特定行所经历的<quote>路径</quote>。
+  </para>
+
+  <para>
+   在更一般的情形下，如果需要检查多个字段才能识别一个环，就要使用行数组。例如，如果需要比较<structfield>f1</structfield>和<structfield>f2</structfield>字段：
+
+<programlisting>
+WITH RECURSIVE search_graph(id, link, data, depth, <emphasis>is_cycle, path</emphasis>) AS (
+    SELECT g.id, g.link, g.data, 0,
+      <emphasis>false,
+      ARRAY[ROW(g.f1, g.f2)]</emphasis>
+    FROM graph g
+  UNION ALL
+    SELECT g.id, g.link, g.data, sg.depth + 1,
+      <emphasis>ROW(g.f1, g.f2) = ANY(path),
+      path || ROW(g.f1, g.f2)</emphasis>
+    FROM graph g, search_graph sg
+    WHERE g.id = sg.link <emphasis>AND NOT is_cycle</emphasis>
+)
+SELECT * FROM search_graph;
+</programlisting>
+  </para>
+
+  <tip>
+
+   <para>
+    在通常只有一个字段需要检查即可识别环的情况下，可以省略<literal>ROW()</literal>语法。这样就能使用简单数组而不是复合类型数组，从而提高效率。
+   </para>
+  </tip>
+
+  <para>
+   有一种内置语法可以简化环检测。上面的查询也可以写成这样：
+  <programlisting>
+  WITH RECURSIVE search_graph(id, link, data, depth) AS (
+      SELECT g.id, g.link, g.data, 1
+      FROM graph g
+    UNION ALL
+      SELECT g.id, g.link, g.data, sg.depth + 1
+      FROM graph g, search_graph sg
+      WHERE g.id = sg.link
+  ) <emphasis>CYCLE id SET is_cycle USING path</emphasis>
+  SELECT * FROM search_graph;
+  </programlisting>
+   它在内部会被重写成上面的形式。<literal>CYCLE</literal>子句首先指定要跟踪哪些列来检测循环，然后指定一个列名，用于显示是否检测到了循环，最后再指定另一个列名，用于跟踪路径。循环列和路径列都会被隐式添加到 CTE 的输出行中。
+  </para>
+
+  <tip>
+
+   <para>
+    循环路径列的计算方式与上一节展示的深度优先排序列相同。一个查询可以同时包含<literal>SEARCH</literal>和<literal>CYCLE</literal>子句，但深度优先搜索规范和环检测规范会产生重复计算，因此通常只使用<literal>CYCLE</literal>子句并按路径列排序会更高效。如果需要广度优先排序，那么同时指定<literal>SEARCH</literal>和<literal>CYCLE</literal>就会比较有用。
+   </para>
+  </tip>
+
+  <para>
+   当你不确定查询是否可能循环时，一个测试查询的有用技巧是在父查询中放一个<literal>LIMIT</literal>。例如，这个查询没有<literal>LIMIT</literal>时会永远循环：
+
+<programlisting>
+WITH RECURSIVE t(n) AS (
+    SELECT 1
+  UNION ALL
+    SELECT n+1 FROM t
+)
+SELECT n FROM t <emphasis>LIMIT 100</emphasis>;
+</programlisting>
+
+   这之所以有效，是因为<productname>PostgreSQL</productname>的实现只会计算父查询实际取到的那些<literal>WITH</literal>查询结果行。不建议在生产环境中使用这个技巧，因为其他系统可能采用不同的工作方式。同样，如果让外层查询对递归查询结果排序，或者把它们与其他表做连接，这个技巧通常就不会生效，因为在这些情况下外层查询往往会尝试获取<literal>WITH</literal>查询的全部输出。
+  </para>
+  </sect3>
+ </sect2>
+
+ <sect2 id="queries-with-cte-materialization">
+
+  <title>公共表表达式物化</title>
+
+  <para>
+   <literal>WITH</literal>查询的一个有用特性是，在父查询每次执行时，它通常只会被计算一次，即使父查询或同级的<literal>WITH</literal>查询对它有多次引用也是如此。
+   因此，在多个地方都需要的昂贵计算可以放进一个<literal>WITH</literal>查询中，以避免重复工作。另一个可能的用途是防止带副作用的函数被意外执行多次。
+   不过，问题的另一面是，如果某个<literal>WITH</literal>查询被多次引用，优化器就无法把父查询中的约束下推到该<literal>WITH</literal>查询中，因为那样本应只影响其中一个引用的约束，可能会影响到所有使用该<literal>WITH</literal>查询输出的地方。
+   被多次引用的<literal>WITH</literal>查询通常会按书写的样子完整求值，而不会抑制那些父查询稍后可能丢弃的行。（不过，如前所述，如果对该查询的引用只请求有限数量的行，那么求值可能会提前停止。）
+  </para>
+
+  <para>
+   但是，如果<literal>WITH</literal>查询是非递归且无副作用的（也就是说，它是一个不包含可变函数的<literal>SELECT</literal>），那么它就可以被折叠进父查询，从而允许两个查询层级进行联合优化。
+   默认情况下，如果父查询只引用该<literal>WITH</literal>查询一次，就会发生这种折叠；如果引用多于一次，则不会发生。
+   你可以通过指定<literal>MATERIALIZED</literal>来强制该<literal>WITH</literal>查询单独计算，也可以通过指定<literal>NOT MATERIALIZED</literal>来强制它并入父查询。
+   后一种选择有重复计算<literal>WITH</literal>查询的风险；但如果每次使用都只需要该<literal>WITH</literal>查询完整输出中的一小部分，它仍然可能带来净收益。
+  </para>
+
+  <para>
+   这些规则的一个简单示例是
+<programlisting>
+WITH w AS (
+    SELECT * FROM big_table
+)
+SELECT * FROM w WHERE key = 123;
+</programlisting>
+   这个<literal>WITH</literal>查询会被折叠，从而生成与下面语句相同的执行计划：
+<programlisting>
+SELECT * FROM big_table WHERE key = 123;
+</programlisting>
+   特别是，如果<structfield>key</structfield>上存在索引，它很可能会被用来只提取那些<literal>key = 123</literal>的行。另一方面，在
+<programlisting>
+WITH w AS (
+    SELECT * FROM big_table
+)
+SELECT * FROM w AS w1 JOIN w AS w2 ON w1.key = w2.ref
+WHERE w2.key = 123;
+</programlisting>
+   <literal>WITH</literal>查询将被物化，生成<structname>big_table</structname>的一个临时副本，然后再与自身连接 &mdash; 因而无法从任何索引中获益。
+   如果把它写成下面这样，这个查询会高效得多：
+<programlisting>
+WITH w AS NOT MATERIALIZED (
+    SELECT * FROM big_table
+)
+SELECT * FROM w AS w1 JOIN w AS w2 ON w1.key = w2.ref
+WHERE w2.key = 123;
+</programlisting>
+   这样父查询中的限制条件就可以直接应用到对<structname>big_table</structname>的扫描上。
+  </para>
+
+  <para>
+   一个可能不适合使用<literal>NOT MATERIALIZED</literal>的示例如下：
+<programlisting>
+WITH w AS (
+    SELECT key, very_expensive_function(val) as f FROM some_table
+)
+SELECT * FROM w AS w1 JOIN w AS w2 ON w1.f = w2.f;
+</programlisting>
+   在这里，<literal>WITH</literal>查询的物化确保<function>very_expensive_function</function>每个表行只计算一次，而不是两次。
+  </para>
+
+  <para>
+   上面的示例仅显示了<literal>WITH</literal>与<command>SELECT</command>一起使用，
+   但它可以以相同的方式附加到<command>INSERT</command>、<command>UPDATE</command>、
+   <command>DELETE</command>或<command>MERGE</command>。
+   在每种情况下，它都等效于提供了可在主命令中引用的临时表。
+  </para>
+ </sect2>
+
+ <sect2 id="queries-with-modifying">
+
+   <title><literal>WITH</literal>中的数据修改语句</title>
+
+   <para>
+    你可以在<literal>WITH</literal>中使用数据修改语句（<command>INSERT</command>、
+    <command>UPDATE</command>、<command>DELETE</command>或<command>MERGE</command>）。这样就可以在同一查询中执行多个不同的操作。
+    例如：
+
+<programlisting>
+WITH moved_rows AS (
+    DELETE FROM products
+    WHERE
+        "date" &gt;= '2010-10-01' AND
+        "date" &lt; '2010-11-01'
+    RETURNING *
+)
+INSERT INTO products_log
+SELECT * FROM moved_rows;
+</programlisting>
+
+    这个查询实际上将行从<structname>products</structname>移动到
+    <structname>products_log</structname>。在<literal>WITH</literal>中的<command>DELETE</command>
+    从<structname>products</structname>中删除指定的行，通过其<literal>RETURNING</literal>子句返回它们的
+    内容；然后主查询读取该输出并将其插入到
+    <structname>products_log</structname>中。
+   </para>
+
+   <para>
+    上述示例中有一个细节值得注意：<literal>WITH</literal>子句附加在<command>INSERT</command>上，而不是附加在<command>INSERT</command>内部的子<command>SELECT</command>上。这是必须的，因为数据修改语句只允许出现在附着于顶层语句的<literal>WITH</literal>子句中。不过，普通<literal>WITH</literal>的可见性规则仍然适用，因此仍然可以在该子<command>SELECT</command>中引用<literal>WITH</literal>语句的输出。
+   </para>
+
+   <para>
+    正如上述示例所示，<literal>WITH</literal>中的数据修改语句通常带有<literal>RETURNING</literal>子句（见<xref linkend="dml-returning"/>）。构成其他查询可引用临时表的，是<literal>RETURNING</literal>子句的输出，<emphasis>而不是</emphasis>数据修改语句的目标表。如果<literal>WITH</literal>中的数据修改语句缺少<literal>RETURNING</literal>子句，那么它就不会形成临时表，也无法被查询的其他部分引用。尽管如此，这样的语句仍然会被执行。下面是一个并不特别有用的示例：
+
+<programlisting>
+WITH t AS (
+    DELETE FROM foo
+)
+DELETE FROM bar;
+</programlisting>
+
+    这个示例将从表<structname>foo</structname>和<structname>bar</structname>中移除所有行。被报告给客户端的受影响行的数目可能只包括从<structname>bar</structname>中移除的行。
+   </para>
+
+   <para>
+    数据修改语句中不允许递归自引用。在某些情况下，可以通过引用递归<literal>WITH</literal>的输出来绕过这一限制，例如：
+
+<programlisting>
+WITH RECURSIVE included_parts(sub_part, part) AS (
+    SELECT sub_part, part FROM parts WHERE part = 'our_product'
+  UNION ALL
+    SELECT p.sub_part, p.part
+    FROM included_parts pr, parts p
+    WHERE p.part = pr.sub_part
+)
+DELETE FROM parts
+  WHERE part IN (SELECT part FROM included_parts);
+</programlisting>
+
+    这个查询会移除一个产品的所有直接和间接子部件。
+   </para>
+
+   <para>
+    <literal>WITH</literal>中的数据修改语句只会执行一次，并且总会执行到完成，而不管主查询是否读取了它们的全部输出，甚至是否读取了任何输出。注意这与<literal>WITH</literal>中<command>SELECT</command>的规则不同：正如前一小节所述，<command>SELECT</command>只会执行到主查询实际需要其输出为止。
+   </para>
+
+   <para>
+    <literal>WITH</literal>中的子语句彼此之间以及与主查询是并发执行的。因此，在<literal>WITH</literal>中使用数据修改语句时，实际更新发生的顺序是不可预知的。所有语句都使用同一个<firstterm>快照</firstterm>执行（参见<xref linkend="mvcc"/>），因此它们无法<quote>看见</quote>彼此对目标表产生的影响。这减轻了实际行更新顺序不可预知所带来的影响，也意味着<literal>RETURNING</literal>数据是在不同<literal>WITH</literal>子语句与主查询之间传递更改的唯一方式。例如，在
+
+<programlisting>
+WITH t AS (
+    UPDATE products SET price = price * 1.05
+    RETURNING *
+)
+SELECT * FROM products;
+</programlisting>
+
+    外层<command>SELECT</command>返回的将是<command>UPDATE</command>操作发生之前的原始价格，而在
+
+<programlisting>
+WITH t AS (
+    UPDATE products SET price = price * 1.05
+    RETURNING *
+)
+SELECT * FROM t;
+</programlisting>
+
+    外层<command>SELECT</command>将返回更新后的数据。
+   </para>
+
+   <para>
+    在单个语句中试图更新同一行两次是不受支持的。只会发生一次修改，但很难（有时根本无法）可靠地预测究竟是哪一次。这同样适用于删除在同一语句中已经被更新过的行：只有更新会生效。因此，通常应避免在一个语句中两次修改同一行。特别要避免编写那些可能影响主语句或同级子语句所修改行的<literal>WITH</literal>子语句，因为这类语句的效果将不可预测。
+   </para>
+
+   <para>
+    当前，用作<literal>WITH</literal>中数据修改语句目标的任何表不能有条件规则、<literal>ALSO</literal>规则或扩展到多个语句的<literal>INSTEAD</literal>规则。
+   </para>
+
+  </sect2>
+
+ </sect1>
+
+</chapter>

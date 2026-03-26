@@ -1,0 +1,115 @@
+<!-- doc/src/sgml/generic-wal.sgml -->
+
+<sect1 id="generic-wal">
+ <title>通用 WAL 记录</title>
+
+  <para>
+   虽然所有内置的、会生成 WAL 记录的模块都有各自的 WAL 记录类型，但也有一种通用 WAL 记录类型，可以用通用方式描述对页面的更改。
+  </para>
+
+  <note>
+   <para>
+    通用 WAL 记录在<link
+    linkend="logicaldecoding">逻辑解码</link>期间会被忽略。如果扩展需要逻辑解码，请考虑使用自定义 WAL 资源管理器。
+   </para>
+  </note>
+
+  <para>
+   用于构造通用 WAL 记录的 API 定义在<filename>access/generic_xlog.h</filename>中，并在<filename>access/transam/generic_xlog.c</filename>中实现。
+  </para>
+
+  <para>
+   要使用通用 WAL 记录机制执行一次需要写入 WAL 的数据更新，请遵循以下步骤：
+
+   <orderedlist>
+    <listitem>
+     <para>
+      <function>state = GenericXLogStart(relation)</function> &mdash; 开始为给定关系构造一条通用 WAL 记录。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      <function>page = GenericXLogRegisterBuffer(state, buffer, flags)</function>
+      &mdash; 注册一个将在当前通用 WAL 记录中被修改的缓冲区。该函数返回一个指向该缓冲区页面临时副本的指针，应在该副本上进行修改（不要直接修改缓冲区内容）。第三个参数是适用于该操作的标志掩码。目前唯一这样的标志是<literal>GENERIC_XLOG_FULL_IMAGE</literal>，表示应在 WAL 记录中包含整页镜像，而不是增量更新。通常在页面是新的，或者已经被完全重写时，会设置该标志。如果该操作需要修改多个页面，则可以重复调用<function>GenericXLogRegisterBuffer</function>。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      对上一步得到的页面镜像施加修改。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      <function>GenericXLogFinish(state)</function> &mdash; 将更改应用到缓冲区，并发出通用 WAL 记录。
+     </para>
+    </listitem>
+   </orderedlist>
+  </para>
+
+  <para>
+   在上述任意步骤之间，都可以调用<function>GenericXLogAbort(state)</function>取消 WAL 记录的构造。这会丢弃对页面镜像副本所做的全部更改。
+  </para>
+
+  <para>
+   在使用通用 WAL 记录功能时请注意以下几点：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      不允许直接修改缓冲区！所有修改都必须在通过<function>GenericXLogRegisterBuffer()</function>取得的副本上完成。换句话说，生成通用 WAL 记录的代码绝不应自行调用<function>BufferGetPage()</function>。不过，在适当的时机对缓冲区执行 pin/unpin 和 lock/unlock，仍然是调用者的责任。对于每个目标缓冲区，从调用<function>GenericXLogRegisterBuffer()</function>之前开始直到<function>GenericXLogFinish()</function>之后，都必须持有排他锁。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      注册缓冲区（步骤 2）和修改页面镜像（步骤 3）可以自由交错进行，也就是说，这两个步骤可以按任意顺序重复。请记住，注册缓冲区的顺序应当与重放时获取其锁的顺序一致。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      一个通用 WAL 记录最多能注册<literal>MAX_GENERIC_XLOG_PAGES</literal>个缓冲区。如果超过这个限制，就会抛出错误。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      通用 WAL 假定待修改的页面具有标准布局，尤其是假定<structfield>pd_lower</structfield>和<structfield>pd_upper</structfield>之间没有有用数据。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      由于修改的是缓冲区页面的副本，<function>GenericXLogStart()</function>不会开启临界区。因此，在<function>GenericXLogStart()</function>和<function>GenericXLogFinish()</function>之间，可以安全地进行内存分配、抛出错误等操作。唯一真正的临界区位于<function>GenericXLogFinish()</function>内部。此外，也不必担心在错误退出时调用<function>GenericXLogAbort()</function>。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      <function>GenericXLogFinish()</function>会负责将缓冲区标记为脏并设置它们的 LSN。你不需要显式执行这些操作。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      对于不记录日志的关系，其他行为都完全相同，只是不会真正发出 WAL 记录。因此，通常不需要专门对不记录日志的关系做任何显式检查。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      通用 WAL 的重做函数会按照缓冲区注册的顺序获取这些缓冲区上的排他锁。在重做完所有更改后，这些锁也会按照同样的顺序释放。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      如果某个已注册缓冲区未指定<literal>GENERIC_XLOG_FULL_IMAGE</literal>，通用 WAL 记录中包含的就是旧页面镜像与新页面镜像之间的差异。该差异基于逐字节比较。对于在页面内移动数据的情况，这种表示方式并不十分紧凑，未来可能会改进。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+</sect1>
