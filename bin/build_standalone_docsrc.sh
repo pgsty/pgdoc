@@ -81,6 +81,11 @@ if [[ -z "${XML_CATALOG_FILES:-}" ]]; then
   fi
 fi
 
+# xmllint --catalogs consults SGML_CATALOG_FILES as well.
+if [[ -n "${XML_CATALOG_FILES:-}" && -z "${SGML_CATALOG_FILES:-}" ]]; then
+  export SGML_CATALOG_FILES="${XML_CATALOG_FILES}"
+fi
+
 # --- Cache directories ---
 mkdir -p "${REPO_ROOT}/.cache/upstream" "${REPO_ROOT}/.cache/work"
 
@@ -133,6 +138,16 @@ rsync -a \
 echo "Configuring source tree ..."
 extra_configure_flags="${CONFIGURE_FLAGS:-}"
 (cd "${work_tree}" && ./configure --without-icu --without-readline --without-zlib ${extra_configure_flags} >/dev/null)
+
+# --- Relax XML validation for translated docs ---
+# Chinese translations may reference anchors from newer PG versions,
+# causing IDREF validation errors.  Keep DTD/entity loading enabled so
+# standard DocBook entities still resolve, but skip strict validation.
+if [[ "${lang}" != "en" ]]; then
+  sed -i.bak \
+    -e 's/--valid/--catalogs --loaddtd/g' \
+    "${work_tree}/doc/src/sgml/Makefile"
+fi
 
 # --- Build HTML ---
 echo "Building HTML docs (${lang} ${version}) ..."
