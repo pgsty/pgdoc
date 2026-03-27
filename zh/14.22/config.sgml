@@ -588,32 +588,6 @@ include_dir 'conf.d'
      </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-reserved-connections" xreflabel="reserved_connections">
-      <term><varname>reserved_connections</varname> (<type>integer</type>)
-      <indexterm>
-       <primary><varname>reserved_connections</varname>配置参数</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        确定为拥有
-        <link linkend="predefined-role-pg-use-reserved-connections"><literal>pg_use_reserved_connections</literal></link>
-        角色的连接保留多少个连接<quote>槽</quote>。当空闲连接槽的数量大于
-        <xref linkend="guc-superuser-reserved-connections"/>，
-        但小于或等于<varname>superuser_reserved_connections</varname>与
-        <varname>reserved_connections</varname>之和时，新连接将只接受超级用户以及拥有
-        <literal>pg_use_reserved_connections</literal>权限的角色。如果可用连接槽的数量等于或少于
-        <varname>superuser_reserved_connections</varname>，则新连接只接受超级用户。
-       </para>
-       <para>
-        默认值为零连接。该值必须小于
-        <varname>max_connections</varname>减去
-        <varname>superuser_reserved_connections</varname>。
-        此参数只能在服务器启动时设置。
-       </para>
-      </listitem>
-     </varlistentry>
-
      <varlistentry id="guc-superuser-reserved-connections"
      xreflabel="superuser_reserved_connections">
 
@@ -627,15 +601,14 @@ include_dir 'conf.d'
 
        <para>
         决定为 <productname>PostgreSQL</productname> 超级用户连接保留多少个连接<quote>槽</quote>。
-        同时活跃的连接数最多始终只能达到 <xref linkend="guc-max-connections"/>。当活跃并发连接数达到
-        <varname>max_connections</varname> 减去 <varname>superuser_reserved_connections</varname> 时，
-        新连接将只接受超级用户。由该参数保留的连接槽是在
-        <xref linkend="guc-reserved-connections"/> 保留的连接槽耗尽之后，用于紧急情况的最后储备。
+        同时活跃的连接数最多始终只能达到 <xref linkend="guc-max-connections"/>。
+        当活跃并发连接数至少达到 <varname>max_connections</varname> 减去
+        <varname>superuser_reserved_connections</varname> 时，新连接将只接受超级用户，
+        并且不再接受新的复制连接。
        </para>
 
        <para>
-        默认值是 3 个连接。该值必须小于
-        <varname>max_connections</varname> 减去 <varname>reserved_connections</varname>。
+        默认值是 3 个连接。该值必须小于 <varname>max_connections</varname>。
         这个参数只能在服务器启动时设置。
        </para>
       </listitem>
@@ -1724,25 +1697,6 @@ include_dir 'conf.d'
      </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-vacuum-buffer-usage-limit" xreflabel="vacuum_buffer_usage_limit">
-      <term><varname>vacuum_buffer_usage_limit</varname> (<type>integer</type>)
-      <indexterm>
-       <primary><varname>vacuum_buffer_usage_limit</varname>配置参数</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        <command>VACUUM</command>和<command>ANALYZE</command>命令使用的缓冲区访问策略大小。
-        设置为<literal>0</literal>将允许操作使用任意数量的<varname>shared_buffers</varname>。
-        否则，有效范围是 128KB 到 16GB。如果指定的大小超过<varname>shared_buffers</varname>的 1/8，
-        将被静默限制到该值。默认值为 2MB。如果未指定单位，则视为千字节。
-        此参数可随时设置，并且可通过为<xref linkend="sql-vacuum"/>和<xref linkend="sql-analyze"/>
-        传递<option>BUFFER_USAGE_LIMIT</option>选项来覆盖。较高的设置可以让
-        <command>VACUUM</command>和<command>ANALYZE</command>运行得更快，但设置过大可能会将过多有用页面从共享缓冲区逐出。
-       </para>
-      </listitem>
-     </varlistentry>
-
      <varlistentry id="guc-logical-decoding-work-mem" xreflabel="logical_decoding_work_mem">
 
       <term><varname>logical_decoding_work_mem</varname> (<type>integer</type>)
@@ -2716,6 +2670,50 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-old-snapshot-threshold" xreflabel="old_snapshot_threshold">
+      <term><varname>old_snapshot_threshold</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>old_snapshot_threshold</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        设置查询快照在使用时不发生<quote>snapshot too old</quote>错误的最短可用时间。
+        已死亡超过该阈值的数据允许被清理掉。这有助于在快照长期保持使用时防止膨胀。
+        为了避免因清理本应对该快照可见的数据而得到错误结果，当快照年龄超过该阈值，
+        并且该快照被用于读取某个自其建立以来已被修改过的页面时，就会报错。
+       </para>
+
+       <para>
+        如果指定值时没有单位，则以分钟为单位。值为 <literal>-1</literal>
+        （默认值）会禁用此特性，相当于把快照年龄上限设为无穷大。
+        该参数只能在服务器启动时设置。
+       </para>
+
+       <para>
+        对生产环境而言，有用的取值大概从几个小时到几天不等。较小的值
+        （例如 <literal>0</literal> 或 <literal>1min</literal>）之所以被允许，
+        只是因为它们有时可用于测试。虽然允许设置到 <literal>60d</literal> 这么高，
+        但请注意，在许多工作负载中，严重膨胀或事务 ID 回卷可能会在更短时间内发生。
+       </para>
+
+       <para>
+        启用此特性后，关系末尾释放出来的空间将不能返还给操作系统，因为那样会移除
+        检测<quote>snapshot too old</quote>条件所需的信息。分配给某个关系的全部空间都会一直
+        归属于该关系，只能在该关系内部重用，除非显式释放（例如使用
+        <command>VACUUM FULL</command>）。
+       </para>
+
+       <para>
+        该设置并不尝试保证在任何特定情况下都一定会产生错误。实际上，如果仍能从
+        某个对象（例如已经物化结果集的游标）生成正确结果，那么即使被引用表中的底层行
+        已经被清理掉，也不会报错。有些表不能安全地提前清理，因此不会受此设置影响，
+        例如系统目录。对这类表来说，此设置既不会减少膨胀，也不会在扫描时引入
+        <quote>snapshot too old</quote>错误的可能性。
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-wal-sync-method" xreflabel="wal_sync_method">
 
       <term><varname>wal_sync_method</varname> (<type>enum</type>)
@@ -3584,57 +3582,6 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
       </listitem>
      </varlistentry>
 
-	    </variablelist>
-	   </sect2>
-
-	   <sect2 id="runtime-config-wal-summarization">
-	    <title>WAL 汇总</title>
-
-	    <para>
-	     这些设置控制 WAL 汇总，这是执行<xref linkend="backup-incremental-backup"/>所需的一项功能。
-	    </para>
-
-	    <variablelist>
-	     <varlistentry id="guc-summarize-wal" xreflabel="summarize_wal">
-	      <term><varname>summarize_wal</varname> (<type>boolean</type>)
-	      <indexterm>
-	       <primary><varname>summarize_wal</varname>配置参数</primary>
-	      </indexterm>
-	      </term>
-	      <listitem>
-	       <para>
-	        启用 WAL 汇总进程。请注意，WAL 汇总既可以在主库上启用，也可以在备库上启用。
-	        该参数只能在<filename>postgresql.conf</filename>文件中或服务器命令行上设置。
-	        默认值为<literal>off</literal>。
-	       </para>
-	       <para>
-	        如果<varname>wal_level</varname>被设置为<literal>minimal</literal>，则无法以
-	        <literal>summarize_wal=on</literal>启动服务器。如果在服务器启动后将
-	        <varname>summarize_wal</varname>设置为<literal>on</literal>而
-	        <varname>wal_level</varname>为<literal>minimal</literal>，则汇总器会运行，但会拒绝为使用
-	        <literal>wal_level=minimal</literal>生成的任何 WAL 创建汇总文件。
-	       </para>
-	      </listitem>
-	     </varlistentry>
-
-	     <varlistentry id="guc-wal-summary-keep-time" xreflabel="wal_summary_keep_time">
-	      <term><varname>wal_summary_keep_time</varname> (<type>integer</type>)
-	      <indexterm>
-	       <primary><varname>wal_summary_keep_time</varname>配置参数</primary>
-	      </indexterm>
-	      </term>
-	      <listitem>
-	       <para>
-	        配置 WAL 汇总器自动删除旧 WAL 汇总文件之前保留它们的时间。文件时间戳用于判断哪些文件已经足够旧，可以被删除。
-	        通常，你应当把该值设置得远大于一次备份与依赖于它的后续增量备份之间可能经过的时间。
-	        WAL 汇总必须覆盖上一次备份与当前正在进行的新增量备份之间的 WAL 记录范围，否则增量备份将失败。
-	        如果该参数设置为零，WAL 汇总将不会被自动删除，但手工删除那些你确定未来增量备份不再需要的文件是安全的。
-	        该参数只能在<filename>postgresql.conf</filename>文件中或服务器命令行上设置。
-	        如果指定值时没有单位，则以分钟为单位。默认值为 10 天。
-	        如果<literal>summarize_wal = off</literal>，则无论该参数的值为何，现有 WAL 汇总都不会被删除，因为 WAL 汇总器不会运行。
-	       </para>
-	      </listitem>
-	     </varlistentry>
 	    </variablelist>
 	   </sect2>
 
@@ -8679,6 +8626,21 @@ SET XML OPTION { DOCUMENT | CONTENT };
         <varname>shared_preload_libraries</varname>任然有用。
        </para>
       </note>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-stats-temp-directory" xreflabel="stats_temp_directory">
+      <term><varname>stats_temp_directory</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>stats_temp_directory</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        设置存放临时统计信息数据的目录。它既可以是相对于数据目录的路径，也可以是绝对路径。默认值是
+        <filename>pg_stat_tmp</filename>。将其指向基于 RAM 的文件系统可以减少物理 I/O 需求，并可能提升性能。
+        这个参数只能在<filename>postgresql.conf</filename>文件中或服务器命令行上设置。
+       </para>
       </listitem>
      </varlistentry>
 

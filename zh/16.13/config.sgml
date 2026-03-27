@@ -1990,6 +1990,185 @@ include_dir 'conf.d'
      </para>
     </sect2>
 
+    <sect2 id="runtime-config-resource-async-behavior">
+
+     <title>异步行为</title>
+
+     <variablelist>
+      <varlistentry id="guc-backend-flush-after" xreflabel="backend_flush_after">
+
+       <term><varname>backend_flush_after</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>backend_flush_after</varname> 配置参数</primary>
+       </indexterm>
+       </term>
+       <listitem>
+
+        <para>
+         当单个后端写入的数据量超过这个数量时，尝试强制操作系统把这些写入发送到底层存储。
+         这样做将限制内核页缓存中的脏数据量，降低在检查点结束时发出 <function>fsync</function>
+         或者操作系统在后台成批写回数据时发生停顿的可能性。通常这会显著降低事务延迟，
+         但在某些场景下，尤其是工作负载大于 <xref linkend="guc-shared-buffers"/>，
+         但小于操作系统页缓存时，性能可能会下降。该设置在某些平台上可能无效。
+         如果未指定单位，则按块计，即 <symbol>BLCKSZ</symbol> 字节，通常为 8kB。
+         有效范围是从 <literal>0</literal>（禁用强制回写）到 <literal>2MB</literal>。
+         默认值为 <literal>0</literal>，也就是不强制回写。（如果 <symbol>BLCKSZ</symbol>
+         不是 8kB，则最大值按比例缩放。）
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-effective-io-concurrency" xreflabel="effective_io_concurrency">
+
+       <term><varname>effective_io_concurrency</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>effective_io_concurrency</varname>配置参数</primary>
+       </indexterm>
+       </term>
+       <listitem>
+
+        <para>
+         设置 <productname>PostgreSQL</productname> 预期能够同时执行的磁盘 I/O 操作数量。
+         增大该值会增加单个 <productname>PostgreSQL</productname> 会话尝试并行发起的 I/O 操作数。
+         允许范围为 1 到 1000，或者 0 表示禁用异步 I/O 请求。目前这个设置只影响位图堆扫描。
+        </para>
+
+        <para>
+         对磁盘阵列来说，一个合适的起点通常是组成 RAID 0 条带或 RAID 1 镜像的磁盘数量。
+         （对于 RAID 5，不应计入奇偶校验盘。）不过，如果数据库经常被多个并发会话同时访问，
+         较小的值也可能足以让磁盘阵列保持忙碌。高于所需值只会带来额外的 CPU 开销。
+         SSD 和其他基于内存的存储通常可以处理很多并发请求，因此最佳值可能高达数百。
+        </para>
+
+        <para>
+         异步 I/O 依赖于有效的 <function>posix_fadvise</function> 函数，而某些操作系统并不提供它。
+         如果该函数不存在，那么把此参数设为非零值会导致错误。在某些操作系统上（例如 Solaris），
+         虽然函数存在，但实际上并不做任何事情。
+        </para>
+
+        <para>
+         支持该特性的系统上默认值为 1，否则为 0。这个值可以通过在某个表空间中设置同名表空间参数来覆盖
+         （见 <xref linkend="sql-altertablespace"/>）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-maintenance-io-concurrency" xreflabel="maintenance_io_concurrency">
+
+       <term><varname>maintenance_io_concurrency</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>maintenance_io_concurrency</varname>配置参数</primary>
+       </indexterm>
+       </term>
+       <listitem>
+
+        <para>
+         与 <varname>effective_io_concurrency</varname> 类似，但用于许多客户端会话共同执行的维护工作。
+        </para>
+
+        <para>
+         支持该特性的系统上默认值为 10，否则为 0。这个值可以通过在某个表空间中设置同名表空间参数来覆盖
+         （见 <xref linkend="sql-altertablespace"/>）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </sect2>
+
+    <sect2 id="runtime-config-resource-worker-processes">
+     <title>工作进程</title>
+
+     <variablelist>
+      <varlistentry id="guc-max-worker-processes" xreflabel="max_worker_processes">
+
+       <term><varname>max_worker_processes</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>max_worker_processes</varname>配置参数</primary>
+       </indexterm>
+       </term>
+       <listitem>
+
+        <para>
+         设置系统能够支持的后台进程的最大数量。这个参数只能在服务器启动时设置。默认值为 8。
+        </para>
+
+        <para>
+         在运行一个备库时，你必须把这个参数设置为等于或者高于主库上的值。
+         否则，备库上可能不会允许查询。
+        </para>
+
+        <para>
+         在更改这个值时，考虑也对<xref linkend="guc-max-parallel-workers"/>、
+         <xref linkend="guc-max-parallel-maintenance-workers"/>以及
+         <xref linkend="guc-max-parallel-workers-per-gather"/>进行调整。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-max-parallel-workers-per-gather" xreflabel="max_parallel_workers_per_gather">
+
+       <term><varname>max_parallel_workers_per_gather</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>max_parallel_workers_per_gather</varname>配置参数</primary>
+       </indexterm>
+       </term>
+       <listitem>
+
+        <para>
+         设置单个<literal>Gather</literal>或者<literal>Gather Merge</literal>节点能够开始的工作者的最大数量。并行工作者会从<xref linkend="guc-max-worker-processes"/>建立的进程池中取得，数量由<xref linkend="guc-max-parallel-workers"/>限制。注意所要求的工作者数量在运行时可能实际无法被满足。如果这种事情发生，该计划将会以比预期更少的工作者运行，这可能会不太高效。默认值是2。把这个值设置为0将会禁用并行查询执行。
+        </para>
+
+        <para>
+         注意并行查询可能消耗比非并行查询更多的资源，因为每一个工作者进程是一个完全独立的进程，它对系统产生的影响大致和一个额外的用户会话相同。在为这个设置选择值时，以及配置其他控制资源利用的设置（例如<xref linkend="guc-work-mem"/>）时，应该把这个因素考虑在内。<varname>work_mem</varname>之类的资源限制会被独立地应用于每一个工作者，这意味着所有进程的总资源利用可能会比单个进程时高得多。例如，一个使用 4 个工作者的并行查询使用的 CPU 时间、内存、I/O 带宽可能是不使用工作者时的 5 倍之多。
+        </para>
+
+        <para>
+         并行查询的更多信息请见<xref linkend="parallel-query"/>。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-max-parallel-maintenance-workers" xreflabel="max_parallel_maintenance_workers">
+
+       <term><varname>max_parallel_maintenance_workers</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>max_parallel_maintenance_workers</varname>配置参数</primary>
+       </indexterm>
+       </term>
+       <listitem>
+
+        <para>
+         设置单一工具性命令能够启动的并行工作者的最大数目。
+         当前，支持使用并行工作者的工具性命令是<command>CREATE INDEX</command>，并且只有在构建B-树索引时才能并行，并且 <command>VACUUM</command> 没有 <literal>FULL</literal>选项。
+         并行工作者从由<xref linkend="guc-max-worker-processes"/>创建的进程池中取出，数量由<xref linkend="guc-max-parallel-workers"/>控制。
+         注意实际在运行时所请求数量的工作者可能不可用。如果发生这种情况，工具性操作将使用比预期数量少的工作者运行。默认值为2。将这个值设置为0可以禁用工具性命令对并行工作者的使用。
+        </para>
+
+        <para>
+         注意并行工具性命令不应该消耗比同等数量非并行操作更多的内存。这种策略与并行查询不同，并行查询的资源限制通常是应用在每个工作者进程上。并行工具性命令把资源限制<varname>maintenance_work_mem</varname>当作对整个工具性命令的限制，而不管其中用到了多少个并行工作者进程。不过，并行工具性命令实际上可能仍会消耗更多的CPU资源和I/O带宽。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-max-parallel-workers" xreflabel="max_parallel_workers">
+
+       <term><varname>max_parallel_workers</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>max_parallel_workers</varname>配置参数</primary>
+       </indexterm>
+       </term>
+       <listitem>
+
+        <para>
+         设置系统为并行操作所支持的工作者的最大数量。默认值为8。
+         在增加或者减小这个值时，也要考虑对<xref linkend="guc-max-parallel-maintenance-workers"/>以及<xref linkend="guc-max-parallel-workers-per-gather"/>进行调整。
+         此外，要注意将这个值设置得大于<xref linkend="guc-max-worker-processes"/>将不会产生效果，因为并行工作者进程都是从<xref linkend="guc-max-worker-processes"/>所建立的工作者进程池中取出来的。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </sect2>
+
    </sect1>
 
    <sect1 id="runtime-config-wal">
@@ -3387,18 +3566,16 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
          </para>
 
          <para>
-          连接字符串应当指定发送服务器的主机名（或地址），以及端口号（如果它与备库的默认端口不同）。
-          还要指定发送服务器上具有适当权限的角色所对应的用户名（见<xref linkend="streaming-replication-authentication"/>）。
-          如果发送端要求密码认证，还需要提供密码。它既可以直接写在 <varname>primary_conninfo</varname> 字符串中，
-          也可以写在备库上的独立 <filename>~/.pgpass</filename> 文件中（数据库名使用 <literal>replication</literal>）。
-         </para>
+         连接字符串应当指定发送服务器的主机名（或地址），以及端口号（如果它与备库的默认端口不同）。
+         还要指定发送服务器上具有适当权限的角色所对应的用户名（见<xref linkend="streaming-replication-authentication"/>）。
+         如果发送端要求密码认证，还需要提供密码。它既可以直接写在 <varname>primary_conninfo</varname> 字符串中，
+         也可以写在备库上的独立 <filename>~/.pgpass</filename> 文件中（数据库名使用 <literal>replication</literal>）。
+        </para>
 
-         <para>
-          对于复制槽同步（见
-          <xref linkend="logicaldecoding-replication-slots-synchronization"/>），
-          还必须在 <varname>primary_conninfo</varname> 字符串中指定有效的 <literal>dbname</literal>。
-          该设置只用于槽同步，对流复制会被忽略。
-         </para>
+        <para>
+         对于复制槽同步，还必须在 <varname>primary_conninfo</varname> 字符串中指定有效的 <literal>dbname</literal>。
+         该设置只用于槽同步，对流复制会被忽略。
+        </para>
 
          <para>
           这个参数只能在 <filename>postgresql.conf</filename> 文件或服务器命令行上设置。
@@ -3712,6 +3889,24 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
      </para>
 
 	     <variablelist>
+
+     <varlistentry id="guc-max-replication-slots-subscriber" xreflabel="max_replication_slots">
+      <term><varname>max_replication_slots</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>max_replication_slots</varname> configuration parameter</primary>
+        <secondary>in a subscriber</secondary>
+       </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定可以同时跟踪多少个复制源（参见<xref linkend="replication-origins"/>），从而实际上限制了服务器上可以创建多少个逻辑复制订阅。将它设置为低于当前正在跟踪的复制源数量（可在<link linkend="view-pg-replication-origin-status">pg_replication_origin_status</link>中看到）会阻止服务器启动。<literal>max_replication_slots</literal> 至少必须设置为订阅者上要添加的订阅数量，再加上一些用于表同步的预留。
+       </para>
+
+       <para>
+        注意，这个参数在发送服务器上也适用，但含义不同。
+       </para>
+      </listitem>
+     </varlistentry>
 
 	
 	     <varlistentry id="guc-max-logical-replication-workers" xreflabel="max_logical_replication_workers">
@@ -6596,6 +6791,365 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
      </variablelist>
 
     </sect2>
+   </sect1>
+
+   <sect1 id="runtime-config-autovacuum">
+
+    <title>自动清理</title>
+
+    <indexterm>
+     <primary>autovacuum</primary>
+     <secondary>配置参数</secondary>
+    </indexterm>
+
+    <para>
+     这些设置控制<firstterm>自动清理</firstterm>功能的行为。更多信息请参见
+     <xref linkend="autovacuum"/>。请注意，其中许多设置都可以按表覆盖；
+     详情见 <xref linkend="sql-createtable-storage-parameters"/>。
+    </para>
+
+    <variablelist>
+
+     <varlistentry id="guc-autovacuum" xreflabel="autovacuum">
+      <term><varname>autovacuum</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>autovacuum</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        控制服务器是否运行 autovacuum 启动器守护进程。默认值为开启；
+        不过，autovacuum 要正常工作还必须启用 <xref linkend="guc-track-counts"/>。
+        该参数只能在 <filename>postgresql.conf</filename> 文件或服务器命令行中设置；
+        不过，可以通过更改表存储参数为单个表禁用自动清理。
+       </para>
+       <para>
+        注意即使该参数被禁用，系统也会在有必要防止事务 ID 回卷时启动自动清理进程。
+        详情请参见 <xref linkend="vacuum-for-wraparound"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-max-workers" xreflabel="autovacuum_max_workers">
+      <term><varname>autovacuum_max_workers</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>autovacuum_max_workers</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定同一时间允许运行的自动清理进程（不包括 autovacuum 启动器）的最大数量。
+        默认值为 3。该参数只能在服务器启动时设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-naptime" xreflabel="autovacuum_naptime">
+      <term><varname>autovacuum_naptime</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>autovacuum_naptime</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定自动清理在任意给定数据库上运行之间的最小延迟。每一轮中，守护进程会检查数据库，
+        并根据需要为其中的表发出 <command>VACUUM</command> 和 <command>ANALYZE</command> 命令。
+        如果未指定单位，则按秒计。默认值为 1 分钟（<literal>1min</literal>）。
+        该参数只能在 <filename>postgresql.conf</filename> 文件或服务器命令行中设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-vacuum-threshold" xreflabel="autovacuum_vacuum_threshold">
+      <term><varname>autovacuum_vacuum_threshold</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>autovacuum_vacuum_threshold</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定在任意一个表上触发 <command>VACUUM</command> 所需的最少已更新或已删除元组数。
+        默认值为 50 个元组。该参数只能在 <filename>postgresql.conf</filename> 文件或服务器命令行中设置；
+        但可以通过更改表存储参数为单个表覆盖该设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-vacuum-insert-threshold" xreflabel="autovacuum_vacuum_insert_threshold">
+      <term><varname>autovacuum_vacuum_insert_threshold</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>autovacuum_vacuum_insert_threshold</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定在任意一个表上触发 <command>VACUUM</command> 所需的已插入元组数。
+        默认值为 1000 个元组。若指定为 <literal>-1</literal>，则 autovacuum 不会根据插入数量
+        在任何表上触发 <command>VACUUM</command>。
+        该参数只能在 <filename>postgresql.conf</filename> 文件或服务器命令行中设置；
+        但可以通过更改表存储参数为单个表覆盖该设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-analyze-threshold" xreflabel="autovacuum_analyze_threshold">
+      <term><varname>autovacuum_analyze_threshold</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>autovacuum_analyze_threshold</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定在任意一个表上触发 <command>ANALYZE</command> 所需的最少已插入、已更新或已删除元组数。
+        默认值为 50 个元组。该参数只能在 <filename>postgresql.conf</filename> 文件或服务器命令行中设置；
+        但可以通过更改表存储参数为单个表覆盖该设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-vacuum-scale-factor" xreflabel="autovacuum_vacuum_scale_factor">
+      <term><varname>autovacuum_vacuum_scale_factor</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>autovacuum_vacuum_scale_factor</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定一个表尺寸的分数，在决定是否触发 <command>VACUUM</command> 时将它加到
+        <varname>autovacuum_vacuum_threshold</varname> 上。默认值为 0.2（表尺寸的 20%）。
+        该参数只能在 <filename>postgresql.conf</filename> 文件或服务器命令行中设置；
+        但可以通过更改表存储参数为单个表覆盖该设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-vacuum-insert-scale-factor" xreflabel="autovacuum_vacuum_insert_scale_factor">
+      <term><varname>autovacuum_vacuum_insert_scale_factor</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>autovacuum_vacuum_insert_scale_factor</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定一个表尺寸的分数，在决定是否触发 <command>VACUUM</command> 时将它加到
+        <varname>autovacuum_vacuum_insert_threshold</varname> 上。默认值为 0.2（表尺寸的 20%）。
+        该参数只能在 <filename>postgresql.conf</filename> 文件或服务器命令行中设置；
+        但可以通过更改表存储参数为单个表覆盖该设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-analyze-scale-factor" xreflabel="autovacuum_analyze_scale_factor">
+      <term><varname>autovacuum_analyze_scale_factor</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>autovacuum_analyze_scale_factor</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定一个表尺寸的分数，在决定是否触发 <command>ANALYZE</command> 时将它加到
+        <varname>autovacuum_analyze_threshold</varname> 上。默认值为 0.1（表尺寸的 10%）。
+        该参数只能在 <filename>postgresql.conf</filename> 文件或服务器命令行中设置；
+        但可以通过更改表存储参数为单个表覆盖该设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-freeze-max-age" xreflabel="autovacuum_freeze_max_age">
+      <term><varname>autovacuum_freeze_max_age</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>autovacuum_freeze_max_age</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定在必须强制执行 <command>VACUUM</command> 以防止表内事务 ID 回卷之前，
+        一个表的 <structname>pg_class</structname>.<structfield>relfrozenxid</structfield>
+        字段可以达到的最大年龄（以事务计）。注意即使自动清理被禁用，系统也会启动自动清理进程来防止回卷。
+       </para>
+
+       <para>
+        清理还允许从 <filename>pg_xact</filename> 子目录中移除旧文件，这也是为什么默认值相对较低，
+        为 2 亿个事务。该参数只能在服务器启动时设置，不过可以通过更改表存储参数为单个表降低这个值。
+        更多信息请参见 <xref linkend="vacuum-for-wraparound"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-multixact-freeze-max-age" xreflabel="autovacuum_multixact_freeze_max_age">
+      <term><varname>autovacuum_multixact_freeze_max_age</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>autovacuum_multixact_freeze_max_age</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定在必须强制执行 <command>VACUUM</command> 以防止表内 multixact ID 回卷之前，
+        一个表的 <structname>pg_class</structname>.<structfield>relminmxid</structfield>
+        字段可以达到的最大年龄（以 multixact 计）。注意即使自动清理被禁用，系统也会启动自动清理进程来防止回卷。
+       </para>
+
+       <para>
+        清理 multixact 还允许从 <filename>pg_multixact/members</filename> 和
+        <filename>pg_multixact/offsets</filename> 子目录中移除旧文件，这也是为什么默认值相对较低，
+        为 4 亿个 multixact。该参数只能在服务器启动时设置，不过可以通过更改表存储参数为单个表降低这个值。
+        更多信息请参见 <xref linkend="vacuum-for-multixact-wraparound"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-vacuum-cost-delay" xreflabel="autovacuum_vacuum_cost_delay">
+      <term><varname>autovacuum_vacuum_cost_delay</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>autovacuum_vacuum_cost_delay</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定自动 <command>VACUUM</command> 操作中要使用的代价延迟值。如果指定为 -1，
+        则使用常规的 <xref linkend="guc-vacuum-cost-delay"/> 值。如果未指定单位，则按毫秒计。
+        默认值为 2 毫秒。该参数只能在 <filename>postgresql.conf</filename> 文件或服务器命令行中设置；
+        但可以通过更改表存储参数为单个表覆盖该设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-vacuum-cost-limit" xreflabel="autovacuum_vacuum_cost_limit">
+      <term><varname>autovacuum_vacuum_cost_limit</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>autovacuum_vacuum_cost_limit</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定自动 <command>VACUUM</command> 操作中要使用的代价限制值。如果指定为 -1（默认值），
+        则使用 <xref linkend="guc-vacuum-cost-limit"/> 值。注意该值会在运行中的自动清理工作进程之间按比例分配，
+        因此所有工作进程的限制值之和不会超过这个变量的值。该参数只能在
+        <filename>postgresql.conf</filename> 文件或服务器命令行中设置；
+        但可以通过更改表存储参数为单个表覆盖该设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>
+
+   <sect2 id="runtime-config-vacuum-default">
+    <title>默认行为</title>
+
+    <variablelist>
+     <varlistentry id="guc-vacuum-truncate" xreflabel="vacuum_truncate">
+      <term><varname>vacuum_truncate</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>vacuum_truncate</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        启用或禁用 vacuum 尝试截断表末尾的空页。默认值为<literal>true</literal>。
+        如果为<literal>true</literal>，则<command>VACUUM</command>和 autovacuum 会执行截断，并将这些页面占用的磁盘空间返还给操作系统。
+        请注意，截断需要获取表上的<literal>ACCESS EXCLUSIVE</literal>锁。
+        如果在<link linkend="sql-vacuum"><command>VACUUM</command></link>中指定了<literal>TRUNCATE</literal>参数，它将覆盖该参数的值。
+        也可以通过修改表存储参数来为单个表覆盖此设置。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect2>
+
+   <sect2 id="runtime-config-vacuum-freezing">
+    <title>冻结 (Freezing)</title>
+
+    <para>
+     这些设置控制旧行版本的冻结。更多信息请参阅<xref linkend="vacuum-for-wraparound"/>和<xref linkend="vacuum-for-multixact-wraparound"/>。
+    </para>
+
+    <variablelist>
+     <varlistentry id="guc-vacuum-freeze-table-age" xreflabel="vacuum_freeze_table_age">
+      <term><varname>vacuum_freeze_table_age</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>vacuum_freeze_table_age</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        当表的<structname>pg_class</structname>.<structfield>relfrozenxid</structfield>字段达到该设置指定的年龄时，<command>VACUUM</command>会执行激进扫描。激进扫描与常规<command>VACUUM</command>不同，它会访问每一个可能包含未冻结 XID 或 MXID 的页面，而不仅仅是那些可能包含死元组的页面。默认值是 1.5 亿个事务。尽管用户可以将该值设置为 0 到 20 亿之间的任意值，<command>VACUUM</command>会悄悄将有效值调整为<xref linkend="guc-autovacuum-freeze-max-age"/>的 95%，从而在触发防回卷 autovacuum 之前仍有机会执行一次常规手工<command>VACUUM</command>。更多信息请参见<xref linkend="vacuum-for-wraparound"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-vacuum-freeze-min-age" xreflabel="vacuum_freeze_min_age">
+      <term><varname>vacuum_freeze_min_age</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>vacuum_freeze_min_age</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定<command>VACUUM</command>在扫描表时用来决定是否冻结行版本的切断年龄（以事务计）。默认值是 5000 万个事务。尽管用户可以将该值设置为 0 到 10 亿之间的任意值，<command>VACUUM</command>会悄悄将有效值调整为<xref linkend="guc-autovacuum-freeze-max-age"/>的一半，这样强制 autovacuum 之间就不会间隔过短。更多信息请参见<xref linkend="vacuum-for-wraparound"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-vacuum-failsafe-age" xreflabel="vacuum_failsafe_age">
+      <term><varname>vacuum_failsafe_age</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>vacuum_failsafe_age</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定表的<structname>pg_class</structname>.<structfield>relfrozenxid</structfield>字段在<command>VACUUM</command>采取特别措施以避免系统范围事务 ID 回卷失败之前所允许达到的最大年龄（以事务计）。这是<command>VACUUM</command>的最后防线。失效保护通常会在防止事务 ID 回卷的 autovacuum 已经运行了一段时间后触发，但也有可能在任何<command>VACUUM</command>期间触发。
+       </para>
+       <para>
+        当失效保护被触发时，将不再应用任何有效的基于成本的延迟，并且会跳过进一步的非关键维护任务（例如索引 vacuum），而且任何正在使用的
+        <glossterm linkend="glossary-buffer-access-strategy">缓冲区访问策略</glossterm>
+        都会被禁用，使 <command>VACUUM</command> 可以自由使用全部
+        <glossterm linkend="glossary-shared-memory">共享缓冲区</glossterm>。
+       </para>
+       <para>
+        默认值为 16 亿个事务。尽管用户可以将该值设置为 0 到 21 亿之间的任意值，<command>VACUUM</command>会悄悄将有效值调整为不低于<xref linkend="guc-autovacuum-freeze-max-age"/>的 105%。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-vacuum-multixact-freeze-table-age" xreflabel="vacuum_multixact_freeze_table_age">
+      <term><varname>vacuum_multixact_freeze_table_age</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>vacuum_multixact_freeze_table_age</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        当表的<structname>pg_class</structname>.<structfield>relminmxid</structfield>字段达到该设置指定的年龄时，<command>VACUUM</command>会执行激进扫描。激进扫描与常规<command>VACUUM</command>不同，它会访问每一个可能包含未冻结 XID 或 MXID 的页面，而不是只扫描那些可能包含死元组的页面。默认值是 1.5 亿个 multixact。尽管用户可以将该值设置为 0 到 20 亿之间的任意值，<command>VACUUM</command>会悄悄将有效值调整为<xref linkend="guc-autovacuum-multixact-freeze-max-age"/>的 95%，从而在触发防回卷 autovacuum 之前仍有机会执行一次常规手工<command>VACUUM</command>。更多信息请参见<xref linkend="vacuum-for-multixact-wraparound"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-vacuum-multixact-freeze-min-age" xreflabel="vacuum_multixact_freeze_min_age">
+      <term><varname>vacuum_multixact_freeze_min_age</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>vacuum_multixact_freeze_min_age</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        指定<command>VACUUM</command>在扫描表时用来决定是否将 multixact ID 替换为较新的事务 ID 或 multixact ID 的切断年龄（以 multixact 计）。默认值是 5000 万个 multixact。尽管用户可以将该值设置为 0 到 10 亿之间的任意值，<command>VACUUM</command>会悄悄将有效值调整为<xref linkend="guc-autovacuum-multixact-freeze-max-age"/>的一半，这样强制 autovacuum 之间就不会间隔过短。更多信息请参见<xref linkend="vacuum-for-multixact-wraparound"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect2>
+
    </sect1>
 
 	   <sect1 id="runtime-config-client">

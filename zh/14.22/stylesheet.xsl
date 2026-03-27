@@ -13,7 +13,8 @@
 <xsl:param name="base.dir" select="'html/'"></xsl:param>
 <xsl:param name="use.id.as.filename" select="'1'"></xsl:param>
 <xsl:param name="generate.legalnotice.link" select="1"></xsl:param>
-<xsl:param name="chunk.first.sections" select="1"/>
+<xsl:param name="chunk.first.sections" select="0"/>
+<xsl:param name="chunk.section.depth" select="1"/>
 <xsl:param name="chunk.quietly" select="1"></xsl:param>
 <xsl:param name="admon.style"></xsl:param>  <!-- handled by CSS stylesheet -->
 

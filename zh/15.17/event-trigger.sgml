@@ -25,36 +25,12 @@
    <para>
      只要与事件触发器关联的事件在其定义所在数据库中发生，事件触发器就会被触发。
      目前支持的事件有
-     <literal>login</literal>、
      <literal>ddl_command_start</literal>、
      <literal>ddl_command_end</literal>、
      <literal>table_rewrite</literal>
      和 <literal>sql_drop</literal>。
      未来版本可能会增加对更多事件的支持。
    </para>
-
-   <sect2 id="event-trigger-login">
-    <title>login</title>
-
-   <para>
-     当已认证用户登录系统时，会发生 <literal>login</literal> 事件。
-     该事件的触发器过程中的任何缺陷都可能导致系统无法成功登录。
-     可以通过在连接字符串或配置文件中将 <xref linkend="guc-event-triggers"/> 设为
-     <literal>false</literal> 来绕过这类问题。或者，也可以将系统重启到单用户模式
-     （该模式下事件触发器被禁用）。关于如何使用单用户模式的细节，参见
-     <xref linkend="app-postgres"/> 参考页。
-     <literal>login</literal> 事件也会在后备服务器上触发。
-     为防止服务器变得无法访问，这类触发器在后备服务器上运行时必须避免向数据库写
-     入任何内容。此外，还建议避免在 <literal>login</literal> 事件触发器中执行长
-     时间运行的查询。请注意，例如在 <application>psql</application> 中取消一个连
-     接，并不会取消正在执行中的 <literal>login</literal> 触发器。
-   </para>
-
-   <para>
-     关于如何使用 <literal>login</literal> 事件触发器的示例，参见
-     <xref linkend="event-trigger-database-login-example"/>。
-   </para>
-   </sect2>
 
    <sect2 id="event-trigger-ddl_command_start">
     <title>ddl_command_start</title>
@@ -246,10 +222,11 @@ typedef struct EventTriggerData
      <varlistentry id="zh18-auto-event-trigger-varlistentry-2">
       <term><structfield>event</structfield></term>
       <listitem>
-       <para>
+     <para>
         描述调用该函数对应的事件，可为
-        <literal>"login"</literal>、<literal>"ddl_command_start"</literal>、
-        <literal>"ddl_command_end"</literal>、<literal>"sql_drop"</literal>、
+        <literal>"ddl_command_start"</literal>、
+        <literal>"ddl_command_end"</literal>、
+        <literal>"sql_drop"</literal>、
         <literal>"table_rewrite"</literal> 之一。
         关于这些事件的含义，参见 <xref linkend="event-trigger-definition"/>。
        </para>
@@ -424,77 +401,5 @@ CREATE EVENT TRIGGER no_rewrite_allowed
    EXECUTE FUNCTION no_rewrite();
 </programlisting>
    </para>
- </sect1>
-
-  <sect1 id="event-trigger-database-login-example">
-    <title>数据库登录事件触发器示例</title>
-
-    <para>
-      作用于 <literal>login</literal> 事件的事件触发器可用于记录用户登录、验证连
-      接并根据当前情况分配角色，或者初始化会话数据。非常重要的一点是，任何使用
-      <literal>login</literal> 事件的事件触发器在执行任何写操作之前都必须检查数
-      据库是否处于恢复状态。向后备服务器写入会导致其变得不可访问。
-    </para>
-
-    <para>
-      以下示例演示了这些用法。
-<programlisting>
--- create test tables and roles
-CREATE TABLE user_login_log (
-  "user" text,
-  "session_start" timestamp with time zone
-);
-CREATE ROLE day_worker;
-CREATE ROLE night_worker;
-
--- the example trigger function
-CREATE OR REPLACE FUNCTION init_session()
-  RETURNS event_trigger SECURITY DEFINER
-  LANGUAGE plpgsql AS
-$$
-DECLARE
-  hour integer = EXTRACT('hour' FROM current_time at time zone 'utc');
-  rec boolean;
-BEGIN
--- 1. Forbid logging in between 2AM and 4AM.
-IF hour BETWEEN 2 AND 4 THEN
-  RAISE EXCEPTION 'Login forbidden';
-END IF;
-
--- The checks below cannot be performed on standby servers so
--- ensure the database is not in recovery before we perform any
--- operations.
-SELECT pg_is_in_recovery() INTO rec;
-IF rec THEN
-  RETURN;
-END IF;
-
--- 2. Assign some roles. At daytime, grant the day_worker role, else the
--- night_worker role.
-IF hour BETWEEN 8 AND 20 THEN
-  EXECUTE 'REVOKE night_worker FROM ' || quote_ident(session_user);
-  EXECUTE 'GRANT day_worker TO ' || quote_ident(session_user);
-ELSE
-  EXECUTE 'REVOKE day_worker FROM ' || quote_ident(session_user);
-  EXECUTE 'GRANT night_worker TO ' || quote_ident(session_user);
-END IF;
-
--- 3. Initialize user session data
-CREATE TEMP TABLE session_storage (x float, y integer);
-ALTER TABLE session_storage OWNER TO session_user;
-
--- 4. Log the connection time
-INSERT INTO public.user_login_log VALUES (session_user, current_timestamp);
-
-END;
-$$;
-
--- trigger definition
-CREATE EVENT TRIGGER init_session
-  ON login
-  EXECUTE FUNCTION init_session();
-ALTER EVENT TRIGGER init_session ENABLE ALWAYS;
-</programlisting>
-    </para>
   </sect1>
 </chapter>
