@@ -362,15 +362,7 @@ test ! -f /mnt/server/archivedir/00000001000000A900000065 &amp;&amp; cp pg_wal/0
    </para>
 
    <para>
-    归档命令和归档库通常都应设计为拒绝覆盖任何已存在的归档文件。这是一项重要的安全特性，可在管理员出错时保护归档的完整性（例如把两台不同服务器的输出发送到同一个归档目录）。建议测试你打算使用的归档库，以确保它不会覆盖已有文件。
-   </para>
-
-   <para>
-    在少数情况下，<productname>PostgreSQL</productname>可能会尝试重新归档一个此前已经归档过的 WAL 文件。例如，如果系统在服务器把归档成功持久记录下来之前崩溃，服务器在重启后会再次尝试归档该文件（前提是归档仍然启用）。当归档命令或归档库遇到一个已存在的文件时，如果该文件与待归档 WAL 文件内容完全相同，且先前归档的文件已经完全持久化到存储，则前者应分别返回零状态或<literal>true</literal>。如果已存在文件的内容与正在归档的 WAL 文件不同，则归档命令或归档库<emphasis>必须</emphasis>分别返回非零状态或<literal>false</literal>。
-   </para>
-
-   <para>
-    上面给出的 Unix 示例命令通过单独加入一个<command>test</command>步骤，避免覆盖已有归档。在某些 Unix 平台上，<command>cp</command>提供了诸如<option>-i</option>之类的开关，也可以更简洁地实现同样目的，但在你确认它会返回正确的退出状态之前，不应依赖这些开关。（尤其是 GNU <command>cp</command>在使用<option>-i</option>且目标文件已存在时会返回状态零，这<emphasis>不是</emphasis>我们想要的行为。）
+    归档命令和归档库通常都应设计为拒绝覆盖任何已存在的归档文件。这是一项重要的安全特性，可在管理员出错时保护归档的完整性（例如把两台不同服务器的输出发送到同一个归档目录）。建议测试你打算使用的归档命令或归档库，以确保它确实不会覆盖已有文件，<emphasis>并且在这种情况下分别返回非零状态或 <literal>false</literal></emphasis>。上面给出的 Unix 示例命令通过单独加入一个<command>test</command>步骤来保证这一点。在某些 Unix 平台上，<command>cp</command>提供了诸如<option>-i</option>之类的开关，也可以更简洁地实现同样目的，但在你确认它会返回正确的退出状态之前，不应依赖这些开关。（尤其是 GNU <command>cp</command>在使用<option>-i</option>且目标文件已存在时会返回状态零，这<emphasis>不是</emphasis>我们想要的行为。）
    </para>
 
    <para>
@@ -610,7 +602,7 @@ SELECT * FROM pg_backup_stop(wait_for_archive => true);
    </para>
 
    <para>
-    这一切的关键在于设置一个恢复配置，描述你希望如何恢复，以及恢复应运行到什么位置。其中绝对必须指定的一项是<varname>restore_command</varname>，它告诉<productname>PostgreSQL</productname>如何检索已归档的 WAL 文件段。像<varname>archive_command</varname>一样，它也是一个 shell 命令字符串。它可以包含<literal>%f</literal>，会被替换为所需 WAL 文件的名称；也可以包含<literal>%p</literal>，会被替换为复制该 WAL 文件时要使用的路径名。（该路径名相对于当前工作目录，也就是集簇的数据目录。）如果需要在命令中嵌入实际的<literal>%</literal>字符，请写成<literal>%%</literal>。最简单而有用的命令类似如下：
+    这一切的关键在于设置一个恢复配置，描述你希望如何恢复，以及恢复应运行到什么位置。其中绝对必须指定的一项是<varname>restore_command</varname>，它告诉<productname>PostgreSQL</productname>如何检索已归档的 WAL 文件段。像<varname>archive_command</varname>一样，它也是一个 shell 命令字符串。它可以包含<literal>%f</literal>，会被替换为所需日志文件的名称；也可以包含<literal>%p</literal>，会被替换为复制该日志文件时要使用的路径名。（该路径名相对于当前工作目录，也就是集簇的数据目录。）如果需要在命令中嵌入实际的<literal>%</literal>字符，请写成<literal>%%</literal>。最简单而有用的命令类似如下：
 <programlisting>
 restore_command = 'cp /mnt/server/archivedir/%f %p'
 </programlisting>
@@ -661,11 +653,7 @@ restore_command = 'cp /mnt/server/archivedir/%f %p'
    </para>
 
    <para>
-    为了解决这个问题，<productname>PostgreSQL</productname>引入了<firstterm>时间线</firstterm>的概念。每当一次归档恢复完成时，系统都会创建一条新的时间线，用来标识此次恢复之后生成的 WAL 记录序列。时间线 ID 是 WAL 段文件名的一部分，因此新的时间线不会覆盖先前时间线产生的 WAL 数据。例如，在 WAL 文件名<filename>0000000100001234000055CD</filename>中，开头的<literal>00000001</literal>就是十六进制表示的时间线 ID。（注意，在服务器日志消息等其他场合，时间线 ID 通常以十进制打印。）
-   </para>
-
-   <para>
-    实际上，完全可以归档许多不同的时间线。虽然这看起来像是个没什么用的特性，但它往往能救命。设想这样一种情况：你不太确定应恢复到哪个时间点，因此不得不通过反复试验做几次时间点恢复，直到找到从旧历史分叉出去的最佳位置。如果没有时间线，这个过程很快就会变成一团无法管理的混乱。有了时间线，你可以恢复到<emphasis>任何</emphasis>先前状态，包括那些你早先已经放弃的时间线分支上的状态。
+    为了解决这个问题，<productname>PostgreSQL</productname>引入了<firstterm>时间线</firstterm>的概念。每当一次归档恢复完成时，系统都会创建一条新的时间线，用来标识此次恢复之后生成的 WAL 记录序列。时间线 ID 是 WAL 段文件名的一部分，因此新的时间线不会覆盖先前时间线产生的 WAL 数据。实际上，完全可以归档许多不同的时间线。虽然这看起来像是个没什么用的特性，但它往往能救命。设想这样一种情况：你不太确定应恢复到哪个时间点，因此不得不通过反复试验做几次时间点恢复，直到找到从旧历史分叉出去的最佳位置。如果没有时间线，这个过程很快就会变成一团无法管理的混乱。有了时间线，你可以恢复到<emphasis>任何</emphasis>先前状态，包括那些你早先已经放弃的时间线分支上的状态。
    </para>
 
    <para>
@@ -771,14 +759,14 @@ archive_command = 'local_backup_script.sh "%p" "%f"'
 
    <listitem>
     <para>
-     <link linkend="sql-createtablespace"><command>CREATE TABLESPACE</command></link>命令会以字面绝对路径写入 WAL，因此重放时会按相同的绝对路径创建表空间。如果 WAL 在另一台机器上重放，这可能并不理想。即使 WAL 在同一台机器上、但重放到新的数据目录中，也可能有危险：重放仍会覆盖原表空间的内容。为避免此类潜在陷阱，最佳做法是在创建或删除表空间后重新执行一次基础备份。
+     <link linkend="sql-createtablespace"><command>CREATE TABLESPACE</command></link>命令会以字面绝对路径写入 WAL，因此重放时会按相同的绝对路径创建表空间。如果日志在另一台机器上重放，这可能并不理想。即使日志在同一台机器上、但重放到新的数据目录中，也可能有危险：重放仍会覆盖原表空间的内容。为避免此类潜在陷阱，最佳做法是在创建或删除表空间后重新执行一次基础备份。
     </para>
    </listitem>
   </itemizedlist>
    </para>
 
    <para>
-    还应注意，默认的<acronym>WAL</acronym>格式相当臃肿，因为它包含许多磁盘页面快照。这些页面快照是为支持崩溃恢复而设计的，因为我们可能需要修复部分写入的磁盘页。根据你的系统硬件和软件情况，部分写入的风险可能小到可以忽略；在这种情况下，可以通过<xref linkend="guc-full-page-writes"/>参数关闭页面快照，从而显著减少已归档 WAL 文件的总量。（在这样做之前，请先阅读<xref linkend="wal"/>中的说明和警告。）关闭页面快照并不妨碍把 WAL 用于 PITR 操作。未来一个可能的开发方向，是在<varname>full_page_writes</varname>开启的情况下，通过去除不必要的页面副本来压缩归档 WAL 数据。在此之前，管理员可以考虑尽可能增大检查点间隔相关参数，以减少 WAL 中包含的页面快照数量。
+    还应注意，默认的<acronym>WAL</acronym>格式相当臃肿，因为它包含许多磁盘页面快照。这些页面快照是为支持崩溃恢复而设计的，因为我们可能需要修复部分写入的磁盘页。根据你的系统硬件和软件情况，部分写入的风险可能小到可以忽略；在这种情况下，可以通过<xref linkend="guc-full-page-writes"/>参数关闭页面快照，从而显著减少已归档日志的总量。（在这样做之前，请先阅读<xref linkend="wal"/>中的说明和警告。）关闭页面快照并不妨碍把日志用于 PITR 操作。未来一个可能的开发方向，是在<varname>full_page_writes</varname>开启的情况下，通过去除不必要的页面副本来压缩归档 WAL 数据。在此之前，管理员可以考虑尽可能增大检查点间隔相关参数，以减少 WAL 中包含的页面快照数量。
    </para>
   </sect2>
  </sect1>

@@ -375,28 +375,16 @@
     <command>VACUUM</command> 使用<link linkend="storage-vm">可见性映射</link>
     来确定表中的哪些页面必须扫描。通常，即使某些页面仍然含有带旧 XID 值的行版本，
     只要这些页面没有任何死行版本，它也会跳过。因此，普通的 <command>VACUUM</command>
-    不一定会冻结表中的每一个旧行版本。在这种情况下，<command>VACUUM</command> 最终需要执行一次
-    <firstterm>激进扫描</firstterm>，它会冻结所有符合条件且尚未冻结的 XID 和 MXID 值，
-    包括那些来自全部可见（all-visible）但未全部冻结（all-frozen）页面的值。
-   </para>
-
-   <para>
-    如果一个表正在积累全部可见但尚未全部冻结的页面，普通清理可能会选择扫描这些本可跳过的页面，
-    以尝试冻结它们。这样可以减少下一次激进扫描必须扫描的页面数。这类页面称为
-    <firstterm>积极扫描页</firstterm>。通过增大 <xref
-    linkend="guc-vacuum-max-eager-freeze-failure-rate"/>，可以调整积极扫描，
-    使其尝试冻结更多全部可见页面。即使积极扫描已将全部可见但未全部冻结页面的数量降到最低，
-    大多数表仍然需要周期性地进行激进扫描。不过，任何成功被积极冻结的页面在激进扫描时都可以跳过，
-    因此积极冻结可以尽量减小激进扫描的开销。
+    不一定会冻结表中的每一个旧行版本。<command>VACUUM</command> 会定期执行<firstterm>激进清理</firstterm>，只跳过那些既没有死行也没有任何未冻结 XID 或 MXID 值的页面。
    </para>
 
    <para>
     <xref linkend="guc-vacuum-freeze-table-age"/>
-    控制何时对表执行激进扫描。如果距离上一次这类扫描以来经过的事务数大于
+    控制<command>VACUUM</command>何时采用这种更激进的策略。如果距离上一次这类扫描以来经过的事务数大于
     <varname>vacuum_freeze_table_age</varname> 减去
-    <varname>vacuum_freeze_min_age</varname>，就会扫描所有全部可见但未全部冻结的页面。
+    <varname>vacuum_freeze_min_age</varname>，就会对所有扫描使用这种更激进的策略。
     把 <varname>vacuum_freeze_table_age</varname> 设为 0 会强制
-    <command>VACUUM</command> 始终采用其激进策略。
+    <command>VACUUM</command> 始终采用其更激进的策略。
    </para>
 
    <para>
@@ -458,9 +446,9 @@
     为了跟踪数据库中最老未冻结 XID 的年龄，<command>VACUUM</command> 会在系统表
     <structname>pg_class</structname> 和 <structname>pg_database</structname>
     中存储 XID 统计信息。具体来说，某个表在 <structname>pg_class</structname> 中对应行的
-    <structfield>relfrozenxid</structfield> 列，记录了最近一次成功推进
-    <structfield>relfrozenxid</structfield> 的 <command>VACUUM</command> 结束时仍然存在的
-    最老未冻结 XID（通常就是最近一次激进 VACUUM）。类似地，某个数据库在
+    <structfield>relfrozenxid</structfield> 列，记录了上一次对该表执行的激进
+    <command>VACUUM</command> 所使用的冻结截止 XID。所有由 XID 早于此截止值的事务
+    插入的行都保证已被冻结。类似地，某个数据库在
     <structname>pg_database</structname> 中对应行的 <structfield>datfrozenxid</structfield> 列，
     是出现在该数据库中的未冻结 XID 的下界，它就是该数据库内各表
     <structfield>relfrozenxid</structfield> 值的最小值。查看这些信息的一种方便方式是执行如下查询：
@@ -478,18 +466,6 @@ SELECT datname, age(datfrozenxid) FROM pg_database;
     <literal>age</literal> 列度量的是从该截止 XID 到当前事务 XID 之间的事务数。
    </para>
 
-   <tip>
-    <para>
-     当为 <command>VACUUM</command> 命令指定 <literal>VERBOSE</literal> 参数时，
-     <command>VACUUM</command> 会打印关于该表的各种统计信息。其中包括
-     <structfield>relfrozenxid</structfield> 和
-     <structfield>relminmxid</structfield> 是如何推进的，以及新冻结页面的数量。
-     当自动清理日志（由 <xref
-      linkend="guc-log-autovacuum-min-duration"/> 控制）报告一次由自动清理执行的
-     <command>VACUUM</command> 操作时，服务器日志中也会出现同样的细节。
-    </para>
-   </tip>
-
    <para>
     虽然 <command>VACUUM</command> 主要扫描自上次清理以来被修改过的页面，
     但它也可能为了冻结它们而积极扫描某些全部可见但未全部冻结的页面；
@@ -501,9 +477,7 @@ SELECT datname, age(datfrozenxid) FROM pg_database;
     就会发生这种情况。当 <command>VACUUM</command> 扫描了表中每个尚未全部冻结的页面时，
     它应把 <literal>age(relfrozenxid)</literal> 设为略高于所用
     <varname>vacuum_freeze_min_age</varname> 设置的值
-    （更高的部分等于自 <command>VACUUM</command> 开始以来已启动的事务数）。
-    <command>VACUUM</command> 会将 <structfield>relfrozenxid</structfield> 设置为表中仍然存在的最老 XID，
-    因此最终值有可能比严格所需的新得多。如果直到达到
+    （更高的部分等于自 <command>VACUUM</command> 开始以来已启动的事务数）。如果直到达到
     <varname>autovacuum_freeze_max_age</varname> 之前，该表都没有执行一次能推进
     <structfield>relfrozenxid</structfield> 的 <command>VACUUM</command>，
     那么很快就会被强制执行一次自动清理。
@@ -618,8 +592,7 @@ HINT:  Execute a database-wide VACUUM in that database.
     </para>
 
     <para>
-     无论出于何种原因而发生，激进的 <command>VACUUM</command> 都<emphasis>保证</emphasis>
-     能够推进表的 <structfield>relminmxid</structfield>。最终，随着所有数据库中的所有表都被扫描，
+     无论出于何种原因而发生，激进的 <command>VACUUM</command> 扫描都能推进该表的值。最终，随着所有数据库中的所有表都被扫描，
      并推进其最老的 multixact 值，较老 multixact 的磁盘存储就可以被移除。
     </para>
 
@@ -736,7 +709,7 @@ vacuum insert threshold = vacuum base insert threshold + vacuum insert scale fac
     <command>INSERT</command> 操作、但没有或几乎没有 <command>UPDATE</command> /
     <command>DELETE</command> 操作的表，降低该表的
     <xref linkend="reloption-autovacuum-freeze-min-age"/> 可能是有益的，
-    因为这会让元组在更早的清理中被冻结。过时元组数和插入元组数取自累积统计系统；
+    因为这会让元组在更早的清理中被冻结。过时元组数和插入元组数取自统计收集器；
     这是一个由每次 <command>UPDATE</command>、<command>DELETE</command> 和
     <command>INSERT</command> 操作更新的最终一致计数。如果该表的
     <structfield>relfrozenxid</structfield> 值早于

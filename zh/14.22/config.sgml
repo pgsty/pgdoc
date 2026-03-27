@@ -227,7 +227,6 @@ shared_buffers = 128MB
 
       <para>
        那些可以在会话本地设置的参数，允许通过<link linkend="sql-set"><command>SET</command></link>命令修改当前会话的参数值；它对其他会话没有影响。
-       许多参数可以通过任何用户以这种方式设置，但有些只能由超级用户和被授予该参数上<literal>SET</literal>权限的用户设置。
        相应的SQL函数是<function>set_config(setting_name, new_value, is_local)</function>
        (参见<xref linkend="functions-admin-set"/>)。
       </para>
@@ -863,8 +862,8 @@ include_dir 'conf.d'
        </para>
 
        <para>
-        这个选项依赖于Linux、macOS、illumos和BSD家族操作系统暴露的内核事件，
-        目前在其他系统上不可用。
+        此选项目前仅在支持非标准<symbol>POLLRDHUP</symbol>扩展的
+        <symbol>poll</symbol>系统调用的系统上可用，包括Linux。
        </para>
 
        <para>
@@ -1127,10 +1126,7 @@ include_dir 'conf.d'
      <title>SSL</title>
 
      <para>
-      查看<xref linkend="ssl-tcp"/>以获取有关设置<acronym>SSL</acronym>的更多信息。
-      用<acronym>TLS</acronym>协议控制传输加密的配置参数被命名为<literal>ssl</literal>，出于历史原因，
-      尽管对<acronym>SSL</acronym>协议的支持已被弃用。
-      在这种情况下，<acronym>SSL</acronym>与<acronym>TLS</acronym>可互换使用。
+      查看<xref linkend="ssl-tcp"/>以获取有关设置SSL的更多信息。
      </para>
 
      <variablelist>
@@ -1675,10 +1671,9 @@ include_dir 'conf.d'
 
        <para>
         基于哈希的操作通常比等效的基于排序的操作更加敏感于内存可用性。
-        哈希表的内存限制是通过将<varname>work_mem</varname>乘以
-        <varname>hash_mem_multiplier</varname>来计算的。这使得
-        基于哈希的操作可以使用超过通常的<varname>work_mem</varname>基本
-        量的内存。
+        哈希表的可用内存通过将<varname>work_mem</varname>乘以
+        <varname>hash_mem_multiplier</varname>来计算。默认值为
+        1.0，这使得基于哈希的操作受到与基于排序的操作相同的简单<varname>work_mem</varname>最大值的限制。
        </para>
       </listitem>
      </varlistentry>
@@ -1694,13 +1689,13 @@ include_dir 'conf.d'
 
        <para>
         用于计算哈希操作可以使用的最大内存量。最终限制由将<varname>work_mem</varname>乘以<varname>hash_mem_multiplier</varname>确定。
-        默认值为2.0，这使得基于哈希的操作使用通常<varname>work_mem</varname>基础量的两倍。
+        默认值为1.0，这使得基于哈希的操作与基于排序的操作受到相同的<varname>work_mem</varname>简单最大值的限制。
        </para>
 
        <para>
         考虑在查询操作频繁溢出的环境中增加<varname>hash_mem_multiplier</varname>，
         特别是当简单增加<varname>work_mem</varname>导致内存压力时（内存压力通常表现为间歇性的内存不足错误）。
-        默认设置为2.0通常在混合工作负载中有效。在已将<varname>work_mem</varname>增加到40MB或更高的环境中，
+        将设置调到1.5或2.0通常在混合工作负载中有效。在已将<varname>work_mem</varname>增加到40MB或更高的环境中，
         可以考虑将设置调高至2.0-8.0或更高。
        </para>
       </listitem>
@@ -1912,7 +1907,7 @@ include_dir 'conf.d'
         需要安全边界是因为服务器中并非每个例程都检查栈深度，而只在关键的潜在递归例程中检查。
         如果未指定单位，则将其视为千字节。默认设置为两兆字节（<literal>2MB</literal>），
         这是保守且不太可能引起崩溃的小值。但是，这可能太小，无法执行复杂函数。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
 
        <para>
@@ -2002,7 +1997,7 @@ include_dir 'conf.d'
         尝试超过此限制的事务将被取消。
         如果未指定单位，则将其视为千字节。
         <literal>-1</literal>（默认值）表示没有限制。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
 
        <para>
@@ -2851,7 +2846,7 @@ include_dir 'conf.d'
 
      <varlistentry id="guc-wal-compression" xreflabel="wal_compression">
 
-      <term><varname>wal_compression</varname> (<type>enum</type>)
+      <term><varname>wal_compression</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>wal_compression</varname>配置参数</primary>
       </indexterm>
@@ -2859,23 +2854,11 @@ include_dir 'conf.d'
       <listitem>
 
        <para>
-        此参数启用使用指定的压缩方法对WAL进行压缩。
-        启用后，<productname>PostgreSQL</productname>服务器在
-        <xref linkend="guc-full-page-writes"/>打开时或在基本备份期间，
-        压缩写入WAL的完整页图像。
-        在WAL重放期间，将对压缩的页图像进行解压缩。
-        支持的方法有<literal>pglz</literal>、
-        <literal>lz4</literal>（如果<productname>PostgreSQL</productname>
-        使用<option>--with-lz4</option>编译）和
-        <literal>zstd</literal>（如果<productname>PostgreSQL</productname>
-        使用<option>--with-zstd</option>编译）。
-        默认值为<literal>off</literal>。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        当这个参数为<literal>on</literal>时，<productname>PostgreSQL</productname>服务器在<xref linkend="guc-full-page-writes"/>打开时或在基础备份期间，压缩写入WAL的完整页面镜像。在WAL回放期间将对压缩的页面镜像进行解压。默认值是<literal>off</literal>。只有超级用户能更改这个设置。
        </para>
 
        <para>
-        启用压缩可以减少WAL卷的大小，而不会增加不可恢复的数据损坏的风险，
-        但会增加在WAL记录期间进行压缩时的额外CPU消耗，以及在WAL重放期间进行解压缩时的成本。
+        开启这个参数可以在不增加不可恢复的数据损坏风险的情况下减少WAL数据量，但代价是在WAL记录期间用于压缩以及在WAL回放期间用于解压的额外CPU开销。
        </para>
       </listitem>
      </varlistentry>
@@ -3010,7 +2993,7 @@ include_dir 'conf.d'
         当要启动刷新时，如果<varname>fsync</varname>被禁用，则不会执行延迟。
         如果未指定单位，则将其视为微秒。
         默认<varname>commit_delay</varname>为零（无延迟）。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
 
        <para>
@@ -3122,7 +3105,7 @@ include_dir 'conf.d'
       <listitem>
 
        <para>
-        在自动检查点期间允许WAL增长的最大大小。这是一个软限制；在特殊情况下，如重负载、失败的<varname>archive_command</varname>或<varname>archive_library</varname>，或高<varname>wal_keep_size</varname>设置下，WAL大小可能会超过<varname>max_wal_size</varname>。
+        在自动检查点期间允许WAL增长的最大大小。这是一个软限制；在特殊情况下，如重负载、失败的<varname>archive_command</varname>，或高<varname>wal_keep_size</varname>设置下，WAL大小可能会超过<varname>max_wal_size</varname>。
         如果未指定单位，则将其视为兆字节。默认值为1 GB。
         增加此参数可能会增加崩溃恢复所需的时间。
         此参数只能在<filename>postgresql.conf</filename>文件或服务器命令行中设置。
@@ -3167,8 +3150,7 @@ include_dir 'conf.d'
 
        <para>
         当启用<varname>archive_mode</varname>时，完成的WAL段会通过设置
-        <xref linkend="guc-archive-command"/>或
-        <xref linkend="guc-archive-library"/>发送到归档存储。除了<literal>off</literal>，
+        <xref linkend="guc-archive-command"/>发送到归档存储。除了<literal>off</literal>，
         要禁用，有两种模式：<literal>on</literal>和
         <literal>always</literal>。在正常操作期间，这两种模式之间没有区别，但当设置为<literal>always</literal>时，
         WAL归档程序在归档恢复或待机模式下也会被启用。在<literal>always</literal>模式下，从归档中恢复的所有文件
@@ -3177,11 +3159,8 @@ include_dir 'conf.d'
        </para>
 
        <para>
-        <varname>archive_mode</varname>是一个独立的设置，不同于
-        <varname>archive_command</varname>和
-        <varname>archive_library</varname>，这样
-        <varname>archive_command</varname>和
-        <varname>archive_library</varname>可以在不离开
+        <varname>archive_mode</varname>和<varname>archive_command</varname>是
+        单独的变量，这样<varname>archive_command</varname>可以在不离开
         归档模式的情况下进行更改。
         此参数只能在服务器启动时设置。
         当<varname>wal_level</varname>设置为<literal>minimal</literal>时，
@@ -3205,31 +3184,11 @@ include_dir 'conf.d'
 
        <para>
         这个参数只能在<filename>postgresql.conf</filename>文件或服务器命令行中设置。
-        除非在服务器启动时启用了<varname>archive_mode</varname>并且<varname>archive_library</varname>设置为空字符串，否则将被忽略。
-        如果<varname>archive_command</varname>是空字符串（默认值），而<varname>archive_mode</varname>已启用（并且<varname>archive_library</varname>设置为空字符串），
+        除非在服务器启动时启用了<varname>archive_mode</varname>，否则将被忽略。
+        如果<varname>archive_command</varname>是空字符串（默认值），而<varname>archive_mode</varname>已启用，
         WAL归档将暂时被禁用，但服务器将继续积累WAL段文件，期望很快会提供命令。
         将<varname>archive_command</varname>设置为一个什么都不做但返回true的命令，例如<literal>/bin/true</literal>（Windows上为<literal>REM</literal>），
         实际上禁用了归档，但也破坏了用于归档恢复所需的WAL文件链，因此只应在不寻常的情况下使用。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-archive-library" xreflabel="archive_library">
-
-      <term><varname>archive_library</varname> (<type>string</type>)
-      <indexterm>
-       <primary><varname>archive_library</varname>配置参数</primary>
-      </indexterm>
-      </term>
-      <listitem>
-
-       <para>
-        用于归档已完成的WAL文件段的库。如果设置为空字符串（默认值），则通过shell进行归档，并使用<xref linkend="guc-archive-command"/>。
-        否则，指定的共享库用于归档。当此参数更改时，postmaster会重新启动WAL归档进程。有关更多信息，请参见<xref linkend="backup-archiving-wal"/>和<xref linkend="archive-modules"/>。
-       </para>
-
-       <para>
-        这个参数只能在<filename>postgresql.conf</filename>文件中或者服务器命令行中设置。
        </para>
       </listitem>
      </varlistentry>
@@ -3244,7 +3203,7 @@ include_dir 'conf.d'
       <listitem>
 
        <para>
-        <xref linkend="guc-archive-command"/>或<xref linkend="guc-archive-library"/>仅在完成的WAL段中调用。
+        <xref linkend="guc-archive-command"/>仅在完成的WAL段上调用。
         因此，如果您的服务器生成的WAL流量较少（或者在这样做时有间歇期），在事务完成和安全记录到归档存储之间可能会有很长的延迟。
         为了限制未归档数据的年龄，您可以将<varname>archive_timeout</varname>设置为强制服务器定期切换到新的WAL段文件。
         当此参数大于零时，只要自上次段文件切换以来经过了这段时间，并且存在任何数据库活动，包括单个检查点（如果没有数据库活动，则跳过检查点），服务器将切换到新的段文件。
@@ -4314,7 +4273,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
 	       <para>
 	        允许临时禁用事件触发器的执行，以便对有故障的事件触发器进行故障排查和修复。
 	        将其设置为<literal>false</literal>会禁用所有事件触发器；设置为<literal>true</literal>则允许所有事件触发器触发，这也是默认值。
-	        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+	        只有超级用户能更改这个设置。
 	       </para>
 	      </listitem>
 	     </varlistentry>
@@ -5768,7 +5727,7 @@ local0.*    /var/log/postgresql
         <literal>PANIC</literal>。每个级别包括其后的所有级别。
         级别越高，发送到日志的消息越少。默认值为<literal>WARNING</literal>。
         请注意，在<xref linkend="guc-client-min-messages"/>中，<literal>LOG</literal>的排名不同。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -5796,7 +5755,7 @@ local0.*    /var/log/postgresql
         默认值为<literal>ERROR</literal>，这意味着导致错误、日志消息、致命错误或紧急情况的语句将被记录。
         要有效地关闭记录失败的语句，
         将此参数设置为<literal>PANIC</literal>。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -5817,7 +5776,7 @@ local0.*    /var/log/postgresql
          如果未指定单位，则将其视为毫秒。
          将此值设置为零将打印所有语句持续时间。
          <literal>-1</literal>（默认值）禁用记录语句持续时间。
-         只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+         只有超级用户能更改这个设置。
         </para>
 
         <para>
@@ -5855,7 +5814,7 @@ local0.*    /var/log/postgresql
          如果未指定单位，则将其视为毫秒。
          将其设置为零会对所有语句持续时间进行采样。
          <literal>-1</literal>（默认值）禁用语句持续时间的采样。
-         只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+         只有超级用户能更改这个设置。
         </para>
 
         <para>
@@ -5882,7 +5841,7 @@ local0.*    /var/log/postgresql
          采样是随机的，例如<literal>0.5</literal>表示统计上有一半的机会任何给定的语句将被记录。
          默认值为<literal>1.0</literal>，表示记录所有采样的语句。
          将此设置为零将禁用采样语句持续时间记录，与将<varname>log_min_duration_sample</varname>设置为<literal>-1</literal>相同。
-         只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+         只有超级用户能更改这个设置。
         </para>
        </listitem>
      </varlistentry>
@@ -5901,7 +5860,7 @@ local0.*    /var/log/postgresql
          采样是随机的，例如<literal>0.1</literal>表示任何给定事务被记录的统计概率是十分之一。
          <varname>log_transaction_sample_rate</varname>可以帮助构建事务样本。
          默认值为<literal>0</literal>，表示不记录任何额外事务的语句。将其设置为<literal>1</literal>会记录所有事务的所有语句。
-         只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+         只有超级用户能更改这个设置。
         </para>
        <note>
 
@@ -6240,7 +6199,7 @@ local0.*    /var/log/postgresql
        <para>
         记录每个已完成语句的持续时间。
         默认值为<literal>off</literal>。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
 
        <para>
@@ -6272,7 +6231,7 @@ local0.*    /var/log/postgresql
         <literal>QUERY</literal>和<literal>CONTEXT</literal>错误信息的记录。
         <literal>VERBOSE</literal>输出包括<symbol>SQLSTATE</symbol>错误代码
         （另请参见<xref linkend="errcodes-appendix"/>）以及生成错误的源代码文件名、函数名和行号。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -6518,7 +6477,7 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
        <para>
         控制当会话等待时间超过<xref linkend="guc-deadlock-timeout"/>以获取锁时是否生成日志消息。
         这对于确定锁等待是否导致性能不佳很有用。默认值为<literal>off</literal>。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
 	      </listitem>
 	     </varlistentry>
@@ -6554,7 +6513,7 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
 	       <para>
 	        控制当获取锁失败时是否生成详细日志消息。这有助于分析锁失败的原因。
 	        目前，仅支持由于<literal>SELECT NOWAIT</literal>导致的锁失败。
-	        默认值为<literal>off</literal>。只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+	        默认值为<literal>off</literal>。只有超级用户能更改这个设置。
 	       </para>
 	      </listitem>
 	     </varlistentry>
@@ -6573,7 +6532,7 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
         零表示禁用非错误语句日志中绑定参数的记录。
         <literal>-1</literal>（默认值）允许完整记录绑定参数。
         如果未指定单位，则默认为字节。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
 
        <para>
@@ -6627,7 +6586,7 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
 
        <para>
         默认值为<literal>none</literal>。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
 
        <note>
@@ -6656,7 +6615,7 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
         每个复制命令都会被记录在服务器日志中。
         有关复制命令的更多信息，请参见<xref linkend="protocol-replication"/>。
         默认值为<literal>off</literal>。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -6677,7 +6636,7 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
         值为零时记录所有临时文件信息，而正值仅记录大小大于或等于指定数据量的文件。
         如果未指定单位，则将其视为千字节。
         默认设置为-1，禁用此类日志记录。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -7054,7 +7013,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         每次服务器接收到新的SQL命令时，都可以更新进程标题。
         在大多数平台上，默认情况下此设置为<literal>on</literal>，但在Windows上默认为<literal>off</literal>，
         因为该平台更新进程标题的开销较大。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -7092,7 +7051,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         此参数默认为开启状态。请注意，即使启用了此信息，只有超级用户、具有
         <literal>pg_read_all_stats</literal>角色权限的角色和拥有被报告会话的用户
         （包括属于他们具有权限的角色的会话）才能看到此信息，因此不应构成安全风险。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -7125,7 +7084,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        <para>
         启用对数据库活动的统计信息收集。
         此参数默认为开启，因为自动清理守护进程需要收集的信息。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
 	      </listitem>
 	     </varlistentry>
@@ -7145,7 +7104,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
 	        <link linkend="analyze-progress-reporting"><structname>pg_stat_progress_analyze</structname></link>中，
 	        也会显示在带有<literal>VERBOSE</literal>选项的<command>VACUUM</command>和<command>ANALYZE</command>输出中，
 	        并且当设置了<xref linkend="guc-log-autovacuum-min-duration"/>时，autovacuum 还会为自动清理和自动分析记录这些信息。
-	        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+	        只有超级用户能更改这个设置。
 	       </para>
 	      </listitem>
 	     </varlistentry>
@@ -7163,7 +7122,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         启用数据库I/O调用的计时。 默认情况下，此参数处于关闭状态，因为它将重复查询操作系统的当前时间，这可能会在某些平台上造成显著的开销。 您可以使用<xref linkend="pgtesttiming"/>工具来测量系统上计时的开销。
         I/O计时信息显示在<link linkend="monitoring-pg-stat-database-view">
         <structname>pg_stat_database</structname></link>中，在<xref linkend="sql-explain"/>的输出中，当使用<literal>BUFFERS</literal>选项时，在<xref linkend="sql-vacuum"/>的输出中，当使用<literal>VERBOSE</literal>选项时，由autovacuum执行自动清理和自动分析时，当设置了<xref linkend="guc-log-autovacuum-min-duration"/>时，以及由<xref linkend="pgstatstatements"/>。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -7184,7 +7143,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         测量系统上定时的开销。
         I/O定时信息显示在<link linkend="monitoring-pg-stat-wal-view">
         <structname>pg_stat_wal</structname></link>中。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -7201,7 +7160,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        <para>
         启用函数调用次数和时间的跟踪。指定<literal>pl</literal>以仅跟踪过程语言函数，
         <literal>all</literal>以同时跟踪SQL和C语言函数。默认值为<literal>none</literal>，
-        即禁用函数统计跟踪。只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        即禁用函数统计跟踪。只有超级用户能更改这个设置。
        </para>
 
        <note>
@@ -8144,7 +8103,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         可能的值是<literal>origin</literal>（默认值），
         <literal>replica</literal>和<literal>local</literal>。
         设置此参数会导致丢弃先前缓存的任何查询计划。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
 
        <para>
@@ -8523,7 +8482,7 @@ SET XML OPTION { DOCUMENT | CONTENT };
        </para>
 
        <para>
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -8690,7 +8649,7 @@ SET XML OPTION { DOCUMENT | CONTENT };
         它包含一个逗号分隔的库名称列表，其中每个名称的解释方式与<link linkend="sql-load"><command>LOAD</command></link>命令相同。
         条目之间的空格会被忽略；如果需要在名称中包含空格或逗号，请用双引号括起库名称。
         参数值仅在连接开始时生效。后续更改不会生效。如果指定的库未找到，连接尝试将失败。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
 
        <para>
@@ -8910,7 +8869,7 @@ extension_control_path = 'C:\tools\postgresql;H:\my_project\share;$system'
         默认值为一秒（<literal>1s</literal>），这可能是您在实践中想要的最小值。
         在负载较重的服务器上，您可能希望提高它。
         理想情况下，设置应超过您的典型事务时间，以提高在等待者决定检查死锁之前释放锁的几率。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
 
        <para>
@@ -9072,7 +9031,7 @@ extension_control_path = 'C:\tools\postgresql;H:\my_project\share;$system'
        <para>
         在<productname>PostgreSQL</productname> 9.0之前的版本中，大对象没有访问权限，因此始终可以被所有用户读取和写入。
         将此变量设置为<literal>on</literal>会禁用新的权限检查，以保持与之前版本的兼容性。默认值为<literal>off</literal>。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
 
        <para>
@@ -9677,7 +9636,7 @@ extension_control_path = 'C:\tools\postgresql;H:\my_project\share;$system'
        <para>
         允许将表空间创建为<filename>pg_tblspc</filename>内的目录，当<command>CREATE TABLESPACE</command>命令提供空位置字符串时。
         这旨在允许测试主库和备库在同一台机器上运行的复制场景。这样的目录可能会混淆备份工具，因为这些工具期望在该位置只找到符号链接。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -9694,7 +9653,7 @@ extension_control_path = 'C:\tools\postgresql;H:\my_project\share;$system'
        <para>
         允许修改系统表的结构以及对系统表进行某些其他风险操作。即使对于超级用户，这也通常是不允许的。
         不明智地使用此设置可能导致无法检索的数据丢失或严重损坏数据库系统。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
 </para>
       </listitem>
      </varlistentry>
@@ -9719,7 +9678,7 @@ extension_control_path = 'C:\tools\postgresql;H:\my_project\share;$system'
        </para>
 
       <para>
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -10155,7 +10114,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
         这种行为可能<emphasis>导致崩溃，传播或隐藏损坏，或其他严重问题</emphasis>。然而，它可能允许您跳过错误，
         并检索可能仍然存在于表中的未损坏的元组，如果块头仍然正常。如果头部损坏，即使启用此选项也会报告错误。
         默认设置为<literal>off</literal>。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -10175,7 +10134,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
         这种行为<emphasis>会破坏数据</emphasis>，即损坏页面上的所有行。但是，它确实允许您跳过错误，并从表中可能存在的未损坏页面中检索行。
         如果由于硬件或软件错误而发生损坏，这对于恢复数据很有用。通常在放弃从表的损坏页面恢复数据的希望之前，不应将其设置为on。
         清零的页面不会强制写入磁盘，因此建议在再次关闭此参数之前重新创建表或索引。默认设置为<literal>off</literal>。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>
@@ -10226,7 +10185,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
        <para>
         将生成的<productname>LLVM</productname> IR写入文件系统，位于<xref linkend="guc-data-directory"/>内。
         这仅对于在JIT实现内部工作时有用。默认设置为<literal>off</literal>。
-        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+        只有超级用户能更改这个设置。
        </para>
       </listitem>
      </varlistentry>

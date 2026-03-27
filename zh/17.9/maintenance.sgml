@@ -378,21 +378,9 @@
     不一定会冻结表中的每一个旧行版本。在这种情况下，<command>VACUUM</command> 最终需要执行一次
     <firstterm>激进扫描</firstterm>，它会冻结所有符合条件且尚未冻结的 XID 和 MXID 值，
     包括那些来自全部可见（all-visible）但未全部冻结（all-frozen）页面的值。
-   </para>
-
-   <para>
-    如果一个表正在积累全部可见但尚未全部冻结的页面，普通清理可能会选择扫描这些本可跳过的页面，
-    以尝试冻结它们。这样可以减少下一次激进扫描必须扫描的页面数。这类页面称为
-    <firstterm>积极扫描页</firstterm>。通过增大 <xref
-    linkend="guc-vacuum-max-eager-freeze-failure-rate"/>，可以调整积极扫描，
-    使其尝试冻结更多全部可见页面。即使积极扫描已将全部可见但未全部冻结页面的数量降到最低，
-    大多数表仍然需要周期性地进行激进扫描。不过，任何成功被积极冻结的页面在激进扫描时都可以跳过，
-    因此积极冻结可以尽量减小激进扫描的开销。
-   </para>
-
-   <para>
+    在实际使用中，大多数表需要周期性地进行激进扫描。
     <xref linkend="guc-vacuum-freeze-table-age"/>
-    控制何时对表执行激进扫描。如果距离上一次这类扫描以来经过的事务数大于
+    控制何时对表执行激进扫描：如果距离上一次这类扫描以来经过的事务数大于
     <varname>vacuum_freeze_table_age</varname> 减去
     <varname>vacuum_freeze_min_age</varname>，就会扫描所有全部可见但未全部冻结的页面。
     把 <varname>vacuum_freeze_table_age</varname> 设为 0 会强制
@@ -491,9 +479,8 @@ SELECT datname, age(datfrozenxid) FROM pg_database;
    </tip>
 
    <para>
-    虽然 <command>VACUUM</command> 主要扫描自上次清理以来被修改过的页面，
-    但它也可能为了冻结它们而积极扫描某些全部可见但未全部冻结的页面；
-    不过，只有当表中每一个可能包含未冻结 XID 的页面都被扫描时，
+    <command>VACUUM</command> 通常只扫描自上次清理以来被修改过的页面，但只有
+    当表中每一个可能包含未冻结 XID 的页面都被扫描时，
     <structfield>relfrozenxid</structfield> 才会被推进。当
     <structfield>relfrozenxid</structfield> 比
     <varname>vacuum_freeze_table_age</varname> 旧、使用了 <command>VACUUM</command> 的
@@ -706,11 +693,9 @@ HINT:  Execute a database-wide VACUUM in that database.
     否则，如果自上次 <command>VACUUM</command> 以来已经失效的元组数超过了
     <quote>清理阈值</quote>，就会对该表执行清理。清理阈值定义如下：
 <programlisting>
-vacuum threshold = Minimum(vacuum max threshold, vacuum base threshold + vacuum scale factor * number of tuples)
+vacuum threshold = vacuum base threshold + vacuum scale factor * number of tuples
 </programlisting>
-    其中，vacuum max threshold 是
-    <xref linkend="guc-autovacuum-vacuum-max-threshold"/>，
-    vacuum base threshold 是
+    其中，vacuum base threshold 是
     <xref linkend="guc-autovacuum-vacuum-threshold"/>，
     vacuum scale factor 是
     <xref linkend="guc-autovacuum-vacuum-scale-factor"/>，
@@ -721,16 +706,12 @@ vacuum threshold = Minimum(vacuum max threshold, vacuum base threshold + vacuum 
    <para>
     如果自上次清理以来插入的元组数超过了定义的插入阈值，也会对该表执行清理，该阈值定义如下：
 <programlisting>
-vacuum insert threshold = vacuum base insert threshold + vacuum insert scale factor * number of tuples * percent of table not frozen
+vacuum insert threshold = vacuum base insert threshold + vacuum insert scale factor * number of tuples
 </programlisting>
     其中，vacuum insert base threshold 是
     <xref linkend="guc-autovacuum-vacuum-insert-threshold"/>，
     vacuum insert scale factor 是
-    <xref linkend="guc-autovacuum-vacuum-insert-scale-factor"/>，
-    元组数是
-    <structname>pg_class</structname>.<structfield>reltuples</structfield>，
-    而表中未冻结部分的百分比是
-    <literal>1 - pg_class.relallfrozen / pg_class.relpages</literal>。
+    <xref linkend="guc-autovacuum-vacuum-insert-scale-factor"/>。
     这样的清理可能使表的一部分被标记为<firstterm>全部可见</firstterm>，
     并且也允许元组被冻结，从而减少后续清理所需的工作。对于只接收
     <command>INSERT</command> 操作、但没有或几乎没有 <command>UPDATE</command> /
@@ -741,7 +722,8 @@ vacuum insert threshold = vacuum base insert threshold + vacuum insert scale fac
     <command>INSERT</command> 操作更新的最终一致计数。如果该表的
     <structfield>relfrozenxid</structfield> 值早于
     <varname>vacuum_freeze_table_age</varname> 个事务，就会执行一次激进扫描，
-    以冻结旧元组并推进 <structfield>relfrozenxid</structfield>。
+    以冻结旧元组并推进 <structfield>relfrozenxid</structfield>；否则，只扫描自
+    上次清理以来被修改过的页面。
    </para>
 
    <para>

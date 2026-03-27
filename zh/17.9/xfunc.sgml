@@ -176,6 +176,18 @@ CALL clean_emp();
      此外，过程是 SQL 标准的一部分，而返回<type>void</type>则是 PostgreSQL 扩展。
     </para>
 
+    <note>
+     <para>
+      一个 SQL 函数的整个函数体在它的任何部分被执行前就已经被解析。
+      虽然 SQL 函数能包含修改系统目录的命令（例如<command>CREATE TABLE</command>），
+      但在解析分析函数中后续命令时，这种命令的效果是不可见的。
+      因此，例如<literal>CREATE TABLE foo (...); INSERT INTO foo VALUES(...);</literal>
+      如果被打包在一个单一的 SQL 函数中将不能按照预期工作，
+      因为当<command>INSERT</command>命令被解析时<structname>foo</structname>还不存在。
+      在这类情况中建议使用<application>PL/pgSQL</application>代替 SQL 函数。
+     </para>
+   </note>
+
    <para>
     <command>CREATE FUNCTION</command> 命令的语法要求把函数体写成一个字符串常量。对于字符串常量，通常使用美元引用最方便（见<xref linkend="sql-syntax-dollar-quoting"/>）。如果你选择使用常规的单引号字符串常量语法，那么必须在函数体中将单引号（<literal>'</literal>）和反斜线（<literal>\</literal>）写成双份（假定使用转义字符串语法，见<xref linkend="sql-syntax-strings"/>）。
    </para>
@@ -1562,9 +1574,6 @@ CREATE FUNCTION square_root(double precision) RETURNS double precision
    <indexterm zone="xfunc-c-dynload">
     <primary>magic block</primary>
    </indexterm>
-   <indexterm zone="xfunc-c-dynload">
-    <primary><literal>PG_MODULE_MAGIC</literal></primary>
-   </indexterm>
 
    <para>
     为确保动态装载的对象文件不会被加载到不兼容的服务器中，<productname>PostgreSQL</productname> 会检查该文件是否包含内容正确的<quote>magic block</quote>。这样服务器就能检测出明显的不兼容情况，例如代码是针对另一个 <productname>PostgreSQL</productname> 主版本编译的。要加入 magic block，请在模块某一个（且只能一个）源文件中，在包含头文件 <filename>fmgr.h</filename> 之后写入：
@@ -1572,23 +1581,6 @@ CREATE FUNCTION square_root(double precision) RETURNS double precision
 <programlisting>
 PG_MODULE_MAGIC;
 </programlisting>
-或者
-<programlisting>
-PG_MODULE_MAGIC_EXT(<replaceable>parameters</replaceable>);
-</programlisting>
-   </para>
-
-   <para>
-    <literal>PG_MODULE_MAGIC_EXT</literal> 这种形式允许为模块指定附加信息；目前可以添加名称和/或版本字符串。（将来可能允许更多字段。）可以写成这样：
-
-<programlisting>
-PG_MODULE_MAGIC_EXT(
-    .name = "my_module_name",
-    .version = "1.2.3"
-);
-</programlisting>
-
-    之后，名称和版本可以通过 <function>pg_get_loaded_modules()</function> 函数查看。版本字符串的具体含义不受 <productname>PostgreSQL</productname> 限制，但建议采用语义化版本规则。
    </para>
 
    <para>
@@ -1963,30 +1955,6 @@ PG_FUNCTION_INFO_V1(funcname);
     </para>
 
     <para>
-     要调用另一个版本-1 函数，你可以使用
-     <function>DirectFunctionCall<replaceable>n</replaceable>(func,
-     arg1, ..., argn)</function>。这在你想调用标准内部库中定义的函数时尤其有用，因为它提供了与其 SQL 签名相似的接口。
-    </para>
-
-    <para>
-     这些便利函数以及类似函数都可以在 <filename>fmgr.h</filename> 中找到。
-     <function>DirectFunctionCall<replaceable>n</replaceable></function> 系列把 C 函数名作为其第一个参数。另有
-     <function>OidFunctionCall<replaceable>n</replaceable></function> 等一些变体，它们接收目标函数的 OID。所有这些函数都要求以 <type>Datum</type> 形式提供函数参数，返回值也同样是 <type>Datum</type>。注意，使用这些便利函数时，参数和结果都不能为 NULL。
-    </para>
-
-    <para>
-     例如，要在 C 中调用 <function>starts_with(text, text)</function>，你可以在系统目录中查到它的 C 实现是
-     <function>Datum text_starts_with(PG_FUNCTION_ARGS)</function>
-     函数。通常你会用 <literal>DirectFunctionCall2(text_starts_with, ...)</literal> 来调用它。不过，<function>starts_with(text,
-     text)</function> 需要排序规则信息，因此如果这样调用，会因<quote>无法确定字符串比较该使用哪一种排序规则</quote>而失败。你必须改用 <literal>DirectFunctionCall2Coll(text_starts_with, ...)</literal>，
-     并提供所需的排序规则，通常就是从 <function>PG_GET_COLLATION()</function> 传递进来，如下面的示例所示。
-    </para>
-
-    <para>
-     <filename>fmgr.h</filename> 还提供了便于在 C 类型和 <type>Datum</type> 之间转换的宏。例如，要把 <type>Datum</type> 转成 <type>text*</type>，可以使用 <function>DatumGetTextPP(X)</function>。虽然某些类型为反向转换提供了名为 <function>TypeGetDatum(X)</function> 之类的宏，但 <type>text*</type> 没有；对它而言，直接使用通用宏 <function>PointerGetDatum(X)</function> 即可。如果你的扩展定义了额外的类型，通常也很方便为这些类型定义类似的宏。
-    </para>
-
-    <para>
      这里是一些使用版本-1调用约定的示例：
     </para>
 
@@ -2084,25 +2052,6 @@ concat_text(PG_FUNCTION_ARGS)
     memcpy(VARDATA(new_text) + arg1_size, VARDATA_ANY(arg2), arg2_size);
     PG_RETURN_TEXT_P(new_text);
 }
-
-/* A wrapper around starts_with(text, text) */
-
-PG_FUNCTION_INFO_V1(t_starts_with);
-
-Datum
-t_starts_with(PG_FUNCTION_ARGS)
-{
-    text       *t1 = PG_GETARG_TEXT_PP(0);
-    text       *t2 = PG_GETARG_TEXT_PP(1);
-    Oid         collid = PG_GET_COLLATION();
-    bool        result;
-
-    result = DatumGetBool(DirectFunctionCall2Coll(text_starts_with,
-                                                  collid,
-                                                  PointerGetDatum(t1),
-                                                  PointerGetDatum(t2)));
-    PG_RETURN_BOOL(result);
-}
 ]]>
 </programlisting>
 
@@ -2130,10 +2079,6 @@ CREATE FUNCTION copytext(text) RETURNS text
 
 CREATE FUNCTION concat_text(text, text) RETURNS text
      AS '<replaceable>DIRECTORY</replaceable>/funcs', 'concat_text'
-     LANGUAGE C STRICT;
-
-CREATE FUNCTION t_starts_with(text, text) RETURNS boolean
-     AS '<replaceable>DIRECTORY</replaceable>/funcs', 't_starts_with'
      LANGUAGE C STRICT;
 </programlisting>
 
@@ -2232,90 +2177,6 @@ CREATE FUNCTION t_starts_with(text, text) RETURNS boolean
    </sect2>
 
 &dfunc;
-
-   <sect2 id="xfunc-api-abi-stability-guidance">
-    <title>服务器 API 和 ABI 稳定性指南</title>
-
-    <para>
-     本节向扩展和其他服务器插件的作者提供有关
-     <productname>PostgreSQL</productname> 服务器 API 与 ABI 稳定性的指导。
-    </para>
-
-    <sect3 id="xfunc-guidance-general">
-     <title>概述</title>
-
-     <para>
-      <productname>PostgreSQL</productname> 服务器为服务器插件提供了若干边界清晰的 API，例如函数管理器（<acronym>fmgr</acronym>，本章已介绍）、<acronym>SPI</acronym>（<xref linkend="spi"/>）以及专门为扩展设计的各种钩子。这些接口都会被谨慎管理，以保持长期稳定性和兼容性。不过，服务器中的整套全局函数和变量实际上也构成了可公开使用的 API，而其中大部分在设计时并未把可扩展性和长期稳定性作为目标。
-     </para>
-
-     <para>
-      因此，虽然使用这些接口是完全允许的，但越是偏离那些久经实践考验的路径，将来遇到 API 或 ABI 兼容性问题的可能性就越大。鼓励扩展作者反馈自己的需求，以便随着时间推移和新用法的出现，某些接口能够被视为更稳定，或者可以加入新的、设计更完善的接口。
-     </para>
-    </sect3>
-
-    <sect3 id="xfunc-guidance-api-compatibility">
-     <title>API 兼容性</title>
-     <para>
-      <acronym>API</acronym>，即应用程序编程接口，是编译时使用的接口。
-     </para>
-
-     <sect4 id="xfunc-guidance-api-major-versions">
-      <title>主版本</title>
-      <para>
-       在 <productname>PostgreSQL</productname> 不同主版本之间，<emphasis>不承诺</emphasis> API 兼容性。因此，扩展代码可能需要修改源代码才能同时支持多个主版本。这类差异通常可以通过预处理器条件（例如 <literal>#if PG_VERSION_NUM &gt;= 160000</literal>）来管理。那些使用了边界清晰接口之外能力的复杂扩展，通常每个服务器主版本都需要做少量这类修改。
-      </para>
-     </sect4>
-
-     <sect4 id="xfunc-guidance-api-mninor-versions">
-      <title>小版本</title>
-      <para>
-       <productname>PostgreSQL</productname> 会尽力避免在小版本发布中破坏服务器 API。一般来说，能针对某个小版本编译并正常工作的扩展代码，也应当能够针对同一主版本的其他任意小版本（无论过去还是将来）编译并正常工作。
-      </para>
-
-      <para>
-       如果<emphasis>确实</emphasis>需要做出变更，也会在考虑扩展需求的前提下谨慎管理。这类变更会在发布说明（<xref linkend="release"/>）中进行说明。
-      </para>
-     </sect4>
-    </sect3>
-
-    <sect3 id="xfunc-guidance-abi-compatibility">
-     <title>ABI 兼容性</title>
-      <para>
-       <acronym>ABI</acronym>，即应用程序二进制接口，是运行时使用的接口。
-      </para>
-
-     <sect4 id="xfunc-guidance-abi-major-versions">
-      <title>主版本</title>
-      <para>
-       不同主版本的服务器在 ABI 上是有意不兼容的。因此，使用服务器 API 的扩展必须针对每一个主版本重新编译。包含 <literal>PG_MODULE_MAGIC</literal>（见<xref linkend="xfunc-c-dynload"/>）可以确保针对某个主版本编译的代码会被其他主版本拒绝。
-      </para>
-     </sect4>
-
-     <sect4 id="xfunc-guidance-abi-mninor-versions">
-      <title>小版本</title>
-      <para>
-       <productname>PostgreSQL</productname> 会尽力避免在小版本发布中破坏服务器 ABI。一般来说，针对任意一个小版本编译的扩展，应当能与同一主版本过去或将来的其他任意小版本一起工作。
-      </para>
-
-      <para>
-       如果<emphasis>确实</emphasis>需要变更，<productname>PostgreSQL</productname> 会尽量选择侵入性最小的方式，例如把新字段塞进填充空间，或者附加到结构体末尾。这类修改通常不应影响扩展，除非扩展使用了非常不寻常的代码模式。
-      </para>
-
-      <para>
-       然而，在极少数情况下，即使是这种非侵入式变更也可能不现实甚至不可能做到。发生这种情况时，也会在考虑扩展需求的前提下谨慎管理该变更。这类变更同样会记录在发布说明（<xref linkend="release"/>）中。
-      </para>
-
-      <para>
-       但请注意，服务器中有很多部分并不是作为公开可消费的 API 来设计和维护的（而且在大多数情况下，其真实边界也并不清晰）。如果这些部分出现紧急需求，对它们的修改自然会比对那些边界清楚且广泛使用的接口做修改时，更少考虑扩展代码的兼容性。
-      </para>
-
-      <para>
-       此外，在缺乏自动化检测这类变化的机制时，这并不能构成严格保证；不过从历史上看，这种破坏性变化极为罕见。
-      </para>
-
-     </sect4>
-    </sect3>
-  </sect2>
 
    <sect2 id="xfunc-c-composite-type-args">
     <title>复合类型参数</title>
@@ -3082,21 +2943,10 @@ uint32 WaitEventExtensionNew(const char *wait_event_name)
     <para>
      给定名称 <literal>name</literal> 的注入点可通过以下宏声明：
 <programlisting>
-INJECTION_POINT(name, arg);
+INJECTION_POINT(name);
 </programlisting>
 
-     服务器代码中已经在若干关键位置声明了注入点。新增注入点后，需要重新编译代码，才能让该注入点出现在二进制文件中。用 C 语言编写的插件也可以使用同一个宏在自己的代码中声明注入点。注入点名称应使用小写字母，并用连字符分隔各个术语。<literal>arg</literal> 是运行时传给回调的可选参数值。
-    </para>
-
-    <para>
-     执行注入点可能需要分配少量内存，而这可能失败。如果你需要在一个不允许动态分配的临界区中使用注入点，可以采用以下两步法：
-<programlisting>
-INJECTION_POINT_LOAD(name);
-INJECTION_POINT_CACHED(name, arg);
-</programlisting>
-
-     在进入临界区之前，调用 <function>INJECTION_POINT_LOAD</function>。它会检查共享内存状态，并在该注入点处于激活状态时把回调加载到后端私有内存中。在临界区内部，再用
-     <function>INJECTION_POINT_CACHED</function> 来执行回调。
+     服务器代码中已经在若干关键位置声明了注入点。新增注入点后，需要重新编译代码，才能让该注入点出现在二进制文件中。用 C 语言编写的插件也可以使用同一个宏在自己的代码中声明注入点。注入点名称应使用小写字母，并用连字符分隔各个术语。
     </para>
 
     <para>
@@ -3117,9 +2967,7 @@ extern void InjectionPointAttach(const char *name,
      <literal>InjectionPointCallback</literal> 的示例：
 <programlisting>
 static void
-custom_injection_callback(const char *name,
-                          const void *private_data,
-                          void *arg)
+custom_injection_callback(const char *name, const void *private_data)
 {
     uint32 wait_event_info = WaitEventInjectionPointNew(name);
 
@@ -3129,25 +2977,6 @@ custom_injection_callback(const char *name,
 }
 </programlisting>
      这个回调会以 <literal>NOTICE</literal> 级别向服务器错误日志写入一条消息，但回调完全可以实现更复杂的逻辑。
-    </para>
-
-    <para>
-     另一种定义“到达注入点时应执行什么动作”的方式，是把测试代码直接写在常规源代码旁边。如果该动作依赖于加载模块无法访问的局部变量，这会很有用。此时可以使用
-     <function>IS_INJECTION_POINT_ATTACHED</function> 宏来检查某个注入点是否已附加，例如：
-<programlisting>
-#ifdef USE_INJECTION_POINTS
-if (IS_INJECTION_POINT_ATTACHED("before-foobar"))
-{
-    /* change a local variable if injection point is attached */
-    local_var = 123;
-
-    /* also execute the callback */
-    INJECTION_POINT_CACHED("before-foobar", NULL);
-}
-#endif
-</programlisting>
-     注意，附加到注入点上的回调不会由 <function>IS_INJECTION_POINT_ATTACHED</function> 宏执行。如果你想执行该回调，就必须像上面的示例那样另外调用
-     <function>INJECTION_POINT_CACHED</function>。
     </para>
 
     <para>
@@ -3174,61 +3003,6 @@ extern bool InjectionPointDetach(const char *name);
      <option>--enable-injection-points</option>，或者在
      <application>Meson</application> 中指定
      <option>-Dinjection_points=true</option>。
-    </para>
-   </sect2>
-
-   <sect2 id="xfunc-addin-custom-cumulative-statistics">
-    <title>自定义累计统计</title>
-
-    <para>
-     用 C 语言编写的插件可以使用在
-     <link linkend="monitoring-stats-setup">累计统计系统</link> 中注册的自定义累计统计类型。
-    </para>
-
-    <para>
-     首先，定义一个 <literal>PgStat_KindInfo</literal>，其中包含与所注册自定义类型相关的全部信息。例如：
-<programlisting>
-static const PgStat_KindInfo custom_stats = {
-    .name = "custom_stats",
-    .fixed_amount = false,
-    .shared_size = sizeof(PgStatShared_Custom),
-    .shared_data_off = offsetof(PgStatShared_Custom, stats),
-    .shared_data_len = sizeof(((PgStatShared_Custom *) 0)->stats),
-    .pending_size = sizeof(PgStat_StatCustomEntry),
-}
-</programlisting>
-
-     然后，每个需要使用这种自定义类型的后端，都需要使用
-     <literal>pgstat_register_kind</literal> 注册它，并指定一个用于存储该类统计条目的唯一 ID：
-<programlisting>
-extern PgStat_Kind pgstat_register_kind(PgStat_Kind kind,
-                                        const PgStat_KindInfo *kind_info);
-</programlisting>
-     在开发新扩展时，应将
-     <literal>PGSTAT_KIND_EXPERIMENTAL</literal> 用作
-     <parameter>kind</parameter>。当你准备把扩展发布给用户时，请在
-     <ulink url="https://wiki.postgresql.org/wiki/CustomCumulativeStats">
-     Custom Cumulative Statistics</ulink> 页面上预留一个 kind ID。
-    </para>
-
-    <para>
-     关于 <literal>PgStat_KindInfo</literal> API 的细节，可见
-     <filename>src/include/utils/pgstat_internal.h</filename>。
-    </para>
-
-    <para>
-     已注册的统计类型会关联到一个名称以及一个在共享内存中供整个服务器共享的唯一 ID。每个使用自定义统计类型的后端都会维护一个本地缓存，用来保存各个自定义 <literal>PgStat_KindInfo</literal> 的信息。
-    </para>
-
-    <para>
-     应将实现自定义累计统计类型的扩展模块加入
-     <xref linkend="guc-shared-preload-libraries"/>，以便在
-     <productname>PostgreSQL</productname> 启动期间尽早载入。
-    </para>
-
-    <para>
-     展示如何注册并使用自定义统计信息的示例可见于
-     <filename>src/test/modules/injection_points</filename>。
     </para>
    </sect2>
 

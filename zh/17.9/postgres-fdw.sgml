@@ -69,16 +69,6 @@
   <command>DELETE</command> 或 <command>TRUNCATE</command> 中不起作用。
  </para>
 
- <para>
-  请注意，<filename>postgres_fdw</filename> 当前不支持带有
-  <literal>ON CONFLICT DO UPDATE</literal> 子句的
-  <command>INSERT</command> 语句。不过，在省略唯一索引推断规范的前提下，支持
-  <literal>ON CONFLICT DO NOTHING</literal> 子句。
-  还要注意，<filename>postgres_fdw</filename> 支持在分区表上执行的
-  <command>UPDATE</command> 语句所引发的行移动，但当前尚不能处理这样一种情况：
-  为插入被移动行而选择的远程分区，同时也是同一命令中其他位置将被更新的
-  <command>UPDATE</command> 目标分区。
- </para>
 
  <para>
   通常建议将外部表的列声明为与被引用远程表的对应列具有完全相同的数据类型，
@@ -172,8 +162,7 @@ OPTIONS (ADD password_required 'false');
     <literal>password_required=false</literal>。还要记住，被映射用户可能
     使用 postgres 服务器所运行的系统用户 unix 主目录中的任何客户端证书、
     <filename>.pgpass</filename>、<filename>.pg_service.conf</filename>
-    等文件。（有关如何查找主目录的细节，见 <xref linkend="libpq-pgpass"/>。）
-    他们还可以利用通过 <literal>peer</literal> 或 <literal>ident</literal>
+    等文件。    他们还可以利用通过 <literal>peer</literal> 或 <literal>ident</literal>
     等认证方式授予的任何信任关系。
    </para>
   </sect3>
@@ -650,7 +639,7 @@ OPTIONS (ADD password_required 'false');
 
     <variablelist>
 
-     <varlistentry id="postgres-fdw-option-keep-connections">
+     <varlistentry>
       <term><literal>keep_connections</literal> (<type>boolean</type>)</term>
       <listitem>
        <para>
@@ -661,68 +650,6 @@ OPTIONS (ADD password_required 'false');
       </para>
       </listitem>
      </varlistentry>
-
-     <varlistentry id="postgres-fdw-option-use-scram-passthrough">
-      <term><literal>use_scram_passthrough</literal> (<type>boolean</type>)</term>
-      <listitem>
-       <para>
-        该选项控制 <filename>postgres_fdw</filename> 在连接到外部服务器时
-        是否使用 SCRAM 透传认证。使用 SCRAM 透传认证时，
-        <filename>postgres_fdw</filename> 使用 SCRAM 哈希后的凭据，而不是
-        明文用户密码连接远程服务器。这样可以避免在 PostgreSQL 系统目录中
-        存储明文用户密码。
-       </para>
-
-       <para>
-        要使用 SCRAM 透传认证：
-        <itemizedlist>
-         <listitem>
-          <para>
-           远程服务器必须请求 <literal>scram-sha-256</literal> 认证方法；
-           否则连接将失败。
-          </para>
-         </listitem>
-
-         <listitem>
-          <para>
-           远程服务器可以是任何支持 SCRAM 的 PostgreSQL 版本。
-           对 <literal>use_scram_passthrough</literal> 的支持只要求客户端
-           一侧（FDW 侧）具备。
-          </para>
-         </listitem>
-
-         <listitem>
-          <para>
-           用户映射密码不会被使用。
-          </para>
-         </listitem>
-
-         <listitem>
-          <para>
-           运行 <filename>postgres_fdw</filename> 的服务器与远程服务器，
-           必须针对用于在 <filename>postgres_fdw</filename> 上认证到外部
-           服务器的该用户，拥有完全相同的 SCRAM secret（加密密码）
-           （盐值和迭代次数都必须相同，而不仅仅是密码相同）。
-          </para>
-
-          <para>
-           因而，如果要建立到多个主机的 FDW 连接，例如用于分区外部表或分片，
-           则所有主机都必须为相关用户保存完全相同的 SCRAM secret。
-          </para>
-         </listitem>
-
-         <listitem>
-          <para>
-           发起对外 FDW 连接的 PostgreSQL 实例中，当前会话的传入客户端连接
-           也必须使用 SCRAM 认证。（因此称为<quote>透传</quote>：SCRAM
-           必须在进入和离开时都被使用。）这是 SCRAM 协议的技术要求。
-          </para>
-         </listitem>
-        </itemizedlist>
-       </para>
-      </listitem>
-     </varlistentry>
-
     </variablelist>
    </sect3>
  </sect2>
@@ -731,111 +658,23 @@ OPTIONS (ADD password_required 'false');
   <title>函数</title>
 
   <variablelist>
-   <varlistentry>
-    <term><function>postgres_fdw_get_connections(
-      IN check_conn boolean DEFAULT false, OUT server_name text,
-      OUT user_name text, OUT valid boolean, OUT used_in_xact boolean,
-      OUT closed boolean, OUT remote_backend_pid int4)
-      returns setof record</function></term>
-    <listitem>
-     <para>
-      此函数返回 postgres_fdw 从本地会话到外部服务器所建立的所有打开连接的
-      信息。如果没有打开的连接，则不返回任何记录。
-     </para>
-     <para>
-      如果将 <literal>check_conn</literal> 设置为 <literal>true</literal>，
-      该函数会检查每个连接的状态，并在 <literal>closed</literal> 列中显示
-      结果。该特性当前仅在支持对 <symbol>poll</symbol> 系统调用的非标准
-      <symbol>POLLRDHUP</symbol> 扩展的系统上可用，包括 Linux。
-      这对于检查事务中使用的所有连接是否仍然打开很有帮助。如果任一连接已经
-      关闭，该事务将无法成功提交，因此在检测到关闭连接后，最好尽快回滚，
-      而不是继续执行到末尾。如果函数报告的某个连接同时满足
-      <literal>used_in_xact</literal> 和 <literal>closed</literal> 都为
-      <literal>true</literal>，用户即可立即回滚事务。
-     </para>
-     <para>
-      此函数的用法示例：
+    <varlistentry>
+    <term><function>postgres_fdw_get_connections(OUT server_name text, OUT valid boolean) returns setof record</function></term>
+     <listitem>
+      <para>
+      此函数返回<filename>postgres_fdw</filename>从本地会话向外部服务器建立的所有打开连接的外部服务器名称。它还返回每个连接是否有效。如果外部服务器连接在当前本地事务中被使用，但其外部服务器或用户映射被更改或删除，则返回<literal>false</literal>（注意，如果服务器被删除，无效连接的服务器名称将为<literal>NULL</literal>），然后这样的无效连接将在该事务结束时被关闭。否则返回<literal>true</literal>。如果没有打开的连接，则不返回任何记录。
+      该函数的用法示例：
 <screen>
-postgres=# SELECT * FROM postgres_fdw_get_connections(true);
- server_name | user_name | valid | used_in_xact | closed | remote_backend_pid
--------------+-----------+-------+--------------+-----------------------------
- loopback1   | postgres  | t     | t            | f      |            1353340
- loopback2   | public    | t     | t            | f      |            1353120
- loopback3   |           | f     | t            | f      |            1353156
+postgres=# SELECT * FROM postgres_fdw_get_connections() ORDER BY 1;
+ server_name | valid
+-------------+-------
+ loopback1   | t
+ loopback2   | f
 </screen>
-      输出列见 <xref linkend="postgres-fdw-get-connections-columns"/>。
-     </para>
+      </para>
+     </listitem>
+    </varlistentry>
 
-    <table id="postgres-fdw-get-connections-columns">
-     <title><function>postgres_fdw_get_connections</function> 输出列</title>
-     <tgroup cols="3">
-      <thead>
-       <row>
-        <entry>列</entry>
-        <entry>类型</entry>
-        <entry>描述</entry>
-       </row>
-      </thead>
-
-      <tbody>
-       <row>
-        <entry><structfield>server_name</structfield></entry>
-        <entry><type>text</type></entry>
-        <entry>
-         此连接的外部服务器名称。如果服务器已被删除但连接仍保持打开
-         （即被标记为无效），则该值为 <literal>NULL</literal>。
-        </entry>
-       </row>
-       <row>
-        <entry><structfield>user_name</structfield></entry>
-        <entry><type>text</type></entry>
-        <entry>
-         映射到此连接所属外部服务器的本地用户名称；如果使用的是 public
-         映射，则为 <literal>public</literal>。
-         如果用户映射已被删除但连接仍保持打开（即被标记为无效），则该值为
-         <literal>NULL</literal>。
-        </entry>
-       </row>
-       <row>
-        <entry><structfield>valid</structfield></entry>
-        <entry><type>boolean</type></entry>
-        <entry>
-         如果此连接无效，则为假；无效意味着它在当前事务中被使用，但其外部
-         服务器或用户映射已被更改或删除。无效连接将在事务结束时关闭。
-         否则返回真。
-        </entry>
-       </row>
-       <row>
-        <entry><structfield>used_in_xact</structfield></entry>
-        <entry><type>boolean</type></entry>
-        <entry>
-         如果此连接在当前事务中被使用，则为真。
-        </entry>
-       </row>
-       <row>
-        <entry><structfield>closed</structfield></entry>
-        <entry><type>boolean</type></entry>
-        <entry>
-         如果此连接已关闭，则为真，否则为假。如果
-         <literal>check_conn</literal> 被设置为 <literal>false</literal>，
-         或当前平台不提供连接状态检查，则返回 <literal>NULL</literal>。
-        </entry>
-       </row>
-       <row>
-        <entry><structfield>remote_backend_pid</structfield></entry>
-        <entry><type>int4</type></entry>
-        <entry>
-         外部服务器上处理此连接的远程后端进程 ID。如果远程后端已终止且
-         连接已关闭（<literal>closed</literal> 为 <literal>true</literal>），
-         此处仍会显示该已终止后端的进程 ID。
-        </entry>
-       </row>
-      </tbody>
-     </tgroup>
-    </table>
-
-    </listitem>
-   </varlistentry>
 
    <varlistentry>
     <term><function>postgres_fdw_disconnect(server_name text) returns boolean</function></term>
@@ -1029,8 +868,6 @@ postgres=# SELECT postgres_fdw_disconnect_all();
    <filename>postgres_fdw</filename> 可用于最早追溯到
    <productname>PostgreSQL</productname> 8.3 的远程服务器。只读能力可追溯到
    8.1。
-  </para>
-  <para>
    不过有一个限制是，<filename>postgres_fdw</filename> 通常假定：
    如果外部表的 <literal>WHERE</literal> 子句中出现不可变的内置函数和
    操作符，那么把它们发送到远程服务器执行是安全的。因此，某个在远程服务器
@@ -1039,12 +876,6 @@ postgres=# SELECT postgres_fdw_disconnect_all();
    重写查询绕过这类失败，例如把外部表引用放入一个带
    <literal>OFFSET 0</literal> 的子 <literal>SELECT</literal> 中，作为优化
    栅栏，并将有问题的函数或操作符放到子 <literal>SELECT</literal> 之外。
-  </para>
-  <para>
-   另一个限制是，在外部表上执行 <command>INSERT</command> 语句并带有
-   <literal>ON CONFLICT DO NOTHING</literal> 子句时，远程服务器必须运行
-   <productname>PostgreSQL</productname> 9.5 或更高版本，因为更早版本
-   不支持此特性。
   </para>
  </sect2>
 

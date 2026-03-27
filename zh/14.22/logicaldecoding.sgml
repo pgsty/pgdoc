@@ -140,12 +140,9 @@ postgres=# SELECT pg_drop_replication_slot('regression_slot');
     发行版中自带的 <xref linkend="app-pgrecvlogical"/>。这要求已经配置好客
     户端认证以允许复制连接（见
     <xref linkend="streaming-replication-authentication"/>），并且
-    <varname>max_wal_senders</varname> 的设置足够高，以容纳额外的连接。第二
-    个示例展示了如何流式传送两阶段事务。在使用两阶段命令之前，必须将
-    <xref linkend="guc-max-prepared-transactions"/> 至少设置为 1。
+    <varname>max_wal_senders</varname> 的设置足够高，以容纳额外的连接。
    </para>
 <programlisting>
-Example 1:
 $ pg_recvlogical -d postgres --slot=test --create-slot
 $ pg_recvlogical -d postgres --slot=test --start -f -
 <keycombo action="simul"><keycap>Control</keycap><keycap>Z</keycap></keycombo>
@@ -154,22 +151,6 @@ $ fg
 BEGIN 693
 table public.data: INSERT: id[integer]:4 data[text]:'4'
 COMMIT 693
-<keycombo action="simul"><keycap>Control</keycap><keycap>C</keycap></keycombo>
-$ pg_recvlogical -d postgres --slot=test --drop-slot
-
-Example 2:
-$ pg_recvlogical -d postgres --slot=test --create-slot --enable-two-phase
-$ pg_recvlogical -d postgres --slot=test --start -f -
-<keycombo action="simul"><keycap>Control</keycap><keycap>Z</keycap></keycombo>
-$ psql -d postgres -c "BEGIN;INSERT INTO data(data) VALUES('5');PREPARE TRANSACTION 'test';"
-$ fg
-BEGIN 694
-table public.data: INSERT: id[integer]:5 data[text]:'5'
-PREPARE TRANSACTION 'test', txid 694
-<keycombo action="simul"><keycap>Control</keycap><keycap>Z</keycap></keycombo>
-$ psql -d postgres -c "COMMIT PREPARED 'test';"
-$ fg
-COMMIT PREPARED 'test', txid 694
 <keycombo action="simul"><keycap>Control</keycap><keycap>C</keycap></keycombo>
 $ pg_recvlogical -d postgres --slot=test --drop-slot
 </programlisting>
@@ -432,7 +413,7 @@ DETAIL:  Synchronization could lead to data loss, because the remote slot needs 
     <title>导出快照</title>
     <para>
      当使用流复制接口创建新的复制槽时（见
-     <xref linkend="protocol-replication-create-replication-slot"/>），会导出
+     <xref linkend="protocol-replication-create-slot"/>），会导出
      一个快照（见 <xref linkend="functions-snapshot-synchronization"/>），
      它准确反映了数据库的这样一种状态：从该状态之后开始，所有更改都会被纳入
      更改流。这可以通过使用
@@ -443,7 +424,7 @@ DETAIL:  Synchronization could lead to data loss, because the remote slot needs 
     </para>
     <para>
      不需要导出快照的应用程序可以使用
-     <literal>SNAPSHOT 'nothing'</literal> 选项来禁止导出。
+     <literal>NOEXPORT_SNAPSHOT</literal> 选项来禁止导出。
     </para>
    </sect2>
   </sect1>
@@ -1210,9 +1191,7 @@ OutputPluginWrite(ctx, true);
     <function>stream_commit_cb</function> 和
     <function>stream_change_cb</function>；另有两个可选回调：
     <function>stream_message_cb</function> 和
-    <function>stream_truncate_cb</function>。此外，如果还要支持两阶段命令的流
-    式传送，则必须额外提供相关回调。（详见
-    <xref linkend="logicaldecoding-two-phase-commits"/>。）
+    <function>stream_truncate_cb</function>。
    </para>
 
    <para>
@@ -1221,11 +1200,7 @@ OutputPluginWrite(ctx, true);
     <function>stream_stop_cb</function> 回调界定的块进行传送。一旦所有解码出
     的更改都已传输，事务就可以通过
     <function>stream_commit_cb</function> 回调来提交（或者可能通过
-    <function>stream_abort_cb</function> 回调来中止）。如果支持两阶段提交，
-    事务可以使用 <function>stream_prepare_cb</function> 回调进入预备状态，
-    随后在 <command>COMMIT PREPARED</command> 时通过
-    <function>commit_prepared_cb</function> 回调提交，或者通过
-    <function>rollback_prepared_cb</function> 回调中止。
+    <function>stream_abort_cb</function> 回调来中止）。
    </para>
 
    <para>
@@ -1249,13 +1224,7 @@ stream_start_cb(...);   &lt;-- start of second block of changes
   stream_change_cb(...);
 stream_stop_cb(...);    &lt;-- end of second block of changes
 
-
-[a. when using normal commit]
-stream_commit_cb(...);    &lt;-- commit of the streamed transaction
-
-[b. when using two-phase commit]
-stream_prepare_cb(...);   &lt;-- prepare the streamed transaction
-commit_prepared_cb(...);  &lt;-- commit of the prepared transaction
+stream_commit_cb(...);  &lt;-- commit of the streamed transaction
 </programlisting>
    </para>
 

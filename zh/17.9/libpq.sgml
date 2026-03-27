@@ -237,11 +237,11 @@ PostgresPollingStatusType PQconnectPoll(PGconn *conn);
       </para>
 
       <para>
-       如果<function>PQconnectStart</function>或<xref linkend="libpq-PQconnectStartParams"/>成功，下一个阶段是轮询<application>libpq</application>，这样它能够继续进行连接序列。使用<function>PQsocket(conn)</function>来获得该数据库连接底层的套接字描述符（警告：不要假定在<function>PQconnectPoll</function>调用之间套接字会保持相同）。这样循环：如果<function>PQconnectPoll(conn)</function>上一次返回<symbol>PGRES_POLLING_READING</symbol>，等到该套接字准备好读取（按照<function>select()</function>、<function>poll()</function>或类似的系统函数所指示的）。则再次调用<function>PQconnectPoll(conn)</function>。反之，如果<function>PQconnectPoll(conn)</function>上一次返回<symbol>PGRES_POLLING_WRITING</symbol>，等到该套接字准备好写入，则再次调用<function>PQconnectPoll(conn)</function>。在第一次迭代时，即如果你还没有调用<function>PQconnectPoll</function>，行为就像是它上次返回了<symbol>PGRES_POLLING_WRITING</symbol>。持续这个循环直到<function>PQconnectPoll(conn)</function>返回<symbol>PGRES_POLLING_FAILED</symbol>指示连接过程已经失败，或者返回<symbol>PGRES_POLLING_OK</symbol>指示连接已经被成功地建立。
+       如果<function>PQconnectStart</function>或<xref linkend="libpq-PQconnectStartParams"/>成功，下一个阶段是轮询<application>libpq</application>，这样它能够继续进行连接序列。使用<function>PQsocket(conn)</function>来获得该数据库连接底层的套接字描述符（警告：不要假定在<function>PQconnectPoll</function>调用之间套接字会保持相同）。这样循环：如果<function>PQconnectPoll(conn)</function>上一次返回<symbol>PGRES_POLLING_READING</symbol>，等到该套接字准备好读取（按照<function>select()</function>、<function>poll()</function>或类似的系统函数所指示的）。注意，如果你的系统提供该函数，<function>PQsocketPoll</function>可以帮助减少对<function>select(2)</function>或<function>poll(2)</function>的样板代码。然后再次调用<function>PQconnectPoll(conn)</function>。反之，如果<function>PQconnectPoll(conn)</function>上一次返回<symbol>PGRES_POLLING_WRITING</symbol>，等到该套接字准备好写入，则再次调用<function>PQconnectPoll(conn)</function>。在第一次迭代时，即如果你还没有调用<function>PQconnectPoll</function>，行为就像是它上次返回了<symbol>PGRES_POLLING_WRITING</symbol>。持续这个循环直到<function>PQconnectPoll(conn)</function>返回<symbol>PGRES_POLLING_FAILED</symbol>指示连接过程已经失败，或者返回<symbol>PGRES_POLLING_OK</symbol>指示连接已经被成功地建立。
       </para>
 
       <para>
-       在连接期间的任意时刻，该连接的状态可以通过调用<xref linkend="libpq-PQstatus"/>来检查。如果这个调用返回<symbol>CONNECTION_BAD</symbol>，那么连接过程已经失败。如果该调用返回<symbol>CONNECTION_OK</symbol>，则该连接已经准备好。如前所述，这些状态同样都可以从<function>PQconnectPoll</function>的返回值检测。在一个异步连接过程中（也只有在这个过程中）也可能出现其他状态。这些状态指示该连接过程的当前阶段，并且可能有助于为用户提供反馈。这些状态是：
+       在连接期间的任意时刻，该连接的状态可以通过调用<xref linkend="libpq-PQstatus"/>来检查。如果这个调用返回<symbol>CONNECTION_BAD</symbol>，那么连接过程已经失败。如果该调用返回<function>CONNECTION_OK</function>，则该连接已经准备好。如前所述，这些状态同样都可以从<function>PQconnectPoll</function>的返回值检测。在一个异步连接过程中（也只有在这个过程中）也可能出现其他状态。这些状态指示该连接过程的当前阶段，并且可能有助于为用户提供反馈。这些状态是：
 
        <variablelist>
         <varlistentry id="libpq-connection-started">
@@ -341,8 +341,54 @@ switch(PQstatus(conn))
        在使用<function>PQconnectPoll</function>时，连接参数<literal>connect_timeout</literal>会被忽略：判断是否超时是应用的责任。否则，<function>PQconnectStart</function>后面跟着<function>PQconnectPoll</function>循环等效于<xref linkend="libpq-PQconnectdb"/>。
       </para>
 
-      <para>
+     <para>
        注意当<function>PQconnectStart</function>或<xref linkend="libpq-PQconnectStartParams"/>返回一个非空的指针时，你必须在用完它之后调用<xref linkend="libpq-PQfinish"/>来处理那些结构和任何相关的内存块。即使连接尝试失败或被放弃时也必须完成这些工作。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="libpq-PQsocketPoll">
+     <term><function>PQsocketPoll</function><indexterm><primary>PQsocketPoll</primary></indexterm></term>
+     <listitem>
+      <para>
+       轮询通过<xref linkend="libpq-PQsocket"/>取得的连接底层套接字描述符。
+       该函数的主要用途，是驱动<xref linkend="libpq-PQconnectStartParams"/>文档中描述的连接序列。
+<synopsis>
+typedef pg_int64 pg_usec_time_t;
+
+int PQsocketPoll(int sock, int forRead, int forWrite,
+                 pg_usec_time_t end_time);
+</synopsis>
+      </para>
+
+      <para>
+       该函数会轮询一个文件描述符，并且可选地设置超时。
+       如果<parameter>forRead</parameter>非零，则当套接字可读时返回；
+       如果<parameter>forWrite</parameter>非零，则当套接字可写时返回。
+      </para>
+
+      <para>
+       超时由<parameter>end_time</parameter>指定，它表示停止等待的时间点，
+       单位为自 Unix 纪元以来的微秒数（也就是 <type>time_t</type> 乘以 100 万）。
+       如果<parameter>end_time</parameter>为<literal>-1</literal>，则无限等待。
+       如果<parameter>end_time</parameter>为<literal>0</literal>（或者任何早于当前时间的值），
+       则立即超时而不阻塞。底层系统调用的精度可能达不到微秒级，因此实际等待时间可能并不精确。
+      </para>
+
+      <para>
+       如果满足指定条件，该函数返回大于 <literal>0</literal> 的值；如果发生超时，返回
+       <literal>0</literal>；如果出错，返回 <literal>-1</literal>。可以通过检查
+       <literal>errno(3)</literal> 来取得错误信息。如果
+       <parameter>forRead</parameter>和<parameter>forWrite</parameter>都为零，
+       则该函数会立即返回超时指示。
+      </para>
+
+      <para>
+       <function>PQsocketPoll</function>通过<function>poll(2)</function>或
+       <function>select(2)</function>实现，具体取决于平台。更多信息请参见
+       <function>poll(2)</function>中的<literal>POLLIN</literal>和<literal>POLLOUT</literal>，
+       或者<function>select(2)</function>中的<parameter>readfds</parameter>和
+       <parameter>writefds</parameter>。
       </para>
      </listitem>
     </varlistentry>
@@ -950,11 +996,6 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
            <para>
             服务器必须请求 MD5 哈希密码认证。
            </para>
-           <warning>
-            <para>
-             对 MD5 加密密码的支持已被废弃，并将在未来的<productname>PostgreSQL</productname>版本中移除。关于迁移到其他密码类型的细节，请参见<xref linkend="auth-password"/>。
-            </para>
-           </warning>
           </listitem>
          </varlistentry>
 
@@ -981,15 +1022,6 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
           <listitem>
            <para>
             服务器必须与客户端成功完成一次 SCRAM-SHA-256 认证交换。
-           </para>
-          </listitem>
-         </varlistentry>
-
-         <varlistentry>
-          <term><literal>oauth</literal></term>
-          <listitem>
-           <para>
-            服务器必须向客户端请求 OAuth Bearer 令牌。
            </para>
           </listitem>
          </varlistentry>
@@ -1375,7 +1407,7 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
          <term><literal>direct</literal></term>
          <listitem>
           <para>
-           在建立 TCP/IP 连接后直接开始 SSL 握手。仅当<literal>sslmode=require</literal>或更高时才允许使用该模式，因为更弱的设置可能在服务器不支持直接 SSL 握手时导致意外回退到明文认证。
+           在建立 TCP/IP 连接后直接开始 SSL 握手。仅当sslmode=require或更高时才允许使用该模式，因为更弱的设置可能在服务器不支持直接 SSL 握手时导致意外回退到明文认证。
           </para>
          </listitem>
         </varlistentry>
@@ -1427,20 +1459,6 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
         一个引擎特定的密钥标识符。如果没有进行SSL连接，则此参数将被忽略。
        </para>
      </listitem>
-     </varlistentry>
-
-     <varlistentry id="libpq-connect-sslkeylogfile" xreflabel="sslkeylogfile">
-      <term><literal>sslkeylogfile</literal></term>
-      <listitem>
-       <para>
-        这个参数指定<application>libpq</application>记录此 SSL 上下文所用密钥的位置。这对于调试<productname>PostgreSQL</productname>协议交互，或者借助<productname>Wireshark</productname>之类的网络检查工具分析客户端连接很有用。如果未建立 SSL 连接，或者使用的是<productname>LibreSSL</productname>（其不支持密钥记录），则会忽略此参数。密钥将按<productname>NSS</productname>格式记录。
-        <warning>
-         <para>
-          密钥记录会在 keylog 文件中暴露潜在敏感信息。应当像处理<xref linkend="libpq-connect-sslkey"/>文件一样谨慎处理 keylog 文件。
-         </para>
-        </warning>
-       </para>
-      </listitem>
      </varlistentry>
 
      <varlistentry id="libpq-connect-sslpassword" xreflabel="sslpassword">
@@ -1617,48 +1635,6 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
      </listitem>
      </varlistentry>
 
-     <varlistentry id="libpq-connect-min-protocol-version" xreflabel="min_protocol_version">
-      <term><literal>min_protocol_version</literal></term>
-      <listitem>
-       <para>
-        这个参数指定该连接允许的最低协议版本。默认情况下，允许使用
-        <application>libpq</application>所支持的任何
-        <productname>PostgreSQL</productname>协议版本，
-        目前即<literal>3.0</literal>。如果服务器至少不支持这一协议版本，
-        则连接将被关闭。
-       </para>
-
-       <para>
-        当前支持的值是<literal>3.0</literal>、<literal>3.2</literal>
-        和<literal>latest</literal>。<literal>latest</literal>等价于
-        正在使用的<application>libpq</application>版本所支持的最新协议版本，
-        目前即<literal>3.2</literal>。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="libpq-connect-max-protocol-version" xreflabel="max_protocol_version">
-      <term><literal>max_protocol_version</literal></term>
-      <listitem>
-       <para>
-        这个参数指定要向服务器请求的协议版本。默认会使用
-        <productname>PostgreSQL</productname>协议的<literal>3.0</literal>版本；
-        但如果连接字符串指定了依赖更高协议版本的特性，则会使用
-        <application>libpq</application>支持的最新版本。如果服务器不支持客户端请求的协议版本，
-        连接会自动降级为服务器支持的较低次版本协议。连接尝试完成后，
-        你可以使用<function>PQfullProtocolVersion()</function>来确定
-        最终协商得到的确切协议版本。
-       </para>
-
-       <para>
-        当前支持的值是<literal>3.0</literal>、<literal>3.2</literal>
-        和<literal>latest</literal>。<literal>latest</literal>等价于
-        正在使用的<application>libpq</application>版本所支持的最新协议版本，
-        目前即<literal>3.2</literal>。
-       </para>
-      </listitem>
-     </varlistentry>
-
      <varlistentry id="libpq-connect-krbsrvname" xreflabel="krbsrvname">
       <term><literal>krbsrvname</literal></term>
       <listitem>
@@ -1695,24 +1671,6 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       <listitem>
        <para>
         将 GSS 凭证转发（委派）给服务器。默认值为<literal>0</literal>，表示不向服务器转发凭证。将其设置为<literal>1</literal>时，会在可能的情况下转发凭证。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="libpq-connect-scram-client-key" xreflabel="scram_client_key">
-      <term><literal>scram_client_key</literal></term>
-      <listitem>
-       <para>
-        以 Base64 编码的 SCRAM client key。外部数据包装器或类似中间件可以利用它启用透传式 SCRAM 认证。一个实现示例见<xref linkend="postgres-fdw-options-connection-management"/>。普通用户或客户端应用不应直接指定它。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="libpq-connect-scram-server-key" xreflabel="scram_server_key">
-      <term><literal>scram_server_key</literal></term>
-      <listitem>
-       <para>
-        以 Base64 编码的 SCRAM server key。外部数据包装器或类似中间件可以利用它启用透传式 SCRAM 认证。一个实现示例见<xref linkend="postgres-fdw-options-connection-management"/>。普通用户或客户端应用不应直接指定它。
        </para>
       </listitem>
      </varlistentry>
@@ -1828,64 +1786,6 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
 	          </listitem>
 	         </varlistentry>
 	        </variablelist>
-	       </para>
-	      </listitem>
-	     </varlistentry>
-
-	     <varlistentry id="libpq-connect-oauth-issuer" xreflabel="oauth_issuer">
-	      <term><literal>oauth_issuer</literal></term>
-	      <listitem>
-	       <para>
-	        如果服务器为该连接请求 OAuth 令牌，要联系的受信任签发者的 HTTPS URL。所有 OAuth 连接都必须设置此参数；它应当与<link linkend="auth-oauth">服务器 HBA 配置</link>中的<literal>issuer</literal>设置完全一致。
-	       </para>
-	       <para>
-	        作为标准认证握手的一部分，<application>libpq</application>会向服务器请求一个<emphasis>发现文档</emphasis>，也就是一个提供一组 OAuth 配置参数的 URL。服务器必须提供一个可由<literal>oauth_issuer</literal>的各组成部分直接构造出来的 URL，并且该值必须与发现文档自身声明的签发者标识符完全一致，否则连接会失败。这是为了防止 OAuth 客户端遭受一类
-	        <ulink url="https://mailarchive.ietf.org/arch/msg/oauth/JIVxFBGsJBVtm7ljwJhPUm3Fr-w/">“混淆攻击（mix-up attacks）”</ulink>。
-	       </para>
-	       <para>
-	        你也可以显式把<literal>oauth_issuer</literal>设置为 OAuth 发现所使用的<literal>/.well-known/</literal> URI。在这种情况下，如果服务器要求使用不同的 URL，连接就会失败；不过，<link linkend="libpq-oauth-authdata-hooks">自定义 OAuth 流程</link>也许能够通过使用先前缓存的令牌来加速标准握手。（此时也建议设置<xref linkend="libpq-connect-oauth-scope"/>，因为客户端将没有机会向服务器询问正确的 scope 设置，而令牌的默认 scope 可能不足以完成连接。）<application>libpq</application>当前支持以下 well-known 端点：
-	        <itemizedlist spacing="compact">
-	         <listitem><para><literal>/.well-known/openid-configuration</literal></para></listitem>
-	         <listitem><para><literal>/.well-known/oauth-authorization-server</literal></para></listitem>
-	        </itemizedlist>
-	       </para>
-	       <warning>
-	        <para>
-	         在 OAuth 连接握手期间，签发者拥有极高的权限。经验法则是：如果你不会信任某个 URL 的运营者来处理你对服务器的访问，或者不会信任其直接冒充你，那么这个 URL 就不应被信任为<literal>oauth_issuer</literal>。
-	        </para>
-	       </warning>
-	      </listitem>
-	     </varlistentry>
-
-	     <varlistentry id="libpq-connect-oauth-client-id" xreflabel="oauth_client_id">
-	      <term><literal>oauth_client_id</literal></term>
-	      <listitem>
-	       <para>
-	        由授权服务器发放的 OAuth 2.0 客户端标识符。如果<productname>PostgreSQL</productname>服务器为该连接<link linkend="auth-oauth">请求 OAuth 令牌</link>，并且没有安装<link linkend="libpq-oauth-authdata-hooks">自定义 OAuth 钩子</link>来提供该令牌，那么就必须设置此参数；否则连接会失败。
-	       </para>
-	      </listitem>
-	     </varlistentry>
-
-	     <varlistentry id="libpq-connect-oauth-client-secret" xreflabel="oauth_client_secret">
-	      <term><literal>oauth_client_secret</literal></term>
-	      <listitem>
-	       <para>
-	        与 OAuth 授权服务器通信时要使用的客户端密码（如果有）。该参数是否必需由 OAuth 提供者决定；“public” 客户端通常不使用 secret，而 “confidential” 客户端通常会使用。
-	       </para>
-	      </listitem>
-	     </varlistentry>
-
-	     <varlistentry id="libpq-connect-oauth-scope" xreflabel="oauth_scope">
-	      <term><literal>oauth_scope</literal></term>
-	      <listitem>
-	       <para>
-	        发送给授权服务器的访问请求 scope，以 OAuth scope 标识符的空格分隔列表指定（该列表可以为空）。该参数是可选的，面向高级用法。
-	       </para>
-	       <para>
-	        通常客户端会从<productname>PostgreSQL</productname>服务器获得合适的 scope 设置。如果使用这个参数，服务器请求的 scope 列表会被忽略。这可以防止不那么受信任的服务器向最终用户请求不恰当的访问 scope。不过，如果客户端的 scope 设置不包含服务器所要求的 scope，服务器很可能会拒绝已经签发的令牌，连接也会失败。
-	       </para>
-	       <para>
-	        空 scope 列表的含义取决于提供者。OAuth 授权服务器可以选择签发带有“默认 scope”的令牌，不管那具体是什么；也可以完全拒绝该令牌请求。
 	       </para>
 	      </listitem>
 	     </varlistentry>
@@ -4968,7 +4868,7 @@ PostgresPollingStatusType PQcancelPoll(PGcancelConn *cancelConn);
       </para>
 
       <para>
-       在连接期间的任意时刻，都可以通过调用<xref linkend="libpq-PQcancelStatus"/>检查取消连接的状态。如果返回<symbol>CONNECTION_BAD</symbol>，则取消过程失败；如果返回<symbol>CONNECTION_OK</symbol>，则取消请求已成功分派。这两种状态同样可以从前面描述的<function>PQcancelPoll</function>返回值中检测到。其他状态也可能仅在异步取消过程中出现，它们表示连接过程的当前阶段，并可能有助于向用户提供反馈。这些状态如下：
+       在连接期间的任意时刻，都可以通过调用<xref linkend="libpq-PQcancelStatus"/>检查取消连接的状态。如果返回<symbol>CONNECTION_BAD</symbol>，则取消过程失败；如果返回<function>CONNECTION_OK</function>，则取消请求已成功分派。这两种状态同样可以从前面描述的<function>PQcancelPoll</function>返回值中检测到。其他状态也可能仅在异步取消过程中出现，它们表示连接过程的当前阶段，并可能有助于向用户提供反馈。这些状态如下：
 
        <variablelist>
         <varlistentry id="libpq-cancel-connection-allocated">
@@ -5064,7 +4964,7 @@ ConnStatusType PQcancelStatus(const PGcancelConn *cancelConn);
       </para>
 
       <para>
-       该状态可以是多种取值之一。不过，在异步取消过程之外只能看到三种：<symbol>CONNECTION_ALLOCATED</symbol>、<symbol>CONNECTION_OK</symbol>和<symbol>CONNECTION_BAD</symbol>。使用<xref linkend="libpq-PQcancelCreate"/>成功创建的<function>PGcancelConn</function>初始状态为<symbol>CONNECTION_ALLOCATED</symbol>。成功分派取消请求后状态为<symbol>CONNECTION_OK</symbol>；取消失败则表现为<symbol>CONNECTION_BAD</symbol>。处于 OK 状态时，会一直保持到调用<xref linkend="libpq-PQcancelFinish"/>或<xref linkend="libpq-PQcancelReset"/>。
+       该状态可以是多种取值之一。不过，在异步取消过程之外只能看到三种：<literal>CONNECTION_ALLOCATED</literal>、<literal>CONNECTION_OK</literal>和<literal>CONNECTION_BAD</literal>。使用<xref linkend="libpq-PQcancelCreate"/>成功创建的<function>PGcancelConn</function>初始状态为<literal>CONNECTION_ALLOCATED</literal>。成功分派取消请求后状态为<literal>CONNECTION_OK</literal>；取消失败则表现为<literal>CONNECTION_BAD</literal>。处于 OK 状态时，会一直保持到调用<xref linkend="libpq-PQcancelFinish"/>或<xref linkend="libpq-PQcancelReset"/>。
       </para>
 
       <para>
@@ -7702,221 +7602,6 @@ void PQinitSSL(int do_ssl);
 
  </sect1>
 
- <sect1 id="libpq-oauth">
-  <title>OAuth 支持</title>
-
-  <para>
-   <application>libpq</application>通过一个可选模块实现了对 OAuth v2 Device Authorization 客户端流程的支持，该流程记录在
-   <ulink url="https://datatracker.ietf.org/doc/html/rfc8628">RFC 8628</ulink>中。关于如何启用内置的 Device Authorization 流程，请参见<link linkend="configure-option-with-libcurl">安装文档</link>。
-  </para>
-  <para>
-   当启用支持并安装该可选模块后，如果服务器在认证期间<link linkend="auth-oauth">请求 Bearer 令牌</link>，<application>libpq</application>默认会使用内置流程。即使运行客户端应用的系统没有可用的 Web 浏览器，例如通过<acronym>SSH</acronym>运行客户端时，也可以使用这一流程。
-  </para>
-  <para>
-   内置流程默认会打印一个需要访问的 URL 以及一个要在该处输入的用户代码：
-<programlisting>
-$ psql 'dbname=postgres oauth_issuer=https://example.com oauth_client_id=...'
-Visit https://example.com/device and enter the code: ABCD-EFGH
-</programlisting>
-   （这一提示可以被<link linkend="libpq-oauth-authdata-prompt-oauth-device">定制</link>。）然后，用户将在其 OAuth 提供者处登录，提供者会询问是否允许 libpq 和服务器代表其执行操作。在继续之前，始终应当仔细检查显示的 URL 和权限，确认它们符合预期。不要向不受信任的第三方授予权限。
-  </para>
-  <para>
-   客户端应用可以实现自己的流程，以定制交互方式以及与应用程序的集成。关于如何向<application>libpq</application>添加自定义流程的更多信息，请参见<xref linkend="libpq-oauth-authdata-hooks"/>。
-  </para>
-  <para>
-   要使某个 OAuth 客户端流程可用，连接字符串至少必须包含<xref linkend="libpq-connect-oauth-issuer"/>和<xref linkend="libpq-connect-oauth-client-id"/>。（这些设置由你所在组织的 OAuth 提供者决定。）此外，内置流程还要求 OAuth 授权服务器发布一个设备授权端点。
-  </para>
-
-  <note>
-   <para>
-    当前 Windows 上尚不支持内置的 Device Authorization 流程。不过，仍然可以实现自定义客户端流程。
-   </para>
-  </note>
-
-  <sect2 id="libpq-oauth-authdata-hooks">
-   <title>Authdata 钩子</title>
-
-   <para>
-    客户端可以通过下面的钩子 API 修改或替换 OAuth 流程的行为：
-
-    <variablelist>
-     <varlistentry id="libpq-PQsetAuthDataHook">
-      <term><function>PQsetAuthDataHook</function><indexterm><primary>PQsetAuthDataHook</primary></indexterm></term>
-
-      <listitem>
-       <para>
-        设置<symbol>PGauthDataHook</symbol>，以覆盖<application>libpq</application>对其 OAuth 客户端流程一个或多个方面的处理。
-<synopsis>
-void PQsetAuthDataHook(PQauthDataHook_type hook);
-</synopsis>
-        如果<replaceable>hook</replaceable>是<literal>NULL</literal>，则会重新安装默认处理器。否则，应用程序需要传入一个回调函数指针，其签名如下：
-<programlisting>
-int hook_fn(PGauthData type, PGconn *conn, void *data);
-</programlisting>
-        当应用程序需要执行某个动作时，<application>libpq</application>会调用该回调。<replaceable>type</replaceable>描述所提出的请求，<replaceable>conn</replaceable>是正在认证的连接句柄，而<replaceable>data</replaceable>指向该请求特有的元数据。这个指针所指内容由<replaceable>type</replaceable>决定；支持的列表见<xref linkend="libpq-oauth-authdata-hooks-types"/>。
-       </para>
-       <para>
-        钩子可以串联起来，以支持协作式和/或回退式行为。一般来说，钩子实现应检查传入的<replaceable>type</replaceable>（以及可能的请求元数据和/或当前<replaceable>conn</replaceable>的设置），以决定是否处理某一项 authdata。如果不处理，则应把请求委托给链中的前一个钩子（可通过<function>PQgetAuthDataHook</function>获取）。
-       </para>
-       <para>
-        返回一个大于零的整数表示成功。返回负整数表示发生错误并放弃此次连接尝试。（值零保留给默认实现。）
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="libpq-PQgetAuthDataHook">
-      <term><function>PQgetAuthDataHook</function><indexterm><primary>PQgetAuthDataHook</primary></indexterm></term>
-
-      <listitem>
-       <para>
-        获取当前的<symbol>PGauthDataHook</symbol>值。
-<synopsis>
-PQauthDataHook_type PQgetAuthDataHook(void);
-</synopsis>
-        在初始化阶段（即首次调用<function>PQsetAuthDataHook</function>之前），该函数会返回<symbol>PQdefaultAuthDataHook</symbol>。
-       </para>
-      </listitem>
-     </varlistentry>
-    </variablelist>
-   </para>
-
-   <sect3 id="libpq-oauth-authdata-hooks-types">
-    <title>钩子类型</title>
-    <para>
-     下面定义了这些<symbol>PGauthData</symbol>类型及其对应的<replaceable>data</replaceable>结构：
-
-     <variablelist>
-      <varlistentry id="libpq-oauth-authdata-prompt-oauth-device">
-       <term>
-        <symbol>PQAUTHDATA_PROMPT_OAUTH_DEVICE</symbol>
-        <indexterm><primary>PQAUTHDATA_PROMPT_OAUTH_DEVICE</primary></indexterm>
-       </term>
-       <listitem>
-        <para>
-         在内置的设备授权客户端流程期间，替换默认的用户提示。<replaceable>data</replaceable>指向一个<symbol>PGpromptOAuthDevice</symbol>实例：
-<synopsis>
-typedef struct _PGpromptOAuthDevice
-{
-    const char *verification_uri;   /* verification URI to visit */
-    const char *user_code;          /* user code to enter */
-    const char *verification_uri_complete;  /* optional combination of URI and
-                                             * code, or NULL */
-    int         expires_in;         /* seconds until user code expires */
-} PGpromptOAuthDevice;
-</synopsis>
-        </para>
-        <para>
-         可被<link linkend="configure-option-with-libcurl">包含</link>在<application>libpq</application>中的 OAuth Device Authorization 流程要求最终用户使用浏览器访问一个 URL，然后输入一个代码，以允许<application>libpq</application>代表其连接到服务器。默认提示只是把<literal>verification_uri</literal>和<literal>user_code</literal>打印到标准错误。替换实现可以按任意偏好的方式展示这些信息，例如使用 GUI。
-        </para>
-        <para>
-         该回调只会在内置设备授权流程中被调用。如果应用程序安装了<link linkend="libpq-oauth-authdata-oauth-bearer-token">自定义 OAuth 流程</link>，或者<application>libpq</application>构建时未启用内置流程支持，则不会使用这种 authdata 类型。
-        </para>
-        <para>
-         如果提供了非空的<structfield>verification_uri_complete</structfield>，则可以选择把它用于非文本形式的验证（例如显示二维码）。在这种情况下，仍应向最终用户显示 URL 和用户代码，因为该代码需要由提供者手工确认，而 URL 也使得用户在无法使用非文本方式时仍可继续。更多信息见
-         <ulink url="https://datatracker.ietf.org/doc/html/rfc8628#section-3.3.1">RFC 8628 第 3.3.1 节</ulink>。
-        </para>
-       </listitem>
-      </varlistentry>
-
-      <varlistentry id="libpq-oauth-authdata-oauth-bearer-token">
-       <term>
-        <symbol>PQAUTHDATA_OAUTH_BEARER_TOKEN</symbol>
-        <indexterm><primary>PQAUTHDATA_OAUTH_BEARER_TOKEN</primary></indexterm>
-       </term>
-       <listitem>
-        <para>
-         添加一个自定义流程实现；如果内置流程已<link linkend="configure-option-with-libcurl">安装</link>，则用它替换内置流程。该钩子应当要么直接返回一个适用于当前 user/issuer/scope 组合的 Bearer 令牌（如果能在不阻塞的情况下获得），要么设置一个异步回调来获取令牌。
-        </para>
-        <para>
-         <replaceable>data</replaceable>指向一个<symbol>PGoauthBearerRequest</symbol>实例，应该由实现填充：
-<synopsis>
-typedef struct PGoauthBearerRequest
-{
-    /* Hook inputs (constant across all calls) */
-    const char *openid_configuration; /* OIDC discovery URL */
-    const char *scope;                /* required scope(s), or NULL */
-
-    /* Hook outputs */
-
-    /*
-     * Callback implementing a custom asynchronous OAuth flow. The signature is
-     * platform-dependent: PQ_SOCKTYPE is SOCKET on Windows, and int everywhere
-     * else.
-     */
-    PostgresPollingStatusType (*async) (PGconn *conn,
-                                        struct PGoauthBearerRequest *request,
-                                        PQ_SOCKTYPE *altsock);
-
-    /* Callback to clean up custom allocations. */
-    void        (*cleanup) (PGconn *conn, struct PGoauthBearerRequest *request);
-
-    char       *token;   /* acquired Bearer token */
-    void       *user;    /* hook-defined allocated data */
-} PGoauthBearerRequest;
-</synopsis>
-        </para>
-        <para>
-         <application>libpq</application>会向该钩子提供两项信息：<replaceable>openid_configuration</replaceable>包含描述授权服务器所支持流程的 OAuth 发现文档 URL，而<replaceable>scope</replaceable>包含访问服务器所需的 OAuth scope 列表（以空格分隔，可以为空）。两者中的任意一个或两个都可能为<literal>NULL</literal>，表示无法发现该信息。（在这种情况下，实现可以通过其他预先配置的知识来确定要求，或者选择失败。）
-        </para>
-        <para>
-         该钩子的最终输出是<replaceable>token</replaceable>，它必须指向一个可在该连接上使用的有效 Bearer 令牌。（该令牌应由<xref linkend="libpq-connect-oauth-issuer"/>所指定的发行者签发，并持有所请求的 scope，否则连接会被服务器的验证器模块拒绝。）分配得到的令牌字符串必须在<application>libpq</application>完成连接之前始终有效；该钩子应设置<replaceable>cleanup</replaceable>回调，以便在<application>libpq</application>不再需要该令牌时调用。
-        </para>
-        <para>
-         如果某个实现无法在首次调用钩子时立即产生<replaceable>token</replaceable>，则应设置<replaceable>async</replaceable>回调，以处理与授权服务器之间的非阻塞通信。
-         <footnote>
-          <para>
-           在<symbol>PQAUTHDATA_OAUTH_BEARER_TOKEN</symbol>钩子回调中执行阻塞操作，会干扰诸如<function>PQconnectPoll</function>之类的非阻塞连接 API，并阻止并发连接继续推进。那些只使用同步连接原语（例如<function>PQconnectdb</function>）的应用程序，可以在钩子中同步获取令牌，而不是实现<replaceable>async</replaceable>回调，但这样它们必然一次只能处理一个连接。
-          </para>
-         </footnote>
-         从钩子返回后，将立即调用该回调以启动流程。当回调在不阻塞的情况下无法继续推进时，它应在设置<literal>*altsock</literal>后返回<symbol>PGRES_POLLING_READING</symbol>或<symbol>PGRES_POLLING_WRITING</symbol>，其中<literal>*altsock</literal>是当可以再次取得进展时会被标记为可读/可写的文件描述符。（然后，这个描述符会通过<function>PQsocket()</function>提供给顶层轮询循环。）当流程完成时，在设置好<replaceable>token</replaceable>之后返回<symbol>PGRES_POLLING_OK</symbol>；如果失败，则返回<symbol>PGRES_POLLING_FAILED</symbol>。
-        </para>
-        <para>
-         实现可能希望在多次调用<replaceable>async</replaceable>和<replaceable>cleanup</replaceable>回调之间保存额外的数据用于记账。为此提供了<replaceable>user</replaceable>指针；<application>libpq</application>不会触碰其内容，应用程序可以按自己的需要使用它。（记得在令牌清理时释放相关分配。）
-        </para>
-       </listitem>
-      </varlistentry>
-     </variablelist>
-    </para>
-   </sect3>
-  </sect2>
-
-  <sect2 id="libpq-oauth-debugging">
-   <title>调试与开发者设置</title>
-
-   <para>
-    通过设置环境变量<envar>PGOAUTHDEBUG=UNSAFE</envar>，可以启用一种<quote>危险的调试模式</quote>。该功能仅用于便于本地开发和测试。它会做一些你绝不会希望生产系统去做的事情：
-
-    <itemizedlist spacing="compact">
-     <listitem>
-      <para>
-       允许在与 OAuth 提供者交互期间使用未加密的 HTTP
-      </para>
-     </listitem>
-     <listitem>
-      <para>
-       允许使用环境变量<envar>PGOAUTHCAFILE</envar>完全替换系统受信任的 CA 列表
-      </para>
-     </listitem>
-     <listitem>
-      <para>
-       在 OAuth 流程期间把 HTTP 流量（其中包含多个关键机密）打印到标准错误
-      </para>
-     </listitem>
-     <listitem>
-      <para>
-       允许使用零秒重试间隔，这可能导致客户端忙等并无谓地消耗 CPU
-      </para>
-     </listitem>
-    </itemizedlist>
-   </para>
-   <warning>
-    <para>
-     不要把 OAuth 流量的输出分享给第三方。它包含可被用来攻击你的客户端和服务器的机密。
-    </para>
-   </warning>
-  </sect2>
- </sect1>
-
  <sect1 id="libpq-threading">
   <title>在线程化程序中的行为</title>
 
@@ -7962,10 +7647,6 @@ int PQisthreadsafe();
 
   <para>
    如果你在应用程序中使用 Kerberos（除了<application>libpq</application>内部之外），则需要在 Kerberos 调用周围加锁，因为 Kerberos 函数不是线程安全的。可参考<application>libpq</application>源代码中的<function>PQregisterThreadLock</function>函数，它提供了一种在<application>libpq</application>与应用程序之间协作加锁的方法。
-  </para>
-
-  <para>
-   同样地，如果你在应用程序中使用<productname>Curl</productname>，并且在启动新线程之前还没有先对 libcurl 进行<ulink url="https://curl.se/libcurl/c/curl_global_init.html">全局初始化</ulink>，那么你也需要通过<function>PQregisterThreadLock</function>协作地为任何可能初始化 libcurl 的代码加锁。对于支持线程安全初始化的较新版本<productname>Curl</productname>，这一限制已被解除；这类构建可以通过其版本元数据中声明的<literal>threadsafe</literal>特性识别出来。
   </para>
  </sect1>
 

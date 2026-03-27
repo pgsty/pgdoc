@@ -14,7 +14,7 @@
  </para>
 
  <para>
-  本文描述协议 3.2 版本，该版本在 <productname>PostgreSQL</productname> 18 中引入。服务器和 libpq 客户端库向后兼容 <productname>PostgreSQL</productname> 7.4 及以后版本实现的协议 3.0。
+  本文描述协议 3.0 版本，自 <productname>PostgreSQL</productname> 7.4 起实现。对早期协议版本的说明可参见之前发布的 <productname>PostgreSQL</productname> 文档。一台服务器可以支持多个协议版本。初始的启动请求消息会告知服务器客户端正在尝试使用哪个协议版本。如果客户端请求的主版本号不被服务器支持，连接将被拒绝（例如，如果客户端请求协议版本 4.0，在撰写本文时该版本尚不存在，就会发生这种情况）。如果客户端请求的次版本号不被服务器支持（如客户端请求 3.1 但服务器仅支持 3.0），服务器可能会拒绝连接，也可能会用一个 NegotiateProtocolVersion 消息进行响应，其中包含它所支持的最高次协议版本号。客户端可以选择使用指定的协议版本继续连接，也可以中止连接。
  </para>
 
   <para>
@@ -98,61 +98,6 @@
   <para>
    整数的二进制表示采用网络字节序（最高有效字节在前）。至于其他数据类型，请查阅文档或源代码了解其二进制表示形式。要注意，复杂数据类型的二进制表示可能会在不同服务器版本之间发生变化；文本格式通常是可移植性更好的选择。
   </para>
-  </sect2>
-
-  <sect2 id="protocol-versions">
-   <title>协议版本</title>
-
-   <para>
-    当前最新协议版本为 3.2。不过，为了兼容尚不支持版本协商的旧服务器和中间件，libpq 默认仍使用 3.0。
-   </para>
-
-   <para>
-    单个服务器可以支持多个协议版本。初始启动请求消息会告诉服务器客户端尝试使用的协议版本。如果客户端请求的主版本服务器不支持，则连接会被拒绝（例如客户端请求 4.0，而截至本文编写时并不存在该版本）。如果客户端请求的次版本服务器不支持（例如客户端请求 3.2，但服务器只支持 3.0），服务器可以拒绝连接，也可以返回 NegotiateProtocolVersion 消息并给出其支持的最高次版本。客户端随后可以选择按该版本继续连接，或中止连接。
-   </para>
-
-   <para>
-    协议版本协商在 <productname>PostgreSQL</productname> 9.3.21 中引入。更早版本在客户端请求不支持的次版本时会直接拒绝连接。
-   </para>
-
-   <para>
-    <xref linkend="protocol-versions-table"/> 给出了当前支持的协议版本。
-   </para>
-
-   <table id="protocol-versions-table">
-    <title>协议版本</title>
-
-    <tgroup cols="3">
-     <thead>
-      <row>
-       <entry>版本</entry>
-       <entry>支持范围</entry>
-       <entry>说明</entry>
-      </row>
-     </thead>
-     <tbody>
-      <row>
-       <entry>3.2</entry>
-       <entry>PostgreSQL 18 及以后</entry>
-       <entry>当前最新版本。用于取消查询的 secret key 从 4 字节扩展为可变长度字段；BackendKeyData 与 CancelRequest 消息相应调整为可变长度负载。</entry>
-      </row>
-      <row>
-       <entry>3.1</entry>
-       <entry>-</entry>
-       <entry>保留。PostgreSQL 从未使用 3.1；之所以跳过该版本，是因为旧版 pgbouncer 在协议协商中存在缺陷，会错误宣称支持 3.1。</entry>
-      </row>
-      <row>
-       <entry>3.0</entry>
-       <entry>PostgreSQL 7.4 及以后</entry>
-      </row>
-      <row>
-       <entry>2.0</entry>
-       <entry>至 PostgreSQL 13</entry>
-       <entry>详见旧版本 <productname>PostgreSQL</productname> 文档。</entry>
-      </row>
-     </tbody>
-    </tgroup>
-   </table>
   </sect2>
  </sect1>
 
@@ -1003,8 +948,8 @@ SELCT 1/0;<!-- this typo is intentional -->
   <title>SASL认证</title>
 
   <para>
-   <firstterm>SASL</firstterm>是面向连接协议中的认证框架。目前，<productname>PostgreSQL</productname>实现了三种 SASL 机制：SCRAM-SHA-256、SCRAM-SHA-256-PLUS 和 OAUTHBEARER。未来可能继续增加。下面的步骤说明 SASL 认证的一般流程，后续小节将介绍具体机制细节。
-</para>
+   <firstterm>SASL</firstterm>是面向连接协议中的认证框架。目前，<productname>PostgreSQL</productname>实现了两种 SASL 机制：SCRAM-SHA-256 和 SCRAM-SHA-256-PLUS。未来可能继续增加。下面的步骤说明 SASL 认证的一般流程，后续小节将介绍具体机制细节。
+  </para>
 
   <procedure>
 
@@ -1137,70 +1082,6 @@ SELCT 1/0;<!-- this typo is intentional -->
   </procedure>
  </sect2>
 
-  <sect2 id="sasl-oauthbearer">
-   <title>OAUTHBEARER 认证</title>
-
-   <para>
-    <literal>OAUTHBEARER</literal> 是一种基于令牌的联合认证机制，详见
-    <ulink url="https://datatracker.ietf.org/doc/html/rfc7628">RFC 7628</ulink>。
-   </para>
-
-   <para>
-    典型交互取决于客户端是否已经为当前用户缓存 bearer token。若没有，通常会经历两次连接：第一次“发现连接”用于从服务器获取 OAuth 元数据，第二次连接在客户端拿到 token 后再发送 token。（libpq 当前内置流程尚未实现缓存，因此使用两连接流程。）
-   </para>
-
-   <para>
-    该机制与 SCRAM 一样由客户端发起。客户端初始响应由 SCRAM 使用的标准 GS2 头部加上一组 <literal>key=value</literal> 对组成。当前服务器仅支持 <literal>auth</literal> 键（即 bearer token）。<literal>OAUTHBEARER</literal> 还定义了三个可选组成（GS2 头部中的 <literal>authzid</literal>，以及 <structfield>host</structfield>/<structfield>port</structfield>），当前服务器会忽略它们。
-   </para>
-
-   <para>
-    <literal>OAUTHBEARER</literal> 不支持通道绑定，因此不存在 “OAUTHBEARER-PLUS”。该机制在成功认证时不使用额外服务器数据，所以不会使用 AuthenticationSASLFinal 消息。
-   </para>
-
-   <procedure>
-    <title>示例</title>
-    <step>
-     <para>
-      第一次交互时，服务器发送 AuthenticationSASL，并在机制列表中声明 <literal>OAUTHBEARER</literal>。
-     </para>
-    </step>
-    <step>
-     <para>
-      客户端发送 SASLInitialResponse 并选择 <literal>OAUTHBEARER</literal>。若尚无可用 token，则 <structfield>auth</structfield> 为空，表示这是发现连接。
-     </para>
-    </step>
-    <step>
-     <para>
-      服务器发送 AuthenticationSASLContinue，包含错误 <literal>status</literal>、well-known URI 以及客户端应使用的 scopes。
-     </para>
-    </step>
-    <step>
-     <para>
-      客户端发送 SASLResponse，内容为空集合（单个 <literal>0x01</literal> 字节），结束发现阶段的客户端半程。
-     </para>
-    </step>
-    <step>
-     <para>
-      服务器发送 ErrorMessage，使第一次交互失败。随后客户端按配置和服务器提供的元数据执行 OAuth 流程以获取 token。（具体获取方式由客户端实现决定，OAUTHBEARER 不强制规定。）
-     </para>
-    </step>
-    <step>
-     <para>
-      客户端拿到 token 后重新连接；服务器再次发送 AuthenticationSASL，并声明 <literal>OAUTHBEARER</literal>。
-     </para>
-    </step>
-    <step>
-     <para>
-      客户端再次发送 SASLInitialResponse，这次在 <structfield>auth</structfield> 中携带 bearer token。
-     </para>
-    </step>
-    <step>
-     <para>
-      服务器按令牌提供方规则校验 token。若客户端被授权连接，服务器发送 AuthenticationOk，认证完成。
-     </para>
-    </step>
-   </procedure>
-  </sect2>
  </sect1>
 
  <sect1 id="protocol-replication">
@@ -3268,7 +3149,7 @@ psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
       </varlistentry>
      </variablelist>
      <para>
-      在协议 3.2 之前，secret key 固定为 4 字节。
+      secret key 为 4 字节。
      </para>
     </listitem>
    </varlistentry>
@@ -3506,7 +3387,7 @@ psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
       </varlistentry>
      </variablelist>
      <para>
-      在协议 3.2 之前，secret key 固定为 4 字节。
+      secret key 为 4 字节。
      </para>
     </listitem>
    </varlistentry>

@@ -29,17 +29,16 @@
   </indexterm>
 
   <para>
-   归档库是通过动态加载共享库的方式载入的，该共享库以<xref linkend="guc-archive-library"/>的名称作为库基名。定位该库时使用常规的库搜索路径。为了提供所需的归档模块回调，并表明该库确实是一个归档模块，它需要提供一个名为<function>_PG_archive_module_init</function>的函数。该函数必须返回一个指向<structname>ArchiveModuleCallbacks</structname>结构体的指针，其中包含核心代码使用该归档模块所需了解的全部信息。返回值需要具有服务器生命周期，这通常可以通过在全局作用域中将其定义为<literal>static const</literal>变量来实现。
+   归档库是通过动态加载共享库的方式载入的，该共享库以<xref linkend="guc-archive-library"/>的名称作为库基名。定位该库时使用常规的库搜索路径。为了提供所需的归档模块回调，并表明该库确实是一个归档模块，它需要提供一个名为<function>_PG_archive_module_init</function>的函数。该函数接收一个需要用各个操作的回调函数指针来填充的结构体。
 
 <programlisting>
 typedef struct ArchiveModuleCallbacks
 {
-    ArchiveStartupCB startup_cb;
     ArchiveCheckConfiguredCB check_configured_cb;
     ArchiveFileCB archive_file_cb;
     ArchiveShutdownCB shutdown_cb;
 } ArchiveModuleCallbacks;
-typedef const ArchiveModuleCallbacks *(*ArchiveModuleInit) (void);
+typedef void (*ArchiveModuleInit) (struct ArchiveModuleCallbacks *cb);
 </programlisting>
 
    只有<function>archive_file_cb</function>回调是必需的，其余回调都是可选的。
@@ -53,18 +52,6 @@ typedef const ArchiveModuleCallbacks *(*ArchiveModuleInit) (void);
    归档回调定义了模块的实际归档行为。服务器会根据需要调用它们来处理每一个 WAL 文件。
   </para>
 
-  <sect2 id="archive-module-startup">
-   <title>启动回调</title>
-
-   <para>
-    <function>startup_cb</function>回调会在模块载入后不久被调用。该回调可用于执行所需的额外初始化。如果归档模块需要维护任何状态，可以使用<structfield>state->private_data</structfield>来存储这些状态。
-
-<programlisting>
-typedef void (*ArchiveStartupCB) (ArchiveModuleState *state);
-</programlisting>
-   </para>
-  </sect2>
-
   <sect2 id="archive-module-check">
    <title>检查回调</title>
 
@@ -72,7 +59,7 @@ typedef void (*ArchiveStartupCB) (ArchiveModuleState *state);
     <function>check_configured_cb</function>回调用于判断模块是否已完成配置并准备好接收 WAL 文件（例如，它的配置参数是否已经设置为有效值）。如果没有定义<function>check_configured_cb</function>，服务器始终假定该模块已经配置完毕。
 
 <programlisting>
-typedef bool (*ArchiveCheckConfiguredCB) (ArchiveModuleState *state);
+typedef bool (*ArchiveCheckConfiguredCB) (void);
 </programlisting>
 
     如果返回<literal>true</literal>，服务器就会通过调用<function>archive_file_cb</function>回调继续归档该文件。如果返回<literal>false</literal>，则不会继续归档，归档器会向服务器日志输出如下消息：
@@ -81,12 +68,6 @@ WARNING:  archive_mode enabled, yet archiving is not configured
 </screen>
     在后一种情况下，服务器会周期性地调用此函数，只有当它返回<literal>true</literal>时，归档才会继续。
    </para>
-
-   <note>
-    <para>
-     当返回<literal>false</literal>时，给这个通用警告消息附加一些额外信息可能会很有帮助。要做到这一点，可以在返回<literal>false</literal>之前，向<function>arch_module_check_errdetail</function>宏提供一条消息。与<function>errdetail()</function>一样，这个宏接受一个格式字符串以及可选的参数列表。生成的字符串会作为该警告消息的<literal>DETAIL</literal>行输出。
-    </para>
-   </note>
   </sect2>
 
   <sect2 id="archive-module-archive">
@@ -96,27 +77,21 @@ WARNING:  archive_mode enabled, yet archiving is not configured
     <function>archive_file_cb</function>回调用于归档单个 WAL 文件。
 
 <programlisting>
-typedef bool (*ArchiveFileCB) (ArchiveModuleState *state, const char *file, const char *path);
+typedef bool (*ArchiveFileCB) (const char *file, const char *path);
 </programlisting>
 
-    如果返回<literal>true</literal>，服务器就会按该文件已成功归档来继续处理，这可能包括回收或移除原始 WAL 文件。如果返回<literal>false</literal>，或者抛出错误，服务器将保留原始 WAL 文件，并在稍后重试归档。<replaceable>file</replaceable>只包含待归档 WAL 文件的文件名，而<replaceable>path</replaceable>包含该 WAL 文件的完整路径（包括文件名）。
+    如果返回<literal>true</literal>，服务器就会按该文件已成功归档来继续处理，这可能包括回收或移除原始 WAL 文件。如果返回<literal>false</literal>，服务器将保留原始 WAL 文件，并在稍后重试归档。<replaceable>file</replaceable>只包含待归档 WAL 文件的文件名，而<replaceable>path</replaceable>包含该 WAL 文件的完整路径（包括文件名）。
    </para>
-
-   <note>
-    <para>
-     <function>archive_file_cb</function>回调是在一个短生命周期的内存上下文中调用的，该上下文会在每次调用之间被重置。如果你需要生命周期更长的存储，请在模块的<function>startup_cb</function>回调中创建一个内存上下文。
-    </para>
-   </note>
   </sect2>
 
   <sect2 id="archive-module-shutdown">
    <title>关闭回调</title>
 
    <para>
-    当归档器进程退出（例如发生错误之后），或者<xref linkend="guc-archive-library"/>的值发生变化时，会调用<function>shutdown_cb</function>回调。如果没有定义<function>shutdown_cb</function>，在这些情况下就不会采取特殊操作。如果归档模块维护了任何状态，该回调应负责释放这些状态，以避免泄漏。
+    当归档器进程退出（例如发生错误之后），或者<xref linkend="guc-archive-library"/>的值发生变化时，会调用<function>shutdown_cb</function>回调。如果没有定义<function>shutdown_cb</function>，在这些情况下就不会采取特殊操作。
 
 <programlisting>
-typedef void (*ArchiveShutdownCB) (ArchiveModuleState *state);
+typedef void (*ArchiveShutdownCB) (void);
 </programlisting>
    </para>
   </sect2>

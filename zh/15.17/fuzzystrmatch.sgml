@@ -1,7 +1,7 @@
 <!-- doc/src/sgml/fuzzystrmatch.sgml -->
 
 <sect1 id="fuzzystrmatch" xreflabel="fuzzystrmatch">
- <title>fuzzystrmatch &mdash; 确定字符串的相似性和距离</title>
+ <title>fuzzystrmatch</title>
 
  <indexterm zone="fuzzystrmatch">
   <primary>fuzzystrmatch</primary>
@@ -15,8 +15,7 @@
   <para>
    目前，<function>soundex</function>、<function>metaphone</function>、
    <function>dmetaphone</function> 和 <function>dmetaphone_alt</function> 函数
-   不能很好地处理多字节编码（例如 UTF-8）。对于这类数据，请使用
-   <function>daitch_mokotoff</function> 或 <function>levenshtein</function>。
+   不能很好地处理多字节编码（例如 UTF-8）。
   </para>
  </caution>
 
@@ -25,7 +24,7 @@
   <literal>CREATE</literal> 权限的非超级用户也可以安装它。
  </para>
 
- <sect2 id="fuzzystrmatch-soundex">
+ <sect2>
   <title>Soundex</title>
 
   <para>
@@ -84,151 +83,7 @@ SELECT * FROM s WHERE difference(s.nm, 'john') &gt; 2;
 </programlisting>
  </sect2>
 
- <sect2 id="fuzzystrmatch-daitch-mokotoff">
-  <title>Daitch-Mokotoff Soundex</title>
-
-  <para>
-   与原始的 Soundex 系统一样，Daitch-Mokotoff Soundex 也是通过将发音相近的名字
-   转换为相同代码来进行匹配。不过，与原始系统相比，Daitch-Mokotoff Soundex
-   对非英语名字要有用得多。相对于原始系统，主要改进包括：
-
-   <itemizedlist spacing="compact" mark="bullet">
-    <listitem>
-     <para>
-      代码基于前六个有意义的字母，而不是前四个。
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      一个字母或字母组合可映射为十种可能的代码，而不是七种。
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      如果两个连续字母只对应一个发音，则它们会被编码为单个数字。
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      当某个字母或字母组合可能有不同发音时，会生成多个代码以覆盖所有可能性。
-     </para>
-    </listitem>
-   </itemizedlist>
-  </para>
-
-  <indexterm>
-   <primary>daitch_mokotoff</primary>
-  </indexterm>
-
-  <para>
-   该函数为输入生成 Daitch-Mokotoff Soundex 代码：
-  </para>
-
-<synopsis>
-daitch_mokotoff(<parameter>source</parameter> text) 返回 text[]
-</synopsis>
-
-  <para>
-   结果可能包含一个或多个代码，取决于存在多少种合理的发音，因此以数组表示。
-  </para>
-
-  <para>
-   由于 Daitch-Mokotoff Soundex 代码仅由 6 个数字组成，
-   <parameter>source</parameter> 最好是单个单词或名字。
-  </para>
-
-  <para>
-   下面是一些示例：
-  </para>
-
-<programlisting>
-SELECT daitch_mokotoff('George');
- daitch_mokotoff
------------------
- {595000}
-
-SELECT daitch_mokotoff('John');
- daitch_mokotoff
------------------
- {160000,460000}
-
-SELECT daitch_mokotoff('Bierschbach');
-                      daitch_mokotoff
------------------------------------------------------------
- {794575,794574,794750,794740,745750,745740,747500,747400}
-
-SELECT daitch_mokotoff('Schwartzenegger');
- daitch_mokotoff
------------------
- {479465}
-</programlisting>
-
-  <para>
-   对于单个名字的匹配，可以直接使用 <literal>&amp;&amp;</literal> 操作符比较返回的
-   text 数组：只要存在任意重叠就可视为匹配。为提高效率，可以使用 GIN 索引，
-   见 <xref linkend="gin"/> 以及下面的示例：
-  </para>
-
-<programlisting>
-CREATE TABLE s (nm text);
-CREATE INDEX ix_s_dm ON s USING gin (daitch_mokotoff(nm)) WITH (fastupdate = off);
-
-INSERT INTO s (nm) VALUES
-  ('Schwartzenegger'),
-  ('John'),
-  ('James'),
-  ('Steinman'),
-  ('Steinmetz');
-
-SELECT * FROM s WHERE daitch_mokotoff(nm) &amp;&amp; daitch_mokotoff('Swartzenegger');
-SELECT * FROM s WHERE daitch_mokotoff(nm) &amp;&amp; daitch_mokotoff('Jane');
-SELECT * FROM s WHERE daitch_mokotoff(nm) &amp;&amp; daitch_mokotoff('Jens');
-</programlisting>
-
-  <para>
-   若要对任意数量、任意顺序的名字进行索引和匹配，可以使用全文检索功能。
-   见 <xref linkend="textsearch"/> 以及下面的示例：
-  </para>
-
-<programlisting>
-CREATE FUNCTION soundex_tsvector(v_name text) RETURNS tsvector
-BEGIN ATOMIC
-  SELECT to_tsvector('simple',
-                     string_agg(array_to_string(daitch_mokotoff(n), ' '), ' '))
-  FROM regexp_split_to_table(v_name, '\s+') AS n;
-END;
-
-CREATE FUNCTION soundex_tsquery(v_name text) RETURNS tsquery
-BEGIN ATOMIC
-  SELECT string_agg('(' || array_to_string(daitch_mokotoff(n), '|') || ')', '&amp;')::tsquery
-  FROM regexp_split_to_table(v_name, '\s+') AS n;
-END;
-
-CREATE TABLE s (nm text);
-CREATE INDEX ix_s_txt ON s USING gin (soundex_tsvector(nm)) WITH (fastupdate = off);
-
-INSERT INTO s (nm) VALUES
-  ('John Doe'),
-  ('Jane Roe'),
-  ('Public John Q.'),
-  ('George Best'),
-  ('John Yamson');
-
-SELECT * FROM s WHERE soundex_tsvector(nm) @@ soundex_tsquery('john');
-SELECT * FROM s WHERE soundex_tsvector(nm) @@ soundex_tsquery('jane doe');
-SELECT * FROM s WHERE soundex_tsvector(nm) @@ soundex_tsquery('john public');
-SELECT * FROM s WHERE soundex_tsvector(nm) @@ soundex_tsquery('besst, giorgio');
-SELECT * FROM s WHERE soundex_tsvector(nm) @@ soundex_tsquery('Jameson John');
-</programlisting>
-
-  <para>
-   如果希望在索引重新检查时避免重新计算 soundex 代码，可以使用单独列上的索引
-   来代替表达式索引。为此可使用存储生成列；参见
-   <xref linkend="ddl-generated-columns"/>。
-  </para>
- </sect2>
-
- <sect2 id="fuzzystrmatch-levenshtein">
+ <sect2>
   <title>Levenshtein</title>
 
   <para>
@@ -244,10 +99,10 @@ SELECT * FROM s WHERE soundex_tsvector(nm) @@ soundex_tsquery('Jameson John');
   </indexterm>
 
 <synopsis>
-levenshtein(source text, target text, ins_cost int, del_cost int, sub_cost int) 返回 int
-levenshtein(source text, target text) 返回 int
-levenshtein_less_equal(source text, target text, ins_cost int, del_cost int, sub_cost int, max_d int) 返回 int
-levenshtein_less_equal(source text, target text, max_d int) 返回 int
+levenshtein(text source, text target, int ins_cost, int del_cost, int sub_cost) 返回 int
+levenshtein(text source, text target) 返回 int
+levenshtein_less_equal(text source, text target, int ins_cost, int del_cost, int sub_cost, int max_d) 返回 int
+levenshtein_less_equal(text source, text target, int max_d) 返回 int
 </synopsis>
 
   <para>
@@ -296,7 +151,7 @@ test=# SELECT levenshtein_less_equal('extensive', 'exhaustive', 4);
 </screen>
  </sect2>
 
- <sect2 id="fuzzystrmatch-metaphone">
+ <sect2>
   <title>Metaphone</title>
 
   <para>
@@ -313,7 +168,7 @@ test=# SELECT levenshtein_less_equal('extensive', 'exhaustive', 4);
   </indexterm>
 
 <synopsis>
-metaphone(source text, max_output_length int) 返回 text
+metaphone(text source, int max_output_length) 返回 text
 </synopsis>
 
   <para>
@@ -335,7 +190,7 @@ test=# SELECT metaphone('GUMBO', 4);
 </screen>
  </sect2>
 
- <sect2 id="fuzzystrmatch-double-metaphone">
+ <sect2>
   <title>Double Metaphone</title>
 
   <para>
@@ -354,8 +209,8 @@ test=# SELECT metaphone('GUMBO', 4);
   </indexterm>
 
 <synopsis>
-dmetaphone(source text) 返回 text
-dmetaphone_alt(source text) 返回 text
+dmetaphone(text source) 返回 text
+dmetaphone_alt(text source) 返回 text
 </synopsis>
 
   <para>

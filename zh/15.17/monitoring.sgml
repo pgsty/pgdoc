@@ -318,12 +318,6 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
 
      <row>
-      <entry><structname>pg_stat_io</structname><indexterm><primary>pg_stat_io</primary></indexterm></entry>
-      <entry>对于每种后端类型、上下文和目标对象的组合各有一行，包含集簇范围的 I/O 统计信息。有关详细信息，请参阅<link linkend="monitoring-pg-stat-io-view"><structname>pg_stat_io</structname></link>。
-     </entry>
-     </row>
-
-     <row>
       <entry><structname>pg_stat_wal</structname><indexterm><primary>pg_stat_wal</primary></indexterm></entry>
       <entry>只有一行，显示有关 WAL 活动的统计信息。有关详细信息，请参阅<link linkend="monitoring-pg-stat-wal-view"><structname>pg_stat_wal</structname></link>。
       </entry>
@@ -467,8 +461,8 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
   </para>
 
   <para>
-   <structname>pg_stat_io</structname> 和 <structname>pg_statio_</structname> 系列视图对于确定缓冲区缓存的有效性很有用，它们可用于计算缓存命中率。请注意，尽管<productname>PostgreSQL</productname> 的 I/O 统计信息捕获了内核被调用以执行 I/O 的大多数情况，但它们并不区分必须从磁盘读取的数据和已经存在于内核页面缓存中的数据。建议将<productname>PostgreSQL</productname>统计视图与操作系统工具结合使用，以更全面地了解数据库的 I/O 性能。
-</para>
+   <structname>pg_statio_</structname>视图对于判断缓冲区缓存的有效性非常有用。当实际磁盘读取的数量远小于缓冲区命中的数量时，缓存正在满足大多数读取请求而不需要调用内核。然而，这些统计信息并不能说明全部情况：由于<productname>PostgreSQL</productname>处理磁盘I/O的方式，不在<productname>PostgreSQL</productname>缓冲区缓存中的数据仍然可能驻留在内核的I/O缓存中，因此可能不需要物理读取。建议将<productname>PostgreSQL</productname>统计视图与允许深入了解内核I/O处理的操作系统工具结合使用，以获得更详细的<productname>PostgreSQL</productname> I/O行为信息。
+  </para>
 
  </sect2>
 
@@ -533,7 +527,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
        <structfield>leader_pid</structfield> <type>integer</type>
       </para>
       <para>
-       如果该进程是并行查询工作进程，则为并行组领导者的进程 ID；如果该进程是并行应用工作进程，则为领导应用工作进程的进程 ID。<literal>NULL</literal> 表示该进程是并行组领导者或领导应用工作进程，或者不参与任何并行操作。
+       如果此进程是并行查询工作进程，则为并行组领导者的进程 ID。如果此进程是并行组领导者或者不参与并行查询，则为<literal>NULL</literal>。
       </para></entry>
      </row>
 
@@ -3400,15 +3394,6 @@ description | Waiting for a newly initialized WAL file to reach durable storage
        如果在此连接上使用了GSSAPI加密，则为真
       </para></entry>
      </row>
-
-     <row>
-      <entry role="catalog_table_entry"><para role="column_definition">
-       <structfield>credentials_delegated</structfield> <type>boolean</type>
-      </para>
-      <para>
-       如果此连接上已委派 GSSAPI 凭据，则为真
-      </para></entry>
-     </row>
     </tbody>
    </tgroup>
   </table>
@@ -3517,347 +3502,6 @@ description | Waiting for a newly initialized WAL file to reach durable storage
 
  </sect2>
 
- <sect2 id="monitoring-pg-stat-io-view">
-  <title><structname>pg_stat_io</structname></title>
-
-  <indexterm>
-   <primary>pg_stat_io</primary>
-  </indexterm>
-
-  <para>
-   <structname>pg_stat_io</structname> 视图对每种后端类型、目标 I/O 对象和 I/O 上下文的组合各提供一行，显示整个集簇范围内的 I/O 统计信息。没有意义的组合会被省略。
-  </para>
-
-  <para>
-   目前会跟踪关系（例如表、索引）的 I/O 以及 WAL 活动。不过，绕过共享缓冲区的关系 I/O（例如将表从一个表空间移动到另一个表空间时）目前不会被跟踪。
-  </para>
-
-  <table id="pg-stat-io-view" xreflabel="pg_stat_io">
-   <title><structname>pg_stat_io</structname> 视图</title>
-   <tgroup cols="1">
-    <thead>
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        列类型
-       </para>
-       <para>
-        描述
-       </para>
-      </entry>
-     </row>
-    </thead>
-    <tbody>
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>backend_type</structfield> <type>text</type>
-       </para>
-       <para>
-        后端类型（例如后台工作进程、autovacuum 工作进程）。有关 <varname>backend_type</varname> 的更多信息，请参阅<link linkend="monitoring-pg-stat-activity-view"><structname>pg_stat_activity</structname></link>。某些 <varname>backend_type</varname> 不会累计 I/O 操作统计信息，因此不会出现在该视图中。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>object</structfield> <type>text</type>
-       </para>
-       <para>
-        I/O 操作的目标对象。可能的值有：
-       </para>
-       <itemizedlist>
-        <listitem>
-         <para>
-          <literal>relation</literal>：永久关系。
-         </para>
-        </listitem>
-        <listitem>
-         <para>
-          <literal>temp relation</literal>：临时关系。
-         </para>
-        </listitem>
-        <listitem>
-         <para>
-          <literal>wal</literal>：预写式日志。
-         </para>
-        </listitem>
-       </itemizedlist>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>context</structfield> <type>text</type>
-       </para>
-       <para>
-        I/O 操作的上下文。可能的值有：
-       </para>
-       <itemizedlist>
-        <listitem>
-         <para>
-          <literal>normal</literal>：某类 I/O 操作的默认或标准 <varname>context</varname>。例如，默认情况下关系数据会读入共享缓冲区并从共享缓冲区写出，因此关系数据与共享缓冲区之间的读写会在 <varname>context</varname> 为 <literal>normal</literal> 时跟踪。
-         </para>
-        </listitem>
-        <listitem>
-         <para>
-          <literal>init</literal>：创建 WAL 段时执行的 I/O 操作会在 <varname>context</varname> 为 <literal>init</literal> 时跟踪。
-         </para>
-        </listitem>
-        <listitem>
-         <para>
-          <literal>vacuum</literal>：对永久关系执行 vacuum 和 analyze 时，在共享缓冲区之外执行的 I/O 操作。临时表 vacuum 与其他临时表 I/O 操作共用同一本地缓冲池，因此会在 <varname>context</varname> 为 <literal>normal</literal> 时跟踪。
-         </para>
-        </listitem>
-        <listitem>
-         <para>
-          <literal>bulkread</literal>：某些在共享缓冲区之外执行的大型读取 I/O 操作，例如对大表的顺序扫描。
-         </para>
-        </listitem>
-        <listitem>
-         <para>
-          <literal>bulkwrite</literal>：某些在共享缓冲区之外执行的大型写入 I/O 操作，例如 <command>COPY</command>。
-         </para>
-        </listitem>
-       </itemizedlist>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>reads</structfield> <type>bigint</type>
-       </para>
-       <para>
-        读取操作的数量。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>read_bytes</structfield> <type>numeric</type>
-       </para>
-       <para>
-        读取操作的总大小（以字节为单位）。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>read_time</structfield> <type>double precision</type>
-       </para>
-       <para>
-        等待读取操作所花费的时间，以毫秒计（如果启用了 <xref linkend="guc-track-io-timing"/> 且 <varname>object</varname> 不是 <literal>wal</literal>，或者启用了 <xref linkend="guc-track-wal-io-timing"/> 且 <varname>object</varname> 是 <literal>wal</literal>；否则为零）。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>writes</structfield> <type>bigint</type>
-       </para>
-       <para>
-        写入操作的数量。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>write_bytes</structfield> <type>numeric</type>
-       </para>
-       <para>
-        写入操作的总大小（以字节为单位）。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>write_time</structfield> <type>double precision</type>
-       </para>
-       <para>
-        等待写入操作所花费的时间，以毫秒计（如果启用了 <xref linkend="guc-track-io-timing"/> 且 <varname>object</varname> 不是 <literal>wal</literal>，或者启用了 <xref linkend="guc-track-wal-io-timing"/> 且 <varname>object</varname> 是 <literal>wal</literal>；否则为零）。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>writebacks</structfield> <type>bigint</type>
-       </para>
-       <para>
-        进程请求内核写出到永久存储的、大小为 <symbol>BLCKSZ</symbol>（通常为 8kB）的单位数量。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>writeback_time</structfield> <type>double precision</type>
-       </para>
-       <para>
-        等待写回操作所花费的时间，以毫秒计（如果启用了 <xref linkend="guc-track-io-timing"/>，否则为零）。这包括排队写出请求所花费的时间，以及可能实际写出脏数据所花费的时间。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>extends</structfield> <type>bigint</type>
-       </para>
-       <para>
-        关系扩展操作的数量。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>extend_bytes</structfield> <type>numeric</type>
-       </para>
-       <para>
-        关系扩展操作的总大小（以字节为单位）。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>extend_time</structfield> <type>double precision</type>
-       </para>
-       <para>
-        等待扩展操作所花费的时间，以毫秒计（如果启用了 <xref linkend="guc-track-io-timing"/> 且 <varname>object</varname> 不是 <literal>wal</literal>，或者启用了 <xref linkend="guc-track-wal-io-timing"/> 且 <varname>object</varname> 是 <literal>wal</literal>；否则为零）。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>hits</structfield> <type>bigint</type>
-       </para>
-       <para>
-        在共享缓冲区中找到所需块的次数。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>evictions</structfield> <type>bigint</type>
-       </para>
-       <para>
-        为了腾出空间供其他用途而将块从共享或本地缓冲区写出的次数。
-       </para>
-       <para>
-        在 <varname>context</varname> 为 <literal>normal</literal> 时，这会统计块从缓冲区中被驱逐并由另一个块替换的次数。在 <varname>context</varname> 为 <literal>bulkwrite</literal>、<literal>bulkread</literal> 和 <literal>vacuum</literal> 时，这会统计块从共享缓冲区中被驱逐，从而把该共享缓冲区加入到单独的、大小受限的环形缓冲区中以供批量 I/O 操作使用的次数。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>reuses</structfield> <type>bigint</type>
-       </para>
-       <para>
-        在 <literal>bulkread</literal>、<literal>bulkwrite</literal> 或 <literal>vacuum</literal> 这些 <varname>context</varname> 中，作为 I/O 操作一部分，位于共享缓冲区之外的大小受限环形缓冲区中已有缓冲区被重用的次数。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>fsyncs</structfield> <type>bigint</type>
-       </para>
-       <para>
-        <literal>fsync</literal> 调用次数。这些只会在 <varname>context</varname> 为 <literal>normal</literal> 时被跟踪。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>fsync_time</structfield> <type>double precision</type>
-       </para>
-       <para>
-        等待 fsync 操作所花费的时间，以毫秒计（如果启用了 <xref linkend="guc-track-io-timing"/> 且 <varname>object</varname> 不是 <literal>wal</literal>，或者启用了 <xref linkend="guc-track-wal-io-timing"/> 且 <varname>object</varname> 是 <literal>wal</literal>；否则为零）。
-       </para>
-      </entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry">
-       <para role="column_definition">
-        <structfield>stats_reset</structfield> <type>timestamp with time zone</type>
-       </para>
-       <para>
-        这些统计信息上次被重置的时间。
-       </para>
-      </entry>
-     </row>
-    </tbody>
-   </tgroup>
-  </table>
-
-  <para>
-   某些后端类型永远不会对某些 I/O 对象和/或在某些 I/O 上下文中执行 I/O 操作，这些行会从视图中省略。例如，检查点进程不会对临时表执行检查点，因此不会出现 <varname>backend_type</varname> 为 <literal>checkpointer</literal> 且 <varname>object</varname> 为 <literal>temp relation</literal> 的行。
-  </para>
-
-  <para>
-   此外，某些 I/O 操作永远不会由某些后端类型执行，或者永远不会针对某些 I/O 对象和/或在某些 I/O 上下文中执行。这些单元格会是 NULL。例如，临时表不会执行 <literal>fsync</literal>，因此当 <varname>object</varname> 为 <literal>temp relation</literal> 时，<varname>fsyncs</varname> 将为 NULL。又如，后台写入器不会执行读取，因此当 <varname>backend_type</varname> 为 <literal>background writer</literal> 时，<varname>reads</varname> 将为 NULL。
-  </para>
-
-  <para>
-   对于 <varname>object</varname> 为 <literal>wal</literal> 的行，<varname>fsyncs</varname> 和 <varname>fsync_time</varname> 跟踪在 <function>issue_xlog_fsync</function> 中完成的 WAL 文件 fsync 活动；<varname>writes</varname> 和 <varname>write_time</varname> 跟踪在 <function>XLogWrite</function> 中完成的 WAL 文件写入活动。更多信息请参阅<xref linkend="wal-configuration"/>。
-  </para>
-
-  <para>
-   <structname>pg_stat_io</structname> 可用于指导数据库调优。例如：
-   <itemizedlist>
-    <listitem>
-     <para>
-      较高的 <varname>evictions</varname> 计数可能表明应增大共享缓冲区。
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      客户端后端依赖检查点进程确保数据持久化到永久存储。客户端后端出现大量 <varname>fsyncs</varname> 可能表明共享缓冲区或检查点进程配置不当。有关配置检查点进程的更多信息，请参阅<xref linkend="wal-configuration"/>。
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      通常，客户端后端应尽可能依赖检查点进程和后台写入器等辅助进程去写出脏数据。客户端后端出现大量写入可能表明共享缓冲区或检查点进程配置不当。有关配置检查点进程的更多信息，请参阅<xref linkend="wal-configuration"/>。
-     </para>
-    </listitem>
-   </itemizedlist>
-  </para>
-
-  <note>
-   <para>
-    跟踪 I/O 等待时间的列只有在启用 <xref linkend="guc-track-io-timing"/> 时才会非零。若自上次统计信息重置以来的整个时间段内并未始终启用 <varname>track_io_timing</varname>，则用户在将这些列与对应的 I/O 操作结合引用时应格外小心。
-   </para>
-  </note>
-
- </sect2>
 
  <sect2 id="monitoring-pg-stat-bgwriter-view">
   <title><structname>pg_stat_bgwriter</structname></title>
@@ -5581,22 +5225,6 @@ description | Waiting for a newly initialized WAL file to reach durable storage
        </para>
        <para>
         返回附加到当前会话的服务器进程的进程ID。
-       </para></entry>
-      </row>
-
-      <row>
-       <entry id="pg-stat-get-backend-io" role="func_table_entry"><para role="func_signature">
-        <indexterm>
-         <primary>pg_stat_get_backend_io</primary>
-        </indexterm>
-        <function>pg_stat_get_backend_io</function> ( <type>integer</type> )
-        <returnvalue>setof record</returnvalue>
-       </para>
-       <para>
-        返回指定进程 ID 的后端的 I/O 统计信息。输出字段与 <structname>pg_stat_io</structname> 视图中的字段完全相同。
-       </para>
-       <para>
-        该函数不会返回检查点进程、后台写入器、启动进程和 自动清理启动器的 I/O 统计信息，因为这些统计信息已经在 <structname>pg_stat_io</structname> 视图中可见，而且每种都只有一个。
        </para></entry>
       </row>
 
