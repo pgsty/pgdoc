@@ -87,14 +87,14 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
 
  <sect1 id="monitoring-stats">
 
-  <title>累计统计系统</title>
+  <title>统计收集器</title>
 
   <indexterm zone="monitoring-stats">
    <primary>statistics</primary>
   </indexterm>
 
   <para>
-   <productname>PostgreSQL</productname>的<firstterm>统计收集器</firstterm>支持收集和报告有关服务器活动的信息。
+   <productname>PostgreSQL</productname>的<firstterm>统计收集器</firstterm>是一个支持收集和报告服务器活动信息的子系统。
    目前，对表和索引的访问以磁盘块和单个行的术语进行计数。每个表中的总行数，
    以及每个表的清理和分析操作的信息也被计数。如果启用，对用户定义函数的调用
    和每个函数中花费的总时间也会被计数。
@@ -102,12 +102,12 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
 
   <para>
    <productname>PostgreSQL</productname>也支持报告关于系统当前正在发生的情况的动态信息，
-   例如其他服务器进程当前正在执行的确切命令，以及系统中存在哪些其他连接。此功能独立于统计收集器。
+   例如其他服务器进程当前正在执行的确切命令，以及系统中存在哪些其他连接。此功能独立于收集器进程。
 </para>
 
  <sect2 id="monitoring-stats-setup">
 
-  <title>统计收集配置</title>
+  <title>统计信息收集配置</title>
 
   <para>
    由于收集统计信息会增加查询执行的开销，因此可以配置系统是否收集信息。这由通常在<filename>postgresql.conf</filename>中设置的配置参数控制（有关设置配置参数的详细信息，请参阅<xref linkend="runtime-config"/>）。
@@ -118,11 +118,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
   </para>
 
   <para>
-   参数<xref linkend="guc-track-cost-delay-timing"/>启用对基于代价的清理延迟的监控。
-  </para>
-
-  <para>
-   参数<xref linkend="guc-track-counts"/>控制是否收集关于表和索引访问的统计收集信息。
+   参数<xref linkend="guc-track-counts"/>控制是否收集关于表和索引访问的统计信息。
 </para>
 
   <para>
@@ -130,11 +126,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
   </para>
 
   <para>
-   参数<xref linkend="guc-track-io-timing"/>启用对块读取、写入、扩展和 fsync 时间的监控。
+   参数<xref linkend="guc-track-io-timing"/>启用对块读取和写入时间的监控。
   </para>
 
   <para>
-   参数<xref linkend="guc-track-wal-io-timing"/>启用对 WAL 读取、写入和 fsync 时间的监控。
+   参数<xref linkend="guc-track-wal-io-timing"/>启用对 WAL 写入时间的监控。
   </para>
 
   <para>
@@ -142,7 +138,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
   </para>
 
   <para>
-   统计收集信息收集在共享内存中。每个<productname>PostgreSQL</productname>进程在本地收集统计信息，然后在适当的间隔更新共享数据。当服务器（包括物理副本）正常关闭时，统计信息数据的永久副本会存储在<filename>pg_stat</filename>子目录中，以便在服务器重启后保留这些统计信息。相反，当从非正常关闭开始启动（例如立即关闭后、服务器崩溃后、从基础备份启动以及进行时间点恢复）时，所有统计计数器都会被重置。
+   统计收集器通过临时文件把收集到的信息传递给其他<productname>PostgreSQL</productname>进程。
+   这些文件默认存放在由<xref linkend="guc-stats-temp-directory"/>参数指定的目录中，即<filename>pg_stat_tmp</filename>。
+   为了获得更好的性能，可以把<varname>stats_temp_directory</varname>指向基于 RAM 的文件系统，以减少物理 I/O 需求。
+   当服务器正常关闭时，统计信息数据的永久副本会存储在<filename>pg_stat</filename>子目录中，以便在服务器重启后保留这些统计信息。
+   当服务器启动时执行恢复时（例如立即关闭后、服务器崩溃后以及进行时间点恢复时），所有统计计数器都会被重置。
 </para>
 
  </sect2>
@@ -152,19 +152,15 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
   <title>查看统计信息</title>
 
   <para>
-   有几个预定义视图列在<xref linkend="monitoring-stats-dynamic-views-table"/>中，可用于显示系统的当前状态。另有几个视图列在<xref linkend="monitoring-stats-views-table"/>中，可用于显示统计收集信息。或者，也可以像<xref linkend="monitoring-stats-functions"/>中所述那样，使用底层的统计收集函数构建自定义视图。
+   有几个预定义视图列在<xref linkend="monitoring-stats-dynamic-views-table"/>中，可用于显示系统的当前状态。另有几个视图列在<xref linkend="monitoring-stats-views-table"/>中，可用于显示统计信息收集的结果。或者，也可以像<xref linkend="monitoring-stats-functions"/>中所述那样，使用底层的统计函数构建自定义视图。
 </para>
 
   <para>
-   当使用统计收集视图和函数来监视收集的数据时，重要的是要意识到信息不会立即更新。每个单独的服务器进程在空闲之前将累积的统计信息刷新到共享内存中，但不会频繁于每<varname>PGSTAT_MIN_INTERVAL</varname>毫秒（1秒，除非在构建服务器时更改）一次；因此，仍在进行中的查询或事务不会影响显示的总计，显示的信息滞后于实际活动。然而，由<varname>track_activities</varname>收集的当前查询信息始终是最新的。
+   当使用统计信息来监视收集到的数据时，重要的是要意识到信息不会立即更新。每个单独的服务器进程会在转为空闲之前把新的统计计数发送给收集器，因此仍在进行中的查询或事务不会影响显示的总计。并且，收集器本身最多每隔<varname>PGSTAT_STAT_INTERVAL</varname>毫秒才会发出一份新报告一次（除非在构建服务器时做过修改，否则为 500 毫秒）。因此，显示的信息会滞后于实际活动。然而，由<varname>track_activities</varname>收集的当前查询信息始终是最新的。
   </para>
 
   <para>
-   另一个重要的观点是，当服务器进程被要求显示任何累积的统计信息时，在默认配置中，访问的值会被缓存直到当前事务结束。因此，只要您继续当前事务，统计信息将显示静态信息。类似地，当在事务中首次请求任何当前会话的查询信息时，会收集关于所有会话当前查询的信息，并且相同的信息将在整个事务中显示。这是一个特性，而不是一个错误，因为它允许您在统计信息上执行多个查询并将结果相关联，而不必担心数字在您眼前发生变化。
-
-   在交互式分析统计信息或使用昂贵的查询时，访问各个统计信息之间的时间差可能导致缓存统计信息中出现显著的偏差。为了最小化偏差，可以将<varname>stats_fetch_consistency</varname>设置为<literal>snapshot</literal>，但这会增加用于缓存不需要的统计数据的内存使用量。相反，如果已知统计信息只被访问一次，那么缓存访问的统计信息是不必要的，可以通过将<varname>stats_fetch_consistency</varname>设置为<literal>none</literal>来避免。
-
-   您可以调用<function>pg_stat_clear_snapshot()</function>来丢弃当前事务的统计快照或缓存的值（如果有）。下一次使用统计信息时（在快照模式下），将会创建一个新的快照，或者（在缓存模式下）将访问的统计信息缓存起来。
+   另一个重要点是，当要求服务器进程显示这些统计信息中的任何一种时，它会先取回收集器进程最近发出的报告，然后在当前事务结束之前，对所有统计视图和函数一直使用这一快照。因此，只要你继续当前事务，统计信息就会显示静态信息。类似地，在事务中第一次请求任意当前会话的查询信息时，就会收集所有会话当前查询的信息，并且在整个事务期间显示的都是同一份信息。这是一个特性，而不是一个错误，因为它允许你对统计信息执行多个查询并对结果做关联，而不必担心数字在你眼前变化。但如果希望每个查询都看到新的结果，请确保在任何事务块之外执行这些查询。或者，也可以调用<function>pg_stat_clear_snapshot</function>()，它会丢弃当前事务的统计快照（如果有）。下一次使用统计信息时，就会获取一个新的快照。
 </para>
 
   <para>
@@ -172,14 +168,14 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
    <structname>pg_stat_xact_sys_tables</structname>、
    <structname>pg_stat_xact_user_tables</structname>和
    <structname>pg_stat_xact_user_functions</structname>中看到自己的统计信息
-   （尚未刷新到共享内存统计信息）。这些数字不像上面所述那样起作用；
+   （这些统计信息尚未传送给收集器）。这些数字不像上面所述那样起作用；
    相反，它们在事务期间持续更新。
 </para>
 
   <para>
    动态统计视图中显示的一些信息在<xref linkend="monitoring-stats-dynamic-views-table"/>中受到安全限制。
    普通用户只能查看关于他们自己会话的所有信息（属于他们是成员的角色的会话）。在关于其他会话的行中，许多列将为空。
-   但是，请注意，所有用户都可以看到会话的存在以及其一般属性，如会话用户和数据库。超级用户和具有内置角色<literal>pg_read_all_stats</literal>权限的角色（另请参阅<xref linkend="predefined-roles"/>)可以查看所有会话的所有信息。
+   但是，请注意，所有用户都可以看到会话的存在及其一般属性，例如会话用户和数据库。超级用户以及内置角色<literal>pg_read_all_stats</literal>的成员（另请参阅<xref linkend="predefined-roles"/>）可以查看所有会话的全部信息。
   </para>
 
   <table id="monitoring-stats-dynamic-views-table">
@@ -4231,7 +4227,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
       </para>
       <para>
        当前连接到此数据库的后端数，对于共享对象则为<literal>NULL</literal>。
-       这是该视图中唯一返回反映当前状态的值的列;所有其他列返回自上次重置以来累积的值。
+       这是该视图中唯一返回反映当前状态的值的列；所有其他列返回的都是自上次重置以来累积的值。
       </para></entry>
      </row>
 
@@ -5635,11 +5631,11 @@ description | Waiting for a newly initialized WAL file to reach durable storage
         <indexterm>
          <primary>pg_stat_get_snapshot_timestamp</primary>
         </indexterm>
-        <function>pg_stat_get_snapshot_timestamp</function> ()
-        <returnvalue>timestamp with time zone</returnvalue>
+       <function>pg_stat_get_snapshot_timestamp</function> ()
+       <returnvalue>timestamp with time zone</returnvalue>
        </para>
        <para>
-        返回当前统计快照的时间戳，如果没有统计快照则返回NULL。如果在事务中第一次访问统计收集信息时将快照设置为<varname>stats_fetch_consistency</varname>为<literal>snapshot</literal>。
+        返回当前统计快照的时间戳。
        </para></entry>
       </row>
 

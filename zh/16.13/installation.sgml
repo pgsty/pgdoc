@@ -2959,21 +2959,6 @@ ninja install
    </sect3>
   </sect2>
 
-  <sect2 id="targets-meson">
-   <title><literal>meson</literal> 构建目标</title>
-
-   <para>
-    可以使用 <command>ninja</command> <replaceable>target</replaceable>
-    构建单个目标。
-
-    如果不指定目标，则会构建除文档之外的所有内容。
-    也可以把路径/文件名作为 <replaceable>target</replaceable>，
-    从而构建单独的构建产物。
-   </para>
-
-   &targets-meson;
-  </sect2>
-
  </sect1>
 
  <sect1 id="install-post">
@@ -3172,6 +3157,95 @@ export MANPATH
   <para>
    这里未列出的平台，目前没有已知的平台特定安装问题。
   </para>
+
+  <sect2 id="installation-notes-aix">
+   <title>AIX</title>
+
+   <indexterm zone="installation-notes-aix">
+    <primary>AIX</primary>
+    <secondary>在其上安装</secondary>
+   </indexterm>
+
+   <para>
+    你可以使用 GCC，或者 IBM 的原生编译器 <command>xlc</command>，
+    在 <productname>AIX</productname> 上构建 <productname>PostgreSQL</productname>。
+   </para>
+
+   <para>
+    <productname>AIX</productname> 7.1 之前的版本，社区不再测试，也不再支持。
+   </para>
+
+   <sect3 id="installation-notes-aix-mem-management">
+    <title>内存管理</title>
+    <!-- https://archives.postgresql.org/message-id/603bgqmpl9.fsf@dba2.int.libertyrms.com -->
+
+    <para>
+     AIX 在内存管理方面有些特殊。即使系统中仍有很多 GB 的空闲 RAM，
+     运行应用时也可能出现内存不足或地址空间错误。一个例子是加载扩展时出现异常错误。
+     例如，以 PostgreSQL 安装所有者身份运行：
+<screen>
+=# CREATE EXTENSION plperl;
+ERROR:  could not load library "/opt/dbs/pgsql/lib/plperl.so": A memory address is not in the address space for the process.
+</screen>
+    以不是所有者、但属于 PostgreSQL 安装所属组的用户运行：
+<screen>
+=# CREATE EXTENSION plperl;
+ERROR:  could not load library "/opt/dbs/pgsql/lib/plperl.so": Bad address
+</screen>
+     另一个例子是 PostgreSQL 服务器日志中出现内存不足错误，而且每次接近或超过 256 MB 的内存分配都会失败。
+    </para>
+
+    <para>
+     这些问题的总根源在于服务器进程默认使用的位数和内存模型。默认情况下，
+     在 AIX 上构建的所有二进制文件都是 32 位的，这与硬件类型或内核无关。
+     这些 32 位进程最多只能使用 4 GB 内存，按 256 MB 分段，并使用几种模型之一。
+     默认模型因为与栈共享一个段，所以堆中可用空间少于 256 MB。
+    </para>
+
+    <para>
+     对于上面的 <literal>plperl</literal> 示例，请检查 umask 以及
+     PostgreSQL 安装目录中二进制文件的权限。该示例中的二进制文件是 32 位的，
+     并且被安装为 750 模式而不是 755。由于权限这样设置，只有所有者或所属组成员才能加载该库。
+     因为它不是 world-readable，加载器会把对象放入进程堆，而不是本应使用的共享库段。
+    </para>
+
+    <para>
+     这个问题的“理想”解决方案是使用 64 位构建的 PostgreSQL，但这并不总是可行，
+     因为带 32 位处理器的系统可以构建 64 位二进制文件，却不能运行它们。
+    </para>
+
+    <para>
+     如果需要 32 位二进制文件，请在启动 PostgreSQL 服务器之前把
+     <symbol>LDR_CNTRL</symbol> 设为
+     <literal>MAXDATA=0x<replaceable>n</replaceable>0000000</literal>，
+     其中 1 &lt;= n &lt;= 8，并尝试不同的值和 <filename>postgresql.conf</filename>
+     设置，找到一个令人满意的配置。使用 <symbol>LDR_CNTRL</symbol> 会告诉 AIX，
+     你希望为服务器保留 <symbol>MAXDATA</symbol> 字节的堆空间，并按 256 MB 段分配。
+     找到可行配置后，可以使用 <command>ldedit</command> 修改二进制文件，
+     使其默认使用所需的堆大小。也可以通过重新构建 PostgreSQL 并传入
+     <literal>configure LDFLAGS="-Wl,-bmaxdata:0x<replaceable>n</replaceable>0000000"</literal>
+     达到同样效果。
+    </para>
+
+    <para>
+     对于 64 位构建，请把 <envar>OBJECT_MODE</envar> 设为 64，并向
+     <command>configure</command> 传入 <literal>CC="gcc -maix64"</literal>
+     和 <literal>LDFLAGS="-Wl,-bbigtoc"</literal>。
+     （<command>xlc</command> 的选项可能不同。）如果你没有导出
+     <envar>OBJECT_MODE</envar>，构建可能会因链接器错误而失败。
+     当设置了 <envar>OBJECT_MODE</envar> 时，它会告诉 AIX 的构建工具，
+     例如 <command>ar</command>、<command>as</command> 和 <command>ld</command>，
+     默认处理哪种类型的对象。
+    </para>
+
+    <para>
+     默认情况下，分页空间可能会发生过量承诺。虽然我们没有见过这种情况，但当系统耗尽内存并且访问了过量承诺的内存时，AIX 会终止进程。
+     我们见过最接近的情况，是因为系统判定没有足够内存再启动一个进程，导致 fork 失败。
+     和 AIX 的许多其他部分一样，如果这成为问题，分页空间分配方式以及内存不足时的进程终止行为，
+     都可以在系统范围或进程范围内配置。
+    </para>
+   </sect3>
+  </sect2>
 
   <sect2 id="installation-notes-cygwin">
    <title>Cygwin</title>
@@ -3455,247 +3529,6 @@ make: *** [postgres] Error 1
    </sect3>
   </sect2>
 
-  <sect2 id="installation-notes-visual-studio">
-   <title>Visual Studio</title>
-
-   <indexterm zone="installation-notes-visual-studio">
-    <primary>Visual Studio</primary>
-    <secondary>在其上安装</secondary>
-   </indexterm>
-
-   <para>
-    建议大多数用户直接下载 Windows 的二进制发行版，它以图形化安装程序的形式发布在
-    <productname>PostgreSQL</productname> 网站上：
-    <ulink url="https://www.postgresql.org/download/"/>。
-    从源代码构建只适合开发 <productname>PostgreSQL</productname>
-    或扩展的人。
-   </para>
-
-   <para>
-    Windows 上配合 Visual Studio 的 PostgreSQL 可以使用 Meson 构建，
-    如 <xref linkend="install-meson"/> 所述。
-    原生 Windows 移植要求 Windows 10 或更高版本的 32 位或 64 位系统。
-   </para>
-
-   <para>
-    原生构建的 <application>psql</application> 不支持命令行编辑。
-    Cygwin 构建支持命令行编辑，因此如果需要在
-    <productname>Windows</productname> 上交互式使用 psql，
-    应使用 <productname>Cygwin</productname> 构建。
-   </para>
-
-   <para>
-    PostgreSQL 可以使用 Microsoft 的 Visual C++ 编译器套件构建。
-    这些编译器可以来自 <productname>Visual Studio</productname>、
-    <productname>Visual Studio Express</productname>，或某些版本的
-    <productname>Microsoft Windows SDK</productname>。
-    如果你还没有搭建好 <productname>Visual Studio</productname> 环境，
-    最简单的办法是使用 <productname>Visual Studio 2022</productname> 中的编译器，
-    或者 <productname>Windows SDK 10</productname> 中的编译器；
-    它们都可以从 Microsoft 免费下载。
-   </para>
-
-   <para>
-    Microsoft 编译器套件既可以进行 32 位构建，也可以进行 64 位构建。
-    32 位 PostgreSQL 可使用 <productname>Visual Studio 2015</productname> 到
-    <productname>Visual Studio 2022</productname> 构建，也可使用独立发布的
-    Windows SDK 10 及更高版本。64 位 PostgreSQL 构建则支持
-    <productname>Microsoft Windows SDK</productname> 10 及更高版本，
-    或 <productname>Visual Studio 2015</productname> 及更高版本。
-    <!--
-        For 2015 requirements:
-        https://docs.microsoft.com/en-us/visualstudio/productinfo/vs2015-sysrequirements-vs
-        For 2017 requirements:
-        https://docs.microsoft.com/en-us/visualstudio/productinfo/vs2017-system-requirements-vs
-        For 2019 requirements:
-        https://docs.microsoft.com/en-us/visualstudio/releases/2019/system-requirements
-        For 2022 requirements:
-        https://docs.microsoft.com/en-us/visualstudio/releases/2022/system-requirements
-    -->
-   </para>
-
-   <para>
-    如果你的构建环境没有附带受支持版本的
-    <productname>Microsoft Windows SDK</productname>，建议升级到最新版本
-    （当前是 10 版），可从
-    <ulink url="https://www.microsoft.com/download"/> 下载。
-   </para>
-
-   <para>
-    你必须始终安装 SDK 中的
-    <application>Windows Headers and Libraries</application> 部分。
-    如果你安装的 <productname>Windows SDK</productname> 包含
-    <application>Visual C++ Compilers</application>，那么即使没有
-    <productname>Visual Studio</productname> 也可以完成构建。
-    请注意，自 8.0a 版本起，Windows SDK 已不再附带完整的命令行构建环境。
-   </para>
-
-   <sect3 id="windows-requirements">
-    <title>需求</title>
-    <para>
-     在 Windows 上构建 <productname>PostgreSQL</productname> 还需要下列附加产品。
-
-     <variablelist>
-      <varlistentry>
-       <term><productname>Strawberry Perl</productname></term>
-       <listitem><para>
-        运行构建生成脚本需要 Strawberry Perl。MinGW Perl 或 Cygwin Perl 都不行。
-        它还必须位于 PATH 中。二进制文件可从
-        <ulink url="https://strawberryperl.com"/> 下载。
-       </para></listitem>
-      </varlistentry>
-
-      <varlistentry>
-       <term><productname>Bison</productname> 和
-        <productname>Flex</productname></term>
-       <listitem>
-       <para>
-        <productname>Bison</productname> 和 <productname>Flex</productname>
-        的二进制文件可以从 <ulink
-        url="https://github.com/lexxmark/winflexbison"/> 下载。
-       </para>
-       </listitem>
-      </varlistentry>
-     </variablelist>
-    </para>
-
-    <para>
-     下列附加产品虽然不是开始构建所必需的，但要构建完整软件包则需要它们。
-
-     <variablelist>
-      <varlistentry>
-       <term><productname>Magicsplat Tcl</productname></term>
-       <listitem><para>
-        构建 <application>PL/Tcl</application> 所需。
-        二进制文件可从
-        <ulink url="https://www.magicsplat.com/tcl-installer/index.html"/> 下载。
-       </para></listitem>
-      </varlistentry>
-
-      <varlistentry>
-       <term><productname>Diff</productname></term>
-       <listitem><para>
-        运行回归测试需要 Diff，可从
-        <ulink url="http://gnuwin32.sourceforge.net"/> 下载。
-       </para></listitem>
-      </varlistentry>
-
-      <varlistentry>
-       <term><productname>Gettext</productname></term>
-       <listitem><para>
-        构建 NLS 支持需要 Gettext，可从
-        <ulink url="http://gnuwin32.sourceforge.net"/> 下载。
-        请注意，二进制文件、依赖项和开发文件都需要。
-       </para></listitem>
-      </varlistentry>
-
-      <varlistentry>
-       <term><productname>MIT Kerberos</productname></term>
-       <listitem><para>
-        GSSAPI 认证支持所需。MIT Kerberos 可从
-        <ulink url="https://web.mit.edu/Kerberos/dist/index.html"/> 下载。
-       </para></listitem>
-      </varlistentry>
-
-      <varlistentry>
-       <term><productname>libxml2</productname> 和
-        <productname>libxslt</productname></term>
-       <listitem><para>
-        XML 支持所需。二进制文件可从
-        <ulink url="https://zlatkovic.com/pub/libxml"/> 下载，
-        源代码可从 <ulink url="http://xmlsoft.org"/> 下载。
-        请注意，libxml2 需要 iconv，而它也可在同一下载位置获得。
-       </para></listitem>
-      </varlistentry>
-
-      <varlistentry>
-       <term><productname>LZ4</productname></term>
-       <listitem><para>
-        支持 <productname>LZ4</productname> 压缩所需。
-        二进制文件和源代码可从
-        <ulink url="https://github.com/lz4/lz4/releases"/> 下载。
-       </para></listitem>
-      </varlistentry>
-
-      <varlistentry>
-       <term><productname>Zstandard</productname></term>
-       <listitem><para>
-        支持 <productname>Zstandard</productname> 压缩所需。
-        二进制文件和源代码可从
-        <ulink url="https://github.com/facebook/zstd/releases"/> 下载。
-       </para></listitem>
-      </varlistentry>
-
-      <varlistentry>
-       <term><productname>OpenSSL</productname></term>
-       <listitem><para>
-        SSL 支持所需。二进制文件可从
-        <ulink url="https://slproweb.com/products/Win32OpenSSL.html"/> 下载，
-        源代码可从 <ulink url="https://www.openssl.org"/> 下载。
-       </para></listitem>
-      </varlistentry>
-
-      <varlistentry>
-       <term><productname>ossp-uuid</productname></term>
-       <listitem><para>
-        UUID-OSSP 支持（仅限 contrib）所需。源代码可从
-        <ulink url="http://www.ossp.org/pkg/lib/uuid/"/> 下载。
-       </para></listitem>
-      </varlistentry>
-
-      <varlistentry>
-       <term><productname>Python</productname></term>
-       <listitem><para>
-        构建 <application>PL/Python</application> 所需。
-        二进制文件可从 <ulink url="https://www.python.org"/> 下载。
-       </para></listitem>
-      </varlistentry>
-
-      <varlistentry>
-       <term><productname>zlib</productname></term>
-       <listitem><para>
-        <application>pg_dump</application> 和 <application>pg_restore</application>
-        的压缩支持所需。二进制文件可从 <ulink url="https://www.zlib.net"/> 下载。
-       </para></listitem>
-      </varlistentry>
-
-     </variablelist>
-    </para>
-   </sect3>
-
-   <sect3 id="install-windows-full-64-bit">
-    <title>64 位 Windows 的特别注意事项</title>
-    <para>
-     PostgreSQL 在 64 位 Windows 上只能构建为 x64 架构。
-    </para>
-    <para>
-     不支持在同一个构建树中混用 32 位和 64 位版本。
-     构建系统会自动检测自己当前运行在 32 位还是 64 位环境中，并据此构建 PostgreSQL。
-     因此，在开始构建前，启动正确的命令提示符非常重要。
-    </para>
-    <para>
-     如果要使用服务器端第三方库，例如 <productname>Python</productname> 或
-     <productname>OpenSSL</productname>，那么该库也<emphasis>必须</emphasis>
-     是 64 位的。64 位服务器不支持加载 32 位库。PostgreSQL 支持的若干第三方库
-     可能只提供 32 位版本，在这种情况下，它们无法与 64 位 PostgreSQL 一起使用。
-    </para>
-   </sect3>
-
-   <sect3 id="windows-crash-dumps">
-    <title>收集崩溃转储</title>
-
-    <para>
-     如果 PostgreSQL 在 Windows 上崩溃，它能够生成
-     <productname>minidumps</productname>，可用于追踪崩溃原因，
-     类似于 Unix 上的核心转储。这些转储可以使用
-     <productname>Windows Debugger Tools</productname> 或
-     <productname>Visual Studio</productname> 读取。
-     要在 Windows 上启用转储生成，请在集簇数据目录中创建一个名为
-     <filename>crashdumps</filename> 的子目录。随后，转储会以唯一名称写入该目录，
-     该名称基于崩溃进程的标识符以及崩溃发生时的当前时间。
-    </para>
-   </sect3>
-  </sect2>
  </sect1>
 
 </chapter>

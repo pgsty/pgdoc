@@ -378,11 +378,6 @@ include_dir   <replaceable>directory</replaceable>
          <para>
           执行 SCRAM-SHA-256 或 MD5 认证以校验用户密码。详见<xref linkend="auth-password"/>。
          </para>
-         <warning>
-          <para>
-           对 MD5 加密密码的支持已被弃用，并将在未来版本的 <productname>PostgreSQL</productname> 中移除。关于迁移到其他密码类型的细节，请参阅 <xref linkend="auth-password"/>。
-          </para>
-         </warning>
         </listitem>
        </varlistentry>
 
@@ -499,14 +494,6 @@ include_dir   <replaceable>directory</replaceable>
         </listitem>
        </varlistentry>
 
-       <varlistentry>
-        <term><literal>oauth</literal></term>
-        <listitem>
-         <para>
-          使用第三方 OAuth 2.0 身份提供方进行授权，并可选地完成认证。详细信息请参见 <xref linkend="auth-oauth"/>。
-         </para>
-        </listitem>
-       </varlistentry>
       </variablelist>
 
       </para>
@@ -863,11 +850,6 @@ omicron         bryanh                  guest1
       <link linkend="auth-bsd">BSD 认证</link>，依赖于 BSD 认证框架（目前仅在 OpenBSD 上可用）。
      </para>
     </listitem>
-    <listitem>
-     <para>
-      <link linkend="auth-oauth">OAuth 授权/认证</link>，依赖于外部 OAuth 2.0 身份提供方。
-     </para>
-    </listitem>
    </itemizedlist>
   </para>
 
@@ -952,11 +934,6 @@ omicron         bryanh                  guest1
       <para>
        为了简化从<literal>md5</literal>方法到较新的SCRAM方法的转变，如果在<filename>pg_hba.conf</filename>中指定了<literal>md5</literal>但是用户在服务器上的密码是为SCRAM（见下文）加密的，则将自动选择基于SCRAM的认证。
       </para>
-      <warning>
-       <para>
-        对 MD5 加密密码的支持已被弃用，并将在未来版本的 <productname>PostgreSQL</productname> 中移除。关于迁移到其他密码类型的细节，请参阅下文。
-       </para>
-      </warning>
      </listitem>
     </varlistentry>
 
@@ -1670,173 +1647,6 @@ host ... radius radiusservers="server1,server2" radiussecrets="""secret one"",""
      要使用 BSD 认证，PostgreSQL 用户账号（也就是运行服务器的操作系统用户）必须首先被加入到<literal>auth</literal>组中。在 OpenBSD 系统上默认存在<literal>auth</literal>组。
     </para>
    </note>
-  </sect1>
-
-  <sect1 id="auth-oauth">
-   <title>OAuth 授权/认证</title>
-
-   <indexterm zone="auth-oauth">
-    <primary>OAuth 授权/认证</primary>
-   </indexterm>
-
-   <para>
-    OAuth 2.0 是一个行业标准框架，定义见
-    <ulink url="https://datatracker.ietf.org/doc/html/rfc6749">RFC 6749</ulink>，
-    它允许第三方应用获得对受保护资源的受限访问。
-
-    在构建 <productname>PostgreSQL</productname> 时必须启用 OAuth 客户端支持；
-    详见 <xref linkend="installation"/>。
-   </para>
-
-   <para>
-    本文档在讨论 OAuth 生态系统时使用下列术语：
-
-    <variablelist>
-
-     <varlistentry>
-      <term>资源所有者（或终端用户）</term>
-      <listitem>
-       <para>
-        拥有受保护资源并能够授予访问权限的用户或系统。当资源所有者是人时，本文档也使用<emphasis>终端用户</emphasis>一词。当你使用 <application>psql</application> 通过 OAuth 连接数据库时，你就是资源所有者/终端用户。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term>客户端</term>
-      <listitem>
-       <para>
-        使用访问令牌访问受保护资源的系统。使用 libpq 的应用（例如 <application>psql</application>）在连接 <productname>PostgreSQL</productname> 集簇时，就是 OAuth 客户端。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term>资源服务器</term>
-      <listitem>
-       <para>
-        托管受保护资源并供客户端访问的系统。被连接的 <productname>PostgreSQL</productname> 集簇就是资源服务器。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term>提供方</term>
-      <listitem>
-       <para>
-        为某个应用开发和/或管理 OAuth 授权服务器与客户端的组织、产品供应商或其他实体。不同提供方通常会为各自的 OAuth 系统选择不同的实现细节；一个提供方的客户端通常并不能保证可以访问另一提供方的服务器。
-       </para>
-       <para>
-        这里对“提供方”一词的使用并非标准术语，但在口语中似乎很常见。（不要将它与 OpenID 中相近的术语“Identity Provider”混淆。虽然 <productname>PostgreSQL</productname> 中的 OAuth 实现旨在与 OpenID Connect/OIDC 互操作并保持兼容，但它本身并不是 OIDC 客户端，也不要求必须使用 OIDC。）
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term>授权服务器</term>
-      <listitem>
-       <para>
-        在资源所有者完成认证并给出批准之后，接收客户端请求并向其发放访问令牌的系统。<productname>PostgreSQL</productname> 不提供授权服务器；这属于 OAuth 提供方的职责。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term id="auth-oauth-issuer">签发者</term>
-      <listitem>
-       <para>
-        授权服务器的一个标识符，以 <literal>https://</literal> URL 形式出现，为 OAuth 客户端和应用提供一个可信的“命名空间”。签发者标识符使得单个授权服务器能够同时与彼此互不信任实体的客户端通信，只要这些实体维护各自独立的签发者即可。
-       </para>
-      </listitem>
-     </varlistentry>
-
-    </variablelist>
-
-    <note>
-     <para>
-      对于小型部署来说，“提供方”、“授权服务器”和“签发者”之间可能并没有有意义的区别。然而在更复杂的部署中，它们之间可能是一个对多个（甚至多个对多个）的关系：某个提供方可能把多个签发者标识符租给不同租户，然后再提供多个授权服务器与其客户端交互，而这些授权服务器支持的特性集合也可能各不相同。
-     </para>
-    </note>
-   </para>
-
-   <para>
-    <productname>PostgreSQL</productname> 支持在
-    <ulink url="https://datatracker.ietf.org/doc/html/rfc6750">RFC 6750</ulink>
-    中定义的 Bearer 令牌，这是一类用于 OAuth 2.0 的访问令牌，其本体是一个不透明字符串。访问令牌的格式取决于具体实现，由各个授权服务器自行决定。
-   </para>
-
-   <para>
-    OAuth 支持下列配置选项：
-    <variablelist>
-     <varlistentry>
-      <term><literal>issuer</literal></term>
-      <listitem>
-       <para>
-        一个 HTTPS URL，它要么是授权服务器发现文档所定义的精确
-        <link linkend="auth-oauth-issuer">签发者标识符</link>，
-        要么是一个直接指向该发现文档的众所周知 URI。此参数为必需项。
-       </para>
-       <para>
-        当 OAuth 客户端连接到服务器时，会基于签发者标识符构造发现文档的 URL。默认情况下，该 URL 采用 OpenID Connect Discovery 的约定：会在签发者标识符末尾追加路径 <literal>/.well-known/openid-configuration</literal>。另一种情况是，如果 <literal>issuer</literal> 本身包含 <literal>/.well-known/</literal> 路径段，那么该 URL 会原样提供给客户端。
-       </para>
-       <warning>
-        <para>
-         libpq 中的 OAuth 客户端要求服务器的 issuer 设置必须与发现文档中提供的签发者标识符完全一致，而该标识符又必须与客户端的 <xref linkend="libpq-connect-oauth-issuer"/> 设置完全一致。不允许大小写或格式上的任何差异。
-        </para>
-       </warning>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><literal>scope</literal></term>
-      <listitem>
-       <para>
-        一个以空格分隔的 OAuth scope 列表，服务器需要借此既能授权客户端，又能认证用户。合适的取值由授权服务器以及所使用的 OAuth 验证模块决定（关于验证器的更多信息，见 <xref linkend="oauth-validators" />）。此参数为必需项。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><literal>validator</literal></term>
-      <listitem>
-       <para>
-        用于验证 Bearer 令牌的库。如果指定，其名称必须与 <xref linkend="guc-oauth-validator-libraries" /> 中列出的某个库完全匹配。除非 <literal>oauth_validator_libraries</literal> 中包含多个库，否则该参数是可选的；如果包含多个库，则该参数为必需项。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><literal>map</literal></term>
-      <listitem>
-       <para>
-        允许在 OAuth 身份提供方用户名和数据库用户名之间建立映射。详见 <xref linkend="auth-username-maps"/>。如果未指定映射，则与令牌关联的用户名（由 OAuth 验证器决定）必须与请求的角色名完全一致。此参数是可选的。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term id="auth-oauth-delegate-ident-mapping" xreflabel="delegate_ident_mapping">
-       <literal>delegate_ident_mapping</literal>
-      </term>
-      <listitem>
-       <para>
-        这是一个高级选项，不适合常规使用。
-       </para>
-       <para>
-        当设置为 <literal>1</literal> 时，会跳过基于 <filename>pg_ident.conf</filename> 的标准用户映射，而由 OAuth 验证器完全负责把终端用户身份映射到数据库角色。如果验证器授权该令牌，服务器就会信任该用户被允许以请求的角色进行连接，并且无论该用户自身的认证状态如何，连接都将继续进行。
-       </para>
-       <para>
-        此参数与 <literal>map</literal> 不兼容。
-       </para>
-       <warning>
-        <para>
-         <literal>delegate_ident_mapping</literal> 为认证系统设计带来了额外灵活性，但也要求对 OAuth 验证器进行谨慎实现。验证器不仅必须执行所有验证器都需要进行的 <link linkend="oauth-validators">标准检查</link>，还必须判断所提供的令牌是否携带了足够的终端用户权限。请谨慎使用。
-        </para>
-       </warning>
-      </listitem>
-     </varlistentry>
-    </variablelist>
-   </para>
   </sect1>
 
   <sect1 id="client-authentication-problems">
