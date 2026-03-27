@@ -223,7 +223,7 @@ CREATE INDEX ON my_table USING GIST (my_inet_column inet_ops);
   </para>
 
  <para>
-   一个<acronym>GiST</acronym>索引操作符类必须提供五个方法，另外还有七个可选方法。通过正确实现<function>same</function>、<function>consistent</function>和<function>union</function>方法可以保证索引的正确性，而索引的效率（大小与速度）则取决于<function>penalty</function>和<function>picksplit</function>方法。两个可选方法是<function>compress</function>和<function>decompress</function>，它们允许索引的内部树数据使用与其所索引数据不同的类型。叶子必须是被索引数据类型，而其他树节点可以是任意 C 结构体（但这里仍必须遵守<productname>PostgreSQL</productname>的数据类型规则，关于变长数据可参见<literal>varlena</literal>）。如果树的内部数据类型在 SQL 层存在，可以使用<command>CREATE OPERATOR CLASS</command>命令的<literal>STORAGE</literal>选项。可选的第八个方法是<function>distance</function>，若操作符类希望支持有序扫描（最近邻搜索），则需要它。可选的第九个方法<function>fetch</function>在操作符类希望支持仅索引扫描时需要，除非省略了<function>compress</function>方法。可选的第十个方法<function>options</function>在操作符类具有用户指定参数时需要。可选的第十一个方法<function>sortsupport</function>用于加速构建<acronym>GiST</acronym>索引。可选的第十二个方法<function>translate_cmptype</function>用于把比较类型（来自<filename>src/include/access/cmptype.h</filename>）转换为该操作符类使用的策略号。这样核心代码就可以为时态约束索引查找操作符。
+   一个<acronym>GiST</acronym>索引操作符类必须提供五个方法，另外还有六个可选方法。通过正确实现<function>same</function>、<function>consistent</function>和<function>union</function>方法可以保证索引的正确性，而索引的效率（大小与速度）则取决于<function>penalty</function>和<function>picksplit</function>方法。两个可选方法是<function>compress</function>和<function>decompress</function>，它们允许索引的内部树数据使用与其所索引数据不同的类型。叶子必须是被索引数据类型，而其他树节点可以是任意 C 结构体（但这里仍必须遵守<productname>PostgreSQL</productname>的数据类型规则，关于变长数据可参见<literal>varlena</literal>）。如果树的内部数据类型在 SQL 层存在，可以使用<command>CREATE OPERATOR CLASS</command>命令的<literal>STORAGE</literal>选项。可选的第八个方法是<function>distance</function>，若操作符类希望支持有序扫描（最近邻搜索），则需要它。可选的第九个方法<function>fetch</function>在操作符类希望支持仅索引扫描时需要，除非省略了<function>compress</function>方法。可选的第十个方法<function>options</function>在操作符类具有用户指定参数时需要。可选的第十一个方法<function>sortsupport</function>用于加速构建<acronym>GiST</acronym>索引。
  </para>
 
  <variablelist>
@@ -945,68 +945,6 @@ my_sortsupport(PG_FUNCTION_ARGS)
      </listitem>
     </varlistentry>
 
-    <varlistentry id="zh18-auto-gist-varlistentry-12">
-     <term><function>translate_cmptype</function></term>
-     <listitem>
-      <para>
-       给定一个来自<filename>src/include/access/cmptype.h</filename>的<literal>CompareType</literal>值，返回该操作符类用于匹配功能的策略号。如果该操作符类没有匹配策略，函数应返回<literal>InvalidStrategy</literal>。
-      </para>
-
-      <para>
-       这用于时态索引约束（即<literal>PRIMARY
-       KEY</literal>和<literal>UNIQUE</literal>）。如果该操作符类提供此函数，并且它会为<literal>COMPARE_EQ</literal>返回结果，那么它就可以用于索引约束中非<literal>WITHOUT OVERLAPS</literal>的部分。
-      </para>
-
-      <para>
-       这个支持函数对应于索引访问方法回调函数<structfield>amtranslatecmptype</structfield>（见<xref
-       linkend="index-functions"/>）。GiST 索引的<structfield>amtranslatecmptype</structfield>回调函数只是调用相应操作符族的<function>translate_cmptype</function>支持函数，因为 GiST 索引访问方法本身并没有固定的策略号。
-      </para>
-
-      <para>
-       该函数的<acronym>SQL</acronym>声明必须如下所示：
-
-<programlisting>
-CREATE OR REPLACE FUNCTION my_translate_cmptype(integer)
-RETURNS smallint
-AS 'MODULE_PATHNAME'
-LANGUAGE C STRICT;
-</programlisting>
-
-       而操作符族注册必须如下所示：
-<programlisting>
-ALTER OPERATOR FAMILY my_opfamily USING gist ADD
-    FUNCTION 12 ("any", "any") my_translate_cmptype(int);
-</programlisting>
-      </para>
-
-       <para>
-        而 C 模块中的对应代码则可以遵循如下框架：
-
-<programlisting>
-PG_FUNCTION_INFO_V1(my_translate_cmptype);
-
-Datum
-my_translate_cmptype(PG_FUNCTION_ARGS)
-{
-    CompareType cmptype = PG_GETARG_INT32(0);
-    StrategyNumber ret = InvalidStrategy;
-
-    switch (cmptype)
-    {
-        case COMPARE_EQ:
-            ret = BTEqualStrategyNumber;
-    }
-
-    PG_RETURN_UINT16(ret);
-}
-</programlisting>
-      </para>
-
-      <para>
-       <productname>PostgreSQL</productname>提供了一个翻译函数：<literal>gist_translate_cmptype_common</literal>，用于使用<literal>RT*StrategyNumber</literal>常量的操作符类。<literal>btree_gist</literal>扩展又定义了第二个翻译函数<literal>gist_translate_cmptype_btree</literal>，用于使用<literal>BT*StrategyNumber</literal>常量的操作符类。
-      </para>
-     </listitem>
-    </varlistentry>
   </variablelist>
 
   <para>

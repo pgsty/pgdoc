@@ -489,48 +489,27 @@
    无论 <varname>max_wal_size</varname> 如何设置，最近
    <xref linkend="guc-wal-keep-size"/> MB 的 WAL 文件外加一个额外的 WAL 文件
    都会始终保留。此外，如果使用了 WAL 归档，那么旧段在完成归档之前不能被删除或
-   回收。如果 WAL 归档跟不上 WAL 产生的速度，或者 <varname>archive_command</varname>
-   反复失败，那么旧 WAL 文件就会在
-   <filename>pg_wal</filename> 中不断累积，直到问题解决。使用复制槽的备库
-   如果速度很慢或者已经失败，也会产生同样的效果（见
-   <xref linkend="streaming-replication-slots"/>）。同样地，如果启用了
-   <link linkend="runtime-config-wal-summarization">WAL 汇总</link>，那么旧段
-   会一直保留到完成汇总为止。
+  回收。如果 WAL 归档跟不上 WAL 产生的速度，或者 <varname>archive_command</varname>
+  反复失败，那么旧 WAL 文件就会在
+  <filename>pg_wal</filename> 中不断累积，直到问题解决。使用复制槽的备库
+  如果速度很慢或者已经失败，也会产生同样的效果（见
+  <xref linkend="streaming-replication-slots"/>）。
   </para>
 
   <para>
    在归档恢复或备库模式下，服务器会周期性地执行
    <firstterm>重启点</firstterm><indexterm><primary>重启点</primary></indexterm>，
    其行为类似于正常运行时的检查点：服务器会强制把自身状态写盘，更新
-   <filename>pg_control</filename> 文件，以表明已经处理过的 WAL 数据无需再次
-   扫描，然后回收 <filename>pg_wal</filename> 目录中的旧 WAL 段文件。重启点的
-   执行频率不会高于主库上的检查点，因为重启点只能在检查点记录处执行。重启点既
-   可能由调度触发，也可能由外部请求触发。
-   <structfield>restartpoints_timed</structfield> 计数器在 <link
-   linkend="monitoring-pg-stat-checkpointer-view"><structname>pg_stat_checkpointer</structname></link>
-   视图中统计前者，而 <structfield>restartpoints_req</structfield> 统计后者。按调度触发的
-   重启点，是在到达某条检查点记录时，如果距上一次已执行的重启点至少已经过去
-   <xref linkend="guc-checkpoint-timeout"/> 秒，或者上一次尝试执行重启点失败时
-   触发。后一种情况下，下一次重启点会安排在 15 秒后。按请求触发的重启点，其原
-   因与检查点类似，但主要是在 WAL 大小即将超过
-   <xref linkend="guc-max-wal-size"/> 时触发。不过，由于重启点的可执行时机受到
-   限制，恢复期间经常会超出 <varname>max_wal_size</varname>，最多可能超出一个
-   检查点周期对应的 WAL 量。（无论如何，<varname>max_wal_size</varname> 从来
-   都不是硬上限，因此你始终应留出充足余量，以免耗尽磁盘空间。）
-   <structfield>restartpoints_done</structfield> 计数器则在 <link
-   linkend="monitoring-pg-stat-checkpointer-view"><structname>pg_stat_checkpointer</structname></link>
-   视图中统计真正执行了的重启点数量。
-  </para>
-
-  <para>
-   在某些情况下，例如发生大规模 <command>INSERT</command> 时，主库上的 WAL 大小
-   会快速增长，此时备库端的 <structfield>restartpoints_req</structfield> 计数器
-   可能会出现突增。这是因为，虽然由于 WAL 消耗增加而提出了创建新重启点的请求，
-   但自上一次重启点以来可安全使用的检查点记录尚未在备库端重放，所以这些请求无法
-   执行。这种行为是正常的，不会导致系统资源消耗增加。在与重启点相关的计数器中，
-   只有 <structfield>restartpoints_done</structfield> 才表明确实消耗了明显的
-   系统资源。
-  </para>
+  <filename>pg_control</filename> 文件，以表明已经处理过的 WAL 数据无需再次
+  扫描，然后回收 <filename>pg_wal</filename> 目录中的旧 WAL 段文件。重启点的
+  执行频率不会高于主库上的检查点，因为重启点只能在检查点记录处执行。重启点既
+  可能由调度触发，也可能由外部请求触发。当到达某条检查点记录且距离上次重启点
+  至少已经过去 <xref linkend="guc-checkpoint-timeout"/> 秒，或者 WAL 大小即将超过
+  <xref linkend="guc-max-wal-size"/> 时，就会触发重启点。不过，由于重启点的可执行时机受到
+  限制，恢复期间经常会超出 <varname>max_wal_size</varname>，最多可能超出一个
+  检查点周期对应的 WAL 量。（无论如何，<varname>max_wal_size</varname> 从来
+  都不是硬上限，因此你始终应留出充足余量，以免耗尽磁盘空间。）
+ </para>
 
   <para>
    有两个常用的内部 <acronym>WAL</acronym> 函数：
@@ -616,14 +595,13 @@
   </para>
 
   <para>
-   有两个内部函数负责把 WAL 数据写入磁盘：
-   <function>XLogWrite</function> 和 <function>issue_xlog_fsync</function>。
-   启用 <xref linkend="guc-track-wal-io-timing"/> 后，
-   <function>XLogWrite</function> 写 WAL 数据以及
-   <function>issue_xlog_fsync</function> 将 WAL 数据同步到磁盘所花费的总时间，
-   会分别统计为 <varname>write_time</varname> 和 <varname>fsync_time</varname>，
-   记录在 <xref linkend="pg-stat-io-view"/> 中
-   <varname>object</varname> 为 <literal>wal</literal> 的项下。
+  有两个内部函数负责把 WAL 数据写入磁盘：
+  <function>XLogWrite</function> 和 <function>issue_xlog_fsync</function>。
+  启用 <xref linkend="guc-track-wal-io-timing"/> 后，
+  <function>XLogWrite</function> 写 WAL 数据以及
+  <function>issue_xlog_fsync</function> 将 WAL 数据同步到磁盘所花费的总时间，
+  会分别统计为 <literal>wal_write_time</literal> 和 <literal>wal_sync_time</literal>，
+  并分别记录在 <xref linkend="pg-stat-wal-view"/> 中。
    <function>XLogWrite</function> 通常由 <function>XLogInsertRecord</function>
    （当 WAL 缓冲区没有空间容纳新记录时）、<function>XLogFlush</function> 以及
    WAL 写入器调用，用于把 WAL 缓冲区写到磁盘并调用
@@ -635,15 +613,14 @@
    <function>issue_xlog_fsync</function> 什么也不做。如果
    <varname>wal_sync_method</varname> 是 <literal>fdatasync</literal>、
    <literal>fsync</literal> 或 <literal>fsync_writethrough</literal>，
-   那么写操作会把 WAL 缓冲区移入内核缓存，而
-   <function>issue_xlog_fsync</function> 会把它们同步到磁盘。无论
-   <varname>track_wal_io_timing</varname> 是否开启，
-   <function>XLogWrite</function> 写 WAL 数据的次数和
-   <function>issue_xlog_fsync</function> 同步 WAL 数据到磁盘的次数，也会分别统计
-   为 <varname>writes</varname> 和 <varname>fsyncs</varname>，记录在
-   <structname>pg_stat_io</structname> 中 <varname>object</varname> 为
-   <literal>wal</literal> 的项下。
-  </para>
+  那么写操作会把 WAL 缓冲区移入内核缓存，而
+  <function>issue_xlog_fsync</function> 会把它们同步到磁盘。无论
+  <varname>track_wal_io_timing</varname> 是否开启，
+  <function>XLogWrite</function> 写 WAL 数据的次数和
+  <function>issue_xlog_fsync</function> 同步 WAL 数据到磁盘的次数，也会分别统计
+  为 <literal>wal_write</literal> 和 <literal>wal_sync</literal>，分别记录在
+  <structname>pg_stat_wal</structname> 中。
+ </para>
 
  </sect1>
 

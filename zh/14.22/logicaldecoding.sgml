@@ -272,28 +272,6 @@ postgres=# select * from pg_logical_slot_get_changes('regression_slot', NULL, NU
      在任意给定时刻，只允许一个接收端从某个槽中消费更改。
     </para>
 
-    <para>
-     逻辑复制槽也可以在热备上创建。为了防止 <command>VACUUM</command> 从系
-     统目录中移除所需的行，应当在备库上设置 <varname>hot_standby_feedback</varname>。
-     即便如此，如果任何所需行仍被移除，槽也会失效。强烈建议在主库和备库之间
-     使用物理复制槽。否则，<varname>hot_standby_feedback</varname> 虽然也能
-     工作，但只在连接存活期间有效（例如节点重启就会打断它）。随后主库可能会删
-     除备库上逻辑解码所需的系统目录行（因为它并不知道备库上的
-     <literal>catalog_xmin</literal>）。如果主库上的 <varname>wal_level</varname>
-     降低到小于 <literal>logical</literal>，备库上现有的逻辑槽也会失效。这会
-     在备库检测到 WAL 流中的该变化后立刻发生。这意味着，对于落后的 WAL 发送
-     器（如果有），直到主库上 <varname>wal_level</varname> 参数变更为止的一些
-     WAL 记录将不会被解码。
-    </para>
-
-    <para>
-     创建逻辑槽需要有关当前所有正在运行事务的信息。在主库上，这些信息可以直接
-     获得；但在备库上，这些信息必须从主库获取。因此，创建槽可能需要等待主库上
-     发生某些活动。如果主库空闲，在备库上创建逻辑槽可能会花费可察觉的时间。
-     通过在主库上调用 <function>pg_log_standby_snapshot</function> 函数可以加
-     快这一过程。
-    </para>
-
     <caution>
      <para>
       复制槽可跨崩溃持久存在，而且不了解其消费者的状态。即使没有连接使用它们，
@@ -307,109 +285,14 @@ postgres=# select * from pg_logical_slot_get_changes('regression_slot', NULL, NU
 
    </sect2>
 
-   <sect2 id="logicaldecoding-replication-slots-synchronization">
-    <title>复制槽同步</title>
-    <para>
-     主库上的逻辑复制槽可以通过
-     <literal>failover</literal> 参数同步到热备，该参数用于
-     <link linkend="pg-create-logical-replication-slot">
-     <function>pg_create_logical_replication_slot</function></link>；或者在创建槽
-     时执行带有
-     <link linkend="sql-createsubscription-params-with-failover">
-     <literal>failover</literal></link> 选项的
-     <command>CREATE SUBSCRIPTION</command>，也可以把主库上的逻辑复制槽同步
-     到热备。另外，还必须在备库上启用
-     <link linkend="guc-sync-replication-slots">
-     <varname>sync_replication_slots</varname></link>。在备库上启用
-     <link linkend="guc-sync-replication-slots">
-     <varname>sync_replication_slots</varname></link> 后，故障转移槽就可以由
-     slotsync 工作进程定期同步。要让同步生效，主库和备库之间必须使
-     用物理复制槽（也就是说，备库上应当配置
-     <link linkend="guc-primary-slot-name"><varname>primary_slot_name</varname></link>），
-     并且备库上必须启用
-     <link linkend="guc-hot-standby-feedback"><varname>hot_standby_feedback</varname></link>。
-     还必须指定有效的 <literal>dbname</literal>，并将其放在
-     <link linkend="guc-primary-conninfo"><varname>primary_conninfo</varname></link>
-     中。强烈建议在主库的
-     <link linkend="guc-synchronized-standby-slots"><varname>synchronized_standby_slots</varname></link>
-     列表中写入上述物理复制槽的名称，以防止订阅者消费更改的速度快于热备的接
-     收进度。
-     即使配置正确，由于需要等待
-     <link linkend="guc-synchronized-standby-slots"><varname>synchronized_standby_slots</varname></link>
-     中列出的槽，向逻辑订阅者发送更改时仍然会有一定延迟。使用
-     <varname>synchronized_standby_slots</varname> 时，主库在与
-     <varname>synchronized_standby_slots</varname> 中指定的物理复制槽相关联
-     的备库确认已接收到截至主库最新刷写位置的 WAL 之前，不会完全关闭。
-    </para>
-
-    <note>
-     <para>
-      虽然启用 <link linkend="guc-sync-replication-slots">
-     <varname>sync_replication_slots</varname></link> 允许对故障转移槽进行自
-      动、周期性的同步，但也可以在备库上使用
-      <link linkend="pg-sync-replication-slots">
-      <function>pg_sync_replication_slots</function></link> 函数手工同步。然
-      而，该函数主要用于测试和调试，应当谨慎使用。与自动同步不同，它不包含循
-      环重试，因此更容易发生同步失败，尤其是在初始同步场景中：槽所需的 WAL
-      文件或系统目录行可能已经被删除，或者在备库上处于可能被删除的风险之中。相
-      比之下，通过 <varname>sync_replication_slots</varname> 实现的自动同步
-      会持续更新槽，从而实现无缝故障转移并支持高可用。因此，这是推荐的槽同步
-      方法。
-     </para>
-    </note>
-
-    <para>
-     当按建议完成配置，并且初始同步已经通过自动方式或通过
-     <function>pg_sync_replication_slots</function> 手工执行后，备库只有在
-     满足以下条件时才能将同步后的槽持久化：主库上的逻辑复制槽必须保留那些在
-     备库上仍可用的 WAL 和系统目录行。这样可以保证数据完整性，并允许在提升
-     后顺畅继续逻辑复制。如果备库上所需的 WAL 或系统目录行已经被清除，则该槽不
-     会被持久化，以避免数据丢失。此时，可能会出现如下日志消息：
-<programlisting>
-LOG:  could not synchronize replication slot "failover_slot"
-DETAIL:  Synchronization could lead to data loss, because the remote slot needs WAL at LSN 0/3003F28 and catalog xmin 754, but the standby has LSN 0/3003F28 and catalog xmin 756.
-</programlisting>
-     如果某个消费者正在积极使用该逻辑复制槽，则无需人工干预；槽会自动前进，
-     并在下一个周期恢复同步。不过，如果没有配置消费者，则建议在主库上使用
-     <link linkend="pg-logical-slot-get-changes">
-     <function>pg_logical_slot_get_changes</function></link> 或
-     <link linkend="pg-logical-slot-get-binary-changes">
-     <function>pg_logical_slot_get_binary_changes</function></link> 手工推进该
-     槽，以便同步继续进行。
-    </para>
-
-    <para>
-     故障转移后能否继续逻辑复制，取决于故障发生时备库上的同步槽在
-     <link linkend="view-pg-replication-slots">pg_replication_slots</link>.<structfield>synced</structfield>
-     列中的值。只有在故障转移前其值已经在备库上变为 true 的持久槽，才能在故
-     障转移后继续用于逻辑复制。临时同步槽不能用于逻辑解码，因此这些槽的逻辑
-     复制无法恢复。例如，如果某个同步槽由于订阅被禁用而无法在备库上变为持久
-     槽，那么即使之后启用了订阅，故障转移后也无法恢复该订阅。
-    </para>
-
-    <para>
-     要在故障转移后从已同步的逻辑槽恢复逻辑复制，必须修改订阅的 'conninfo'，使
-     其指向新的主库。这可以使用
-     <link linkend="sql-altersubscription-params-connection"><command>ALTER SUBSCRIPTION ... CONNECTION</command></link>
-     完成。建议先禁用订阅，再提升备库，并在修改连接字符串之后重新启用订阅。
-    </para>
-    <caution>
-     <para>
-      在提升过程中，旧主库有可能重新上线；如果订阅未被禁用，那么即使完成提
-      升，逻辑订阅者仍可能继续从旧主库接收数据，直到连接字符串被修改为止。这
-      可能导致数据不一致问题，使逻辑订阅者无法继续从新的主库复制。
-     </para>
-    </caution>
-   </sect2>
-
-   <sect2 id="logicaldecoding-explanation-output-plugins">
+   <sect2>
     <title>输出插件</title>
     <para>
      输出插件把预写式日志内部表示的数据转换成复制槽消费者所需的格式。
     </para>
    </sect2>
 
-   <sect2 id="logicaldecoding-explanation-exported-snapshots">
+   <sect2>
     <title>导出快照</title>
     <para>
      当使用流复制接口创建新的复制槽时（见
