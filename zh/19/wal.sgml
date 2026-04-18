@@ -1,0 +1,827 @@
+<!-- doc/src/sgml/wal.sgml -->
+
+<chapter id="wal">
+ <title>可靠性与预写式日志</title>
+
+ <para>
+  本章解释如何控制 <productname>PostgreSQL</productname> 的可靠性，
+  并介绍预写式日志的相关细节。
+ </para>
+
+ <sect1 id="wal-reliability">
+  <title>可靠性</title>
+
+  <para>
+   可靠性是任何严肃数据库系统的重要属性，而
+   <productname>PostgreSQL</productname> 会尽一切可能保证运行可靠。可靠运行的
+   一个方面是，已提交事务所记录的所有数据都应存储在不受断电、操作系统故障和
+   硬件故障影响的非易失性区域中（当然不包括该非易失性区域本身的故障）。通常，只要
+   能成功将数据写入计算机的永久存储设备（磁盘驱动器或等效设备），就满足这一
+   要求。实际上，即使一台计算机遭受致命损坏，只要磁盘驱动器得以幸存，就可以将
+   它们移到另一台硬件相近的计算机上，所有已提交事务仍将完好无损。
+  </para>
+
+  <para>
+   虽然周期性地强制将数据写到磁盘盘片似乎是个简单操作，但事实并非如此。由于
+   磁盘驱动器远慢于主存和 CPU，在计算机主存与磁盘盘片之间存在多层缓存。首先是
+   操作系统的缓冲区缓存，它会缓存常用磁盘块并合并磁盘写入。幸运的是，所有
+   操作系统都为应用提供了强制将数据从缓冲区缓存写入磁盘的方法，而
+   <productname>PostgreSQL</productname> 会使用这些机制。（关于如何调整这一
+   过程，见参数 <xref linkend="guc-wal-sync-method"/>。）
+  </para>
+
+  <para>
+   其次，磁盘驱动器控制器中可能还有缓存；这在 <acronym>RAID</acronym> 控制卡上
+   尤为常见。其中一些缓存是 <firstterm>直写式</firstterm>，也就是说写请求一到达
+   就立刻发送到驱动器。另一些是 <firstterm>回写式</firstterm>，也就是说数据会在
+   稍后的某个时间发送到驱动器。这类缓存可能构成可靠性隐患，因为磁盘控制器缓存
+   中的内存是易失性的，断电时会丢失内容。较好的控制卡配有
+   <firstterm>后备电池单元</firstterm>（<acronym>BBU</acronym>），也就是卡上
+   带有电池，可在系统断电时维持缓存供电。电力恢复后，数据便会写入磁盘驱动器。
+  </para>
+
+  <para>
+   最后，大多数磁盘驱动器自身也带有缓存。有些是直写式，有些是回写式；对于
+   回写式驱动器缓存，同样存在与磁盘控制器缓存相同的数据丢失隐患。消费级 IDE 和
+   SATA 驱动器尤其可能带有在断电后无法保留内容的回写式缓存。很多固态驱动器
+   （SSD）也带有易失性的回写式缓存。
+  </para>
+
+  <para>
+   这些缓存通常都可以禁用；不过，具体方法会因操作系统和驱动器类型而异：
+  </para>
+
+  <itemizedlist>
+    <listitem>
+      <para>
+        在 <productname>Linux</productname> 上，可以使用
+        <command>hdparm -I</command> 查询 IDE 和 SATA 驱动器；如果
+        <literal>Write cache</literal> 旁边有一个 <literal>*</literal>，
+        就表示启用了写缓存。可以使用 <command>hdparm -W 0</command> 关闭
+        写缓存。SCSI 驱动器可以使用
+        <ulink url="http://sg.danny.cz/sg/sdparm.html"><application>sdparm</application></ulink>
+        查询。使用 <command>sdparm --get=WCE</command> 检查是否启用了写缓存，
+        使用 <command>sdparm --clear=WCE</command> 将其禁用。
+      </para>
+    </listitem>
+
+    <listitem>
+      <para>
+        在 <productname>FreeBSD</productname> 上，可以使用
+        <command>camcontrol identify</command> 查询 IDE 驱动器，并通过在
+        <filename>/boot/loader.conf</filename> 中设置
+        <literal>hw.ata.wc=0</literal> 来关闭写缓存；SCSI 驱动器也可以使用
+        <command>camcontrol identify</command> 查询，并在可用时借助
+        <command>sdparm</command> 查询和修改写缓存。
+      </para>
+    </listitem>
+
+    <listitem>
+      <para>
+        在 <productname>Solaris</productname> 上，磁盘写缓存由
+        <command>format -e</command> 控制。
+        （Solaris 的 <acronym>ZFS</acronym> 文件系统在启用磁盘写缓存时仍然是
+        安全的，因为它会发出自己的磁盘缓存刷新命令。）
+      </para>
+    </listitem>
+
+    <listitem>
+      <para>
+        在 <productname>Windows</productname> 上，如果
+        <varname>wal_sync_method</varname> 是
+        <literal>open_datasync</literal>（默认值），可以通过取消勾选
+        <literal>My Computer\Open\<replaceable>disk drive</replaceable>\Properties\Hardware\Properties\Policies\Enable write caching on the disk</literal>
+        来禁用写缓存。另一种办法是将 <varname>wal_sync_method</varname> 设为
+        <literal>fdatasync</literal>（仅限 NTFS）或 <literal>fsync</literal>，
+        这两者都会阻止写缓存。
+      </para>
+    </listitem>
+
+    <listitem>
+      <para>
+        在 <productname>macOS</productname> 上，可以通过将
+        <varname>wal_sync_method</varname> 设为
+        <literal>fsync_writethrough</literal> 来防止写缓存。
+      </para>
+    </listitem>
+  </itemizedlist>
+
+  <para>
+   较新的 SATA 驱动器（遵循 <acronym>ATAPI-6</acronym> 或更高版本标准的那些）
+   提供了驱动器缓存刷新命令（<command>FLUSH CACHE EXT</command>），而 SCSI
+   驱动器则早已支持类似的 <command>SYNCHRONIZE CACHE</command> 命令。这些
+   命令对 <productname>PostgreSQL</productname> 并不直接可见，但某些文件系统
+   （如 <acronym>ZFS</acronym>、<acronym>ext4</acronym>）可以利用它们将
+   启用了回写缓存的驱动器上的数据刷新到盘片。遗憾的是，这类文件系统与带后备电池
+   单元（<acronym>BBU</acronym>）的磁盘控制器配合时表现并不理想。在这种配置中，
+   同步命令会强制把控制器缓存中的全部数据写到磁盘，削弱 BBU 的大部分好处。
+   可以运行 <xref linkend="pgtestfsync"/> 程序查看自己是否受此影响。如果确实
+   受影响，而又能这样做，则可通过关闭文件系统中的写屏障或重新配置磁盘控制器，
+   恢复 BBU 的性能优势。如果关闭了写屏障，一定要确保电池保持正常工作；电池故障
+   有可能导致数据丢失。希望文件系统和磁盘控制器的设计者最终能解决这种次优行为。
+  </para>
+
+  <para>
+   当操作系统向存储硬件发出写请求后，它几乎做不了什么来确保数据已经到达真正的
+   非易失性存储区域。相反，管理员有责任确保所有存储组件都能同时保证数据和
+   文件系统元数据的完整性。应避免使用写缓存没有电池后备的磁盘控制器。在
+   驱动器层面，如果驱动器无法保证在关闭前把数据写出，就应禁用回写缓存。如果
+   使用 SSD，要注意其中很多默认并不遵守缓存刷新命令。可以借助 <ulink
+   url="https://brad.livejournal.com/2116715.html"><filename>diskchecker.pl</filename></ulink>
+   测试 I/O 子系统行为是否可靠。
+  </para>
+
+  <para>
+   数据丢失的另一种风险来自磁盘盘片写操作本身。磁盘盘片被分为若干扇区，通常每个
+   512 字节。每一次物理读写都处理整个扇区。当写请求到达驱动器时，它可能是若干个
+   512 字节的倍数（<productname>PostgreSQL</productname> 通常一次写入
+   8192 字节，也就是 16 个扇区），而写入过程可能在任何时刻因断电失败，这就意味着
+   某些 512 字节扇区写成功了，另一些却没有。为防范这类故障，
+   <productname>PostgreSQL</productname> 会在修改磁盘上的实际页面
+   <emphasis>之前</emphasis>，定期将整页镜像写入持久 WAL 存储。这样一来，在
+   崩溃恢复时 <productname>PostgreSQL</productname> 就能从 WAL 恢复部分写入的
+   页面。如果你使用了能阻止部分页面写入的文件系统软件（如 ZFS），可以通过关闭
+   参数 <xref linkend="guc-full-page-writes"/> 来禁用这种页面镜像。带后备电池
+   单元（BBU）的磁盘控制器并不能阻止部分页面写入，除非它们保证写入 BBU 的数据
+   总是完整的整页（8kB）。
+  </para>
+  <para>
+   <productname>PostgreSQL</productname> 还能够防范存储设备上因硬件错误或介质
+   随时间失效而发生的某些数据损坏，例如读出或写入垃圾数据。
+   <itemizedlist>
+    <listitem>
+     <para>
+      WAL 文件中的每条单独记录都受 CRC-32C（32 位）校验保护，因此我们可以判断
+      记录内容是否正确。CRC 值会在写入每条 WAL 记录时设置，并在崩溃恢复、归档
+      恢复和复制过程中进行检查。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      数据页默认带有校验和，而记录在 WAL 记录中的整页镜像始终受校验和保护。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <filename>pg_xact</filename>、<filename>pg_subtrans</filename>、
+      <filename>pg_multixact</filename>、<filename>pg_serial</filename>、
+      <filename>pg_notify</filename>、<filename>pg_stat</filename>、
+      <filename>pg_snapshots</filename> 等内部数据结构并不直接带校验和，其页面
+      也不受整页写保护。不过，在这些数据结构是持久的场合，会写入 WAL 记录，使
+      最近的更改能够在崩溃恢复时被准确重建，而这些 WAL 记录本身会按前述方式受
+      到保护。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <filename>pg_twophase</filename> 中各个单独的状态文件受 CRC-32C 保护。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      较大 SQL 查询用于排序、物化和存放中间结果的临时数据文件当前不带校验和，
+      对这些文件的更改也不会写入 WAL 记录。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+  <para>
+   <productname>PostgreSQL</productname> 不防范可纠正的内存错误，因此这里假定
+   你使用的是带有业界标准纠错码（ECC）或更强保护机制的 RAM。
+  </para>
+ </sect1>
+
+ <sect1 id="checksums">
+  <title>数据校验和</title>
+  <indexterm>
+   <primary>校验和</primary>
+  </indexterm>
+
+  <para>
+   默认情况下，数据页受校验和保护，但也可以选择为集簇禁用。启用后，每个数据页
+   都包含一个校验和，在页面写入时更新，并在页面每次被读取时进行验证。只有数据
+   页受校验和保护；内部数据结构和临时文件不受保护。
+  </para>
+
+  <para>
+   可以在使用 <link linkend="app-initdb-data-checksums"><application>initdb</application></link>
+   初始化集簇时禁用校验和。之后也可以作为离线操作，或者在允许并发访问的运行中
+   集簇上在线启用或禁用。数据校验和是在整个集簇级别启用或禁用的，不能为单个
+   数据库、表或复制的集簇成员分别指定。
+  </para>
+
+  <para>
+   可以通过查看只读配置变量 <xref linkend="guc-data-checksums" /> 的值来确认
+   集簇当前的校验和状态，执行命令 <command>SHOW data_checksums</command> 即可。
+  </para>
+
+  <para>
+   在尝试从页面损坏中恢复时，可能需要绕过校验和保护。为此，请临时设置配置参数
+   <xref linkend="guc-ignore-checksum-failure" />。
+  </para>
+
+  <sect2 id="checksums-offline-enable-disable">
+   <title>离线启用校验和</title>
+
+   <para>
+    <link linkend="app-pgchecksums"><application>pg_checksums</application></link>
+    程序可用于在离线集簇上启用或禁用数据校验和，也可以用来验证校验和。
+   </para>
+
+  </sect2>
+
+  <sect2 id="checksums-online-enable-disable">
+   <title>在线启用校验和</title>
+
+   <para>
+    可以通过调用相应的 <link linkend="functions-admin-checksum">函数</link> 在线启用
+    或禁用校验和。
+   </para>
+
+   <para>
+    启用和禁用数据校验和都分两个阶段完成，中间由一次检查点分隔，以确保持久性。
+    不同状态及其转换关系如 <xref linkend="data-checksums-states-figure"/> 所示，本节
+    将进一步说明。
+   </para>
+
+   <para>
+    <figure id="data-checksums-states-figure">
+     <title>数据校验和状态</title>
+     <mediaobject>
+      <imageobject>
+       <imagedata fileref="images/datachecksums.svg" format="SVG" width="100%"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </para>
+
+   <para>
+    启用校验和会把集簇校验和状态设为 <literal>inprogress-on</literal>。在此期间，
+    校验和会被写入，但不会被验证。除此之外，还会启动一个后台工作进程，用于为集簇
+    中所有现有数据启用校验和。该工作进程完成集簇中所有数据库的处理后，校验和状态
+    会自动切换为 <literal>on</literal>。该处理会占用两个后台工作进程，因此要
+    确保 <varname>max_worker_processes</varname> 至少还能容纳另外两个进程。
+   </para>
+
+   <para>
+    该过程在开始前会先等待所有打开的事务结束，以便确认不存在在尚未提交的事务内部
+    创建、从而对启用校验和的过程不可见的表。它还会在完成前，针对每个数据库等待所
+    有预先存在的临时表被移除。如果应用中使用了生命周期较长的临时表，则可能需要终
+    止这些应用连接，以便该过程完成。
+   </para>
+
+   <para>
+    如果集簇在 <literal>inprogress-on</literal> 状态下由于任何原因停止，或者处理
+    被中断，那么必须手工重新启动校验和启用过程。为此，在集簇重启后重新执行
+    <function>pg_enable_data_checksums()</function> 函数。该过程会从头开始，不支
+    持从中断处继续。若集簇在 <literal>inprogress-off</literal> 状态下停止，则在
+    集簇重启时，校验和状态会被设为 <literal>off</literal>。
+   </para>
+
+   <para>
+    禁用数据校验和会把数据校验和状态设为 <literal>inprogress-off</literal>。
+    在此期间，校验和会被写入，但不会被验证。所有进程确认该变更后，状态会自动设为
+    <literal>off</literal>。
+   </para>
+
+   <para>
+    在数据校验和正在被启用时禁用数据校验和，会中止当前处理。
+   </para>
+
+   <sect3 id="checksums-online-system-impact">
+    <title>在线操作对系统的影响</title>
+    <para>
+     启用数据校验和会给系统带来显著的 I/O 压力，因为所有数据库页面都需要重写，
+     并且既要写入数据文件，也要写入 WAL。可以通过
+     <function>pg_enable_data_checksums()</function> 函数的
+     <parameter>cost_delay</parameter> 和 <parameter>cost_limit</parameter>
+     参数进行节流，从而限制影响。
+    </para>
+
+    <para>
+     <itemizedlist>
+      <listitem><para>
+       I/O：所有页面都需要计算并写入数据校验和，这会生成大量脏页，之后这些脏页还
+       需要刷盘，同时也会写入 WAL。
+      </para></listitem>
+      <listitem><para>
+       复制：当备库在 WAL 流中收到数据校验和状态变更时，它会发起一个
+       <glossterm linkend="glossary-restartpoint">重启点</glossterm>，以便把
+       当前状态刷入 <filename>pg_control</filename> 文件。重启点会把当前状态刷到
+       磁盘，并在完成前阻塞重做。这反过来会引入复制延迟，在同步备库上还会阻塞
+       主库。在过程启动前减小 <xref linkend="guc-max-wal-size"/>，有助于缩短
+       重启点完成所需的时间。
+      </para></listitem>
+      <listitem><para>
+       关闭/重启：如果在启用数据校验和期间服务器被关闭或重启，处理过程不会恢复，
+       所有页面都需要重新计算并重写。应当在无需常规维护或处于服务窗口期间启用数据
+       校验和。
+      </para></listitem>
+     </itemizedlist>
+    </para>
+
+    <para>
+     禁用数据校验和时不会产生 I/O，但仍然需要检查点。
+    </para>
+   </sect3>
+
+  </sect2>
+ </sect1>
+
+  <sect1 id="wal-intro">
+   <title>预写式日志（<acronym>WAL</acronym>）</title>
+
+   <indexterm zone="wal">
+    <primary>WAL</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>事务日志</primary>
+    <see>WAL</see>
+   </indexterm>
+
+   <para>
+    <firstterm>预写式日志</firstterm>（<acronym>WAL</acronym>）是确保数据完整性
+    的标准方法。大多数（即使不是全部）事务处理书籍中都能找到详细描述。简而言之，
+    <acronym>WAL</acronym> 的核心思想是，对数据文件（即表和索引所在之处）的更改，
+    必须在这些更改被记入日志之后才能写出；也就是说，必须在描述这些更改的 WAL
+    记录被刷入持久存储之后，再去写数据文件。如果遵循这个过程，就无需在每次事务
+    提交时都把数据页刷盘，因为我们知道，一旦发生崩溃，就可以利用日志恢复数据
+    库：任何尚未应用到数据页上的更改，都可以根据 WAL 记录重做。（这就是前滚恢
+    复，也称 REDO。）
+   </para>
+
+   <tip>
+    <para>
+     由于 <acronym>WAL</acronym> 会在崩溃后恢复数据库文件内容，因此要可靠地存储
+     数据文件或 WAL 文件，并不需要日志化文件系统。实际上，日志开销反而可能降低
+     性能，特别是在日志会导致文件系统<emphasis>数据</emphasis>刷盘时。幸运的是，
+     通常可以通过文件系统挂载选项关闭日志期间的数据刷写，例如
+     Linux ext3 文件系统上的 <literal>data=writeback</literal>。不过，日志化
+     文件系统确实能够提高崩溃后的启动速度。
+    </para>
+   </tip>
+
+
+   <para>
+    使用 <acronym>WAL</acronym> 会显著减少磁盘写入次数，因为要保证事务已提交，
+    通常只需把 WAL 文件刷入磁盘，而不必把该事务修改过的每个数据文件都刷盘。
+    WAL 文件按顺序写入，因此同步 WAL 的代价远低于刷写数据页。对于处理大量小事务、
+    且这些事务触及数据存储不同部分的服务器，这一点尤其明显。此外，当服务器正在
+    处理大量并发的小事务时，对 WAL 文件执行一次 <function>fsync</function> 就
+    可能足以提交多个事务。
+   </para>
+
+   <para>
+    <acronym>WAL</acronym> 还使在线备份和时间点恢复成为可能，如
+    <xref linkend="continuous-archiving"/> 所述。通过归档 WAL 数据，我们就能支
+    持回退到可用 WAL 数据覆盖范围内的任意时刻：只需先安装数据库的一个较早物理
+    备份，然后把 WAL 重放到目标时刻即可。更进一步说，这个物理备份不必是数据库
+    状态的瞬时快照 &mdash; 即使备份是在一段时间内完成的，重放这段时间内的 WAL
+    也能修复任何内部不一致。
+   </para>
+  </sect1>
+
+ <sect1 id="wal-async-commit">
+  <title>异步提交</title>
+
+   <indexterm>
+    <primary>同步提交</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>异步提交</primary>
+   </indexterm>
+
+  <para>
+   <firstterm>异步提交</firstterm>是一项可选功能，它允许事务更快完成，但代价是
+   如果数据库发生崩溃，最近的事务可能会丢失。在许多应用中，这是可以接受的权衡。
+  </para>
+
+  <para>
+   如前一节所述，事务提交通常是 <firstterm>同步的</firstterm>：服务器要等到该
+   事务的 <acronym>WAL</acronym> 记录被刷入持久存储后，才向客户端返回成功
+   指示。因此，客户端可以确信那些已被报告为提交成功的事务一定会被保留，即使
+   服务器紧接着立刻崩溃也是如此。然而，对于短事务而言，这种等待是总事务时间的
+   主要组成部分。选择异步提交模式意味着服务器会在事务从逻辑上完成后就立刻返回
+   成功，而不必等到它生成的 <acronym>WAL</acronym> 记录真正到达磁盘。这会显著
+   提升小事务的吞吐量。
+  </para>
+
+  <para>
+   异步提交引入了数据丢失风险。在向客户端报告事务完成与事务真正被提交（也就是
+   说，即使服务器崩溃也保证不会丢失）之间，存在一个很短的时间窗口。因此，如果
+   客户端会基于“系统一定会记住这个事务”这一假设采取外部动作，就不应使用异步提
+   交。例如，银行显然不会对记录 ATM 吐钞的事务使用异步提交。但在很多场景中，
+   例如事件日志记录，并不需要这种强保证。
+  </para>
+
+  <para>
+   使用异步提交所承担的风险是数据丢失，而不是数据损坏。如果数据库发生崩溃，它会
+   通过重放 <acronym>WAL</acronym> 直到最后一条已刷写记录来恢复。因此，数据库
+   会被恢复到自洽状态，但任何尚未刷到磁盘的事务都不会反映在该状态中。其最终
+   效果就是丢失最后几个事务。由于事务按提交顺序重放，所以不会引入任何不一致性
+   &mdash; 例如，如果事务 B 做出的更改依赖于更早的事务 A 的效果，就不可能出现
+   A 的效果丢失而 B 的效果却被保留的情况。
+  </para>
+
+  <para>
+   用户可以为每个事务选择提交模式，因此同步提交事务和异步提交事务可以并发运行。
+   这使得在性能与事务持久性的确定性之间能够灵活权衡。提交模式由用户可设置的
+   参数 <xref linkend="guc-synchronous-commit"/> 控制，而该参数可以用任何
+   设置配置参数的方式来更改。任一事务实际使用的模式取决于事务提交开始时
+   <varname>synchronous_commit</varname> 的值。
+  </para>
+
+  <para>
+   某些实用命令，例如 <command>DROP TABLE</command>，无论
+   <varname>synchronous_commit</varname> 如何设置，都会强制同步提交。这是为了
+   保证服务器文件系统与数据库逻辑状态之间的一致性。支持两阶段提交的命令，例如
+   <command>PREPARE TRANSACTION</command>，也始终是同步的。
+  </para>
+
+  <para>
+   如果数据库在异步提交与写出该事务 <acronym>WAL</acronym> 记录之间的风险窗口内
+   崩溃，那么该事务所做的更改<emphasis>将</emphasis>丢失。该风险窗口的时长是
+   受限的，因为一个后台进程（<quote>WAL 写入器</quote>）会将尚未写出的
+   <acronym>WAL</acronym> 记录每隔
+   <xref linkend="guc-wal-writer-delay"/> 毫秒刷到磁盘。风险窗口的实际最大时长是
+   <varname>wal_writer_delay</varname> 的三倍，因为 WAL 写入器在系统繁忙时被
+   设计为倾向于一次写出整页。
+  </para>
+
+  <caution>
+   <para>
+    立即模式关闭等同于服务器崩溃，因此也会造成任何未刷写的异步提交丢失。
+   </para>
+  </caution>
+
+  <para>
+   异步提交的行为不同于将 <xref linkend="guc-fsync"/> 设为 off。
+   <varname>fsync</varname> 是影响所有事务的全服务器设置。它会禁用
+   <productname>PostgreSQL</productname> 内部所有试图同步数据库不同部分写入的
+   逻辑，因此系统崩溃（即硬件或操作系统崩溃，而不是
+   <productname>PostgreSQL</productname> 本身故障）可能导致数据库状态遭受任意
+   严重的损坏。在许多场景中，异步提交能带来关闭 <varname>fsync</varname> 所能
+   获得的大部分性能提升，却不承担数据损坏的风险。
+  </para>
+
+  <para>
+   <xref linkend="guc-commit-delay"/> 听起来也很像异步提交，但它实际上是一种同步
+   提交方法（事实上，在异步提交期间 <varname>commit_delay</varname> 会被忽略）。
+   <varname>commit_delay</varname> 会在事务把 <acronym>WAL</acronym> 刷到磁盘
+   之前引入一段延迟，希望某个事务执行的一次刷盘也能服务于其他差不多同时提交的
+   事务。可以把这个设置看成是扩大一个时间窗口，让事务得以加入即将参与同一次刷盘
+   的组，从而在多个事务之间摊销这次刷盘的代价。
+  </para>
+
+ </sect1>
+
+ <sect1 id="wal-configuration">
+  <title><acronym>WAL</acronym> 配置</title>
+
+  <para>
+   有若干与 <acronym>WAL</acronym> 相关的配置参数会影响数据库性能。本节解释它们
+   的用法。有关设置服务器配置参数的一般信息，请参见 <xref linkend="runtime-config"/>。
+  </para>
+
+  <para>
+   <firstterm>检查点</firstterm><indexterm><primary>检查点</primary></indexterm>
+   是事务序列中的一些点，在这些点上可以保证堆和索引数据文件已经用检查点之前写入
+   的全部信息进行了更新。执行检查点时，所有脏数据页都会刷写到磁盘，并向 WAL
+   文件写入一条特殊的检查点记录。（更改记录此前已经刷入 <acronym>WAL</acronym>
+   文件。）如果发生崩溃，崩溃恢复过程会查看最新的检查点记录，以确定应该从 WAL
+   的哪个位置（称为重做记录）开始执行 REDO。该点之前对数据文件所做的任何更改
+   都保证已经在磁盘上。因此，检查点之后，位于包含重做记录的段之前的 WAL 段不再需要，
+   可以被回收或删除。（若正在执行 <acronym>WAL</acronym> 归档，则这些 WAL 段必
+   须先归档，随后才能回收或删除。）
+  </para>
+
+  <para>
+   检查点要求将所有脏数据页刷盘，这可能造成可观的 I/O 负载。因此，检查点活动会
+   被节流，使 I/O 从检查点开始时就启动，并在下一个检查点预计开始前完成；这样可
+   将检查点期间的性能下降降到最低。
+  </para>
+
+  <para>
+   服务器的检查点进程会定期自动执行检查点。每经过
+   <xref linkend="guc-checkpoint-timeout"/> 秒，或者当
+   <xref linkend="guc-max-wal-size"/> 即将超出时，就会开始一个检查点，以先到者为
+   准。默认设置分别是 5 分钟和 1 GB。如果自上一个检查点以来没有写入任何 WAL，
+   那么即使 <varname>checkpoint_timeout</varname> 已经过去，也会跳过新的
+   检查点。（如果正在使用 WAL 归档，而你希望对文件归档频率设定下限，从而限制
+   潜在数据丢失，那么应当调整参数
+   <xref linkend="guc-archive-timeout"/>，而不是检查点参数。）
+   也可以使用 SQL 命令 <command>CHECKPOINT</command> 强制执行检查点。
+  </para>
+
+  <para>
+   减小 <varname>checkpoint_timeout</varname> 和/或
+   <varname>max_wal_size</varname> 会让检查点更频繁地发生。这样可以加快崩溃后
+   恢复，因为需要重做的工作更少。不过，这必须与更频繁刷写脏数据页所增加的成本
+   权衡。如果设置了 <xref linkend="guc-full-page-writes"/>（默认就是如此），
+   还要考虑另一个因素。为了保证数据页一致性，每个检查点之后对某个数据页的首次
+   修改，都会导致把整页内容写入日志。在这种情况下，更短的检查点间隔会增加输出到
+   WAL 的数据量，部分抵消缩短间隔的目的，并且无论如何都会带来更多磁盘 I/O。
+  </para>
+
+  <para>
+   检查点的代价相当高，首先是因为它要求写出当前所有脏缓冲区，其次是因为它还会像
+   上文所述那样带来额外的后续 WAL 流量。因此，明智的做法是将检查点参数设得足够
+   高，避免检查点发生得过于频繁。作为对检查点参数的一种简单合理性检查，你可以
+   设置参数 <xref linkend="guc-checkpoint-warning"/>。如果检查点之间的间隔
+   小于 <varname>checkpoint_warning</varname> 秒，服务器日志就会输出一条消息，
+   建议增大 <varname>max_wal_size</varname>。偶尔出现这样的消息无需惊慌，但如果
+   它频繁出现，就应当增大检查点控制参数。大型 <command>COPY</command> 传输之类的
+   批量操作，如果 <varname>max_wal_size</varname> 设得不够高，也可能导致出现
+   多次此类警告。
+  </para>
+
+  <para>
+   为了避免大量页面写出在短时间内淹没 I/O 系统，检查点期间对脏缓冲区的写出会被
+   分散到一段时间内。这段时间由
+   <xref linkend="guc-checkpoint-completion-target"/> 控制，它表示为检查点间隔
+   （通过 <varname>checkpoint_timeout</varname> 配置）的一个分数。系统会调节
+   I/O 速率，使检查点在给定比例的 <varname>checkpoint_timeout</varname> 秒数
+   经过时完成，或者在 <varname>max_wal_size</varname> 即将超出之前完成，以较早
+   者为准。使用默认值 0.9 时，可以预期 <productname>PostgreSQL</productname>
+   会在下一次计划检查点开始前稍早完成每个检查点（大约在检查点间隔的 90% 时）。
+   这样能尽可能摊平 I/O，从而使检查点 I/O 负载在整个检查点间隔内保持稳定。这样
+   做的缺点是，延长检查点会影响恢复时间，因为需要保留更多 WAL 段以备恢复时
+   使用。关心恢复耗时的用户，可能希望减小
+   <varname>checkpoint_timeout</varname>，让检查点更频繁地发生，但仍将 I/O 分散
+   在整个检查点间隔内。另一种办法是减小
+   <varname>checkpoint_completion_target</varname>，但这会导致检查点期间 I/O
+   更密集，而在检查点完成后、下一次计划检查点开始前 I/O 更少，因此不推荐。虽然
+   <varname>checkpoint_completion_target</varname> 理论上可以设到 1.0，但通常
+   建议不要超过 0.9（默认值），因为检查点除了写出脏缓冲区之外还包含其他活动。
+   设置为 1.0 很可能导致检查点不能按时完成，从而因为所需 WAL 段数量的意外波动而
+   损失性能。
+  </para>
+
+  <para>
+   在 Linux 和 POSIX 平台上，<xref linkend="guc-checkpoint-flush-after"/>
+   允许在检查点写出的操作系统页面达到可配置的字节数后，强制把它们刷到磁盘。
+   否则，这些页面可能会停留在操作系统页缓存中，从而在检查点末尾发出
+   <literal>fsync</literal> 时引发停顿。这个设置通常有助于降低事务延迟，但也可能
+   对性能产生不利影响，尤其是在工作负载大于
+   <xref linkend="guc-shared-buffers"/>、但小于操作系统页缓存时。
+  </para>
+
+  <para>
+   <filename>pg_wal</filename> 目录中 WAL 段文件的数量取决于
+   <varname>min_wal_size</varname>、<varname>max_wal_size</varname>，以及此前几
+   个检查点周期中产生的 WAL 数量。当旧的 WAL 段文件不再需要时，它们会被删除或
+   回收（也就是重命名为编号序列中的未来段文件）。如果由于 WAL 输出速率短期突增而
+   超过了 <varname>max_wal_size</varname>，那么不再需要的段文件就会被删除，
+   直到系统重新回到该限制之下。在此限制以下，系统会回收足够多的 WAL 文件，以覆
+   盖到下一个检查点之前的预估需求，其余则删除。这个估计基于此前几个检查点周期中
+   所用 WAL 文件数量的移动平均值。如果实际使用量超过估计值，移动平均会立即增大，
+   因而在一定程度上能够适应峰值使用量，而不仅仅是平均使用量。
+   <varname>min_wal_size</varname> 规定了为将来复用而回收的 WAL 文件最小总量；
+   即使系统空闲，且 WAL 使用量估计表明只需要很少 WAL，也始终会回收这么多文件以
+   供未来使用。
+  </para>
+
+  <para>
+   无论 <varname>max_wal_size</varname> 如何设置，最近
+   <xref linkend="guc-wal-keep-size"/> MB 的 WAL 文件外加一个额外的 WAL 文件
+   都会始终保留。此外，如果使用了 WAL 归档，那么旧段在完成归档之前不能被删除或
+   回收。如果 WAL 归档跟不上 WAL 产生的速度，或者 <varname>archive_command</varname>
+   或 <varname>archive_library</varname> 反复失败，那么旧 WAL 文件就会在
+   <filename>pg_wal</filename> 中不断累积，直到问题解决。使用复制槽的备库
+   如果速度很慢或者已经失败，也会产生同样的效果（见
+   <xref linkend="streaming-replication-slots"/>）。同样地，如果启用了
+   <link linkend="runtime-config-wal-summarization">WAL 汇总</link>，那么旧段
+   会一直保留到完成汇总为止。
+  </para>
+
+  <para>
+   在归档恢复或备库模式下，服务器会周期性地执行
+   <firstterm>重启点</firstterm><indexterm><primary>重启点</primary></indexterm>，
+   其行为类似于正常运行时的检查点：服务器会强制把自身状态写盘，更新
+   <filename>pg_control</filename> 文件，以表明已经处理过的 WAL 数据无需再次
+   扫描，然后回收 <filename>pg_wal</filename> 目录中的旧 WAL 段文件。重启点的
+   执行频率不会高于主库上的检查点，因为重启点只能在检查点记录处执行。重启点既
+   可能由调度触发，也可能由外部请求触发。
+   <structfield>restartpoints_timed</structfield> 计数器在 <link
+   linkend="monitoring-pg-stat-checkpointer-view"><structname>pg_stat_checkpointer</structname></link>
+   视图中统计前者，而 <structfield>restartpoints_req</structfield> 统计后者。按调度触发的
+   重启点，是在到达某条检查点记录时，如果距上一次已执行的重启点至少已经过去
+   <xref linkend="guc-checkpoint-timeout"/> 秒，或者上一次尝试执行重启点失败时
+   触发。后一种情况下，下一次重启点会安排在 15 秒后。按请求触发的重启点，其原
+   因与检查点类似，但主要是在 WAL 大小即将超过
+   <xref linkend="guc-max-wal-size"/> 时触发。不过，由于重启点的可执行时机受到
+   限制，恢复期间经常会超出 <varname>max_wal_size</varname>，最多可能超出一个
+   检查点周期对应的 WAL 量。（无论如何，<varname>max_wal_size</varname> 从来
+   都不是硬上限，因此你始终应留出充足余量，以免耗尽磁盘空间。）
+   <structfield>restartpoints_done</structfield> 计数器则在 <link
+   linkend="monitoring-pg-stat-checkpointer-view"><structname>pg_stat_checkpointer</structname></link>
+   视图中统计真正执行了的重启点数量。
+  </para>
+
+  <para>
+   在某些情况下，例如发生大规模 <command>INSERT</command> 时，主库上的 WAL 大小
+   会快速增长，此时备库端的 <structfield>restartpoints_req</structfield> 计数器
+   可能会出现突增。这是因为，虽然由于 WAL 消耗增加而提出了创建新重启点的请求，
+   但自上一次重启点以来可安全使用的检查点记录尚未在备库端重放，所以这些请求无法
+   执行。这种行为是正常的，不会导致系统资源消耗增加。在与重启点相关的计数器中，
+   只有 <structfield>restartpoints_done</structfield> 才表明确实消耗了明显的
+   系统资源。
+  </para>
+
+  <para>
+   有两个常用的内部 <acronym>WAL</acronym> 函数：
+   <function>XLogInsertRecord</function> 和 <function>XLogFlush</function>。
+   <function>XLogInsertRecord</function> 用于把新记录放入共享内存中的
+   <acronym>WAL</acronym> 缓冲区。如果新记录没有可用空间，
+   <function>XLogInsertRecord</function> 就不得不把
+   若干已满的 <acronym>WAL</acronym> 缓冲区写出（移入内核缓存）。这并不理想，因为
+   <function>XLogInsertRecord</function> 会在每一次数据库底层修改（例如插入行）
+   时被调用，而在调用它时，受影响数据页上正持有排他锁，因此这一操作必须尽可能
+   快。更糟的是，写 <acronym>WAL</acronym> 缓冲区还可能迫使系统创建新的 WAL 段，
+   这会花费更多时间。正常情况下，<acronym>WAL</acronym> 缓冲区应由
+   <function>XLogFlush</function> 请求负责写出并刷盘；
+   该请求大多发生在事务提交时，以确保事务记录被刷入持久存储。在 WAL 输出量很高
+   的系统上，<function>XLogFlush</function> 请求可能不够频繁，无法避免
+   <function>XLogInsertRecord</function> 自己去执行写出。在这种系统上，应增加
+   <acronym>WAL</acronym> 缓冲区的数量，具体做法是修改参数
+   <xref linkend="guc-wal-buffers"/>。当设置了
+   <xref linkend="guc-full-page-writes"/> 且系统非常繁忙时，提高
+   <varname>wal_buffers</varname> 还有助于平滑每次检查点后紧接着那段时期的响应时间。
+  </para>
+
+  <para>
+   参数 <xref linkend="guc-commit-delay"/> 定义了组提交的领导者进程在
+   <function>XLogFlush</function> 内部获取锁之后会睡眠多少微秒，在此期间，组提
+   交的追随者会排队跟在领导者后面。这一延迟允许其他服务器进程把自己的提交记录添
+   加到 WAL 缓冲区中，以便它们都能由领导者最终执行的同步操作一并刷出。如果没有
+   启用 <xref linkend="guc-fsync"/>，或者当前处于活跃事务中的其他会话少于
+   <xref linkend="guc-commit-siblings"/> 个，就不会发生睡眠；这样可以避免在其他
+   会话不太可能很快提交时还去睡眠。请注意，在某些平台上，休眠请求的分辨率是
+   10 毫秒，因此介于 1 到 10000 微秒之间的任何非零
+   <varname>commit_delay</varname> 设置，效果都相同。还要注意，在某些平台上，
+   休眠操作持续的时间可能会比该参数所请求的略长。
+  </para>
+
+  <para>
+   由于 <varname>commit_delay</varname> 的目的，是让每次刷盘操作的成本在并发
+   提交的事务之间分摊（代价是可能增加事务延迟），因此在选择该设置之前，有必要
+   先量化这一成本。该成本越高，<varname>commit_delay</varname> 在提高事务吞吐量
+   方面预计就越有效，当然这种效果也有上限。可以使用 <xref linkend="pgtestfsync"/>
+   程序来测量单次 WAL 刷盘操作平均需要多少微秒。通常，把该程序报告的“单次
+   8kB 写操作之后再刷盘”的平均耗时取一半，往往是
+   <varname>commit_delay</varname> 最有效的设置，因此建议把这一值作为针对特定
+   工作负载进行优化时的起点。虽然在 WAL 位于高延迟旋转磁盘上时，调优
+   <varname>commit_delay</varname> 尤其有用，但即便是在同步时间非常快的存储
+   介质上，例如固态驱动器或带有电池后备写缓存的 RAID 阵列，其收益也可能很可观；不过
+   这无疑应当在有代表性的工作负载上进行测试。在这种场景下，通常应使用更高的
+   <varname>commit_siblings</varname> 值，而在高延迟介质上，较小的
+   <varname>commit_siblings</varname> 值往往更有帮助。还要注意，
+   <varname>commit_delay</varname> 如果设得过高，也完全可能由于显著增加事务
+   延迟而导致总体事务吞吐量下降。
+  </para>
+
+  <para>
+   当 <varname>commit_delay</varname> 设为 0（默认值）时，仍然可能出现一种组
+   提交，但每个组只会包含那些恰好在前一次刷盘操作（若有）进行期间，到达“需要刷
+   出其提交记录”这一点的会话。客户端数量更高时，往往会出现一种
+   <quote>gangway effect</quote>，以至于即使 <varname>commit_delay</varname>
+   为 0，组提交的效果也会变得很显著，因此显式设置
+   <varname>commit_delay</varname> 的帮助反而会变小。只有在以下两种条件同时
+   满足时，设置 <varname>commit_delay</varname> 才可能有帮助：（1）存在一些
+   并发提交的事务；以及（2）吞吐量在某种程度上受限于提交速率。但在旋转延迟较高
+   的介质上，即使只有两个客户端（也就是一个正在提交的客户端，再加上一个并发的
+   兄弟事务），这个设置也能有效提高事务吞吐量。
+  </para>
+
+  <para>
+   参数 <xref linkend="guc-wal-sync-method"/> 决定
+   <productname>PostgreSQL</productname> 将如何请求内核把
+   <acronym>WAL</acronym> 更新强制刷到磁盘。就可靠性而言，所有选项应当都是相同
+   的；例外是 <literal>fsync_writethrough</literal>，它有时能够在其他选项做不
+   到时强制刷新磁盘缓存。不过，具体哪个选项速度最快则高度依赖平台。可以使用
+   <xref linkend="pgtestfsync"/> 程序测试不同选项的速度。请注意，如果
+   <varname>fsync</varname> 已被关闭，那么这个参数就没有意义。
+  </para>
+
+  <para>
+   启用配置参数 <xref linkend="guc-wal-debug"/>（前提是
+   <productname>PostgreSQL</productname> 编译时支持它）会导致每一次
+   <function>XLogInsertRecord</function> 和 <function>XLogFlush</function>
+   的 <acronym>WAL</acronym> 调用都被记录到服务器日志中。将来，这个选项可能会
+   被更通用的机制所取代。
+  </para>
+
+  <para>
+   有两个内部函数负责把 WAL 数据写入磁盘：
+   <function>XLogWrite</function> 和 <function>issue_xlog_fsync</function>。
+   启用 <xref linkend="guc-track-wal-io-timing"/> 后，
+   <function>XLogWrite</function> 写 WAL 数据以及
+   <function>issue_xlog_fsync</function> 将 WAL 数据同步到磁盘所花费的总时间，
+   会分别统计为 <varname>write_time</varname> 和 <varname>fsync_time</varname>，
+   记录在 <xref linkend="pg-stat-io-view"/> 中
+   <varname>object</varname> 为 <literal>wal</literal> 的项下。
+   <function>XLogWrite</function> 通常由 <function>XLogInsertRecord</function>
+   （当 WAL 缓冲区没有空间容纳新记录时）、<function>XLogFlush</function> 以及
+   WAL 写入器调用，用于把 WAL 缓冲区写到磁盘并调用
+   <function>issue_xlog_fsync</function>。<function>issue_xlog_fsync</function>
+   通常由 <function>XLogWrite</function> 调用，用于将 WAL 文件同步到磁盘。如果
+   <varname>wal_sync_method</varname> 是 <literal>open_datasync</literal> 或
+   <literal>open_sync</literal>，那么 <function>XLogWrite</function> 中的写操作
+   本身就保证已将写出的 WAL 数据同步到磁盘，而
+   <function>issue_xlog_fsync</function> 什么也不做。如果
+   <varname>wal_sync_method</varname> 是 <literal>fdatasync</literal>、
+   <literal>fsync</literal> 或 <literal>fsync_writethrough</literal>，
+   那么写操作会把 WAL 缓冲区移入内核缓存，而
+   <function>issue_xlog_fsync</function> 会把它们同步到磁盘。无论
+   <varname>track_wal_io_timing</varname> 是否开启，
+   <function>XLogWrite</function> 写 WAL 数据的次数和
+   <function>issue_xlog_fsync</function> 同步 WAL 数据到磁盘的次数，也会分别统计
+   为 <varname>writes</varname> 和 <varname>fsyncs</varname>，记录在
+   <structname>pg_stat_io</structname> 中 <varname>object</varname> 为
+   <literal>wal</literal> 的项下。
+  </para>
+
+  <para>
+   参数 <xref linkend="guc-recovery-prefetch"/> 可用于在恢复期间降低 I/O 等待
+   时间：它会指示内核对那些很快就会需要、但当前尚未位于
+   <productname>PostgreSQL</productname> 缓冲池中的磁盘块发起读取。
+   <xref linkend="guc-maintenance-io-concurrency"/> 和
+   <xref linkend="guc-wal-decode-buffer-size"/> 分别限制预取的并发度和距离。
+   默认值是 <literal>try</literal>，这会在支持发出预读建议的系统上启用该特性。
+  </para>
+ </sect1>
+
+ <sect1 id="wal-internals">
+  <title>WAL 内部机制</title>
+
+  <indexterm zone="wal-internals">
+   <primary>LSN</primary>
+  </indexterm>
+
+  <para>
+   <acronym>WAL</acronym> 会自动启用；管理员除了确保满足
+   <acronym>WAL</acronym> 文件的磁盘空间需求，并完成任何必要调优之外，不需要再
+   做其他操作（见 <xref linkend="wal-configuration"/>）。
+  </para>
+
+  <para>
+   每写入一条新记录，<acronym>WAL</acronym> 记录就会追加到
+   <acronym>WAL</acronym> 文件中。插入位置由日志序列号
+   （<acronym>LSN</acronym>）描述，它是 WAL 内的一个字节偏移量，会随着每条新记
+   录的写入而单调递增。<acronym>LSN</acronym> 值以数据类型
+   <link linkend="datatype-pg-lsn"><type>pg_lsn</type></link> 返回。通过比较
+   两个值，可以计算它们之间相隔的 <acronym>WAL</acronym> 数据量，因此它们可用于
+   衡量复制和恢复的进度。
+  </para>
+
+  <para>
+   <acronym>WAL</acronym> 文件保存在数据目录下的 <filename>pg_wal</filename> 目录中，由一组段文件
+   组成，每个段通常为 16 MB（不过可通过修改
+   <option>--wal-segsize</option> <application>initdb</application> 选项来
+   改变大小）。每个段又分为若干页面，通常每页 8 kB（该大小可通过 configure 选
+   项 <option>--with-wal-blocksize</option> 更改）。WAL 记录头定义在
+   <filename>access/xlogrecord.h</filename> 中；记录内容则取决于被记录的事件类
+   型。段文件以不断递增的数字命名，从
+   <filename>000000010000000000000001</filename> 开始。这些编号不会回绕，但要
+   把可用的编号耗尽还需要非常、非常长的时间。
+  </para>
+
+  <para>
+   如果能将 WAL 放在与主数据库文件不同的磁盘上，会更有利。这可以通过把
+   <filename>pg_wal</filename> 目录移动到其他位置（当然要在服务器关闭时进行），
+   然后在主数据目录中的原位置创建一个指向新位置的符号链接来实现。
+  </para>
+
+  <para>
+   <acronym>WAL</acronym> 的目标是确保数据库记录在被修改之前，日志已经先被写
+   出；但如果磁盘驱动器<indexterm><primary>磁盘驱动器</primary></indexterm>
+   实际上只是缓存了数据、尚未将其存储到磁盘上，却向内核谎报
+   写入成功，这一目标就会被破坏。在这种情况下，断电可能导致不可恢复的数据损坏。
+   管理员应尽量确保保存 <productname>PostgreSQL</productname>
+   <acronym>WAL</acronym> 文件的磁盘不会做出这种虚假报告。（见
+   <xref linkend="wal-reliability"/>。）
+  </para>
+
+  <para>
+   在完成检查点并刷写 WAL 之后，该检查点的位置会保存在文件
+   <filename>pg_control</filename> 中。因此，在恢复开始时，服务器会先读取
+   <filename>pg_control</filename>，再读取检查点记录；然后从检查点记录给出的
+   WAL 位置向前扫描并执行 REDO。由于检查点之后对数据页的第一次修改，会把整页内
+   容保存在 WAL 中（假设没有禁用 <xref linkend="guc-full-page-writes"/>），
+   因而自该检查点以来被修改的所有页面都会恢复到一致状态。
+  </para>
+
+  <para>
+   为处理 <filename>pg_control</filename> 损坏的情况，我们本应支持按相反顺序扫
+   描现有 WAL 段 &mdash; 也就是从新到旧 &mdash;，以便找到最新检查点。这一功能
+   尚未实现。
+   <filename>pg_control</filename> 足够小（不足一个磁盘页），因此不会受部分写
+   问题影响；到目前为止，也没有仅仅因为无法读取
+   <filename>pg_control</filename> 本身而导致数据库故障的报告。所以，尽管理论上
+   它是个薄弱环节，<filename>pg_control</filename> 在实践中似乎不是问题。
+  </para>
+ </sect1>
+
+</chapter>

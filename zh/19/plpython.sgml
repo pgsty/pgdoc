@@ -1,0 +1,1186 @@
+<!-- doc/src/sgml/plpython.sgml -->
+
+<chapter id="plpython">
+
+ <title>PL/Python &mdash; Python 过程语言</title>
+
+ <indexterm zone="plpython"><primary>PL/Python</primary></indexterm>
+
+ <indexterm zone="plpython"><primary>Python</primary></indexterm>
+
+ <para>
+  <application>PL/Python</application>过程语言允许使用<ulink url="https://www.python.org">Python 语言</ulink>编写<productname>PostgreSQL</productname>函数和过程。
+ </para>
+
+ <para>
+  要在特定数据库中安装 PL/Python，可使用<literal>CREATE EXTENSION plpython3u</literal>。
+ </para>
+
+  <tip>
+
+   <para>
+    如果把某种语言安装到<literal>template1</literal>中，之后创建的所有数据库都会自动安装该语言。
+   </para>
+  </tip>
+
+ <para>
+  PL/Python 只能作为一种<quote>不受信任的</quote>语言使用，这意味着它不提供任何机制来限制用户能在其中做什么，因此其名称为<literal>plpython3u</literal>。如果将来能在 Python 中开发出安全的执行机制，受信任的变体<literal>plpython</literal>可能会出现。使用不受信任的 PL/Python 编写函数时，函数编写者必须确保该函数不会被用来做任何不希望发生的事情，因为它能够做到任何以数据库管理员身份登录的用户所能做的事情。只有超级用户才能在<literal>plpython3u</literal>这类不受信任的语言中创建函数。
+ </para>
+
+ <note>
+
+  <para>
+   源码包用户必须在安装过程中专门启用 PL/Python 的构建（更多信息请参阅安装说明）。二进制包用户则可能会在单独的子包中找到 PL/Python。
+  </para>
+ </note>
+
+ <sect1 id="plpython-funcs">
+
+  <title>PL/Python 函数</title>
+
+  <para>
+   PL/Python 中的函数通过标准的<xref linkend="sql-createfunction"/>语法声明：
+
+<programlisting>
+CREATE FUNCTION <replaceable>funcname</replaceable> (<replaceable>argument-list</replaceable>)
+  RETURNS <replaceable>return-type</replaceable>
+AS $$
+  # PL/Python function body
+$$ LANGUAGE plpython3u;
+</programlisting>
+  </para>
+
+  <para>
+   函数体只是一个 Python 脚本。调用函数时，其参数会作为列表<varname>args</varname>的元素传入；命名参数还会作为普通变量传给 Python 脚本。使用命名参数通常可读性更好。结果通常通过<literal>return</literal>或<literal>yield</literal>（在返回结果集的情况下）从 Python 代码返回。如果不提供返回值，Python 会返回默认值<symbol>None</symbol>。<application>PL/Python</application>会把 Python 的<symbol>None</symbol>转换成 SQL 空值。对于过程，Python 代码的结果必须是<symbol>None</symbol>（通常做法是以不带<literal>return</literal>语句的方式结束过程，或者使用不带参数的<literal>return</literal>语句），否则会引发错误。
+  </para>
+
+  <para>
+   例如，一个返回两个整数中较大值的函数可以定义为：
+
+<programlisting>
+CREATE FUNCTION pymax (a integer, b integer)
+  RETURNS integer
+AS $$
+  if a &gt; b:
+    return a
+  return b
+$$ LANGUAGE plpython3u;
+</programlisting>
+
+   函数定义体中给出的 Python 代码会被转换成一个 Python 函数。例如，上面的定义会变成：
+
+<programlisting>
+def __plpython_procedure_pymax_23456():
+  if a &gt; b:
+    return a
+  return b
+</programlisting>
+
+   这里假定 23456 是由<productname>PostgreSQL</productname>分配给该函数的 OID。
+ </para>
+
+  <para>
+   参数会被设置为全局变量。由于 Python 的作用域规则，这会带来一个微妙的结果：除非在代码块中再次将该变量声明为全局变量，否则不能在函数内部把参数变量重新赋值为一个引用该变量名自身的表达式的值。例如，下面这样是行不通的：
+<programlisting>
+CREATE FUNCTION pystrip(x text)
+  RETURNS text
+AS $$
+  x = x.strip()  # error
+  return x
+$$ LANGUAGE plpython3u;
+</programlisting>
+   因为对<varname>x</varname>赋值会使<varname>x</varname>在整个代码块中都成为局部变量，因此赋值语句右侧的<varname>x</varname>指向的是尚未赋值的局部变量<varname>x</varname>，而不是 PL/Python 函数参数。使用<literal>global</literal>语句后，这样写就能工作：
+<programlisting>
+CREATE FUNCTION pystrip(x text)
+  RETURNS text
+AS $$
+  global x
+  x = x.strip()  # ok now
+  return x
+$$ LANGUAGE plpython3u;
+</programlisting>
+   但是，建议不要依赖 PL/Python 的这一实现细节。最好将函数参数视为只读。
+ </para>
+ </sect1>
+
+ <sect1 id="plpython-data">
+
+  <title>数据值</title>
+
+  <para>
+   一般来说，PL/Python 的目标是在 PostgreSQL 世界和 Python 世界之间提供一种<quote>自然</quote>的映射。下面描述的数据映射规则就是基于这一目标。
+  </para>
+
+  <sect2 id="plpython-data-type-mapping">
+
+   <title>数据类型映射</title>
+
+   <para>
+    调用 PL/Python 函数时，其参数会从 PostgreSQL 数据类型转换为相应的 Python 类型：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       PostgreSQL <type>boolean</type> 会转换为 Python <type>bool</type>。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       PostgreSQL <type>smallint</type>、<type>int</type>、<type>bigint</type>
+       和 <type>oid</type> 会转换为 Python <type>int</type>。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       PostgreSQL <type>real</type> 和 <type>double</type> 会转换为
+       Python <type>float</type>。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       PostgreSQL <type>numeric</type> 会转换为
+       Python <type>Decimal</type>。如果可用，将从
+       <literal>cdecimal</literal> 包导入这种类型。
+       否则，将使用标准库中的 <literal>decimal.Decimal</literal>。
+       <literal>cdecimal</literal> 明显快于 <literal>decimal</literal>。
+       不过在 Python 3.3 及更高版本中，
+       <literal>cdecimal</literal> 已经以 <literal>decimal</literal> 这一名称并入标准库，
+       因此不再有区别。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       PostgreSQL <type>bytea</type> 会转换为 Python <type>bytes</type>。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       所有其他数据类型，包括 PostgreSQL 字符串类型，
+       都会转换为 Python <type>str</type>（和所有 Python 字符串一样，都是 Unicode）。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       对于非标量数据类型，请参见下文。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    当 PL/Python 函数返回时，其返回值会按如下方式转换成该函数声明的 PostgreSQL 返回数据类型：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       当 PostgreSQL 返回类型为<type>boolean</type>时，返回值会按照<emphasis>Python</emphasis>规则进行真值判定。也就是说，0 和空字符串为假，但值得注意的是，<literal>'f'</literal> 为真。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       当 PostgreSQL 返回类型为<type>bytea</type>时，返回值会通过相应的 Python 内置函数转换成 Python <type>bytes</type>，再将结果转换成<type>bytea</type>。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       对于所有其他 PostgreSQL 返回类型，返回值会使用 Python 内置函数<literal>str</literal>转换为字符串，然后将结果传给 PostgreSQL 数据类型的输入函数。（如果 Python 值是<type>float</type>，则会使用<literal>repr</literal>内置函数而不是<literal>str</literal>来转换，以避免精度损失。）
+      </para>
+
+      <para>
+       字符串在传给 PostgreSQL 时，会自动转换为 PostgreSQL 服务器编码。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       对于非标量数据类型，请参见下文。
+      </para>
+     </listitem>
+    </itemizedlist>
+
+    请注意，即使声明的 PostgreSQL 返回类型与实际返回对象的 Python 数据类型在逻辑上并不匹配，也不会报错；无论如何该值都会被转换。
+   </para>
+  </sect2>
+
+  <sect2 id="plpython-data-null">
+
+   <title>空值、None</title>
+
+  <para>
+   如果把 SQL 空值<indexterm><primary>空值</primary><secondary
+   sortas="PL/Python">在 PL/Python 中</secondary></indexterm>传给函数，参数值在 Python 中会显示为<symbol>None</symbol>。例如，<xref linkend="plpython-funcs"/>中展示的<function>pymax</function>定义在处理空输入时就会返回错误结果。我们可以在函数定义中添加<literal>STRICT</literal>，让<productname>PostgreSQL</productname>做出更合理的处理：如果传入空值，函数根本不会被调用，而是自动返回空结果。另一种办法是在函数体中检查空输入：
+
+<programlisting>
+CREATE FUNCTION pymax (a integer, b integer)
+  RETURNS integer
+AS $$
+  if (a is None) or (b is None):
+    return None
+  if a &gt; b:
+    return a
+  return b
+$$ LANGUAGE plpython3u;
+</programlisting>
+
+   如上所示，要从 PL/Python 函数返回 SQL 空值，只需返回<symbol>None</symbol>。无论函数是否被声明为<literal>STRICT</literal>，都可以这样做。
+ </para>
+  </sect2>
+
+  <sect2 id="plpython-arrays">
+
+   <title>数组、列表</title>
+
+  <para>
+   SQL 数组值会作为 Python 列表传入 PL/Python。要从 PL/Python 函数返回 SQL 数组值，请返回一个 Python 列表：
+
+<programlisting>
+CREATE FUNCTION return_arr()
+  RETURNS int[]
+AS $$
+return [1, 2, 3, 4, 5]
+$$ LANGUAGE plpython3u;
+
+SELECT return_arr();
+ return_arr
+-------------
+ {1,2,3,4,5}
+(1 row)
+</programlisting>
+
+   多维数组会作为嵌套的 Python 列表传入 PL/Python。例如，二维数组就是列表的列表。从 PL/Python 函数返回多维 SQL 数组时，每一层中的内部列表都必须大小相同。例如：
+
+<programlisting>
+CREATE FUNCTION test_type_conversion_array_int4(x int4[]) RETURNS int4[] AS $$
+plpy.info(x, type(x))
+return x
+$$ LANGUAGE plpython3u;
+
+SELECT * FROM test_type_conversion_array_int4(ARRAY[[1,2,3],[4,5,6]]);
+INFO:  ([[1, 2, 3], [4, 5, 6]], &lt;type 'list'&gt;)
+ test_type_conversion_array_int4
+---------------------------------
+ {{1,2,3},{4,5,6}}
+(1 row)
+</programlisting>
+
+   其他 Python 序列（如元组）也可被接受，这是为了与 PostgreSQL 9.6 及以下版本保持向后兼容，因为那时尚不支持多维数组。不过，它们始终被视为一维数组，因为它们与复合类型存在歧义。出于同样原因，当在多维数组中使用复合类型时，必须用元组而不是列表来表示。
+ </para>
+
+  <para>
+   请注意，在 Python 中，字符串也是序列，这可能会带来一些 Python 程序员熟悉但并不理想的效果：
+
+<programlisting>
+CREATE FUNCTION return_str_arr()
+  RETURNS varchar[]
+AS $$
+return "hello"
+$$ LANGUAGE plpython3u;
+
+SELECT return_str_arr();
+ return_str_arr
+----------------
+ {h,e,l,l,o}
+(1 row)
+</programlisting>
+  </para>
+  </sect2>
+
+  <sect2 id="plpython-data-composite-types">
+
+   <title>复合类型</title>
+
+  <para>
+   复合类型参数会以 Python 映射的形式传给函数。映射中的元素名就是复合类型的属性名。如果传入行中的某个属性为空值，那么它在映射中的值就是<symbol>None</symbol>。例如：
+
+<programlisting>
+CREATE TABLE employee (
+  name text,
+  salary integer,
+  age integer
+);
+
+CREATE FUNCTION overpaid (e employee)
+  RETURNS boolean
+AS $$
+  if e["salary"] &gt; 200000:
+    return True
+  if (e["age"] &lt; 30) and (e["salary"] &gt; 100000):
+    return True
+  return False
+$$ LANGUAGE plpython3u;
+</programlisting>
+  </para>
+
+  <para>
+   有多种方法可以从 Python 函数返回行类型或复合类型。以下示例假定我们有：
+
+<programlisting>
+CREATE TYPE named_value AS (
+  name   text,
+  value  integer
+);
+</programlisting>
+
+   组合结果可以按以下形式返回：
+
+   <variablelist>
+    <varlistentry>
+     <term>序列类型（元组或列表，但不能是集合，因为集合不可通过索引访问）</term>
+     <listitem>
+      <para>
+       返回的序列对象必须包含与组合结果类型字段数相同的项。索引为 0 的项会赋给复合类型的第一个字段，索引为 1 的项赋给第二个字段，依此类推。例如：
+
+<programlisting>
+CREATE FUNCTION make_pair (name text, value integer)
+  RETURNS named_value
+AS $$
+  return ( name, value )
+  # or alternatively, as list: return [ name, value ]
+$$ LANGUAGE plpython3u;
+</programlisting>
+
+       要为任意列返回 SQL 空值，请在相应位置插入<symbol>None</symbol>。
+      </para>
+      <para>
+       当返回复合类型数组时，不能将其表示为列表，因为这样无法区分 Python 列表表示的是复合类型还是另一个数组维度。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>映射（字典）</term>
+     <listitem>
+      <para>
+       每个结果类型列的值都从该映射中取出，列名作为键。例如：
+
+<programlisting>
+CREATE FUNCTION make_pair (name text, value integer)
+  RETURNS named_value
+AS $$
+  return { "name": name, "value": value }
+$$ LANGUAGE plpython3u;
+</programlisting>
+
+       额外的字典键/值对会被忽略。缺失的键会被视为错误。
+       要为任意列返回 SQL 空值，请使用相应列名作为键插入<symbol>None</symbol>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>对象（提供方法<literal>__getattr__</literal>的任何对象）</term>
+     <listitem>
+      <para>
+       其工作方式与映射相同。例如：
+
+<programlisting>
+CREATE FUNCTION make_pair (name text, value integer)
+  RETURNS named_value
+AS $$
+  class named_value:
+    def __init__ (self, n, v):
+      self.name = n
+      self.value = v
+  return named_value(name, value)
+
+  # or simply
+  class nv: pass
+  nv.name = name
+  nv.value = value
+  return nv
+$$ LANGUAGE plpython3u;
+</programlisting>
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+   <para>
+    也支持带<literal>OUT</literal>参数的函数。例如：
+<programlisting>
+CREATE FUNCTION multiout_simple(OUT i integer, OUT j integer) AS $$
+return (1, 2)
+$$ LANGUAGE plpython3u;
+
+SELECT * FROM multiout_simple();
+</programlisting>
+   </para>
+
+   <para>
+    过程的输出参数也以同样的方式传回。例如：
+<programlisting>
+CREATE PROCEDURE python_triple(INOUT a integer, INOUT b integer) AS $$
+return (a * 3, b * 3)
+$$ LANGUAGE plpython3u;
+
+CALL python_triple(5, 10);
+</programlisting>
+   </para>
+  </sect2>
+
+  <sect2 id="plpython-data-set-returning-funcs">
+
+   <title>集合返回函数</title>
+
+  <para>
+   <application>PL/Python</application>函数也可以返回标量类型或复合类型的集合。实现方式有多种，因为返回的对象在内部会被转换成一个迭代器。以下示例假定我们有如下复合类型：
+
+<programlisting>
+CREATE TYPE greeting AS (
+  how text,
+  who text
+);
+</programlisting>
+
+   集合结果可以通过以下对象返回：
+
+   <variablelist>
+    <varlistentry>
+     <term>序列类型（元组、列表、集合）</term>
+     <listitem>
+      <para>
+<programlisting>
+CREATE FUNCTION greet (how text)
+  RETURNS SETOF greeting
+AS $$
+  # return tuple containing lists as composite types
+  # all other combinations work also
+  return ( [ how, "World" ], [ how, "PostgreSQL" ], [ how, "PL/Python" ] )
+$$ LANGUAGE plpython3u;
+</programlisting>
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>迭代器（任何提供<symbol>__iter__</symbol>和<symbol>__next__</symbol>方法的对象）</term>
+     <listitem>
+      <para>
+<programlisting>
+CREATE FUNCTION greet (how text)
+  RETURNS SETOF greeting
+AS $$
+  class producer:
+    def __init__ (self, how, who):
+      self.how = how
+      self.who = who
+      self.ndx = -1
+
+    def __iter__ (self):
+      return self
+
+    def __next__(self):
+      self.ndx += 1
+      if self.ndx == len(self.who):
+        raise StopIteration
+      return ( self.how, self.who[self.ndx] )
+
+  return producer(how, [ "World", "PostgreSQL", "PL/Python" ])
+$$ LANGUAGE plpython3u;
+</programlisting>
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>生成器（<literal>yield</literal>）</term>
+     <listitem>
+      <para>
+<programlisting>
+CREATE FUNCTION greet (how text)
+  RETURNS SETOF greeting
+AS $$
+  for who in [ "World", "PostgreSQL", "PL/Python" ]:
+    yield ( how, who )
+$$ LANGUAGE plpython3u;
+</programlisting>
+
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+   <para>
+    也支持带<literal>OUT</literal>参数的返回集函数（使用<literal>RETURNS SETOF record</literal>）。例如：
+<programlisting>
+CREATE FUNCTION multiout_simple_setof(n integer, OUT integer, OUT integer) RETURNS SETOF record AS $$
+return [(1, 2)] * n
+$$ LANGUAGE plpython3u;
+
+SELECT * FROM multiout_simple_setof(3);
+</programlisting>
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="plpython-sharing">
+
+  <title>共享数据</title>
+
+  <para>
+   全局字典<varname>SD</varname>可用于在同一函数的多次调用之间保存私有数据。全局字典<varname>GD</varname>则是可供一个会话中的所有 Python 函数使用的公共数据；使用时要小心。<indexterm><primary>全局数据</primary>
+   <secondary>在 PL/Python 中</secondary></indexterm>
+  </para>
+
+  <para>
+   每个函数在 Python 解释器中都有自己的执行环境，因此<function>myfunc</function>中的全局数据和函数参数对<function>myfunc2</function>不可见。例外是前面提到的<varname>GD</varname>字典中的数据。
+  </para>
+ </sect1>
+
+ <sect1 id="plpython-do">
+
+  <title>匿名代码块</title>
+
+  <para>
+   PL/Python 也支持通过<xref linkend="sql-do"/>语句调用的匿名代码块：
+
+<programlisting>
+DO $$
+    # PL/Python code
+$$ LANGUAGE plpython3u;
+</programlisting>
+
+   匿名代码块不接受任何参数，而且无论返回什么值都会被丢弃。除此之外，它的行为与函数完全相同。
+ </para>
+ </sect1>
+
+ <sect1 id="plpython-trigger">
+
+  <title>触发器函数</title>
+
+  <indexterm zone="plpython-trigger">
+   <primary>触发器</primary>
+   <secondary>在 PL/Python 中</secondary>
+  </indexterm>
+
+  <para>
+   当函数被用作触发器时，字典<literal>TD</literal>包含与触发器相关的值：
+   <variablelist>
+    <varlistentry>
+     <term><literal>TD["event"]</literal></term>
+     <listitem>
+      <para>
+       以字符串形式包含事件：<literal>INSERT</literal>、<literal>UPDATE</literal>、<literal>DELETE</literal>或者<literal>TRUNCATE</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>TD["when"]</literal></term>
+     <listitem>
+      <para>
+       包含<literal>BEFORE</literal>、<literal>AFTER</literal>或者<literal>INSTEAD OF</literal>之一。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>TD["level"]</literal></term>
+     <listitem>
+      <para>
+       包含<literal>ROW</literal>或者<literal>STATEMENT</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>TD["new"]</literal></term>
+     <term><literal>TD["old"]</literal></term>
+     <listitem>
+      <para>
+       对于行级触发器，这两个字段中的一个或两个会根据触发器事件包含相应的触发行。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>TD["name"]</literal></term>
+     <listitem>
+      <para>
+       包含触发器名称。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>TD["table_name"]</literal></term>
+     <listitem>
+      <para>
+       包含触发器所在表的名称。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>TD["table_schema"]</literal></term>
+     <listitem>
+      <para>
+       包含触发器所在表的模式。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>TD["relid"]</literal></term>
+     <listitem>
+      <para>
+       包含触发器所在表的 OID。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>TD["args"]</literal></term>
+     <listitem>
+      <para>
+       如果<command>CREATE TRIGGER</command>命令包含参数，这些参数可在<literal>TD["args"][0]</literal>到<literal>TD["args"][<replaceable>n</replaceable>-1]</literal>中取得。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+  <para>
+   如果<literal>TD["when"]</literal>是<literal>BEFORE</literal>或<literal>INSTEAD OF</literal>，且<literal>TD["level"]</literal>是<literal>ROW</literal>，那么可以从 Python 函数返回<literal>None</literal>或<literal>"OK"</literal>来表示该行未被修改，返回<literal>"SKIP"</literal>来中止该事件；如果<literal>TD["event"]</literal>是<command>INSERT</command>或<command>UPDATE</command>，还可以返回<literal>"MODIFY"</literal>来表示你已经修改了新行。否则返回值会被忽略。
+  </para>
+ </sect1>
+
+ <sect1 id="plpython-event-trigger">
+  <title>事件触发器函数</title>
+
+  <indexterm zone="plpython-event-trigger">
+   <primary>event trigger</primary>
+   <secondary>in PL/Python</secondary>
+  </indexterm>
+
+  <para>
+   <application>PL/Python</application> 可用于定义事件触发器（另见<xref linkend="event-triggers"/>）。
+   <productname>PostgreSQL</productname> 要求，被作为事件触发器调用的函数必须声明为无参数且返回类型为<literal>event_trigger</literal>的函数。
+  </para>
+
+  <para>
+   当函数被用作事件触发器时，字典<literal>TD</literal>包含与触发器相关的值：
+
+   <variablelist>
+    <varlistentry>
+     <term><varname>TD["event"]</varname></term>
+     <listitem>
+      <para>
+       触发器被触发的事件，字符串形式，例如<literal>ddl_command_start</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TD["tag"]</varname></term>
+     <listitem>
+      <para>
+       触发器被触发时对应的命令标签，字符串形式，例如<literal>DROP TABLE</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+  <para>
+   <xref linkend="plpython-event-trigger-example"/>给出了一个<application>PL/Python</application> 事件触发器函数的示例。
+  </para>
+
+  <example id="plpython-event-trigger-example">
+   <title>一个<application>PL/Python</application>事件触发器函数</title>
+
+   <para>
+    这个示例触发器会在每次执行受支持的命令时简单地发出一条<literal>NOTICE</literal>消息。
+   </para>
+
+<programlisting>
+CREATE OR REPLACE FUNCTION pysnitch() RETURNS event_trigger
+LANGUAGE plpython3u
+AS $$
+  plpy.notice("TD[event] => " + TD["event"] + " ; TD[tag] => " + TD["tag"]);
+$$;
+
+CREATE EVENT TRIGGER pysnitch ON ddl_command_start EXECUTE FUNCTION pysnitch();
+</programlisting>
+  </example>
+ </sect1>
+
+ <sect1 id="plpython-database">
+
+  <title>数据库访问</title>
+
+  <para>
+   PL/Python 语言模块会自动导入一个名为<literal>plpy</literal>的 Python 模块。该模块中的函数和常量在 Python 代码中可以通过<literal>plpy.<replaceable>foo</replaceable></literal>这样的形式访问。
+  </para>
+
+  <sect2 id="plpython-database-access-funcs">
+
+    <title>数据库访问函数</title>
+
+  <para>
+   <literal>plpy</literal>模块提供若干函数来执行数据库命令：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><literal>plpy.<function>execute</function>(<replaceable>query</replaceable> [, <replaceable>limit</replaceable>])</literal></term>
+    <listitem>
+
+     <para>
+      使用查询字符串和可选的行数限制参数调用<function>plpy.execute</function>会执行该查询，并把结果作为结果对象返回。
+     </para>
+
+     <para>
+      如果指定了<replaceable>limit</replaceable>且其大于零，则<function>plpy.execute</function>最多检索<replaceable>limit</replaceable>行，就像查询中包含了<literal>LIMIT</literal>子句一样。省略<replaceable>limit</replaceable>或将其指定为零，则表示不限制行数。
+     </para>
+
+     <para>
+      结果对象的行为类似于列表或字典对象。可以通过行号和列名来访问结果对象。例如：
+<programlisting>
+rv = plpy.execute("SELECT * FROM my_table", 5)
+</programlisting>
+      会从<literal>my_table</literal>中返回最多 5 行。如果<literal>my_table</literal>有一列名为<literal>my_column</literal>，则可以这样访问它：
+<programlisting>
+foo = rv[i]["my_column"]
+</programlisting>
+      返回的行数可以用内置的<function>len</function>函数获取。
+     </para>
+
+     <para>
+      结果对象还具有以下附加方法：
+      <variablelist>
+       <varlistentry>
+        <term><literal><function>nrows</function>()</literal></term>
+        <listitem>
+         <para>
+          返回该命令处理的行数。注意，这不一定与返回的行数相同。例如，<command>UPDATE</command>命令会设置这个值，但不会返回任何行（除非使用<literal>RETURNING</literal>）。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry>
+        <term><literal><function>status</function>()</literal></term>
+        <listitem>
+         <para>
+          <function>SPI_execute()</function>的返回值。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry>
+        <term><literal><function>colnames</function>()</literal></term>
+        <term><literal><function>coltypes</function>()</literal></term>
+        <term><literal><function>coltypmods</function>()</literal></term>
+        <listitem>
+         <para>
+          分别返回列名列表、列类型 OID 列表以及列的类型相关修饰符列表。
+         </para>
+
+         <para>
+          如果在来自不产生结果集的命令的结果对象上调用这些方法，就会引发异常，例如不带<literal>RETURNING</literal>的<command>UPDATE</command>或<command>DROP TABLE</command>。但在包含零行的结果集上使用这些方法是没有问题的。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry>
+        <term><literal><function>__str__</function>()</literal></term>
+        <listitem>
+         <para>
+          还定义了标准的<literal>__str__</literal>方法，例如可以使用<literal>plpy.debug(rv)</literal>来调试查询执行结果。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+     </para>
+
+     <para>
+      结果对象是可修改的。
+     </para>
+
+     <para>
+      注意，调用<literal>plpy.execute</literal>会把整个结果集读入内存。只有在确信结果集相对较小时才应使用这个函数。获取大型结果时，如果不想承担过高的内存占用风险，应使用<literal>plpy.cursor</literal>而不是<literal>plpy.execute</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>plpy.<function>prepare</function>(<replaceable>query</replaceable> [, <replaceable>argtypes</replaceable>])</literal></term>
+    <term><literal>plpy.<function>execute</function>(<replaceable>plan</replaceable> [, <replaceable>arguments</replaceable> [, <replaceable>limit</replaceable>]])</literal></term>
+    <listitem>
+
+     <para>
+      <indexterm><primary>准备查询</primary><secondary>在 PL/Python 中</secondary></indexterm>
+      <function>plpy.prepare</function>为查询准备执行计划。若查询中有参数引用，则它接受查询字符串和参数类型列表作为参数。例如：
+<programlisting>
+plan = plpy.prepare("SELECT last_name FROM my_users WHERE first_name = $1", ["text"])
+</programlisting>
+      <literal>text</literal>是你要传给<literal>$1</literal>的变量类型。如果查询不需要任何参数，第二个参数可以省略。
+     </para>
+
+     <para>
+      准备好语句后，可以使用<function>plpy.execute</function>函数的另一种调用形式来执行它：
+<programlisting>
+rv = plpy.execute(plan, ["name"], 5)
+</programlisting>
+      将计划对象作为第一个参数传递（而不是查询字符串），并将要代入查询的值列表作为第二个参数传递。如果查询不需要任何参数，第二个参数可以省略。和前面一样，第三个参数仍然是可选的行数限制。
+     </para>
+
+     <para>
+      另外，也可以在计划对象上调用<function>execute</function>方法：
+<programlisting>
+rv = plan.execute(["name"], 5)
+</programlisting>
+     </para>
+
+     <para>
+      查询参数和结果行字段会按照<xref linkend="plpython-data"/>中所述，在 PostgreSQL 与 Python 数据类型之间进行转换。
+     </para>
+
+     <para>
+      当你使用 PL/Python 模块准备一个计划时，它会被自动保存。关于这意味着什么，请参阅 SPI 文档（<xref linkend="spi"/>）。为了在函数调用之间有效利用这一点，需要使用持久存储字典<literal>SD</literal>或<literal>GD</literal>之一（见<xref linkend="plpython-sharing"/>）。例如：
+<programlisting>
+CREATE FUNCTION usesavedplan() RETURNS trigger AS $$
+    if "plan" in SD:
+        plan = SD["plan"]
+    else:
+        plan = plpy.prepare("SELECT 1")
+        SD["plan"] = plan
+    # rest of function
+$$ LANGUAGE plpython3u;
+</programlisting>
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>plpy.<function>cursor</function>(<replaceable>query</replaceable>)</literal></term>
+    <term><literal>plpy.<function>cursor</function>(<replaceable>plan</replaceable> [, <replaceable>arguments</replaceable>])</literal></term>
+    <listitem>
+
+     <para>
+      <literal>plpy.cursor</literal>函数接受与<literal>plpy.execute</literal>相同的参数（只是没有行数限制），并返回一个游标对象，使你可以分块处理大型结果集。与<literal>plpy.execute</literal>一样，可以使用查询字符串，也可以使用带参数列表的计划对象；还可以把<function>cursor</function>函数作为计划对象的方法来调用。
+     </para>
+
+     <para>
+      游标对象提供<literal>fetch</literal>方法，它接受一个整数参数并返回结果对象。每次调用<literal>fetch</literal>，返回对象都会包含下一批行，数量不会超过该参数值。一旦所有行都已取完，<literal>fetch</literal>就会开始返回空结果对象。游标对象还提供<ulink url="https://docs.python.org/library/stdtypes.html#iterator-types">迭代器接口</ulink>，每次产生一行，直到所有行为止。以这种方式获取的数据不会作为结果对象返回，而是以字典形式返回，每个字典对应一行结果。
+     </para>
+
+     <para>
+      下面示例展示了如何处理大表中的数据：
+<programlisting>
+CREATE FUNCTION count_odd_iterator() RETURNS integer AS $$
+odd = 0
+for row in plpy.cursor("SELECT num FROM largetable"):
+    if row['num'] % 2:
+         odd += 1
+return odd
+$$ LANGUAGE plpython3u;
+
+CREATE FUNCTION count_odd_fetch(batch_size integer) RETURNS integer AS $$
+odd = 0
+cursor = plpy.cursor("SELECT num FROM largetable")
+while True:
+    rows = cursor.fetch(batch_size)
+    if not rows:
+        break
+    for row in rows:
+        if row['num'] % 2:
+            odd += 1
+return odd
+$$ LANGUAGE plpython3u;
+
+CREATE FUNCTION count_odd_prepared() RETURNS integer AS $$
+odd = 0
+plan = plpy.prepare("SELECT num FROM largetable WHERE num % $1 &lt;&gt; 0", ["integer"])
+rows = list(plpy.cursor(plan, [2]))  # or: = list(plan.cursor([2]))
+
+return len(rows)
+$$ LANGUAGE plpython3u;
+</programlisting>
+     </para>
+
+     <para>
+      游标会被自动释放。但如果想显式释放游标持有的全部资源，可使用<literal>close</literal>方法。一旦关闭，就不能再从该游标中取数。
+     </para>
+
+     <tip>
+
+      <para>
+        不要把<literal>plpy.cursor</literal>创建的对象与<ulink url="https://www.python.org/dev/peps/pep-0249/">Python 数据库 API 规范</ulink>定义的 DB-API 游标混淆。除了名字之外，它们毫无共同之处。
+      </para>
+     </tip>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  </sect2>
+
+  <sect2 id="plpython-trapping">
+
+   <title>捕获错误</title>
+
+   <para>
+    访问数据库的函数可能会遇到错误，这会导致它们中止并抛出异常。<function>plpy.execute</function>和<function>plpy.prepare</function>都可能抛出<literal>plpy.SPIError</literal>某个子类的实例，默认情况下这会终止函数。这个错误可以像其他 Python 异常一样，通过<literal>try/except</literal>结构来处理。例如：
+<programlisting>
+CREATE FUNCTION try_adding_joe() RETURNS text AS $$
+    try:
+        plpy.execute("INSERT INTO users(username) VALUES ('joe')")
+    except plpy.SPIError:
+        return "something went wrong"
+    else:
+        return "Joe added"
+$$ LANGUAGE plpython3u;
+</programlisting>
+   </para>
+
+   <para>
+    实际抛出的异常类对应于引起错误的具体条件。可能的条件列表见<xref linkend="errcodes-table"/>。模块<literal>plpy.spiexceptions</literal>为每一种<productname>PostgreSQL</productname>条件都定义了一个异常类，其名称派生自条件名。例如，<literal>division_by_zero</literal>会变成<literal>DivisionByZero</literal>，<literal>unique_violation</literal>会变成<literal>UniqueViolation</literal>，<literal>fdw_error</literal>会变成<literal>FdwError</literal>，等等。每个异常类都继承自<literal>SPIError</literal>。这种区分让处理特定错误更容易，例如：
+<programlisting>
+CREATE FUNCTION insert_fraction(numerator int, denominator int) RETURNS text AS $$
+from plpy import spiexceptions
+try:
+    plan = plpy.prepare("INSERT INTO fractions (frac) VALUES ($1 / $2)", ["int", "int"])
+    plpy.execute(plan, [numerator, denominator])
+except spiexceptions.DivisionByZero:
+    return "denominator cannot equal zero"
+except spiexceptions.UniqueViolation:
+    return "already have that fraction"
+except plpy.SPIError as e:
+    return "other error, SQLSTATE %s" % e.sqlstate
+else:
+    return "fraction inserted"
+$$ LANGUAGE plpython3u;
+</programlisting>
+    请注意，由于<literal>plpy.spiexceptions</literal>模块中的所有异常都继承自<literal>SPIError</literal>，处理它的<literal>except</literal>子句会捕获任何数据库访问错误。
+   </para>
+
+   <para>
+    作为处理不同错误情况的另一种方法，你可以捕获<literal>SPIError</literal>异常，并在<literal>except</literal>块中通过查看异常对象的<literal>sqlstate</literal>属性来判断具体的错误条件。该属性是一个包含<quote>SQLSTATE</quote>错误代码的字符串值。这种方法大体上提供了相同的功能。
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="plpython-subtransaction">
+
+  <title>显式子事务</title>
+
+  <para>
+   如<xref linkend="plpython-trapping"/>中所述，从数据库访问引发的错误中恢复，可能会造成一种不理想的情况：在某个操作失败之前，其他一些操作已经成功，而在从该错误恢复后，数据却处于不一致状态。PL/Python 以显式子事务的形式为这个问题提供了解决方案。
+  </para>
+
+  <sect2 id="plpython-subtransaction-context-managers">
+
+   <title>子事务上下文管理器</title>
+
+   <para>
+    考虑一个在两个账户之间转账的函数：
+<programlisting>
+CREATE FUNCTION transfer_funds() RETURNS void AS $$
+try:
+    plpy.execute("UPDATE accounts SET balance = balance - 100 WHERE account_name = 'joe'")
+    plpy.execute("UPDATE accounts SET balance = balance + 100 WHERE account_name = 'mary'")
+except plpy.SPIError as e:
+    result = "error transferring funds: %s" % e.args
+else:
+    result = "funds transferred correctly"
+plan = plpy.prepare("INSERT INTO operations (result) VALUES ($1)", ["text"])
+plpy.execute(plan, [result])
+$$ LANGUAGE plpython3u;
+</programlisting>
+    如果第二个<literal>UPDATE</literal>语句导致抛出异常，该函数会报告错误，但第一个<literal>UPDATE</literal>的结果仍然会被提交。换句话说，资金会从 Joe 的账户中扣除，却不会转入 Mary 的账户。
+ </para>
+
+   <para>
+    为避免这种问题，可以把<literal>plpy.execute</literal>调用包装在显式子事务中。<literal>plpy</literal>模块提供了一个用于管理显式子事务的辅助对象，它通过<literal>plpy.subtransaction()</literal>函数创建。该函数创建的对象实现了<ulink url="https://docs.python.org/library/stdtypes.html#context-manager-types">
+    上下文管理器接口</ulink>。使用显式子事务后，我们可以将函数重写如下：
+<programlisting>
+CREATE FUNCTION transfer_funds2() RETURNS void AS $$
+try:
+    with plpy.subtransaction():
+        plpy.execute("UPDATE accounts SET balance = balance - 100 WHERE account_name = 'joe'")
+        plpy.execute("UPDATE accounts SET balance = balance + 100 WHERE account_name = 'mary'")
+except plpy.SPIError as e:
+    result = "error transferring funds: %s" % e.args
+else:
+    result = "funds transferred correctly"
+plan = plpy.prepare("INSERT INTO operations (result) VALUES ($1)", ["text"])
+plpy.execute(plan, [result])
+$$ LANGUAGE plpython3u;
+</programlisting>
+    请注意，仍然需要使用<literal>try</literal>/<literal>except</literal>。否则，异常会传播到 Python 栈顶，并以<productname>PostgreSQL</productname>错误的形式导致整个函数中止，从而使<literal>operations</literal>表中不会插入任何行。子事务上下文管理器不会捕获错误，它只是确保其作用域内执行的所有数据库操作会被原子地提交或回滚。子事务块在任何类型的异常退出时都会回滚，而不仅仅是由数据库访问引起的错误。在显式子事务块中引发的普通 Python 异常也会导致子事务回滚。
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="plpython-transactions">
+
+  <title>事务管理</title>
+
+  <para>
+   如果过程是从顶层调用的，或者匿名代码块（<command>DO</command>命令）是从顶层调用的，就可以控制事务。要提交当前事务，调用<literal>plpy.commit()</literal>。要回滚当前事务，调用<literal>plpy.rollback()</literal>。（注意，不能通过<function>plpy.execute</function>或类似函数来执行 SQL 命令<command>COMMIT</command>或<command>ROLLBACK</command>，必须使用这些函数。）事务结束后，会自动启动一个新事务，因此不需要单独提供这样的函数。
+  </para>
+
+  <para>
+   下面是一个示例：
+<programlisting>
+CREATE PROCEDURE transaction_test1()
+LANGUAGE plpython3u
+AS $$
+for i in range(0, 10):
+    plpy.execute("INSERT INTO test1 (a) VALUES (%d)" % i)
+    if i % 2 == 0:
+        plpy.commit()
+    else:
+        plpy.rollback()
+$$;
+
+CALL transaction_test1();
+</programlisting>
+  </para>
+
+  <para>
+   当显式子事务处于活动状态时，不能结束事务。
+  </para>
+ </sect1>
+
+ <sect1 id="plpython-util">
+
+  <title>实用函数</title>
+
+  <para>
+   <literal>plpy</literal>模块还提供以下函数：
+   <simplelist>
+    <member><literal>plpy.debug(<replaceable>msg, **kwargs</replaceable>)</literal></member>
+    <member><literal>plpy.log(<replaceable>msg, **kwargs</replaceable>)</literal></member>
+    <member><literal>plpy.info(<replaceable>msg, **kwargs</replaceable>)</literal></member>
+    <member><literal>plpy.notice(<replaceable>msg, **kwargs</replaceable>)</literal></member>
+    <member><literal>plpy.warning(<replaceable>msg, **kwargs</replaceable>)</literal></member>
+    <member><literal>plpy.error(<replaceable>msg, **kwargs</replaceable>)</literal></member>
+    <member><literal>plpy.fatal(<replaceable>msg, **kwargs</replaceable>)</literal></member>
+   </simplelist>
+   <indexterm><primary>elog</primary><secondary>在 PL/Python 中</secondary></indexterm>
+   <function>plpy.error</function>和<function>plpy.fatal</function>实际上会引发 Python 异常；如果这些异常未被捕获，就会传播到调用查询，导致当前事务或子事务中止。<literal>raise plpy.Error(<replaceable>msg</replaceable>)</literal>和<literal>raise plpy.Fatal(<replaceable>msg</replaceable>)</literal>分别等价于调用<literal>plpy.error(<replaceable>msg</replaceable>)</literal>和<literal>plpy.fatal(<replaceable>msg</replaceable>)</literal>，不过<literal>raise</literal>形式不允许传递关键字参数。其他函数只会生成不同优先级的消息。某一优先级的消息是报告给客户端、写入服务器日志还是两者兼有，由配置变量<xref linkend="guc-log-min-messages"/>和<xref linkend="guc-client-min-messages"/>控制。更多信息见<xref linkend="runtime-config"/>。
+  </para>
+
+  <para>
+   <replaceable>msg</replaceable>参数作为位置参数给出。为了向后兼容，也可以给出多个位置参数。在这种情况下，这些位置参数所构成元组的字符串表示会成为报告给客户端的消息。
+  </para>
+
+  <para>
+   可接受以下仅限关键字的参数：
+   <simplelist>
+    <member><literal>detail</literal></member>
+    <member><literal>hint</literal></member>
+    <member><literal>sqlstate</literal></member>
+    <member><literal>schema_name</literal></member>
+    <member><literal>table_name</literal></member>
+    <member><literal>column_name</literal></member>
+    <member><literal>datatype_name</literal></member>
+    <member><literal>constraint_name</literal></member>
+   </simplelist>
+   作为仅限关键字参数传入的对象，其字符串表示会被用来丰富报告给客户端的消息。例如：
+
+<programlisting>
+CREATE FUNCTION raise_custom_exception() RETURNS void AS $$
+plpy.error("custom exception message",
+           detail="some info about exception",
+           hint="hint for users")
+$$ LANGUAGE plpython3u;
+
+=# SELECT raise_custom_exception();
+ERROR:  plpy.Error: custom exception message
+DETAIL:  some info about exception
+HINT:  hint for users
+CONTEXT:  Traceback (most recent call last):
+  PL/Python function "raise_custom_exception", line 4, in &lt;module&gt;
+    hint="hint for users")
+PL/Python function "raise_custom_exception"
+</programlisting>
+  </para>
+
+  <para>
+   另一组实用函数是<literal>plpy.quote_literal(<replaceable>string</replaceable>)</literal>、<literal>plpy.quote_nullable(<replaceable>string</replaceable>)</literal>以及<literal>plpy.quote_ident(<replaceable>string</replaceable>)</literal>。它们等价于<xref linkend="functions-string"/>中描述的内置引用函数。在构造临时查询时，这些函数很有用。<xref linkend="plpgsql-quote-literal-example"/>中动态 SQL 的一个 PL/Python 等价写法如下：
+<programlisting>
+plpy.execute("UPDATE tbl SET %s = %s WHERE key = %s" % (
+    plpy.quote_ident(colname),
+    plpy.quote_nullable(newvalue),
+    plpy.quote_literal(keyvalue)))
+</programlisting>
+  </para>
+ </sect1>
+
+ <sect1 id="plpython-python23">
+
+  <title>Python 2 与 Python 3</title>
+
+  <para>
+   PL/Python 只支持 Python 3。过去版本的<productname>PostgreSQL</productname>支持 Python 2，使用的语言名是<literal>plpythonu</literal>和<literal>plpython2u</literal>。
+ </para>
+ </sect1>
+
+ <sect1 id="plpython-envar">
+
+  <title>环境变量</title>
+
+  <para>
+   Python 解释器接受的某些环境变量也可用于影响 PL/Python 的行为。这些变量需要在 PostgreSQL 主服务器进程的环境中设置，例如在启动脚本中设置。可用的环境变量取决于 Python 版本；详情请参阅 Python 文档。在撰写本文时，假定 Python 版本足以支持这些变量，下列环境变量会影响 PL/Python：
+   <itemizedlist>
+    <listitem>
+     <para><envar>PYTHONHOME</envar></para>
+    </listitem>
+
+    <listitem>
+     <para><envar>PYTHONPATH</envar></para>
+    </listitem>
+
+    <listitem>
+     <para><envar>PYTHONY2K</envar></para>
+    </listitem>
+
+    <listitem>
+     <para><envar>PYTHONOPTIMIZE</envar></para>
+    </listitem>
+
+    <listitem>
+     <para><envar>PYTHONDEBUG</envar></para>
+    </listitem>
+
+    <listitem>
+     <para><envar>PYTHONVERBOSE</envar></para>
+    </listitem>
+
+    <listitem>
+     <para><envar>PYTHONCASEOK</envar></para>
+    </listitem>
+
+    <listitem>
+     <para><envar>PYTHONDONTWRITEBYTECODE</envar></para>
+    </listitem>
+
+    <listitem>
+     <para><envar>PYTHONIOENCODING</envar></para>
+    </listitem>
+
+    <listitem>
+     <para><envar>PYTHONUSERBASE</envar></para>
+    </listitem>
+
+    <listitem>
+     <para><envar>PYTHONHASHSEED</envar></para>
+    </listitem>
+   </itemizedlist>
+
+   （这似乎是 Python 的实现细节，超出了 PL/Python 的控制范围：列在<command>python</command>手册页中的某些环境变量只在命令行解释器中有效，而在嵌入式 Python 解释器中无效。）
+  </para>
+ </sect1>
+</chapter>

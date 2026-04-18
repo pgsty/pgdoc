@@ -1,0 +1,769 @@
+<!--
+doc/src/sgml/ref/pg_basebackup.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="app-pgbasebackup">
+
+ <indexterm zone="app-pgbasebackup">
+  <primary>pg_basebackup</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle><application>pg_basebackup</application></refentrytitle>
+  <manvolnum>1</manvolnum>
+  <refmiscinfo>Application</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>pg_basebackup</refname>
+  <refpurpose>获取<productname>PostgreSQL</productname>集簇的基础备份</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+  <cmdsynopsis>
+   <command>pg_basebackup</command>
+   <arg rep="repeat"><replaceable>option</replaceable></arg>
+  </cmdsynopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+
+  <title>描述</title>
+
+  <para>
+   <application>pg_basebackup</application>用于获取正在运行的<productname>PostgreSQL</productname>数据库集簇的基础备份。备份过程不会影响数据库的其他客户端，并且该备份既可用于时间点恢复（见<xref linkend="continuous-archiving"/>），也可用作日志传送或流复制备库的起点（见<xref linkend="warm-standby"/>）。
+  </para>
+
+  <para>
+   <application>pg_basebackup</application>既可以执行完整基础备份，也可以执行增量基础备份。执行完整备份时，它会精确复制数据库集簇的文件。执行增量备份时，原本会包含在完整备份中的某些文件，可能会被这些文件的增量版本替代，其中仅包含自参考备份以来被修改过的块。增量备份不能直接使用；必须先使用<xref linkend="app-pgcombinebackup"/>将其与它所依赖的先前备份合并。关于增量备份的更多信息，见<xref linkend="backup-incremental-backup"/>；关于从备份恢复的步骤，见<xref linkend="backup-pitr-recovery"/>。
+  </para>
+
+  <para>
+   在任何模式下，<application>pg_basebackup</application>都会确保服务器自动进入和退出备份模式。备份始终针对整个数据库集簇；不可能只备份单个数据库或数据库对象。对于选择性备份，必须使用诸如<xref linkend="app-pgdump"/>之类的其他工具。
+  </para>
+
+  <para>
+   备份是通过一个使用复制协议的常规<productname>PostgreSQL</productname>连接进行的。建立该连接所使用的用户 ID 必须具有<literal>REPLICATION</literal>权限（见<xref linkend="role-attributes"/>），或者是超级用户，并且<link linkend="auth-pg-hba-conf"><filename>pg_hba.conf</filename></link>必须允许该复制连接。服务器还必须将<xref linkend="guc-max-wal-senders"/>设置得足够高，以便至少提供一个用于备份的 WAL 发送器，并在使用 WAL 流传输时再提供一个 WAL 发送器。
+  </para>
+
+  <para>
+   可以同时运行多个<command>pg_basebackup</command>，但从性能角度来看，通常最好只执行一次备份，然后复制其结果。
+  </para>
+
+  <para>
+   <application>pg_basebackup</application>不仅可以从主库获取基础备份，也可以从备库获取。要从备库获取备份，需要将备库配置为能够接受复制连接（即设置<varname>max_wal_senders</varname>和<xref linkend="guc-hot-standby"/>，并适当地配置其<filename>pg_hba.conf</filename>）。还需要在主库上启用<xref linkend="guc-full-page-writes"/>。
+  </para>
+
+  <para>
+   请注意，从备库获取备份存在一些限制：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      备份历史文件不会在被备份的数据库集簇中创建。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <application>pg_basebackup</application>无法强制备库在备份结束时切换到新的 WAL 文件。
+      当使用<literal>-X none</literal>时，如果主库上的写入活动较少，
+      <application>pg_basebackup</application>可能需要长时间等待，
+      直到备份所需的最后一个 WAL 文件被切换并归档。在这种情况下，
+      可以在主库上运行<function>pg_switch_wal</function>，以立即触发 WAL 文件切换。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      如果备库在备份过程中被提升为主库，则备份会失败。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      备份所需的所有 WAL 记录都必须包含足够的全页写入，
+      因此必须在主库上启用<varname>full_page_writes</varname>。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+
+  <para>
+   每当<application>pg_basebackup</application>执行基础备份时，服务器的<structname>pg_stat_progress_basebackup</structname>视图都会报告备份进度。详见<xref linkend="basebackup-progress-reporting"/>。
+  </para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>选项</title>
+
+   <para>
+    以下命令行选项控制输出的位置和格式：
+
+    <variablelist>
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-2">
+      <term><option>-D <replaceable class="parameter">directory</replaceable></option></term>
+      <term><option>--pgdata=<replaceable class="parameter">directory</replaceable></option></term>
+      <listitem>
+
+       <para>
+        设置写入输出的目标目录。如果该目录不存在，
+        <application>pg_basebackup</application>会创建它（以及所有缺失的父目录）。
+        如果该目录已经存在，则必须为空。
+       </para>
+
+       <para>
+        当备份采用 tar 格式时，目标目录可以指定为<literal>-</literal>（短横线），从而将 tar 文件写到<literal>stdout</literal>。
+       </para>
+
+       <para>
+        此选项是必需的。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-3">
+      <term><option>-F <replaceable class="parameter">format</replaceable></option></term>
+      <term><option>--format=<replaceable class="parameter">format</replaceable></option></term>
+      <listitem>
+
+       <para>
+        选择输出格式。<replaceable>format</replaceable>可以是以下值之一：
+
+        <variablelist>
+         <varlistentry id="zh18-auto-pg_basebackup-varlistentry-6">
+          <term><literal>p</literal></term>
+          <term><literal>plain</literal></term>
+          <listitem>
+           <para>
+            将输出写为普通文件，其布局与源服务器的数据目录和表空间相同。当集簇没有额外表空间时，整个数据库都会放在目标目录中。如果集簇包含额外表空间，则主数据目录会放在目标目录中，而其他所有表空间都会放在与源服务器上相同的绝对路径中。（如需改变这一点，见<option>--tablespace-mapping</option>。）
+           </para>
+           <para>
+            这是默认格式。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry id="zh18-auto-pg_basebackup-varlistentry-7">
+          <term><literal>t</literal></term>
+          <term><literal>tar</literal></term>
+          <listitem>
+           <para>
+            将输出写为目标目录中的 tar 文件。主数据目录的内容会写入名为<filename>base.tar</filename>的文件中，而每个其他表空间都会写入一个以该表空间 OID 命名的独立 tar 文件中。
+           </para>
+           <para>
+            如果目标目录指定为<literal>-</literal>（短横线），tar 内容将写入标准输出，适合通过管道传给例如<productname>gzip</productname>。只有当集簇没有额外表空间且未使用 WAL 流时，才允许这样做。
+           </para>
+           </listitem>
+         </varlistentry>
+        </variablelist>
+</para>
+     </listitem>
+    </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-8">
+      <term><option>-i <replaceable class="parameter">old_manifest_file</replaceable></option></term>
+      <term><option>--incremental=<replaceable class="parameter">old_manifest_file</replaceable></option></term>
+      <listitem>
+       <para>
+        执行<link linkend="backup-incremental-backup">增量备份</link>。必须提供参考备份的备份清单；该文件将被上传到服务器，随后服务器会返回所请求的增量备份。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-9">
+      <term><option>-R</option></term>
+      <term><option>--write-recovery-conf</option></term>
+      <listitem>
+
+       <para>
+        创建<link linkend="file-standby-signal"><filename>standby.signal</filename></link>
+        <indexterm><primary><filename>standby.signal</filename></primary><secondary>pg_basebackup --write-recovery-conf</secondary></indexterm>文件，并将连接设置追加到目标目录中的<filename>postgresql.auto.conf</filename>文件中（如果使用 tar 格式，则追加到基础归档文件内）。这样可以更方便地利用备份结果搭建备库。
+       </para>
+
+       <para>
+        <filename>postgresql.auto.conf</filename>文件将记录连接设置，以及（如果指定）<application>pg_basebackup</application>正在使用的复制槽，以便后续的流复制和<link linkend="logicaldecoding-replication-slots-synchronization">逻辑复制槽同步</link>使用相同的设置。只有当 dbname 在连接字符串或<link linkend="libpq-envars">环境变量</link>中被显式指定时，才会记录 dbname。
+       </para>
+
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-10">
+      <term><option>-t <replaceable class="parameter">target</replaceable></option></term>
+      <term><option>--target=<replaceable class="parameter">target</replaceable></option></term>
+      <listitem>
+
+       <para>
+        指示服务器将基础备份放到哪里。默认目标是<literal>client</literal>，表示备份应发送到运行<application>pg_basebackup</application>的那台机器。如果目标改为<literal>server:/some/path</literal>，则备份会存储在服务器运行所在机器的<literal>/some/path</literal>目录中。将备份存储在服务器上需要超级用户权限，或拥有<literal>pg_write_server_files</literal>角色的权限。如果目标设置为<literal>blackhole</literal>，则内容会被丢弃，不会存储到任何地方。这只应用于测试目的，因为最终不会得到实际备份。
+       </para>
+
+       <para>
+        由于 WAL 流是由<application>pg_basebackup</application>而不是服务器实现的，因此此选项不能与<literal>-Xstream</literal>一起使用。由于后者是默认值，所以指定此选项时，还必须同时指定<literal>-Xfetch</literal>或<literal>-Xnone</literal>之一。
+</para>
+
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-11">
+      <term><option>-T <replaceable class="parameter">olddir</replaceable>=<replaceable class="parameter">newdir</replaceable></option></term>
+      <term><option>--tablespace-mapping=<replaceable class="parameter">olddir</replaceable>=<replaceable class="parameter">newdir</replaceable></option></term>
+      <listitem>
+
+       <para>
+        在备份期间，将目录<replaceable>olddir</replaceable>中的表空间重定位到<replaceable>newdir</replaceable>。要使此选项生效，<replaceable>olddir</replaceable>必须与源服务器上定义的该表空间路径完全一致。（但如果源服务器上在<replaceable>olddir</replaceable>中没有表空间，也不算错误。）与此同时，<replaceable>newdir</replaceable>是接收主机文件系统中的一个目录。与主目标目录一样，<replaceable>newdir</replaceable>不必事先存在，但如果存在则必须为空。<replaceable>olddir</replaceable>和<replaceable>newdir</replaceable>都必须是绝对路径。如果任一路径中需要包含等号（<literal>=</literal>），请在其前面加上反斜杠。可以多次指定此选项，以处理多个表空间。
+       </para>
+
+       <para>
+        如果以这种方式重定位表空间，主数据目录中的符号链接将被更新为指向新位置。因此，新数据目录已可直接用于启动一个所有表空间都位于更新后位置的新服务器实例。
+       </para>
+
+       <para>
+        目前，此选项仅适用于 plain 输出格式；如果选择了 tar 格式，则会被忽略。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-12">
+      <term><option>--waldir=<replaceable class="parameter">waldir</replaceable></option></term>
+      <listitem>
+
+       <para>
+        设置写入 WAL（预写式日志）文件的目录。默认情况下，WAL 文件会放在目标目录的<filename>pg_wal</filename>子目录中，但此选项可用于将其放在其他位置。<replaceable>waldir</replaceable>必须是绝对路径。与主目标目录一样，<replaceable>waldir</replaceable>不必事先存在，但如果存在则必须为空。只有当备份采用 plain 格式时，才能指定此选项。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-13">
+      <term><option>-X <replaceable class="parameter">method</replaceable></option></term>
+      <term><option>--wal-method=<replaceable class="parameter">method</replaceable></option></term>
+      <listitem>
+
+       <para>
+        在备份中包含所需的 WAL（预写式日志）文件。这将包括备份期间生成的所有预写式日志。除非指定方法<literal>none</literal>，否则就可以在目标目录中启动 postmaster，而无需查阅 WAL 归档，从而使输出成为一个完全独立的备份。
+       </para>
+
+       <para>
+        支持以下用于收集预写式日志的<replaceable>method</replaceable>值：
+
+        <variablelist>
+         <varlistentry id="zh18-auto-pg_basebackup-varlistentry-17">
+          <term><literal>n</literal></term>
+          <term><literal>none</literal></term>
+          <listitem>
+           <para>
+            不在备份中包含预写式日志。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry id="zh18-auto-pg_basebackup-varlistentry-18">
+          <term><literal>f</literal></term>
+          <term><literal>fetch</literal></term>
+          <listitem>
+           <para>
+            在备份结束时收集预写式日志文件。因此，源服务器的<xref linkend="guc-wal-keep-size"/>参数必须设置得足够高，以确保在备份结束前不会移除所需的日志数据。如果在传输这些数据之前它们已经被回收，则备份会失败并且无法使用。
+           </para>
+           <para>
+            当使用 tar 格式时，预写式日志文件会包含在<filename>base.tar</filename>文件中。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry id="zh18-auto-pg_basebackup-varlistentry-19">
+          <term><literal>s</literal></term>
+          <term><literal>stream</literal></term>
+          <listitem>
+           <para>
+            在执行备份的同时流式传输预写式日志数据。此方法会向服务器打开第二个连接，并在执行备份时并行开始流式传输预写式日志。因此，它需要两个复制连接，而不只是一个。只要客户端能够跟上预写式日志数据，使用此方法就不需要在源服务器上额外保留预写式日志。
+           </para>
+           <para>
+            当使用 tar 格式时，预写式日志文件会写入一个名为<filename>pg_wal.tar</filename>的独立文件中（如果服务器版本早于 10，则文件名为<filename>pg_xlog.tar</filename>）。
+           </para>
+           <para>
+            这是默认值。
+           </para>
+          </listitem>
+         </varlistentry>
+        </variablelist>
+</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-20">
+      <term><option>-z</option></term>
+      <term><option>--gzip</option></term>
+      <listitem>
+
+       <para>
+        启用 tar 文件输出的 gzip 压缩，使用默认压缩级别。压缩仅在使用 tar 格式时可用，并且所有 tar 文件名都会自动添加<filename>.gz</filename>后缀。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-21">
+      <term><option>-Z <replaceable class="parameter">level</replaceable></option></term>
+      <term><option>-Z [{client|server}-]<replaceable class="parameter">method</replaceable>[:<replaceable>detail</replaceable>]</option></term>
+      <term><option>--compress=<replaceable class="parameter">level</replaceable></option></term>
+      <term><option>--compress=[{client|server}-]<replaceable class="parameter">method</replaceable>[:<replaceable>detail</replaceable>]</option></term>
+      <listitem>
+
+       <para>
+        请求对备份进行压缩。如果包含<literal>client</literal>或<literal>server</literal>，则指定压缩执行的位置。在服务器端压缩会减少传输带宽占用，但会增加服务器 CPU 消耗。默认值是<literal>client</literal>，但使用<literal>--target</literal>时除外；此时备份不会发送到客户端，因此只有服务器端压缩才有意义。使用默认的<literal>-Xstream</literal>时，服务器端压缩不会应用于 WAL。若要压缩 WAL，请使用客户端压缩，或者指定<literal>-Xfetch</literal>。
+       </para>
+
+       <para>
+        压缩方法可以设置为<literal>gzip</literal>、<literal>lz4</literal>、<literal>zstd</literal>、<literal>none</literal>（不压缩），也可以直接指定一个整数（0 表示不压缩，大于 0 表示<literal>gzip</literal>）。还可以选择性地指定压缩细节字符串。如果细节字符串是整数，则表示压缩级别；否则，它应为逗号分隔的项目列表，每项的形式为<replaceable>keyword</replaceable>或<replaceable>keyword=value</replaceable>。目前支持的关键字有<literal>level</literal>、<literal>long</literal>和<literal>workers</literal>。当压缩方法以纯整数形式指定时，不能再使用细节字符串。
+       </para>
+
+       <para>
+        如果未指定压缩级别，则使用默认压缩级别。如果只指定了级别而未指定算法，那么级别大于 0 时使用<literal>gzip</literal>压缩，级别为 0 时则不压缩。
+       </para>
+
+       <para>
+        当 tar 格式配合<literal>gzip</literal>、<literal>lz4</literal>或<literal>zstd</literal>使用时，所有 tar 文件名都会分别自动加上<filename>.gz</filename>、<filename>.lz4</filename>或<filename>.zst</filename>后缀。使用 plain 格式时，不能指定客户端压缩，但仍可以请求服务器端压缩。这样做时，服务器会先压缩备份再传输，而客户端会对其进行解压并提取。
+       </para>
+
+       <para>
+        当此选项与<literal>-Xstream</literal>组合使用时，如果选择了客户端 gzip 压缩，则<literal>pg_wal.tar</literal>会使用<literal>gzip</literal>压缩；但如果选择了其他压缩算法，或者选择了服务器端压缩，则不会被压缩。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    以下命令行选项控制备份的生成和程序的调用：
+
+    <variablelist>
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-23">
+      <term><option>-c {fast|spread}</option></term>
+      <term><option>--checkpoint={fast|spread}</option></term>
+      <listitem>
+
+       <para>
+        将检查点模式设置为 fast 或 spread
+        （见<xref linkend="backup-lowlevel-base-backup"/>）。
+        默认值为 spread。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-24">
+      <term><option>-C</option></term>
+      <term><option>--create-slot</option></term>
+      <listitem>
+
+       <para>
+        指定在开始备份之前，应创建由<literal>--slot</literal>选项指定名称的复制槽。如果该槽已经存在，则会报错。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-25">
+      <term><option>-l <replaceable class="parameter">label</replaceable></option></term>
+      <term><option>--label=<replaceable class="parameter">label</replaceable></option></term>
+      <listitem>
+
+       <para>
+        设置备份标签。如果未指定，则使用默认值<quote><literal>pg_basebackup base backup</literal></quote>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-26">
+      <term><option>-n</option></term>
+      <term><option>--no-clean</option></term>
+      <listitem>
+
+       <para>
+        默认情况下，当<command>pg_basebackup</command>因错误中止时，它会删除在发现自己无法完成任务之前可能已创建的所有目录（例如目标目录和预写式日志目录）。此选项会禁止这种清理，因此对调试很有帮助。
+       </para>
+
+       <para>
+        请注意，无论如何表空间目录都不会被清理。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-27">
+      <term><option>-N</option></term>
+      <term><option>--no-sync</option></term>
+      <listitem>
+
+       <para>
+        默认情况下，<command>pg_basebackup</command>会等待所有文件都被安全写入磁盘。此选项会使<command>pg_basebackup</command>不经等待就直接返回，因此速度更快，但这意味着如果随后操作系统崩溃，基础备份可能会损坏。通常，此选项适合测试，但不应用于创建生产环境安装。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-28">
+      <term><option>-P</option></term>
+      <term><option>--progress</option></term>
+      <listitem>
+
+       <para>
+        启用进度报告。打开此选项后，会在备份过程中给出一个近似的进度报告。由于数据库在备份过程中可能发生变化，因此这只是近似值，最终未必恰好结束在<literal>100%</literal>。特别是当备份中包含 WAL 时，总数据量无法预先估计；在这种情况下，一旦进度超过不含 WAL 时的总估计值，估计目标大小就会继续增加。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-29">
+      <term><option>-r <replaceable class="parameter">rate</replaceable></option></term>
+      <term><option>--max-rate=<replaceable class="parameter">rate</replaceable></option></term>
+      <listitem>
+
+       <para>
+        设置从源服务器收集数据时允许的最大传输速率。这有助于限制<application>pg_basebackup</application>对服务器的影响。取值单位为每秒千字节。使用后缀<literal>M</literal>表示每秒兆字节。也接受后缀<literal>k</literal>，但没有实际影响。有效取值范围为每秒 32 千字节到每秒 1024 兆字节。
+       </para>
+
+       <para>
+        此选项始终影响数据目录的传输。只有当收集方法为<literal>fetch</literal>时，WAL 文件的传输才会受到影响。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-30">
+      <term><option>-S <replaceable>slotname</replaceable></option></term>
+      <term><option>--slot=<replaceable class="parameter">slotname</replaceable></option></term>
+      <listitem>
+
+       <para>
+        此选项只能与<literal>-X stream</literal>一起使用。它会使 WAL 流传输使用指定的复制槽。如果此基础备份打算用作使用复制槽的流复制备库，那么该备库应使用与<xref linkend="guc-primary-slot-name"/>相同的复制槽名称。这样可以确保主库在基础备份结束与新备库开始流复制之间的这段时间内，不会移除任何必需的 WAL 数据。
+       </para>
+
+       <para>
+        指定的复制槽必须已经存在，除非还同时使用了<option>-C</option>。
+       </para>
+
+       <para>
+        如果未指定此选项，并且服务器支持临时复制槽（10 及以上版本），则会自动使用临时复制槽进行 WAL 流传输。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-31">
+      <term><option>--sync-method=<replaceable class="parameter">method</replaceable></option></term>
+      <listitem>
+       <para>
+        设置为<literal>fsync</literal>（默认）时，<command>pg_basebackup</command>会递归打开并同步备份目录中的所有文件。使用 plain 格式时，查找文件会跟随 WAL 目录和各已配置表空间的符号链接。
+       </para>
+       <para>
+        在 Linux 上，也可以使用<literal>syncfs</literal>，让操作系统同步包含备份目录的整个文件系统。使用 plain 格式时，<command>pg_basebackup</command>还会同步包含 WAL 文件和各表空间的文件系统。关于使用<literal>syncfs</literal>时需要注意的限制，见<xref linkend="guc-recovery-init-sync-method"/>。
+       </para>
+       <para>
+        使用<option>--no-sync</option>时，此选项无效。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-32">
+      <term><option>-v</option></term>
+      <term><option>--verbose</option></term>
+      <listitem>
+
+       <para>
+        启用详细模式。它会在启动和关闭过程中输出一些额外步骤；如果同时启用了进度报告，还会显示当前正在处理的确切文件名。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-33">
+      <term><option>--manifest-checksums=<replaceable class="parameter">algorithm</replaceable></option></term>
+      <listitem>
+
+       <para>
+        指定应用到备份清单中每个文件的校验和算法。目前可用的算法有<literal>NONE</literal>、<literal>CRC32C</literal>、<literal>SHA224</literal>、<literal>SHA256</literal>、<literal>SHA384</literal>和<literal>SHA512</literal>。默认值为<literal>CRC32C</literal>。
+       </para>
+
+       <para>
+        如果选择<literal>NONE</literal>，备份清单将不包含任何校验和。否则，它将包含使用指定算法为备份中每个文件计算的校验和。此外，清单始终会包含其自身内容的<literal>SHA256</literal>校验和。<literal>SHA</literal>算法明显比<literal>CRC32C</literal>更耗费 CPU，因此选择其中一种可能会增加完成备份所需的时间。
+       </para>
+
+       <para>
+        对于希望验证备份未被篡改的用户，使用 SHA 哈希函数可以为每个文件提供具有密码学安全性的摘要；而 CRC-32C 算法提供的校验和计算速度要快得多，虽然它很适合发现由于意外改动造成的错误，但并不能抵御恶意修改。请注意，要想对能够访问备份的攻击者形成防护，备份清单就需要安全地保存在其他地方，或者以其他方式确认自备份完成后未被修改。
+       </para>
+
+       <para>
+        可以使用<xref linkend="app-pgverifybackup"/>根据备份清单检查备份的完整性。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-34">
+      <term><option>--manifest-force-encode</option></term>
+      <listitem>
+
+       <para>
+        强制将备份清单中的所有文件名编码为十六进制。如果未指定此选项，则只对非 UTF8 文件名进行十六进制编码。此选项主要用于测试读取备份清单文件的工具是否能正确处理这种情况。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-35">
+      <term><option>--no-estimate-size</option></term>
+      <listitem>
+
+       <para>
+        阻止服务器估算将要流式传输的备份数据总量，因此<structname>pg_stat_progress_basebackup</structname>视图中的<structfield>backup_total</structfield>列将始终为<literal>NULL</literal>。
+       </para>
+
+       <para>
+        如果不使用此选项，备份会先枚举整个数据库的大小，然后再回过头来发送实际内容。这可能会让备份耗时略长，特别是在发送第一批数据之前所需时间会更久。如果这种估算耗时过长，此选项就很有用，因为它可以避免这段估算时间。
+       </para>
+
+       <para>
+        使用<option>--progress</option>时，不允许使用此选项。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-36">
+      <term><option>--no-manifest</option></term>
+      <listitem>
+
+       <para>
+        禁止生成备份清单。如果未指定此选项，服务器将生成并发送一个备份清单，可使用<xref linkend="app-pgverifybackup"/>进行验证。该清单列出了备份中的每一个文件，但不包括可能包含在其中的任何 WAL 文件。它还会保存每个文件的大小、最后修改时间以及可选的校验和。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-37">
+      <term><option>--no-slot</option></term>
+      <listitem>
+
+       <para>
+        防止为备份创建临时复制槽。
+       </para>
+
+       <para>
+        默认情况下，如果选择了 WAL 流传输，但没有使用<option>-S</option>选项给出槽名，那么会创建一个临时复制槽（如果源服务器支持）。
+       </para>
+
+       <para>
+        此选项的主要目的是在服务器没有空闲复制槽时，仍然允许执行基础备份。几乎总是首选使用复制槽，因为它能防止服务器在备份期间移除所需的 WAL。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-38">
+      <term><option>--no-verify-checksums</option></term>
+      <listitem>
+
+       <para>
+        如果获取基础备份的服务器启用了校验和，则禁用对这些校验和的验证。
+       </para>
+
+       <para>
+        默认情况下，会验证校验和；校验和验证失败将导致非零退出状态。不过，在这种情况下，基础备份不会被删除，就像使用了<option>--no-clean</option>一样。校验和验证失败也会在<link linkend="monitoring-pg-stat-database-view"><structname>pg_stat_database</structname></link>视图中报告。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    以下命令行选项控制到源服务器的连接：
+
+   <variablelist>
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-46">
+      <term><option>-d <replaceable class="parameter">connstr</replaceable></option></term>
+      <term><option>--dbname=<replaceable class="parameter">connstr</replaceable></option></term>
+      <listitem>
+       <para>
+        以<link linkend="libpq-connstring">连接字符串</link>的形式指定用于连接服务器的参数；这些参数会覆盖任何相互冲突的命令行选项。
+       </para>
+       <para>
+        出于与其他客户端应用保持一致的考虑，此选项名为<literal>--dbname</literal>；但由于<application>pg_basebackup</application>并不连接到集簇中的某个特定数据库，连接字符串中包含的数据库名会被服务器忽略。不过，以这种方式提供的数据库名会覆盖默认数据库名（<literal>replication</literal>），从而用于在<filename>~/.pgpass</filename>中查找复制连接的密码。类似地，连接<productname>PostgreSQL</productname>时使用的中间件或代理，也可能出于连接路由等目的使用该名称。该数据库名也可供<link linkend="logicaldecoding-replication-slots-synchronization">逻辑复制槽同步</link>使用。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-47">
+      <term><option>-h <replaceable class="parameter">host</replaceable></option></term>
+      <term><option>--host=<replaceable class="parameter">host</replaceable></option></term>
+      <listitem>
+       <para>
+        指定服务器运行所在机器的主机名。如果该值以斜线开头，则它会被用作 Unix 域套接字的目录。默认值取自<envar>PGHOST</envar>环境变量（如果已设置）；否则会尝试使用 Unix 域套接字连接。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-48">
+      <term><option>-p <replaceable class="parameter">port</replaceable></option></term>
+      <term><option>--port=<replaceable class="parameter">port</replaceable></option></term>
+      <listitem>
+       <para>
+        指定服务器监听连接所使用的 TCP 端口，或本地 Unix 域套接字文件扩展名。默认使用<envar>PGPORT</envar>环境变量中的值（如果已设置），否则使用编译时确定的默认值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-49">
+      <term><option>-s <replaceable class="parameter">interval</replaceable></option></term>
+      <term><option>--status-interval=<replaceable class="parameter">interval</replaceable></option></term>
+      <listitem>
+       <para>
+        指定发送回源服务器的状态包之间相隔的秒数。较小的值可以让服务器端对备份进度的监控更精确。值为零时会完全禁用周期性状态更新，不过当服务器请求时仍会发送更新，以避免因超时而断开连接。默认值是 10 秒。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-50">
+      <term><option>-U <replaceable>username</replaceable></option></term>
+      <term><option>--username=<replaceable class="parameter">username</replaceable></option></term>
+      <listitem>
+       <para>
+        指定连接时使用的用户名。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-51">
+      <term><option>-w</option></term>
+      <term><option>--no-password</option></term>
+      <listitem>
+       <para>
+        禁止发出密码提示。如果服务器要求密码认证，而又无法通过其他方式（例如<filename>.pgpass</filename>文件）获得密码，则连接尝试将失败。此选项对于批处理作业和脚本很有用，因为那种场景下通常没有用户在场输入密码。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-52">
+      <term><option>-W</option></term>
+      <term><option>--password</option></term>
+      <listitem>
+       <para>
+        强制<application>pg_basebackup</application>在连接源服务器之前提示输入密码。
+       </para>
+
+       <para>
+        此选项绝非必需，因为如果服务器要求密码认证，<application>pg_basebackup</application>会自动提示输入密码。不过，<application>pg_basebackup</application>会浪费一次连接尝试来发现服务器需要密码。在某些情况下，输入<option>-W</option>以避免额外的连接尝试是值得的。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    其他选项也可用：
+
+   <variablelist>
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-55">
+       <term><option>-V</option></term>
+       <term><option>--version</option></term>
+       <listitem>
+       <para>
+       输出<application>pg_basebackup</application>的版本并退出。
+       </para>
+       </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-pg_basebackup-varlistentry-56">
+       <term><option>-?</option></term>
+       <term><option>--help</option></term>
+       <listitem>
+       <para>
+       显示<application>pg_basebackup</application>命令行参数的帮助并退出。
+       </para>
+       </listitem>
+     </varlistentry>
+
+    </variablelist>
+   </para>
+
+ </refsect1>
+
+ <refsect1>
+
+  <title>环境</title>
+
+  <para>
+   与大多数其他<productname>PostgreSQL</productname>工具一样，此工具也使用<application>libpq</application>支持的环境变量（见<xref linkend="libpq-envars"/>）。
+  </para>
+
+  <para>
+   环境变量<envar>PG_COLOR</envar>指定是否在诊断消息中使用颜色。可能的值为<literal>always</literal>、<literal>auto</literal>和<literal>never</literal>。
+  </para>
+ </refsect1>
+
+ <refsect1>
+
+  <title>注意</title>
+
+  <para>
+   在备份开始时，需要在源服务器上执行一次检查点。这可能需要一些时间（尤其是在未使用<literal>--checkpoint=fast</literal>选项时）；在此期间，<application>pg_basebackup</application>看起来会处于空闲状态。
+  </para>
+
+  <para>
+   备份将包括数据目录和表空间中的所有文件，包括配置文件以及第三方放在这些目录中的任何额外文件，但由 PostgreSQL 管理的某些临时文件和操作系统文件除外。不过，只有普通文件和目录会被复制，但用于表空间的符号链接会被保留。指向 PostgreSQL 已知某些目录的符号链接会被复制为空目录。其他符号链接和特殊设备文件则会被跳过。具体细节见<xref linkend="protocol-replication"/>。
+</para>
+
+  <para>
+   在 plain 格式中，除非使用了<literal>--tablespace-mapping</literal>选项，否则表空间会备份到其在源服务器上的相同路径。如果不使用此选项，那么当表空间正在使用时，就无法在与服务器相同的主机上执行 plain 格式的基础备份，因为备份将不得不写入与原始表空间相同的目录位置。
+  </para>
+
+  <para>
+   使用 tar 格式时，用户有责任在启动使用这些数据的 PostgreSQL 服务器之前解压每一个 tar 文件。如果存在额外表空间，则这些表空间对应的 tar 文件必须解压到正确的位置。在这种情况下，服务器会根据包含在<filename>base.tar</filename>文件中的<filename>tablespace_map</filename>文件内容，为这些表空间创建符号链接。
+  </para>
+
+  <para>
+   <application>pg_basebackup</application>可以与相同主版本或更低主版本的服务器配合工作，最低支持到 9.1。不过，WAL 流模式（<literal>-X stream</literal>）仅适用于 9.3 及以上版本服务器，tar 格式（<literal>--format=tar</literal>）仅适用于 9.5 及以上版本服务器，而增量备份（<literal>--incremental</literal>）仅适用于 17 及以上版本服务器。
+  </para>
+
+  <para>
+   如果源集簇启用了数据文件的组权限，<application>pg_basebackup</application>会保留这些组权限。
+  </para>
+
+ </refsect1>
+
+ <refsect1>
+
+  <title>示例</title>
+
+  <para>
+   要为服务器<literal>mydbserver</literal>创建一个基础备份，并将其存储到本地目录<filename>/usr/local/pgsql/data</filename>中：
+<screen>
+<prompt>$</prompt> <userinput>pg_basebackup -h mydbserver -D /usr/local/pgsql/data</userinput>
+</screen>
+  </para>
+
+  <para>
+   要为本地服务器创建一个备份，为每个表空间各生成一个压缩的 tar 文件，并将其存储在目录<filename>backup</filename>中，同时在运行期间显示进度报告：
+<screen>
+<prompt>$</prompt> <userinput>pg_basebackup -D backup -Ft -z -P</userinput>
+</screen>
+  </para>
+
+  <para>
+   要为一个仅包含单个表空间的本地数据库创建备份，并使用<productname>bzip2</productname>进行压缩：
+<screen>
+<prompt>$</prompt> <userinput>pg_basebackup -D - -Ft -X fetch | bzip2 &gt; backup.tar.bz2</userinput>
+</screen>
+   （如果该数据库中有多个表空间，此命令将失败。）
+  </para>
+
+  <para>
+   要创建一个本地数据库的备份，并将位于<filename>/opt/ts</filename>中的表空间重定位到<filename>./backup/ts</filename>：
+<screen>
+<prompt>$</prompt> <userinput>pg_basebackup -D backup/data -T /opt/ts=$(pwd)/backup/ts</userinput>
+</screen></para>
+
+  <para>
+   要为本地服务器创建一个备份，为每个表空间生成一个 tar 文件，并使用<application>gzip</application>以 9 级压缩后存储到目录<filename>backup</filename>中：
+<screen>
+<prompt>$</prompt> <userinput>pg_basebackup -D backup -Ft --compress=gzip:9</userinput>
+</screen>
+</para>
+
+ </refsect1>
+
+ <refsect1>
+
+  <title>参见</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="app-pgdump"/></member>
+   <member><xref linkend="basebackup-progress-reporting"/></member>
+  </simplelist>
+ </refsect1>
+
+</refentry>

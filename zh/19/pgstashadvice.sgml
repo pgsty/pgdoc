@@ -1,0 +1,245 @@
+<!-- doc/src/sgml/pgstashadvice.sgml -->
+
+<sect1 id="pgstashadvice" xreflabel="pg_stash_advice">
+ <title>pg_stash_advice —— 存储并自动应用计划建议</title>
+
+ <indexterm zone="pgstashadvice">
+  <primary>pg_stash_advice</primary>
+ </indexterm>
+
+ <para>
+  <filename>pg_stash_advice</filename> 扩展允许你将
+  <link linkend="pgplanadvice">计划建议</link> 字符串存储在动态共享内存中，以便自动应用。
+  <literal>建议存储</literal> 是从
+  <link linkend="guc-compute-query-id">查询标识符</link>到计划建议字符串的映射。
+  每当某个会话需要为其查询 ID 出现在相应建议存储中的查询生成计划时，系统就会自动应用该计划建议字符串来指导规划。
+  请注意，建议存储保存在动态分配的共享内存中。
+  这意味着，在决定要存储多少计划建议时，需要注意内存消耗。
+  另外，建议存储及其内容可以自动持久化到磁盘，并在之后从磁盘重新加载；见下面的
+  <literal>pg_stash_advice.persist</literal>。
+ </para>
+
+ <para>
+  要使用此模块，你需要至少在一个数据库中执行
+  <literal>CREATE EXTENSION pg_stash_advice</literal>，这样才能获得用于管理建议存储的 SQL 函数。
+  你还需要在所有希望该模块自动应用建议的会话中加载
+  <literal>pg_stash_advice</literal> 模块。
+  通常，最好的做法是将 <literal>pg_stash_advice</literal> 添加到
+  <xref linkend="guc-shared-preload-libraries"/>，然后重启服务器。
+ </para>
+
+ <para>
+  在满足上述条件后，你可以使用下面介绍的
+  <literal>pg_create_advice_stash</literal> 函数创建建议存储，
+  并使用 <literal>pg_set_stashed_advice</literal> 函数为给定存储中的某个查询 ID 设置计划建议。
+  然后，你只需要将 <literal>pg_stash_advice.stash_name</literal> 配置为指向所选建议存储的名称即可。
+  对于某些用例，与其在系统范围内设置它，不如使用
+  <literal>ALTER DATABASE ... SET</literal> 或
+  <literal>ALTER ROLE ... SET</literal> 来配置只适用于某个数据库或某个角色的值，这会更有帮助。
+  同样，有时也可以通过在特定会话中使用 <literal>SET</literal> 来设置存储名称。
+ </para>
+
+ <para>
+  由于 <literal>pg_stash_advice</literal> 是基于查询标识符工作的，你需要为每个希望控制其计划的查询确定查询标识符。
+  你还需要确定希望为每个查询存储的建议字符串。
+  一种做法是使用 <literal>EXPLAIN</literal>：<literal>VERBOSE</literal> 选项会显示查询 ID，<literal>PLAN_ADVICE</literal> 选项会显示计划建议。
+  查询标识符也可以通过 <xref linkend="pgstatstatements" /> 或
+  <xref linkend="monitoring-pg-stat-activity-view" /> 等工具获取，但这些工具不会提供计划建议字符串。
+  请注意，必须启用 <xref linkend="guc-compute-query-id" />，才能计算查询标识符；
+  如果将其设置为 <literal>auto</literal>，加载 <literal>pg_stash_advice</literal> 时会自动启用它。
+ </para>
+
+ <para>
+  一般来说，规划器能够随着底层数据分布的变化而改变查询计划，这是一项特性，而不是缺陷。
+  此外，即使计划建议最终没有导致查询计划发生变化，应用它也可能带来明显的性能开销。
+  因此，最好只在需要时、并且仅在必要范围内使用这一特性。
+  计划建议字符串可以精简到只包含需要控制的计划方面，并且只用于那些被认为存在显著规划器出错风险的查询。
+ </para>
+
+ <para>
+  请注意，<literal>pg_stash_advice</literal> 目前缺乏完善的安全模型。
+  只有超级用户，或者超级用户已对相关函数授予 <literal>EXECUTE</literal> 权限的用户，才可以创建建议存储或修改其内容；
+  但任何用户都可以为其会话设置 <literal>pg_stash_advice.stash_name</literal>，这可能会暴露该名称对应的建议存储内容。
+  用户应当假定，存储在建议字符串中的信息可能会对非特权用户可见。
+ </para>
+
+ <sect2 id="pgstashadvice-functions">
+  <title>函数</title>
+
+  <variablelist>
+
+   <varlistentry>
+    <term>
+     <function>pg_create_advice_stash(stash_name text) returns void</function>
+     <indexterm>
+      <primary>pg_create_advice_stash</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      创建一个具有给定名称的新空建议存储。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>pg_drop_advice_stash(stash_name text) returns void</function>
+     <indexterm>
+      <primary>pg_drop_advice_stash</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      删除指定名称的建议存储及其所有条目。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>pg_set_stashed_advice(stash_name text, query_id bigint,
+       advice_string text) returns void</function>
+     <indexterm>
+      <primary>pg_set_stashed_advice</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      在指定名称的建议存储中存储一个建议字符串，并将其关联到给定的查询标识符。
+      如果该查询标识符在存储中已存在条目，则会被替换。
+      如果 <parameter>advice_string</parameter> 为 <literal>NULL</literal>，则会删除该查询标识符对应的任何现有条目。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>pg_get_advice_stashes() returns setof (stash_name text,
+       num_entries bigint)</function>
+     <indexterm>
+      <primary>pg_get_advice_stashes</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      为每个建议存储返回一行，显示存储名称及其包含的条目数。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>pg_get_advice_stash_contents(stash_name text) returns setof
+       (stash_name text, query_id bigint, advice_string text)</function>
+     <indexterm>
+      <primary>pg_get_advice_stash_contents</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      为指定建议存储中的每个条目返回一行。
+      如果 <parameter>stash_name</parameter> 为 <literal>NULL</literal>，则返回所有存储中的条目。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>pg_start_stash_advice_worker() returns void</function>
+     <indexterm>
+      <primary>pg_start_stash_advice_worker</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      启动后台工作进程，以便将建议存储内容自动持久化到磁盘。
+      如果在服务器启动时将此模块包含在
+      <xref linkend="guc-shared-preload-libraries"/> 中，并设置
+      <literal>pg_stash_advice.persist = true</literal>，则该工作进程会自动启动。
+      以手动方式启动时，工作进程不会从磁盘加载任何内容，但仍会将数据持久化到磁盘。
+      然后，你可以配置服务器在下一次重启后自动启动该工作进程，从而保留你现在添加的任何已存储建议。
+     </para>
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+
+ </sect2>
+
+ <sect2 id="pgstashadvice-config-params">
+  <title>配置参数</title>
+
+  <variablelist>
+
+   <varlistentry>
+    <term>
+     <varname>pg_stash_advice.persist</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>pg_stash_advice.persist</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      控制是否应将建议存储及其条目持久化到磁盘。该参数默认启用。
+      如果有任何建议存储被持久化，将会在数据目录中创建名为
+      <literal>pg_stash_advice.tsv</literal> 的文件。
+      建议存储的加载和保存通过后台工作进程完成。
+      此参数只能在服务器启动时设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <varname>pg_stash_advice.persist_interval</varname> (<type>integer</type>)
+     <indexterm>
+      <primary><varname>pg_stash_advice.persist_interval</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      指定检查需要写入 <literal>pg_stash_advice.tsv</literal> 的变更的间隔（以秒为单位）。
+      如果设为零，则只会在服务器关闭时写入变更。默认值为 <literal>30</literal>。
+      此参数只能在 <filename>postgresql.conf</filename> 文件中或通过服务器命令行设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <varname>pg_stash_advice.stash_name</varname> (<type>string</type>)
+     <indexterm>
+      <primary><varname>pg_stash_advice.stash_name</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      指定在查询规划期间要查阅的建议存储名称。默认值为空字符串，这会禁用
+      此模块。
+     </para>
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+
+ </sect2>
+
+ <sect2 id="pgstashadvice-author">
+  <title>作者</title>
+
+  <para>
+   Robert Haas <email>rhaas@postgresql.org</email>
+  </para>
+ </sect2>
+
+</sect1>

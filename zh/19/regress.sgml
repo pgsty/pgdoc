@@ -1,0 +1,960 @@
+<!-- doc/src/sgml/regress.sgml -->
+
+ <chapter id="regress">
+  <title>回归测试</title>
+
+  <indexterm zone="regress">
+   <primary>regression tests</primary>
+  </indexterm>
+
+  <indexterm zone="regress">
+   <primary>test</primary>
+  </indexterm>
+
+  <para>
+   回归测试是针对<productname>PostgreSQL</productname>中 SQL
+   实现的一套全面测试。它们既测试标准 SQL 操作，也测试
+   <productname>PostgreSQL</productname>的扩展能力。
+  </para>
+
+  <sect1 id="regress-run">
+   <title>运行测试</title>
+
+  <para>
+   回归测试既可以针对已经安装并正在运行的服务器执行，也可以在构建树中
+   使用临时安装来执行。此外，运行测试时还有<quote>parallel</quote>和
+   <quote>sequential</quote>两种模式。顺序方式一次只运行一个测试脚本，
+   而并行方式会启动多个服务器进程，以并行方式运行一组测试。并行测试能
+   进一步确认进程间通信和锁定机制是否正常工作。在某些测试有此需要时，
+   即使在<quote>parallel</quote>模式下，它们也可能按顺序运行。
+  </para>
+
+  <sect2 id="regress-run-temp-inst">
+   <title>针对临时安装运行测试</title>
+
+  <para>
+   要在构建完成但尚未安装时运行并行回归测试，请在顶层目录中输入：
+<screen>
+make check
+</screen>
+   （或者也可以切换到<filename>src/test/regress</filename>并在那里运行该命令。）
+   并行运行的测试以前缀<quote>+</quote>标记，顺序运行的测试以前缀
+   <quote>-</quote>标记。最后你应该会看到类似下面的内容：
+<screen>
+<computeroutput>
+# All 213 tests passed.
+</computeroutput>
+</screen>
+   否则会看到哪些测试失败的提示。在认定<xref
+   linkend="regress-evaluation"/>下文所述的<quote>失败</quote>表示严重问题
+   之前，请先阅读该节。
+  </para>
+
+   <para>
+    由于这种测试方法会运行一个临时服务器，如果你以 root 用户身份进行构建，
+    它将无法工作，因为服务器不会以 root 身份启动。推荐做法是不要以 root
+    身份构建；否则应在安装完成后再执行测试。
+   </para>
+
+   <para>
+    如果你把<productname>PostgreSQL</productname>配置为安装到某个已经存在旧版
+    <productname>PostgreSQL</productname>安装的位置，并且在安装新版本之前执行
+    <literal>make check</literal>，可能会发现测试失败，因为新程序会尝试使用
+    已安装的共享库。（典型症状是报出未定义符号。）如果你希望在覆盖旧安装
+    之前运行测试，就需要使用<literal>configure --disable-rpath</literal>
+    进行构建。不过，不建议在最终安装时使用这个选项。
+   </para>
+
+   <para>
+    并行回归测试会在你的用户 ID 下启动相当多的进程。目前最大并发度为二十个
+    并行测试脚本，也就是四十个进程：每个测试脚本都有一个服务器进程和一个
+    <application>psql</application>进程。因此，如果你的系统对每个用户可创建的
+    进程数施加限制，请确保该限制至少有五十个左右，否则并行测试中可能会出现
+    看似随机的失败。如果无法提高该限制，可以通过设置<literal>MAX_CONNECTIONS</literal>
+    参数来降低并行度。例如：
+<screen>
+make MAX_CONNECTIONS=10 check
+</screen>
+    这样一次最多只会并发运行十个测试。
+   </para>
+  </sect2>
+
+  <sect2 id="regress-run-existing-inst">
+   <title>针对现有安装运行测试</title>
+
+  <para>
+   要在安装后运行测试（见<xref linkend="installation"/>），请初始化一个数据目录，
+   并按<xref linkend="runtime"/>中的说明启动服务器，然后输入：
+<screen>
+make installcheck
+</screen>
+或运行并行测试：
+<screen>
+make installcheck-parallel
+</screen>
+   除非通过环境变量<envar>PGHOST</envar>和<envar>PGPORT</envar>另行指定，
+   否则测试会尝试连接本地主机上的默认端口。测试将在名为
+   <literal>regression</literal>的数据库中运行；如果已存在同名数据库，
+   将会被删除。
+  </para>
+
+  <para>
+   这些测试还会临时创建一些集簇级对象，例如角色、表空间和订阅。
+   这些对象的名称都会以<literal>regress_</literal>开头。请注意，不要对
+   含有这类真实全局对象名的安装使用<literal>installcheck</literal>模式。
+  </para>
+  </sect2>
+
+  <sect2 id="regress-subset">
+   <title>运行特定测试</title>
+
+   <para>
+    回归测试的一个子集可以通过命令
+    <literal>make check-tests TESTS="boolean char"</literal> 或
+    <literal>make installcheck-tests TESTS="boolean char"</literal>
+    来运行。请注意，有时测试之间会依赖其他测试创建的对象，这可能导致意外失败。
+   </para>
+  </sect2>
+
+  <sect2 id="regress-additional">
+   <title>附加测试套件</title>
+
+  <para>
+   <literal>make check</literal>和<literal>make installcheck</literal>命令
+   只运行<quote>核心</quote>回归测试，也就是测试
+   <productname>PostgreSQL</productname>服务器内置功能的那些测试。
+   源代码分发包中还包含许多其他测试套件，其中大多与可选过程语言等附加功能
+   有关。
+  </para>
+
+  <para>
+   要运行已选择构建的模块所适用的全部测试套件，包括核心测试，请在构建树
+   顶层输入以下命令之一：
+<screen>
+make check-world
+make installcheck-world
+</screen>
+   这些命令分别像前面为<literal>make check</literal>和
+   <literal>make installcheck</literal>所说明的那样，使用临时服务器或
+   已安装服务器运行测试。其他注意事项也与前述各自方法相同。请注意，
+   <literal>make check-world</literal>会为每个受测模块构建单独的实例
+   （临时数据目录），因此比<literal>make installcheck-world</literal>
+   需要更多时间和磁盘空间。
+  </para>
+
+  <para>
+   在拥有多个 CPU 内核且操作系统限制不严格的现代机器上，可以通过并行化
+   显著加快速度。大多数 PostgreSQL 开发人员实际运行所有测试时使用的命令
+   大致如下：
+<screen>
+make check-world -j8 >/dev/null
+</screen>
+   其中<option>-j</option>的限制通常设为接近或略高于可用核心数。把
+   <systemitem>stdout</systemitem>丢弃后，在你只想确认测试是否成功时，
+   就可以免去那些无关紧要的输出。（如果失败，
+   <systemitem>stderr</systemitem>消息通常已经足够判断应该重点查看哪里。）
+  </para>
+
+  <para>
+   或者，也可以在构建树相应的子目录中执行<literal>make check</literal>
+   或<literal>make installcheck</literal>来运行单个测试套件。请记住，
+   <literal>make installcheck</literal>假定你已经安装了相关模块，而不仅仅
+   是核心服务器。
+  </para>
+
+  <para>
+   可以按这种方式调用的附加测试包括：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     可选过程语言的回归测试，位于<filename>src/pl</filename>下。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>contrib</filename>模块的回归测试，位于
+     <filename>contrib</filename>下。并非所有<filename>contrib</filename>
+     模块都有测试。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     接口库的回归测试，位于<filename>src/interfaces/libpq/test</filename>和
+     <filename>src/interfaces/ecpg/test</filename>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     核心支持的认证方法测试，位于<filename>src/test/authentication</filename>。
+     （其他与认证相关的测试见下文。）
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     针对并发会话行为的压力测试，位于<filename>src/test/isolation</filename>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     崩溃恢复和物理复制测试，位于<filename>src/test/recovery</filename>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     逻辑复制测试，位于<filename>src/test/subscription</filename>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     客户端程序的测试，位于<filename>src/bin</filename>下。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   使用<literal>installcheck</literal>模式时，这些测试会创建并销毁名称中
+   包含<literal>regression</literal>的测试数据库，例如
+   <literal>pl_regression</literal>或<literal>contrib_regression</literal>。
+   请勿对存在这类非测试数据库的安装使用<literal>installcheck</literal>模式。
+  </para>
+
+  <para>
+   其中一些辅助测试套件会使用<xref linkend="regress-tap"/>中说明的
+   TAP 基础设施。基于 TAP 的测试仅在 PostgreSQL 以
+   <option>--enable-tap-tests</option>选项配置时才会运行。对开发而言，
+   建议启用它；但如果没有合适的 Perl 安装，也可以省略。
+  </para>
+
+  <para>
+   有些测试套件默认不会运行，原因可能是它们在多用户系统上运行不安全、
+   需要特殊软件，或者资源密集型。你可以通过将<command>make</command>
+   变量或环境变量<varname>PG_TEST_EXTRA</varname>设置为空白分隔的列表，
+   来决定额外运行哪些测试套件，例如：
+<programlisting>
+make check-world PG_TEST_EXTRA='kerberos ldap ssl load_balance libpq_encryption'
+</programlisting>
+   目前支持以下取值：
+   <variablelist>
+    <varlistentry>
+     <term><literal>checksum</literal>、<literal>checksum_extended</literal></term>
+     <listitem>
+      <para>
+       运行用于启用数据校验和的附加测试，这些测试会注入故障以迫使处理过程重试，
+       以及会并发运行 pgbench 并随机重启集簇的测试。部分测试套件需要在安装中启用
+       注入点。
+       <literal>checksum_extended</literal> 是一个扩展版本，运行时间更长，
+       会注入随机延迟并使用更大的数据集。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>kerberos</literal></term>
+     <listitem>
+      <para>
+       运行<filename>src/test/kerberos</filename>下的测试套件。这需要
+       MIT Kerberos 安装，并会打开 TCP/IP 监听套接字。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>ldap</literal></term>
+     <listitem>
+      <para>
+       运行<filename>src/test/ldap</filename>下的测试套件。这需要
+       <productname>OpenLDAP</productname>安装，并会打开 TCP/IP
+       监听套接字。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>libpq_encryption</literal></term>
+     <listitem>
+      <para>
+       运行测试<filename>src/interfaces/libpq/t/005_negotiate_encryption.pl</filename>。
+       这会打开 TCP/IP 监听套接字。如果<varname>PG_TEST_EXTRA</varname>
+       还包含<literal>kerberos</literal>，则会启用需要 MIT Kerberos 安装的
+       附加测试。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>load_balance</literal></term>
+     <listitem>
+      <para>
+       运行测试<filename>src/interfaces/libpq/t/004_load_balance_dns.pl</filename>。
+       这需要编辑系统<filename>hosts</filename>文件，并会打开 TCP/IP
+       监听套接字。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>oauth</literal></term>
+     <listitem>
+      <para>
+       运行<filename>src/test/modules/oauth_validator</filename>下的测试套件。
+       这会为运行 HTTPS 的测试服务器打开 TCP/IP 监听套接字。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>regress_dump_restore</literal></term>
+     <listitem>
+      <para>
+       在<filename>src/bin/pg_upgrade/t/002_pg_upgrade.pl</filename>中运行一个
+       额外测试套件，该套件会让回归数据库经过<command>pg_dump</command>/
+       <command>pg_restore</command>的循环。由于资源密集型，默认不启用。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>saslprep</literal></term>
+     <listitem>
+      <para>
+       运行<filename>src/test/modules/test_saslprep</filename>下的 TAP 测试套件。
+       由于资源密集型，默认不启用。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>sepgsql</literal></term>
+     <listitem>
+      <para>
+       运行<filename>contrib/sepgsql</filename>下的测试套件。这需要一个以
+       特定方式设置的 SELinux 环境；参见<xref linkend="sepgsql-regression"/>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>ssl</literal></term>
+     <listitem>
+      <para>
+       运行<filename>src/test/ssl</filename>下的测试套件。这会打开 TCP/IP
+       监听套接字。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>wal_consistency_checking</literal></term>
+     <listitem>
+      <para>
+       使用<literal>wal_consistency_checking=all</literal>运行
+       <filename>src/test/recovery</filename>下的某些测试。由于资源密集型，
+       默认不启用。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>xid_wraparound</literal></term>
+     <listitem>
+      <para>
+       运行<filename>src/test/modules/xid_wraparound</filename>下的测试套件。
+       由于资源密集型，默认不启用。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+
+   即使在<varname>PG_TEST_EXTRA</varname>中提到了当前构建配置不支持的特性，
+   其测试也不会运行。
+  </para>
+
+  <para>
+   此外，<filename>src/test/modules</filename>中还有一些测试会由
+   <literal>make check-world</literal>运行，但不会由
+   <literal>make installcheck-world</literal>运行。这是因为它们会安装
+   非生产用途的扩展，或具有其他被认为不适合生产安装的副作用。如果确有需要，
+   你可以在这些子目录之一中使用<literal>make install</literal>和
+   <literal>make installcheck</literal>，但不建议对非测试服务器这样做。
+  </para>
+  </sect2>
+
+  <sect2 id="regress-run-locale">
+   <title>区域设置和编码</title>
+
+   <para>
+    默认情况下，使用临时安装的测试会采用当前环境中定义的区域设置，以及由
+    <command>initdb</command>决定的相应数据库编码。通过设置适当的环境变量
+    来测试不同的区域设置可能很有用，例如：
+<screen>
+make check LANG=C
+make check LC_COLLATE=en_US.utf8 LC_CTYPE=fr_CA.utf8
+</screen>
+    出于实现原因，设置<envar>LC_ALL</envar>不能用于此目的；其他所有与
+    区域设置相关的环境变量都可以。
+   </para>
+
+   <para>
+    在针对现有安装测试时，区域设置由现有数据库集簇决定，不能为测试单独设置。
+   </para>
+
+   <para>
+    也可以通过设置变量<envar>ENCODING</envar>来显式选择数据库编码，例如：
+<screen>
+make check LANG=C ENCODING=EUC_JP
+</screen>
+    只有在区域设置为 C 时，这样设置数据库编码通常才有意义；否则编码会从
+    区域设置自动选择，而指定与区域设置不匹配的编码会导致错误。
+   </para>
+
+   <para>
+    无论是针对临时安装还是现有安装测试，都可以设置数据库编码；不过在后一种
+    情况下，它必须与该安装的区域设置兼容。
+   </para>
+  </sect2>
+
+  <sect2 id="regress-run-path-substitution">
+   <title>路径替换</title>
+
+   <para>
+    由 <command>pg_regress</command> 驱动的测试套件可以使用以下环境变量进行
+    路径替换：
+
+    <variablelist>
+     <varlistentry>
+      <term><literal>PG_ABS_SRCDIR</literal></term>
+      <listitem>
+       <para>
+        源代码目录的绝对路径。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PG_ABS_BUILDDIR</literal></term>
+      <listitem>
+       <para>
+        构建目录的绝对路径。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PG_DLSUFFIX</literal></term>
+      <listitem>
+       <para>
+        动态可加载模块的扩展名（例如 Linux 上的 <literal>.so</literal>）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PG_LIBDIR</literal></term>
+      <listitem>
+       <para>
+        动态库的绝对路径。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    这些变量应在测试中通过元命令 <command>\getenv</command> 设定，例如：
+<programlisting>
+\getenv abs_builddir PG_ABS_BUILDDIR
+\getenv abs_srcdir PG_ABS_SRCDIR
+</programlisting>
+   </para>
+
+   <para>
+    在涉及函数和对象加载、并且需要特定路径才能工作的场景中，这些变量很有
+    用，例如 <command>CREATE FUNCTION</command> 或 <command>LOAD</command>
+    命令中定义的路径。
+   </para>
+  </sect2>
+
+  <sect2 id="regress-run-custom-settings">
+   <title>自定义服务器设置</title>
+
+   <para>
+    运行测试套件时，有几种方式可以使用自定义服务器设置。这对于启用额外日志、
+    调整资源限制，或启用额外的运行时检查（例如
+    <xref linkend="guc-debug-discard-caches"/>）可能很有用。但请注意，
+    并非所有测试都能在任意设置下都顺利通过。
+   </para>
+
+   <para>
+    在测试准备过程中，内部运行的各个<command>initdb</command>命令可以通过
+    环境变量<envar>PG_TEST_INITDB_EXTRA_OPTS</envar>传入附加选项。例如，
+    要在启用校验和并使用自定义 WAL 段大小和<varname>work_mem</varname>
+    设置的情况下运行测试，可使用：
+<screen>
+make check PG_TEST_INITDB_EXTRA_OPTS='-k --wal-segsize=4 -c work_mem=50MB'
+</screen>
+   </para>
+
+   <para>
+    对于核心回归测试套件以及其他由<command>pg_regress</command>驱动的测试，
+    自定义运行时服务器设置还可以通过<varname>PGOPTIONS</varname>环境变量
+    来设置（适用于允许这样设置的参数），例如：
+<screen>
+make check PGOPTIONS="-c debug_parallel_query=regress -c work_mem=50MB"
+</screen>
+    （这利用了 libpq 提供的功能；详情见<xref
+    linkend="libpq-connect-options"/>。）
+   </para>
+
+   <para>
+    在针对临时安装运行时，也可以通过提供预先写好的
+    <filename>postgresql.conf</filename>来设置自定义参数：
+<screen>
+echo 'log_checkpoints = on' > test_postgresql.conf
+echo 'work_mem = 50MB' >> test_postgresql.conf
+make check EXTRA_REGRESS_OPTS="--temp-config=test_postgresql.conf"
+</screen>
+   </para>
+
+  </sect2>
+
+  <sect2 id="regress-run-extra-tests">
+   <title>额外测试</title>
+
+   <para>
+    核心回归测试套件包含少数默认不运行的测试文件，因为它们可能依赖平台，
+    或者运行时间非常长。你可以通过设置变量<envar>EXTRA_TESTS</envar>来
+    运行这些或其他额外测试文件。例如，要运行<literal>numeric_big</literal>
+    测试：
+<screen>
+make check EXTRA_TESTS=numeric_big
+</screen>
+   </para>
+  </sect2>
+  </sect1>
+
+  <sect1 id="regress-evaluation">
+   <title>测试结果评估</title>
+
+   <para>
+    某些安装正确且功能完备的<productname>PostgreSQL</productname>实例，
+    可能会因为平台特有因素而在部分回归测试中<quote>失败</quote>，例如浮点
+    表示或消息措辞不同。目前这些测试是通过把输出与参考系统生成的输出做
+    简单的<command>diff</command>比较来评估的，因此结果会对细微的系统差异
+    很敏感。报告某项测试<quote>失败</quote>时，请务必检查预期结果与实际结果
+    之间的差异；你可能会发现这些差异并不重要。尽管如此，我们仍努力在所有
+    受支持平台上维护准确的参考文件，因此原则上应期待所有测试都能通过。
+   </para>
+
+   <para>
+    回归测试的实际输出位于<filename>src/test/regress/results</filename>
+    目录中的文件里。测试脚本使用<command>diff</command>将每个输出文件
+    与存放在<filename>src/test/regress/expected</filename>目录中的参考输出
+    进行比较。所有差异都会保存在
+    <filename>src/test/regress/regression.diffs</filename>中供你检查。
+    （运行核心测试以外的测试套件时，这些文件当然会出现在相应的子目录中，
+    而不是<filename>src/test/regress</filename>。）
+   </para>
+
+   <para>
+    如果不喜欢默认使用的<command>diff</command>选项，可设置环境变量
+    <envar>PG_REGRESS_DIFF_OPTS</envar>，例如
+    <literal>PG_REGRESS_DIFF_OPTS='-c'</literal>。（或者如果你愿意，
+    也可以自己运行<command>diff</command>。）
+   </para>
+
+   <para>
+    如果由于某种原因，某个特定平台在某个测试上产生了<quote>失败</quote>，
+    但对输出的检查令你相信结果是有效的，那么可以新增一个比较文件，让后续
+    测试运行不再报告该失败。详情见<xref linkend="regress-variant"/>。
+   </para>
+
+   <sect2 id="regress-evaluation-message-differences">
+    <title>错误消息差异</title>
+
+    <para>
+     某些回归测试包含故意构造的非法输入值。错误消息可能来自
+     <productname>PostgreSQL</productname>代码，也可能来自宿主平台的系统例程。
+     在后一种情况下，消息会因平台而异，但应反映相近的信息。这类消息差异
+     会导致回归测试显示为<quote>失败</quote>，但可以通过检查确认其有效性。
+    </para>
+   </sect2>
+
+   <sect2 id="regress-evaluation-locale-differences">
+    <title>区域设置差异</title>
+
+    <para>
+     如果你针对一个使用 C 以外排序规则顺序的区域设置初始化的服务器运行测试，
+     就可能因为排序顺序不同而出现差异，并导致后续失败。回归测试套件通过
+     提供备用结果文件来处理这个问题；这些文件已知可以覆盖大量区域设置。
+    </para>
+
+    <para>
+     使用临时安装方法时，要在不同区域设置下运行测试，可在
+     <command>make</command>命令行上传递合适的区域设置相关环境变量，例如：
+<programlisting>
+make check LANG=de_DE.utf8
+</programlisting>
+     （回归测试驱动器会取消设置<envar>LC_ALL</envar>，因此不能用该变量
+     选择区域设置。）如果不使用区域设置，要么取消所有与区域设置相关的
+     环境变量（或将它们设为<literal>C</literal>），要么使用下面这个特殊调用：
+<programlisting>
+make check NO_LOCALE=1
+</programlisting>
+     针对现有安装运行测试时，区域设置由现有安装决定。要改变它，需要在
+     初始化数据库集簇时向<command>initdb</command>传入合适选项，使用
+     另一种区域设置。
+    </para>
+
+    <para>
+     一般来说，建议在计划用于生产环境的区域设置下运行回归测试，因为这样
+     可以覆盖实际将在生产中使用的区域设置和编码相关代码部分。根据操作系统
+     环境不同，可能会出现失败，但至少你会知道在真实应用运行时应当预期哪些
+     与区域设置相关的行为。
+    </para>
+   </sect2>
+
+   <sect2 id="regress-evaluation-date-time-differences">
+    <title>日期和时间差异</title>
+
+    <para>
+     大多数日期和时间结果依赖于时区环境。参考文件是在时区
+     <literal>America/Los_Angeles</literal>下生成的，如果测试未在该时区设置
+     下运行，就会出现表面上的失败。回归测试驱动器会将环境变量
+     <envar>PGTZ</envar>设为<literal>America/Los_Angeles</literal>，
+     这通常能够确保获得正确结果。
+    </para>
+   </sect2>
+
+   <sect2 id="regress-evaluation-float-differences">
+    <title>浮点差异</title>
+
+    <para>
+     某些测试涉及根据表列计算 64 位浮点数（<type>double
+     precision</type>）。我们已经观察到涉及<type>double
+     precision</type>列数学函数的结果存在差异。<literal>float8</literal>和
+     <literal>geometry</literal>测试尤其容易在不同平台之间，甚至在不同
+     编译器优化设置下出现细微差异。要判断这些通常出现在小数点右侧第 10 位
+     附近的差异究竟是否重要，需要人工目测比较。
+    </para>
+
+    <para>
+     某些系统把负零显示为<literal>-0</literal>，而另一些只显示
+     <literal>0</literal>。
+    </para>
+
+    <para>
+     某些系统对<function>pow()</function>和<function>exp()</function>
+     发出错误的方式，与当前<productname>PostgreSQL</productname>代码所
+     预期的机制不同。
+    </para>
+   </sect2>
+
+   <sect2 id="regress-evaluation-ordering-differences">
+    <title>行顺序差异</title>
+
+    <para>
+你可能会看到这样的差异：同样的行在输出中的顺序与预期文件中的顺序不同。
+在大多数情况下，严格说来这并不是缺陷。大多数回归测试脚本并没有细致到
+为每一个<literal>SELECT</literal>都使用<literal>ORDER BY</literal>，
+因此按 SQL 规范，它们的结果行顺序并没有良好定义。实际上，由于我们看到的
+是同一软件在同一数据上执行相同查询，通常在所有平台上都会得到相同的结果
+顺序，所以缺少<literal>ORDER BY</literal>并不是问题。不过，有些查询
+确实会表现出跨平台的顺序差异。针对已安装服务器测试时，非 C 区域设置或
+非默认参数设置，例如自定义的<varname>work_mem</varname>值或规划器代价
+参数，也可能导致顺序差异。
+    </para>
+
+    <para>
+因此，如果你看到顺序差异，一般无需担心，除非查询确实包含
+<literal>ORDER BY</literal>而你的结果违反了它。不过，仍请报告该问题，
+这样我们可以为那个特定查询加上<literal>ORDER BY</literal>，以在后续
+版本中消除这种虚假的<quote>失败</quote>。
+    </para>
+
+    <para>
+你可能会好奇，为什么我们不显式地为所有回归测试查询排序，从而一劳永逸地
+解决这个问题。原因在于，那样反而会降低回归测试的价值，因为测试会倾向于
+覆盖能产生有序结果的查询计划类型，而排除那些不能产生有序结果的计划类型。
+    </para>
+   </sect2>
+
+   <sect2 id="regress-evaluation-stack-depth">
+    <title>栈深度不足</title>
+
+    <para>
+     如果<literal>errors</literal>测试在执行
+     <literal>select infinite_recurse()</literal>命令时导致服务器崩溃，
+     这意味着平台对进程栈大小的限制比<xref linkend="guc-max-stack-depth"/>
+     参数所表明的更小。可通过在更高的栈大小限制下运行服务器来修复
+     （对于<varname>max_stack_depth</varname>的默认值，建议 4MB）。
+     如果做不到，另一种办法是减小<varname>max_stack_depth</varname>
+     的值。
+    </para>
+
+    <para>
+     在支持<function>getrlimit()</function>的平台上，服务器应自动选择
+     <varname>max_stack_depth</varname>的安全值；因此，除非你手工覆盖了
+     该设置，否则这类失败就是一个应报告的缺陷。
+    </para>
+   </sect2>
+
+   <sect2 id="regress-evaluation-random-test">
+    <title><quote>random</quote> 测试</title>
+
+    <para>
+     <literal>random</literal>测试脚本本来就是要产生随机结果的。在极少数
+     情况下，这会导致该回归测试失败。输入：
+<programlisting>
+diff results/random.out expected/random.out
+</programlisting>
+     通常只应产生一两行差异。除非 random 测试反复失败，
+     否则不必担心。
+    </para>
+   </sect2>
+
+   <sect2 id="regress-evaluation-config-params">
+    <title>配置参数</title>
+
+    <para>
+     在针对现有安装运行测试时，某些非默认参数设置可能导致测试失败。例如，
+     改变<varname>enable_seqscan</varname>或
+     <varname>enable_indexscan</varname>等参数，可能导致计划发生变化，
+     进而影响使用<command>EXPLAIN</command>的测试结果。
+    </para>
+   </sect2>
+  </sect1>
+
+<!-- We might want to move the following section into the developer's guide. -->
+  <sect1 id="regress-variant">
+   <title>变体比较文件</title>
+
+   <para>
+    由于某些测试天生会产生依赖环境的结果，我们提供了指定备用
+    <quote>预期</quote>结果文件的方法。每个回归测试都可以有多个比较文件，
+    用来展示不同平台上的可能结果。对于每个测试应使用哪个比较文件，有两种
+    相互独立的判定机制。
+   </para>
+
+   <para>
+    第一种机制允许针对特定平台选择比较文件。有一个映射文件
+    <filename>src/test/regress/resultmap</filename>，用于定义每个平台应使用
+    哪个比较文件。要为某个特定平台消除虚假的测试<quote>失败</quote>，
+    你需要先选择或创建一个变体结果文件，然后在<filename>resultmap</filename>
+    文件中增加一行。
+   </para>
+
+   <para>
+    映射文件中的每一行都采用如下形式：
+<synopsis>
+testname:output:platformpattern=comparisonfilename
+</synopsis>
+    测试名就是相应回归测试模块的名称。输出值指明要检查哪个输出文件。
+    对标准回归测试而言，这里始终是<literal>out</literal>。该值对应于
+    输出文件的扩展名。平台模式是 Unix 工具<command>expr</command>风格
+    的模式（也就是在开头隐含<literal>^</literal>锚点的正则表达式）。
+    它会与<command>config.guess</command>打印出的平台名进行匹配。
+    比较文件名则是替代结果比较文件的基名。
+   </para>
+
+   <para>
+    例如，有些系统缺少可用的<literal>strtof</literal>函数，而我们的变通办法
+    会在<filename>float4</filename>回归测试中造成舍入错误。因此，我们提供
+    了一个变体比较文件<filename>float4-misrounded-input.out</filename>，
+    其中包含这些系统上应期望的结果。为了让虚假的<quote>失败</quote>消息
+    不再出现在<systemitem>Cygwin</systemitem>平台上，
+    <filename>resultmap</filename>中包含：
+<programlisting>
+float4:out:.*-.*-cygwin.*=float4-misrounded-input.out
+</programlisting>
+    这会在任何<command>config.guess</command>输出匹配
+    <literal>.*-.*-cygwin.*</literal>的机器上触发。
+    <filename>resultmap</filename>中的其他行则会在其他适用平台上选择该
+    变体比较文件。
+   </para>
+
+   <para>
+    第二种用于选择变体比较文件的机制更加自动化：它只是在多个提供的比较文件
+    中选取<quote>最佳匹配</quote>。回归测试驱动脚本既考虑某个测试的标准
+    比较文件<literal><replaceable>testname</replaceable>.out</literal>，
+    也考虑名为
+    <literal><replaceable>testname</replaceable>_<replaceable>digit</replaceable>.out</literal>
+    的变体文件（其中<replaceable>digit</replaceable>可以是任一单个数字
+    <literal>0</literal>-<literal>9</literal>）。如果其中任何一个文件
+    完全匹配，就认为测试通过；否则，会使用生成最短 diff 的那个文件来创建
+    失败报告。（如果<filename>resultmap</filename>为该特定测试包含一项，
+    那么基础<replaceable>testname</replaceable>就是
+    <filename>resultmap</filename>中给出的替代名称。）
+   </para>
+
+   <para>
+    例如，对于<literal>char</literal>测试，比较文件
+    <filename>char.out</filename>包含在<literal>C</literal>和
+    <literal>POSIX</literal>区域设置中应当出现的结果，而文件
+    <filename>char_1.out</filename>则包含在许多其他区域设置中出现的排序结果。
+   </para>
+
+   <para>
+    最佳匹配机制原本是为了解决依赖区域设置的结果问题，但它也可以用于任何
+    仅凭平台名无法轻易预测测试结果的场景。该机制的一个局限是，测试驱动器
+    无法判断哪一个变体对当前环境才真正<quote>正确</quote>；它只会选择
+    看起来最合适的那个。因此，最安全的做法是只对那些你愿意在所有上下文中
+    都视为同样有效的变体结果使用这种机制。
+   </para>
+
+  </sect1>
+
+  <sect1 id="regress-tap">
+   <title>TAP 测试</title>
+
+   <para>
+    各种测试，尤其是<filename>src/bin</filename>下的客户端程序测试，会使用
+    Perl TAP 工具，并通过 Perl 测试程序<command>prove</command>运行。
+    你可以通过向<command>prove</command>传递命令行选项，并设置
+    <command>make</command>变量<varname>PROVE_FLAGS</varname>来实现，例如：
+<programlisting>
+make -C src/bin check PROVE_FLAGS='--timer'
+</programlisting>
+    更多信息请参见<command>prove</command>的手册页。
+   </para>
+
+   <para>
+    <command>make</command>变量<varname>PROVE_TESTS</varname>可用于定义一个
+    以空白分隔的路径列表，这些路径相对于<filename>Makefile</filename>；
+    该文件调用<command>prove</command>来运行指定的测试子集，而不是默认的
+    <filename>t/*.pl</filename>。例如：
+<programlisting>
+make check PROVE_TESTS='t/001_test1.pl t/003_test3.pl'
+</programlisting>
+   </para>
+
+   <para>
+    TAP 测试需要 Perl 模块<literal>IPC::Run</literal>。该模块可从
+    <ulink url="https://metacpan.org/dist/IPC-Run">CPAN</ulink>
+    或操作系统软件包获得。此外，这些测试还要求
+    <productname>PostgreSQL</productname>在配置时使用
+    <option>--enable-tap-tests</option>选项。
+   </para>
+
+   <para>
+    一般来说，如果执行<literal>make installcheck</literal>，TAP 测试会测试
+    先前安装树中的可执行文件；如果执行<literal>make check</literal>，
+    则会根据当前源码构建一个新的本地安装树。无论哪种情况，它们都会初始化
+    一个本地实例（数据目录），并在其中临时运行服务器。其中一些测试会运行
+    多个服务器。因此，这些测试可能相当耗费资源。
+   </para>
+
+   <para>
+    需要注意的是，即使执行<literal>make installcheck</literal>，TAP 测试也会
+    启动测试服务器；这不同于传统的非 TAP 测试基础设施，后者在该情况下期望
+    使用一个已经运行的测试服务器。PostgreSQL 的某些子目录同时包含传统风格
+    和 TAP 风格的测试，这意味着<literal>make installcheck</literal>会产生
+    来自临时服务器和已在运行的测试服务器的混合结果。
+   </para>
+
+  <sect2 id="regress-tap-vars">
+   <title>环境变量</title>
+
+   <para>
+    数据目录会根据测试文件名命名，如果测试失败就会被保留。如果设置了环境变量
+    <varname>PG_TEST_NOCLEAN</varname>，无论测试状态如何，数据目录都会保留。
+    例如，运行<application>pg_dump</application>测试时，无论测试结果如何
+    都保留数据目录：
+<programlisting>
+PG_TEST_NOCLEAN=1 make -C src/bin/pg_dump check
+</programlisting>
+    这个环境变量还会阻止删除测试的临时目录。
+   </para>
+
+   <para>
+    测试套件中的许多操作使用 180 秒超时，在较慢的主机上可能会导致因负载
+    引起的超时。将环境变量<varname>PG_TEST_TIMEOUT_DEFAULT</varname>
+    设为更大的数值，可以修改默认值以避免这种情况。
+   </para>
+
+   <para>
+    对于某些测试，可以将环境变量 <envar>PG_TEST_FILE_READ_LINES</envar>
+    设为一个值，以限制从大型输出文件（开头和结尾）读取的行数。这在测试输出
+    包含大量不必要内容时很有用，可以让测试框架只读取有限行数用于报告。
+   </para>
+  </sect2>
+
+  </sect1>
+
+  <sect1 id="regress-coverage">
+   <title>测试覆盖率检查</title>
+
+   <para>
+    可以用覆盖率测试插装编译 PostgreSQL 源代码，从而检查回归测试或任何
+    其他与该代码一起运行的测试套件覆盖了代码的哪些部分。目前，这只在使用
+    GCC 编译时受支持，并且需要<literal>gcov</literal>和
+    <literal>lcov</literal>软件包。
+   </para>
+
+   <sect2 id="regress-coverage-configure">
+    <title>使用 Autoconf 和 Make 的覆盖率检查</title>
+    <para>
+     一个典型的工作流程如下：
+<screen>
+./configure --enable-coverage ... OTHER OPTIONS ...
+make
+make check # or other test suite
+make coverage-html
+</screen>
+     然后将 HTML 浏览器指向<filename>coverage/index.html</filename>。
+    </para>
+
+    <para>
+     如果没有<command>lcov</command>，或者你更喜欢文本输出而不是 HTML
+     报告，可以运行：
+<screen>
+make coverage
+</screen>
+     来代替<literal>make coverage-html</literal>，这样会为与测试相关的
+     每个源文件生成<filename>.gcov</filename>输出文件。
+     （<literal>make coverage</literal>和<literal>make coverage-html</literal>
+     会互相覆盖对方的文件，因此混用它们可能会让人困惑。）
+    </para>
+
+    <para>
+     在生成覆盖率报告前，可以先运行若干不同的测试；执行计数会累计。
+     如果想在多次测试运行之间重置执行计数，请运行：
+<screen>
+make coverage-clean
+</screen>
+    </para>
+
+    <para>
+     如果只想获得代码树某一部分的覆盖率报告，可以在子目录中运行
+     <literal>make coverage-html</literal>或<literal>make
+     coverage</literal>命令。
+    </para>
+
+    <para>
+     完成后，使用<literal>make distclean</literal>进行清理。
+    </para>
+   </sect2>
+
+   <sect2 id="regress-coverage-meson">
+    <title>使用 Meson 的覆盖率检查</title>
+    <para>
+     一个典型的工作流程如下：
+<screen>
+meson setup -Db_coverage=true ... OTHER OPTIONS ... builddir/
+meson compile -C builddir/
+meson test -C builddir/
+cd builddir/
+ninja coverage-html
+</screen>
+     然后将 HTML 浏览器指向
+     <filename>./meson-logs/coveragereport/index.html</filename>。
+    </para>
+
+    <para>
+     在生成覆盖率报告前，可以先运行若干不同的测试；执行计数会累计。
+    </para>
+   </sect2>
+  </sect1>
+
+</chapter>

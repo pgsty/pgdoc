@@ -1,0 +1,750 @@
+<!-- doc/src/sgml/sepgsql.sgml -->
+
+<sect1 id="sepgsql" xreflabel="sepgsql">
+ <title>sepgsql &mdash;
+   基于 SELinux 标签的强制访问控制（MAC）安全模块</title>
+
+ <indexterm zone="sepgsql">
+  <primary>sepgsql</primary>
+ </indexterm>
+
+ <para>
+  <filename>sepgsql</filename> 是一个可加载模块，支持基于
+  <productname>SELinux</productname> 安全策略和安全标签的强制访问控制（MAC）。
+ </para>
+
+ <warning>
+   <para>
+     当前实现存在重大限制，并不会对所有操作实施强制访问控制。详见
+     <xref linkend="sepgsql-limitations"/>。
+   </para>
+ </warning>
+
+ <sect2 id="sepgsql-overview">
+  <title>概述</title>
+
+  <para>
+   该模块与 <productname>SELinux</productname> 集成，在
+   <productname>PostgreSQL</productname> 通常提供的安全检查之外再增加一层
+   安全检查。从 <productname>SELinux</productname> 的角度看，该模块使
+   <productname>PostgreSQL</productname> 能够充当用户空间对象管理器。由 DML
+   查询发起的每一次表或函数访问，都会依据系统安全策略进行检查。这种检查是
+   对 <productname>PostgreSQL</productname> 常规 SQL 权限检查的补充。
+  </para>
+
+  <para>
+   <productname>SELinux</productname> 的访问控制决策通过安全标签作出，安全标签
+   以 <literal>system_u:object_r:sepgsql_table_t:s0</literal> 这样的字符串表示。
+   每个访问控制决策都涉及两个标签：尝试执行操作的主体标签，以及要执行该操
+   作的对象标签。由于这些标签可以应用到任意类型的对象，数据库中存储对象的
+   访问控制决策也可以与文件等其他类型对象一样，遵循同一套一般性标准；使
+   用该模块时也确实如此。这样的设计旨在让集中式安全策略能够保护信息资产，
+   而不受这些资产具体存储方式的影响。
+  </para>
+
+  <para>
+   <link linkend="sql-security-label"><command>SECURITY LABEL</command></link> 语句允许为数据库对象分配安全标签。
+  </para>
+
+ </sect2>
+ <sect2 id="sepgsql-installation">
+  <title>安装</title>
+
+  <para>
+    <filename>sepgsql</filename> 只能在启用了
+    <productname>SELinux</productname> 的
+    <productname>Linux</productname> 2.6.28 或更高版本上使用。
+    它在其他任何平台上都不可用。还需要
+    <productname>libselinux</productname> 2.1.10 或更高版本，以及
+    <productname>selinux-policy</productname> 3.9.13 或更高版本（尽管某些发行版
+    可能会把所需规则回移植到较旧的策略版本中）。
+  </para>
+
+  <para>
+   可以使用 <command>sestatus</command> 命令检查
+   <productname>SELinux</productname> 的状态。典型显示如下：
+<screen>
+$ sestatus
+SELinux status:                 enabled
+SELinuxfs mount:                /selinux
+Current mode:                   enforcing
+Mode from config file:          enforcing
+Policy version:                 24
+Policy from config file:        targeted
+</screen>
+   如果 <productname>SELinux</productname> 被禁用或尚未安装，则必须先安装并配置
+   它，之后才能安装本模块。
+  </para>
+
+  <para>
+   要构建此模块，使用 <link
+   linkend="install-make">make 和 autoconf</link> 时请指定 <xref
+   linkend="configure-option-with-sepgsql"/>，使用 <link
+   linkend="install-meson">meson</link> 时请指定 <xref
+   linkend="configure-with-sepgsql-meson"/>。
+
+   还要确保构建时已经安装 <filename>libselinux-devel</filename> RPM。
+  </para>
+
+  <para>
+   要使用此模块，必须将 <literal>sepgsql</literal> 包含在
+   <xref linkend="guc-shared-preload-libraries"/> 参数中，该参数位于
+   <filename>postgresql.conf</filename> 内。如果以其他任何方式加载该模块，它都
+   无法正确工作。
+   模块加载后，应在每个数据库中执行 <filename>sepgsql.sql</filename>。这会安装
+   安全标签管理所需的函数，并分配初始安全标签。
+  </para>
+
+  <para>
+   下面的示例展示了如何初始化一个全新的数据库集簇，并安装
+   <filename>sepgsql</filename> 函数和安全标签。请根据实际安装情况调整其中的路径：
+  </para>
+
+<screen>
+$ export PGDATA=/path/to/data/directory
+$ initdb
+$ vi $PGDATA/postgresql.conf
+  change
+    #shared_preload_libraries = ''                # (change requires restart)
+  to
+    shared_preload_libraries = 'sepgsql'          # (change requires restart)
+$ for DBNAME in template0 template1 postgres; do
+    postgres --single -F -c exit_on_error=true $DBNAME \
+      &lt;/usr/local/pgsql/share/contrib/sepgsql.sql &gt;/dev/null
+  done
+</screen>
+
+  <para>
+   请注意，具体会看到以下通知中的哪些，取决于所使用的
+   <productname>libselinux</productname> 和
+   <productname>selinux-policy</productname> 版本，可能是部分，也可能是全部：
+<screen>
+/etc/selinux/targeted/contexts/sepgsql_contexts:  line 33 has invalid object type db_blobs
+/etc/selinux/targeted/contexts/sepgsql_contexts:  line 36 has invalid object type db_language
+/etc/selinux/targeted/contexts/sepgsql_contexts:  line 37 has invalid object type db_language
+/etc/selinux/targeted/contexts/sepgsql_contexts:  line 38 has invalid object type db_language
+/etc/selinux/targeted/contexts/sepgsql_contexts:  line 39 has invalid object type db_language
+/etc/selinux/targeted/contexts/sepgsql_contexts:  line 40 has invalid object type db_language
+</screen>
+   这些消息没有害处，应予忽略。
+  </para>
+
+  <para>
+   如果安装过程无错误完成，此时就可以正常启动服务器。
+  </para>
+ </sect2>
+
+ <sect2 id="sepgsql-regression">
+  <title>回归测试</title>
+
+  <para>
+   <filename>sepgsql</filename> 测试套件会在 <literal>PG_TEST_EXTRA</literal>
+   包含 <literal>sepgsql</literal> 时运行（见 <xref linkend="regress-additional"/>）。
+   这种方式适用于 <productname>PostgreSQL</productname> 的开发过程。另一种方式是
+   运行测试，以检查某个数据库实例是否已为 <literal>sepgsql</literal> 正确设置。
+  </para>
+
+  <para>
+   由于 <productname>SELinux</productname> 的特性，运行
+   <filename>sepgsql</filename> 的回归测试需要额外执行若干配置步骤，其中部分
+   步骤必须以 root 身份完成。
+  </para>
+
+  <para>
+   手工测试必须在一个已配置好的 PostgreSQL 构建树中的
+   <filename>contrib/sepgsql</filename> 目录下运行。虽然这些测试需要构建树，
+   但它们被设计为针对已安装的服务器执行，也就是说更接近于
+   <literal>make installcheck</literal>，而不是 <literal>make check</literal>。
+  </para>
+
+  <para>
+   首先，在一个可用数据库中设置 <filename>sepgsql</filename>，并遵循
+   <xref linkend="sepgsql-installation"/> 中的说明。请注意，当前操作系统用户必
+   须能够无需密码认证，以超级用户身份连接到该数据库。
+  </para>
+
+  <para>
+   第二，构建并安装回归测试所需的策略包。<filename>sepgsql-regtest</filename>
+   策略是一个专用策略包，提供了一组允许在回归测试期间使用的规则。它应从策
+   略源文件 <filename>sepgsql-regtest.te</filename> 构建，构建过程通过使用
+   <command>make</command> 和由 SELinux 提供的 Makefile 完成。需要在本机上找
+   到合适的 Makefile；下面展示的路径仅为示例。（该 Makefile 通常由
+   <filename>selinux-policy-devel</filename> 或
+   <filename>selinux-policy</filename> RPM 提供。）构建完成后，使用
+   <command>semodule</command> 命令安装该策略包，该命令会将提供的策略包装载到
+   内核中。如果安装正确，<literal><command>semodule</command> -l</literal> 应该把
+   <literal>sepgsql-regtest</literal> 列为可用策略包之一：
+  </para>
+
+<screen>
+$ cd .../contrib/sepgsql
+$ make -f /usr/share/selinux/devel/Makefile
+$ sudo semodule -u sepgsql-regtest.pp
+$ sudo semodule -l | grep sepgsql
+sepgsql-regtest 1.07
+</screen>
+
+  <para>
+   第三，打开 <literal>sepgsql_regression_test_mode</literal>。出于安全原因，
+   <filename>sepgsql-regtest</filename> 中的规则默认并未启用；
+   <literal>sepgsql_regression_test_mode</literal> 参数会启用启动回归测试所需
+   的规则。可以使用 <command>setsebool</command> 命令将其打开：
+  </para>
+
+<screen>
+$ sudo setsebool sepgsql_regression_test_mode on
+$ getsebool sepgsql_regression_test_mode
+sepgsql_regression_test_mode --> on
+</screen>
+
+  <para>
+   第四，确认 shell 正在 <literal>unconfined_t</literal> 域中运行：
+  </para>
+<screen>
+$ id -Z
+unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+</screen>
+
+  <para>
+   如有需要，请参阅 <xref linkend="sepgsql-resources"/>，了解如何调整工作域。
+  </para>
+
+  <para>
+   最后，运行回归测试脚本：
+  </para>
+<screen>
+$ ./test_sepgsql
+</screen>
+
+  <para>
+   该脚本会尝试验证是否已正确完成全部配置步骤，然后运行
+   <filename>sepgsql</filename> 模块的回归测试。
+  </para>
+
+  <para>
+   完成测试后，建议关闭
+   <literal>sepgsql_regression_test_mode</literal> 参数：
+  </para>
+
+<screen>
+$ sudo setsebool sepgsql_regression_test_mode off
+</screen>
+
+  <para>
+   也可以选择彻底移除 <filename>sepgsql-regtest</filename> 策略：
+  </para>
+
+<screen>
+$ sudo semodule -r sepgsql-regtest
+</screen>
+ </sect2>
+
+ <sect2 id="sepgsql-parameters">
+  <title>GUC 参数</title>
+
+  <variablelist>
+   <varlistentry id="guc-sepgsql-permissive" xreflabel="sepgsql.permissive">
+    <term>
+     <varname>sepgsql.permissive</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>sepgsql.permissive</varname> 配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      该参数使 <filename>sepgsql</filename> 无论系统设置如何都以宽容模式运行。
+      默认值为关闭。该参数只能在 <filename>postgresql.conf</filename> 文件中
+      或服务器命令行上设置。
+     </para>
+
+     <para>
+      当该参数打开时，<filename>sepgsql</filename> 会以宽容模式运行，即使
+      SELinux 整体处于强制模式也是如此。该参数主要用于测试。
+     </para>
+    </listitem>
+
+   </varlistentry>
+   <varlistentry id="guc-sepgsql-debug-audit" xreflabel="sepgsql.debug_audit">
+    <term>
+     <varname>sepgsql.debug_audit</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>sepgsql.debug_audit</varname> 配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      该参数会在不考虑系统策略设置的情况下启用审计消息输出。
+      默认值为关闭，这意味着消息将按系统设置输出。
+     </para>
+
+     <para>
+      <productname>SELinux</productname> 的安全策略本身也有规则来控制是否记录特
+      定的访问。默认情况下，访问违例会被记录，而被允许的访问不会被记录。
+     </para>
+
+     <para>
+      该参数会在不考虑系统策略的情况下，强制打开所有可能的日志记录。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="sepgsql-features">
+  <title>特性</title>
+  <sect3 id="sepgsql-features-controlled-obj-classes">
+   <title>受控对象类</title>
+   <para>
+    <productname>SELinux</productname> 的安全模型把全部访问控制规则描述为主体
+    实体（通常是数据库客户端）与对象实体（例如数据库对象）之间的关系，这两
+    者都由安全标签标识。如果尝试访问一个未带标签的对象，则会把它视为被赋予
+    了 <literal>unlabeled_t</literal> 标签。
+   </para>
+
+   <para>
+    当前，<filename>sepgsql</filename> 允许为模式、表、列、序列、视图和函数分
+    配安全标签。使用 <filename>sepgsql</filename> 时，安全标签会在受支持的数据
+    库对象创建时自动分配。这个标签称为默认安全标签，其取值由系统安全策略决
+    定；策略的输入包括创建者的标签、新对象父对象的标签，以及待创建对象的名
+    称（如果需要）。
+   </para>
+
+   <para>
+    新数据库对象基本上会继承父对象的安全标签，但如果安全策略中存在称为类型
+    转换规则的特殊规则，则可能会应用不同的标签。对于模式，父对象是当前数据
+    库；对于表、序列、视图和函数，父对象是其所在模式；对于列，父对象是其所
+    在表。
+   </para>
+  </sect3>
+
+  <sect3 id="sepgsql-features-dml-permissions">
+   <title>DML 权限</title>
+
+   <para>
+    对于表，会根据语句类型，对所有被引用的目标表检查
+    <literal>db_table:select</literal>、<literal>db_table:insert</literal>、
+    <literal>db_table:update</literal> 或 <literal>db_table:delete</literal>；
+    此外，对于其列在 <literal>WHERE</literal> 或 <literal>RETURNING</literal>
+    子句中被引用的所有表，以及作为 <literal>UPDATE</literal> 数据源的所有表等，
+    还会检查 <literal>db_table:select</literal>。
+   </para>
+
+   <para>
+    每个被引用的列也都会检查列级权限。<literal>db_column:select</literal>
+    不仅会对通过 <literal>SELECT</literal> 读取的列进行检查，也会对其他 DML
+    语句中被引用的列进行检查；对于被 <literal>UPDATE</literal> 或
+    <literal>INSERT</literal> 修改的列，还会检查
+    <literal>db_column:update</literal> 或
+    <literal>db_column:insert</literal>。
+   </para>
+
+   <para>
+   例如，考虑：
+<synopsis>
+UPDATE t1 SET x = 2, y = func1(y) WHERE z = 100;
+</synopsis>
+
+    这里会对 <literal>t1.x</literal> 检查 <literal>db_column:update</literal>，
+    因为它被更新；会对 <literal>t1.y</literal> 检查
+    <literal>db_column:{select update}</literal>，因为它既被更新也被引用；
+    会对 <literal>t1.z</literal> 检查 <literal>db_column:select</literal>，
+    因为它只是被引用。表级别还会检查
+    <literal>db_table:{select update}</literal>。
+   </para>
+
+   <para>
+    对于序列，当使用 <literal>SELECT</literal> 引用序列对象时，会检查
+    <literal>db_sequence:get_value</literal>；但请注意，当前不会检查执行相
+    应函数（如 <literal>lastval()</literal>）的权限。
+   </para>
+
+   <para>
+    对于视图，会先检查 <literal>db_view:expand</literal>，然后对由该视图展
+    开得到的各个对象分别检查所需的其他权限。
+   </para>
+
+   <para>
+    对于函数，当用户试图在查询中执行某个函数，或通过快速路径调用执行某个函
+    数时，会检查 <literal>db_procedure:{execute}</literal>。如果该函数是受信
+    任过程，还会检查 <literal>db_procedure:{entrypoint}</literal> 权限，以判定
+    它是否可以充当受信任过程的入口点。
+   </para>
+
+   <para>
+    要访问任何模式对象，都需要在其所在模式上具有
+    <literal>db_schema:search</literal> 权限。当对象在引用时未带模式限定时，
+    不具备该权限的模式不会被搜索（就像用户在该模式上没有
+    <literal>USAGE</literal> 权限一样）。如果使用了显式模式限定，而用户在所指
+    定模式上又没有所需权限，则会报错。
+   </para>
+
+   <para>
+    客户端必须被允许访问所有被引用的表和列，即使这些表和列最初来自随后被展
+    开的视图也是如此，这样我们才能在不受表内容引用方式影响的情况下，应用一
+    致的访问控制规则。
+   </para>
+
+   <para>
+    默认数据库权限系统允许数据库超级用户使用 DML 命令修改系统目录，也允许引
+    用或修改 TOAST 表。启用 <filename>sepgsql</filename> 后，这些操作都会被禁
+    止。
+   </para>
+  </sect3>
+
+  <sect3 id="sepgsql-features-ddl-permissions">
+   <title>DDL 权限</title>
+   <para>
+    <productname>SELinux</productname> 为每种对象类型定义了若干权限，用于控制
+    常见操作，例如创建、修改、删除以及重设安全标签。此外，若干对象类
+    型还具有特殊权限，用于控制它们特有的操作，例如在特定模式中添加或删除名
+    称项。
+   </para>
+   <para>
+    创建新的数据库对象需要 <literal>create</literal> 权限。
+    <productname>SELinux</productname> 会根据客户端的安全标签以及为新对象拟定
+    的安全标签授予或拒绝该权限。在某些情况下，还需要额外权限：
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <link linkend="sql-createdatabase"><command>CREATE DATABASE</command></link> 还需要对源数据库或模板数据库具
+      有 <literal>getattr</literal> 权限。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      创建模式对象还需要在父模式上具有 <literal>add_name</literal> 权限。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      创建表还需要有权限创建每个单独的表列，就好像每个表列都是独立的顶层对
+      象一样。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      创建被标记为 <literal>LEAKPROOF</literal> 的函数还需要
+      <literal>install</literal> 权限。（对现有函数设置
+      <literal>LEAKPROOF</literal> 时同样会检查该权限。）
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    执行 <literal>DROP</literal> 命令时，会对将被移除的对象检查
+    <literal>drop</literal> 权限。通过 <literal>CASCADE</literal> 间接删除的对
+    象同样会检查权限。删除位于特定模式中的对象（表、视图、序列和过程）还需
+    要该模式上的 <literal>remove_name</literal> 权限。
+   </para>
+
+   <para>
+    执行 <literal>ALTER</literal> 命令时，会针对被修改的对象检查
+    <literal>setattr</literal> 权限，但表的索引或触发器等附属对象除外，这类情
+    况改为在父对象上检查权限。在某些情况下，还需要额外权限：
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      将对象移动到新模式还需要在旧模式上具有
+      <literal>remove_name</literal> 权限，并在新模式上具有
+      <literal>add_name</literal> 权限。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      在函数上设置 <literal>LEAKPROOF</literal> 属性需要
+      <literal>install</literal> 权限。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      在对象上使用 <link linkend="sql-security-label"><command>SECURITY LABEL</command></link>
+      还需要同时具备与其旧安全标签组合的对象
+      <literal>relabelfrom</literal> 权限，以及与其新安全标签组合的对象
+      <literal>relabelto</literal> 权限。（在安装了多个标签提供者且用户尝试设
+      置一个不由 <productname>SELinux</productname> 管理的安全标签时，这里本应
+      只检查 <literal>setattr</literal>。由于实现限制，当前尚未这样做。）
+     </para>
+    </listitem>
+   </itemizedlist>
+
+  </sect3>
+
+  <sect3 id="sepgsql-features-trusted-procedures">
+   <title>受信任过程</title>
+   <para>
+    受信任过程类似于安全定义器函数或 setuid 命令。
+    <productname>SELinux</productname> 提供了一项功能，允许受信任代码以不同于客
+    户端的安全标签运行，通常用于以高度受控的方式访问敏感数据（例如可以省略
+    某些行，或降低已存储值的精度）。函数是否充当受信任过程，由其安全标签和操
+    作系统安全策略控制。例如：
+   </para>
+
+<screen>
+postgres=# CREATE TABLE customer (
+               cid     int primary key,
+               cname   text,
+               credit  text
+           );
+CREATE TABLE
+postgres=# SECURITY LABEL ON COLUMN customer.credit
+               IS 'system_u:object_r:sepgsql_secret_table_t:s0';
+SECURITY LABEL
+postgres=# CREATE FUNCTION show_credit(int) RETURNS text
+             AS 'SELECT regexp_replace(credit, ''-[0-9]+$'', ''-xxxx'', ''g'')
+                        FROM customer WHERE cid = $1'
+           LANGUAGE sql;
+CREATE FUNCTION
+postgres=# SECURITY LABEL ON FUNCTION show_credit(int)
+               IS 'system_u:object_r:sepgsql_trusted_proc_exec_t:s0';
+SECURITY LABEL
+</screen>
+
+   <para>
+    上述操作应由管理用户执行。
+   </para>
+
+<screen>
+postgres=# SELECT * FROM customer;
+ERROR:  SELinux: security policy violation
+postgres=# SELECT cid, cname, show_credit(cid) FROM customer;
+ cid | cname  |     show_credit
+-----+--------+---------------------
+   1 | taro   | 1111-2222-3333-xxxx
+   2 | hanako | 5555-6666-7777-xxxx
+(2 rows)
+</screen>
+
+   <para>
+    在这种情况下，普通用户不能直接引用 <literal>customer.credit</literal>，
+    但受信任过程 <literal>show_credit</literal> 允许用户打印客户信用卡号，并对其
+    中部分数字做掩码处理。
+   </para>
+  </sect3>
+
+  <sect3 id="sepgsql-features-dynamic-domain-transitions">
+   <title>动态域转换</title>
+   <para>
+    如果安全策略允许，可以利用 SELinux 的动态域转换功能，将客户端进程
+    （即客户端域）的安全标签切换到新的上下文。客户端域需要
+    <literal>setcurrent</literal> 权限，以及从旧域切换到新域的
+    <literal>dyntransition</literal> 权限。
+   </para>
+   <para>
+    动态域转换需要谨慎考虑，因为它允许用户按自己的意愿切换标签，因而也能切
+    换其权限，而不是像受信任过程那样由系统强制规定。因此，只有当它被用于切换
+    到一个权限集合少于原始域的新域时，<literal>dyntransition</literal> 权限才
+    被认为是安全的。例如：
+   </para>
+<screen>
+regression=# SELECT sepgsql_getcon();
+                    sepgsql_getcon
+-------------------------------------------------------
+ unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+(1 row)
+
+regression=# SELECT sepgsql_setcon('unconfined_u:unconfined_r:unconfined_t:s0-s0:c1.c4');
+ sepgsql_setcon
+----------------
+ t
+(1 row)
+
+regression=# SELECT sepgsql_setcon('unconfined_u:unconfined_r:unconfined_t:s0-s0:c1.c1023');
+ERROR:  SELinux: security policy violation
+</screen>
+   <para>
+    在上面的例子中，允许从较大的 MCS 范围 <literal>c1.c1023</literal> 切换到较
+    小的范围 <literal>c1.c4</literal>，但不允许切换回去。
+   </para>
+   <para>
+    动态域转换与受信任过程的组合支持一种很有意思的用例，它契合连接池软件的
+    典型进程生命周期。即使连接池软件本身不允许运行大多数 SQL 命令，也可以让
+    它在受信任过程中调用 <literal>sepgsql_setcon()</literal> 函数来切换客户端的
+    安全标签；该过程应要求某种凭据，以授权切换客户端标签的请求。此后，这个
+    会话就将拥有目标用户而非连接池软件的权限。之后，连接池软件还可以再次在
+    具有适当权限检查的受信任过程中，以 <literal>NULL</literal> 参数调用
+    <literal>sepgsql_setcon()</literal>，从而恢复这一安全标签变更。这里的关键
+    在于，真正有权修改生效安全标签的只有受信任过程，而且它只会在获得适当凭据
+    时这样做。当然，为了安全运行，凭据存储（表、过程定义或其他载体）必须防
+    止未授权访问。
+   </para>
+  </sect3>
+
+  <sect3 id="sepgsql-features-misc">
+   <title>杂项</title>
+   <para>
+    我们一律拒绝 <link linkend="sql-load"><command>LOAD</command></link> 命令，因为装入任意模块都可能轻易绕过安
+    全策略的强制执行。
+   </para>
+
+  </sect3>
+</sect2>
+
+ <sect2 id="sepgsql-functions">
+  <title>sepgsql 函数</title>
+  <para>
+   <xref linkend="sepgsql-functions-table"/> 展示了可用函数。
+  </para>
+
+  <table id="sepgsql-functions-table">
+   <title>sepgsql 函数</title>
+    <tgroup cols="1">
+     <thead>
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        函数
+       </para>
+       <para>
+        描述
+       </para></entry>
+      </row>
+     </thead>
+
+     <tbody>
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <function>sepgsql_getcon</function> ()
+        <returnvalue>text</returnvalue>
+       </para>
+       <para>
+        返回客户端域，也就是客户端当前的安全标签。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <function>sepgsql_setcon</function> ( <type>text</type> )
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        如果安全策略允许，将当前会话的客户端域切换到新域。它也接受
+        <literal>NULL</literal> 输入，表示请求切换到客户端的原始域。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <function>sepgsql_mcstrans_in</function> ( <type>text</type> )
+        <returnvalue>text</returnvalue>
+       </para>
+       <para>
+        如果 mcstrans 守护进程正在运行，则把给定的限定格式 MLS/MCS 范围转换为
+        原始格式。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <function>sepgsql_mcstrans_out</function> ( <type>text</type> )
+        <returnvalue>text</returnvalue>
+       </para>
+       <para>
+        如果 mcstrans 守护进程正在运行，则把给定的原始 MLS/MCS 范围转换为限定
+        格式。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <function>sepgsql_restorecon</function> ( <type>text</type> )
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        为当前数据库内的所有对象建立初始安全标签。参数可以是
+        <literal>NULL</literal>，也可以是用作系统默认值替代方案的 specfile 文件名。
+       </para></entry>
+      </row>
+     </tbody>
+    </tgroup>
+  </table>
+ </sect2>
+
+ <sect2 id="sepgsql-limitations">
+  <title>限制</title>
+
+  <variablelist>
+   <varlistentry>
+    <term>数据定义语言（DDL）权限</term>
+    <listitem>
+     <para>
+      由于实现限制，某些 DDL 操作不会检查权限。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>数据控制语言（DCL）权限</term>
+    <listitem>
+     <para>
+      由于实现限制，DCL 操作不会检查权限。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>行级访问控制</term>
+    <listitem>
+     <para>
+      <productname>PostgreSQL</productname> 支持行级访问，但
+      <filename>sepgsql</filename> 不支持。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>隐蔽通道</term>
+    <listitem>
+     <para>
+      <filename>sepgsql</filename> 不会试图隐藏某个对象的存在，即使用户无权引用
+      它也是如此。例如，即便我们无法取得一个不可见对象的内容，也仍然可以从主
+      键冲突、外键违例等结果中推断出它的存在。绝密表的存在无法隐藏；我们只希
+      望隐藏其内容。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="sepgsql-resources">
+  <title>外部资源</title>
+  <variablelist>
+   <varlistentry>
+    <term><ulink url="https://wiki.postgresql.org/wiki/SEPostgreSQL_Introduction">SE-PostgreSQL Introduction</ulink></term>
+    <listitem>
+     <para>
+      该 wiki 页面提供了简要概述，并介绍了安全设计、体系结构、管理以及未来特
+      性。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><ulink url="https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/7/html/selinux_users_and_administrators_guide/index">SELinux User's and Administrator's Guide</ulink></term>
+    <listitem>
+     <para>
+      该文档提供了在系统上管理 <productname>SELinux</productname> 所需的广泛知
+      识。它主要聚焦于 Red Hat 操作系统，但并不限于此。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><ulink url="https://fedoraproject.org/wiki/SELinux_FAQ">Fedora SELinux FAQ</ulink></term>
+    <listitem>
+     <para>
+      该文档回答了关于 <productname>SELinux</productname> 的常见问题。它主要
+      聚焦于 Fedora，但并不限于 Fedora。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="sepgsql-author">
+  <title>作者</title>
+  <para>
+   KaiGai Kohei <email>kaigai@ak.jp.nec.com</email>
+  </para>
+ </sect2>
+</sect1>

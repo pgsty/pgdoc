@@ -1,0 +1,1314 @@
+<!-- doc/src/sgml/postgres-fdw.sgml -->
+
+<sect1 id="postgres-fdw" xreflabel="postgres_fdw">
+ <title>postgres_fdw &mdash;
+   访问存储在外部 <productname>PostgreSQL</productname> 服务器中的数据</title>
+
+ <indexterm zone="postgres-fdw">
+  <primary>postgres_fdw</primary>
+ </indexterm>
+
+ <para>
+  <filename>postgres_fdw</filename> 模块提供外部数据包装器
+  <literal>postgres_fdw</literal>，可用于访问存储在外部
+  <productname>PostgreSQL</productname> 服务器中的数据。
+ </para>
+
+ <para>
+  本模块提供的功能与较旧的 <xref linkend="dblink"/> 模块在很大程度上重叠。
+  但 <filename>postgres_fdw</filename> 为访问远程表提供了更透明且符合标准的语法，
+  并且在许多情况下性能更好。
+ </para>
+
+ <para>
+  要准备通过 <filename>postgres_fdw</filename> 进行远程访问：
+  <orderedlist spacing="compact">
+   <listitem>
+    <para>
+     安装 <filename>postgres_fdw</filename> 扩展，可使用 <xref
+     linkend="sql-createextension"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     使用 <xref linkend="sql-createserver"/> 创建外部服务器对象，
+     用来表示每个要连接的远程数据库。将除 <literal>user</literal> 和
+     <literal>password</literal> 之外的连接信息指定为服务器对象的选项。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     对于每个需要被允许访问各外部服务器的数据库用户，使用
+     <xref linkend="sql-createusermapping"/> 创建用户映射。将要使用的
+     远程用户名和密码指定为用户映射的 <literal>user</literal> 和
+     <literal>password</literal> 选项。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     对于每个要访问的远程表，使用 <xref linkend="sql-createforeigntable"/>
+     或 <xref linkend="sql-importforeignschema"/> 创建外部表。
+     外部表的列必须与被引用的远程表匹配。不过，如果在外部表对象的选项中
+     指定正确的远程名称，也可以使用与远程表不同的表名和/或列名。
+    </para>
+   </listitem>
+  </orderedlist>
+ </para>
+
+ <para>
+  现在，只需从外部表执行 <command>SELECT</command>，即可访问其底层远程表中
+  存储的数据。也可以使用 <command>INSERT</command>、<command>UPDATE</command>、
+  <command>DELETE</command>、<command>COPY</command> 或
+  <command>TRUNCATE</command> 修改远程表。
+  （当然，在用户映射中指定的远程用户必须拥有执行这些操作的权限。）
+ </para>
+
+ <para>
+  请注意，在访问或修改远程表时，<literal>ONLY</literal> 选项在
+  <command>SELECT</command>、<command>UPDATE</command>、
+  <command>DELETE</command> 或 <command>TRUNCATE</command> 中不起作用。
+ </para>
+
+ <para>
+   请注意，<filename>postgres_fdw</filename> 当前不支持带有
+   <literal>ON CONFLICT DO SELECT/UPDATE</literal> 子句的
+   <command>INSERT</command> 语句。不过，在省略唯一索引推断规范的前提下，支持
+   <literal>ON CONFLICT DO NOTHING</literal> 子句。
+  还要注意，<filename>postgres_fdw</filename> 支持在分区表上执行的
+  <command>UPDATE</command> 语句所引发的行移动，但当前尚不能处理这样一种情况：
+  为插入被移动行而选择的远程分区，同时也是同一命令中其他位置将被更新的
+  <command>UPDATE</command> 目标分区。
+ </para>
+
+ <para>
+  通常建议将外部表的列声明为与被引用远程表的对应列具有完全相同的数据类型，
+  并在适用时具有相同的排序规则。尽管 <filename>postgres_fdw</filename>
+  目前在按需执行数据类型转换方面相当宽容，但当类型或排序规则不匹配时，
+  仍可能出现令人意外的语义异常，因为远程服务器对查询条件的解释可能与
+  本地服务器不同。
+ </para>
+
+ <para>
+  请注意，外部表的声明可以比其底层远程表少一些列，或者使用不同的列顺序。
+  与远程表列的匹配是按名称而不是按位置进行的。
+ </para>
+
+ <sect2 id="postgres-fdw-options">
+  <title>postgres_fdw 的 FDW 选项</title>
+
+  <sect3 id="postgres-fdw-options-connection">
+   <title>连接选项</title>
+
+   <para>
+    使用 <filename>postgres_fdw</filename> 外部数据包装器的外部服务器，
+    可以使用 <application>libpq</application> 在连接字符串中接受的相同选项，
+    详见 <xref linkend="libpq-paramkeywords"/>；但以下选项不允许使用，
+    或会被特殊处理：
+
+    <itemizedlist spacing="compact">
+     <listitem>
+      <para>
+       <literal>user</literal>、<literal>password</literal> 和
+       <literal>sslpassword</literal>（请改为在用户映射中指定，或使用服务文件）
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <literal>client_encoding</literal>（会根据本地服务器编码自动设置）
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <literal>application_name</literal> 可以出现在连接选项和
+       <xref linkend="guc-pgfdw-application-name"/> 中的任一处，或同时出现在
+       二者中。
+       如果两者都存在，<varname>postgres_fdw.application_name</varname>
+       会覆盖连接设置。与 <application>libpq</application> 不同，
+       <filename>postgres_fdw</filename> 允许 <varname>application_name</varname>
+       包含<quote>逃逸序列</quote>。详见
+       <xref linkend="guc-pgfdw-application-name"/>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <literal>fallback_application_name</literal>（始终设置为
+       <literal>postgres_fdw</literal>）
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <literal>sslkey</literal> 和 <literal>sslcert</literal>
+       可以出现在 <emphasis>连接选项、用户映射中的任一处，或同时出现在二者中</emphasis>。如果两者都存在，
+       用户映射设置会覆盖连接设置。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    只有超级用户才能创建或修改带有 <literal>sslcert</literal> 或
+    <literal>sslkey</literal> 设置的用户映射。
+   </para>
+   <para>
+    非超级用户可以通过密码认证或使用 GSSAPI 委派凭据连接到外部服务器，
+    因此在需要密码认证的场景中，应为属于非超级用户的用户映射指定
+    <literal>password</literal> 选项。
+   </para>
+   <para>
+    超级用户可以通过设置用户映射选项
+    <literal>password_required 'false'</literal> 按用户映射单独覆盖此检查，
+    例如：
+<programlisting>
+ALTER USER MAPPING FOR some_non_superuser SERVER loopback_nopw
+OPTIONS (ADD password_required 'false');
+</programlisting>
+    为了防止非特权用户利用 postgres 服务器所运行的 unix 用户的认证权限
+    提升到超级用户权限，只有超级用户才能在用户映射上设置此选项。
+    </para>
+    <para>
+    必须谨慎确保这不会使被映射用户能够以超级用户身份连接到被映射的数据库，
+    以避免触发 CVE-2007-3278 和 CVE-2007-6601 所述问题。不要在
+    <literal>public</literal> 角色上设置
+    <literal>password_required=false</literal>。还要记住，被映射用户可能
+    使用 postgres 服务器所运行的系统用户 unix 主目录中的任何客户端证书、
+    <filename>.pgpass</filename>、<filename>.pg_service.conf</filename>
+    等文件。（有关如何查找主目录的细节，见 <xref linkend="libpq-pgpass"/>。）
+    他们还可以利用通过 <literal>peer</literal> 或 <literal>ident</literal>
+    等认证方式授予的任何信任关系。
+   </para>
+  </sect3>
+
+  <sect3 id="postgres-fdw-options-object-name">
+   <title>对象名称选项</title>
+
+   <para>
+    这些选项可用于控制发送到远程 <productname>PostgreSQL</productname>
+    服务器的 SQL 语句中所使用的名称。当创建外部表时所用的名称与其底层
+    远程表的名称不同时，就需要这些选项。
+   </para>
+
+   <variablelist>
+
+    <varlistentry>
+     <term><literal>schema_name</literal> (<type>string</type>)</term>
+     <listitem>
+      <para>
+       该选项可为外部表指定，用于给出在远程服务器上为该外部表使用的模式名。
+       如果省略，则使用外部表自身所在模式的名称。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>table_name</literal> (<type>string</type>)</term>
+     <listitem>
+      <para>
+       该选项可为外部表指定，用于给出在远程服务器上为该外部表使用的表名。
+       如果省略，则使用外部表自身的名称。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>column_name</literal> (<type>string</type>)</term>
+     <listitem>
+      <para>
+       该选项可为外部表的某个列指定，用于给出在远程服务器上为该列使用的列名。
+       如果省略，则使用该列自身的名称。
+      </para>
+     </listitem>
+    </varlistentry>
+
+   </variablelist>
+
+  </sect3>
+
+  <sect3 id="postgres-fdw-options-cost-estimation">
+   <title>代价估算选项</title>
+
+   <para>
+    <filename>postgres_fdw</filename> 通过在远程服务器上执行查询来获取远程数据，
+    因此，理想情况下，扫描外部表的估计代价应当等于在远程服务器上完成该操作的
+    代价，再加上一些通信开销。获得这种估算最可靠的方法，是向远程服务器询问，
+    再把开销加上去；但对于简单查询，为了取得代价估算而额外发送一次远程查询，
+    可能并不划算。因此 <filename>postgres_fdw</filename> 提供以下选项来控制
+    代价估算的方式：
+   </para>
+
+   <variablelist>
+
+    <varlistentry>
+     <term><literal>use_remote_estimate</literal> (<type>boolean</type>)</term>
+     <listitem>
+      <para>
+       该选项可为外部表或外部服务器指定，用于控制
+       <filename>postgres_fdw</filename> 是否发出远程 <command>EXPLAIN</command>
+       命令来获取代价估算。外部表上的设置会覆盖其所属服务器的设置，但只对
+       该表生效。默认值为 <literal>false</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>fdw_startup_cost</literal> (<type>floating point</type>)</term>
+     <listitem>
+      <para>
+       该选项可为外部服务器指定，是一个浮点值，会被加到该服务器上任何
+       外部表扫描的估计启动代价中。它表示建立连接、在远程端解析并规划查询等
+       额外开销。默认值为 <literal>100</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>fdw_tuple_cost</literal> (<type>floating point</type>)</term>
+     <listitem>
+      <para>
+       该选项可为外部服务器指定，是一个浮点值，用作该服务器上外部表扫描的
+       每个元组的额外代价。它表示服务器之间数据传输的额外开销。可以增大或
+       减小该数值，以反映到远程服务器更高或更低的网络延迟。默认值为
+       <literal>0.2</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+   </variablelist>
+
+   <para>
+    当 <literal>use_remote_estimate</literal> 为真时，
+    <filename>postgres_fdw</filename> 从远程服务器获取行数和代价估算，然后
+    将 <literal>fdw_startup_cost</literal> 和 <literal>fdw_tuple_cost</literal>
+    加到代价估算中。当 <literal>use_remote_estimate</literal> 为假时，
+    <filename>postgres_fdw</filename> 在本地执行行数和代价估算，然后再将
+    <literal>fdw_startup_cost</literal> 和 <literal>fdw_tuple_cost</literal>
+    加到代价估算中。除非有远程表统计信息的本地副本可用，否则这种本地估算
+    不太可能非常准确。更新本地统计信息的方法，是在外部表上运行
+    <xref linkend="sql-analyze"/>；这样会扫描远程表，然后像对待本地表一样
+    计算并存储统计信息。保留本地统计信息可以有效减少远程表每次查询的规划开销；
+    但如果远程表经常更新，本地统计信息很快就会过时。
+   </para>
+
+   <para>
+    以下选项控制这种 <command>ANALYZE</command> 操作的行为：
+   </para>
+
+   <variablelist>
+
+    <varlistentry>
+     <term><literal>analyze_sampling</literal> (<type>string</type>)</term>
+     <listitem>
+      <para>
+       该选项可为外部表或外部服务器指定，用于决定在外部表上执行
+       <command>ANALYZE</command> 时，是在远程端对数据采样，还是读取并传输
+       所有数据后在本地采样。支持的取值为 <literal>off</literal>、
+       <literal>random</literal>、<literal>system</literal>、
+       <literal>bernoulli</literal> 和 <literal>auto</literal>。
+       <literal>off</literal> 禁用远程采样，因此所有数据都会被传输并在本地
+       采样。<literal>random</literal> 使用 <literal>random()</literal>
+       函数选择返回的行，从而在远程端执行采样，而 <literal>system</literal> 和
+       <literal>bernoulli</literal> 则依赖同名的内置
+       <literal>TABLESAMPLE</literal> 方法。<literal>random</literal> 适用于
+       所有远程服务器版本，而 <literal>TABLESAMPLE</literal> 仅从 9.5 起
+       受支持。<literal>auto</literal>（默认值）会自动选择推荐的采样方法；
+       当前意味着根据远程服务器版本选择 <literal>bernoulli</literal> 或
+       <literal>random</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>restore_stats</literal> (<type>boolean</type>)</term>
+     <listitem>
+      <para>
+       该选项可为外部表或外部服务器指定，用于决定在外部表上执行
+       <command>ANALYZE</command> 时，是否改为尝试获取远程服务器上该外部表
+       的现有统计信息，并将这些统计信息直接恢复到本地服务器。如果尝试失败，
+       则会通过对外部表进行行采样来收集统计信息。
+       该选项仅在远程表属于可以拥有常规统计信息的对象时才有用
+       （即表和物化视图）。
+       使用该选项时，<emphasis>确保外部表现有统计信息保持最新是用户自己的
+       责任</emphasis>。
+       默认值为 <literal>false</literal>。
+      </para>
+
+      <para>
+       如果外部表是分区表的一个分区，那么即便设置了该选项，在分析整个分区表时，
+       仍然会对该外部表执行行采样；不过，如果直接分析该外部表，就会优先尝试
+       获取并恢复远程统计信息。
+      </para>
+     </listitem>
+    </varlistentry>
+
+   </variablelist>
+
+  </sect3>
+
+  <sect3 id="postgres-fdw-options-remote-execution">
+   <title>远程执行选项</title>
+
+   <para>
+    默认情况下，只有使用内置操作符和函数的 <literal>WHERE</literal> 子句
+    才会被考虑在远程服务器上执行。涉及非内置函数的子句会在取回行之后
+    在本地检查。如果这些函数在远程服务器上也可用，并且可以确信其结果与
+    本地相同，则将这类 <literal>WHERE</literal> 子句发送到远程端执行
+    可以提高性能。可以使用以下选项控制此行为：
+   </para>
+
+   <variablelist>
+
+    <varlistentry>
+     <term><literal>extensions</literal> (<type>string</type>)</term>
+     <listitem>
+      <para>
+       该选项是一个以逗号分隔的 <productname>PostgreSQL</productname> 扩展
+       名称列表，这些扩展必须在本地和远程服务器上都已安装且版本兼容。
+       属于列出扩展且为 immutable 的函数和操作符，将被视为可下推到远程服务器
+       执行。该选项只能为外部服务器指定，不能按表指定。
+      </para>
+
+      <para>
+       使用 <literal>extensions</literal> 选项时，
+       <emphasis>确保所列扩展在本地和远程服务器上都存在且行为完全一致，
+       属于用户自己的责任</emphasis>。否则，远程查询可能失败或出现意外行为。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>fetch_size</literal> (<type>integer</type>)</term>
+     <listitem>
+      <para>
+       该选项指定 <filename>postgres_fdw</filename> 在每次取回操作中应获取的
+       行数。它可为外部表或外部服务器指定。表上指定的选项会覆盖服务器上
+       指定的选项。默认值为 <literal>100</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>batch_size</literal> (<type>integer</type>)</term>
+     <listitem>
+      <para>
+       该选项指定 <filename>postgres_fdw</filename> 在每次插入操作中应插入的
+       行数。它可为外部表或外部服务器指定。表上指定的选项会覆盖服务器上
+       指定的选项。默认值为 <literal>1</literal>。
+      </para>
+
+      <para>
+       请注意，<filename>postgres_fdw</filename> 实际一次插入的行数取决于
+       列数和提供的 <literal>batch_size</literal> 值。一个批次作为单条查询
+       执行，而 libpq 协议（<filename>postgres_fdw</filename> 用它连接远程
+       服务器）将单条查询的参数数目限制为 65535。当列数 *
+       <literal>batch_size</literal> 超过该限制时，<literal>batch_size</literal>
+       会被调整，以避免报错。
+      </para>
+
+      <para>
+       该选项也适用于向外部表执行 <command>COPY</command>。在这种情况下，
+       <filename>postgres_fdw</filename> 实际一次复制的行数会以与插入场景
+       类似的方式确定，但由于 <command>COPY</command> 命令的实现限制，
+       最多只能为 1000 行。
+      </para>
+     </listitem>
+    </varlistentry>
+
+   </variablelist>
+
+  </sect3>
+
+  <sect3 id="postgres-fdw-options-asynchronous-execution">
+   <title>异步执行选项</title>
+
+   <para>
+    <filename>postgres_fdw</filename> 支持异步执行，它可以并发运行
+    <structname>Append</structname> 节点的多个部分，而不是串行运行，以提高
+    性能。可以使用以下选项控制这种执行方式：
+   </para>
+
+   <variablelist>
+
+    <varlistentry>
+     <term><literal>async_capable</literal> (<type>boolean</type>)</term>
+     <listitem>
+      <para>
+       该选项控制 <filename>postgres_fdw</filename> 是否允许为异步执行而
+       并发扫描外部表。它可为外部表或外部服务器指定。表级选项会覆盖
+       服务器级选项。默认值为 <literal>false</literal>。
+      </para>
+
+      <para>
+       为了确保从外部服务器返回的数据保持一致，除非这些表使用不同的
+       用户映射，否则对于同一外部服务器，
+       <filename>postgres_fdw</filename> 只会打开一个连接，并且即使涉及
+       多个外部表，也会顺序运行针对该服务器的所有查询。在这种情况下，
+       禁用此选项以消除异步运行查询带来的开销，反而可能具有更好的性能。
+      </para>
+
+      <para>
+       即使 <structname>Append</structname> 节点同时包含同步执行和异步执行的
+       子计划，也会应用异步执行。在这种情况下，如果异步子计划是使用
+       <filename>postgres_fdw</filename> 处理的，则在至少有一个同步子计划
+       返回全部元组之前，不会返回异步子计划的元组，因为同步子计划执行时，
+       异步子计划仍在等待发送给外部服务器的异步查询结果。这种行为在未来版本中
+       可能会改变。
+      </para>
+     </listitem>
+    </varlistentry>
+
+   </variablelist>
+  </sect3>
+
+  <sect3 id="postgres-fdw-options-transaction-management">
+   <title>事务管理选项</title>
+
+   <para>
+    如“事务管理”一节所述，在 <filename>postgres_fdw</filename> 中，
+    事务是通过创建对应的远程事务来管理的，子事务则通过创建对应的远程
+    子事务来管理。当当前本地事务涉及多个远程事务时，默认情况下，
+    <filename>postgres_fdw</filename> 会在本地事务提交或中止时串行提交
+    或中止这些远程事务。当当前本地子事务涉及多个远程子事务时，默认情况下，
+    <filename>postgres_fdw</filename> 也会在本地子事务提交或中止时串行
+    提交或中止这些远程子事务。使用以下选项可以改善性能：
+   </para>
+
+   <variablelist>
+
+    <varlistentry>
+     <term><literal>parallel_commit</literal> (<type>boolean</type>)</term>
+     <listitem>
+      <para>
+       该选项控制在本地事务提交时，<filename>postgres_fdw</filename>
+       是否并行提交该本地事务中在某个外部服务器上打开的远程事务。
+       此设置也适用于远程子事务和本地子事务。该选项只能为外部服务器指定，
+       不能按表指定。默认值为 <literal>false</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>parallel_abort</literal> (<type>boolean</type>)</term>
+     <listitem>
+      <para>
+       该选项控制在本地事务中止时，<filename>postgres_fdw</filename>
+       是否并行中止该本地事务中在某个外部服务器上打开的远程事务。
+       此设置也适用于远程子事务和本地子事务。该选项只能为外部服务器指定，
+       不能按表指定。默认值为 <literal>false</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+   </variablelist>
+
+   <para>
+    如果启用了这些选项的多个外部服务器参与同一个本地事务，那么在本地事务
+    提交或中止时，这些外部服务器上的多个远程事务会跨服务器并行提交或中止。
+   </para>
+
+   <para>
+    启用这些选项后，若某个外部服务器涉及很多远程事务，则在本地事务提交
+    或中止时，该外部服务器上的性能可能会受到负面影响。
+   </para>
+
+  </sect3>
+
+  <sect3 id="postgres-fdw-options-updatability">
+   <title>可更新性选项</title>
+
+   <para>
+    默认情况下，所有使用 <filename>postgres_fdw</filename> 的外部表都被
+    假定为可更新。这一点可以通过以下选项覆盖：
+   </para>
+
+   <variablelist>
+
+    <varlistentry>
+     <term><literal>updatable</literal> (<type>boolean</type>)</term>
+     <listitem>
+      <para>
+       该选项控制 <filename>postgres_fdw</filename> 是否允许使用
+       <command>INSERT</command>、<command>UPDATE</command> 和
+       <command>DELETE</command> 命令修改外部表。它可为外部表或外部服务器
+       指定。表级选项会覆盖服务器级选项。默认值为 <literal>true</literal>。
+      </para>
+
+      <para>
+       当然，如果远程表实际上不可更新，最终仍会报错。该选项的主要作用是
+       允许在本地直接抛出错误，而无需查询远程服务器。但请注意，
+       <literal>information_schema</literal> 视图会根据该选项的设置，将
+       <filename>postgres_fdw</filename> 外部表报告为可更新（或不可更新），
+       而不会对远程服务器进行任何检查。
+      </para>
+     </listitem>
+    </varlistentry>
+
+   </variablelist>
+  </sect3>
+
+  <sect3 id="postgres-fdw-options-truncatability">
+   <title>可截断性选项</title>
+
+   <para>
+    默认情况下，所有使用 <filename>postgres_fdw</filename> 的外部表都被
+    假定为可截断。这一点可以通过以下选项覆盖：
+   </para>
+
+   <variablelist>
+
+    <varlistentry>
+     <term><literal>truncatable</literal> (<type>boolean</type>)</term>
+     <listitem>
+      <para>
+       该选项控制 <filename>postgres_fdw</filename> 是否允许使用
+       <command>TRUNCATE</command> 命令截断外部表。它可为外部表或外部服务器
+       指定。表级选项会覆盖服务器级选项。默认值为 <literal>true</literal>。
+      </para>
+
+      <para>
+       当然，如果远程表实际上不可截断，最终仍会报错。该选项的主要作用是
+       允许在本地直接抛出错误，而无需查询远程服务器。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect3>
+
+  <sect3 id="postgres-fdw-options-importing">
+   <title>导入选项</title>
+
+   <para>
+    <filename>postgres_fdw</filename> 可以使用
+    <xref linkend="sql-importforeignschema"/> 导入外部表定义。该命令会在
+    本地服务器上创建外部表定义，以匹配远程服务器上的表或视图。如果要导入的
+    远程表列使用用户定义数据类型，则本地服务器必须存在同名且兼容的类型。
+   </para>
+
+   <para>
+    可使用以下选项（在 <command>IMPORT FOREIGN SCHEMA</command> 命令中给出）
+    自定义导入行为：
+   </para>
+
+   <variablelist>
+    <varlistentry>
+     <term><literal>import_collate</literal> (<type>boolean</type>)</term>
+     <listitem>
+      <para>
+       该选项控制从外部服务器导入的外部表定义中是否包含列的
+       <literal>COLLATE</literal> 选项。默认值为 <literal>true</literal>。
+       如果远程服务器的排序规则名称集合与本地服务器不同，则可能需要关闭此
+       选项；如果远程服务器运行在不同操作系统上，这种情况尤其可能发生。
+       不过，如果这样做，导入表列的排序规则极有可能与底层数据不匹配，
+       从而导致查询行为异常。
+      </para>
+
+      <para>
+       即使将此参数设置为 <literal>true</literal>，导入排序规则为远程服务器
+       默认值的列仍可能有风险。这些列会以
+       <literal>COLLATE "default"</literal> 导入，这将选择本地服务器的默认
+       排序规则，而它可能并不相同。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><literal>import_default</literal> (<type>boolean</type>)</term>
+     <listitem>
+      <para>
+       该选项控制从外部服务器导入的外部表定义中是否包含列的
+       <literal>DEFAULT</literal> 表达式。默认值为 <literal>false</literal>。
+       如果启用此选项，需要警惕那些在本地服务器上的计算结果可能与远程服务器
+       不同的默认值；<function>nextval()</function> 是常见的问题来源。
+       如果导入的默认值表达式使用了本地不存在的函数或操作符，则整个
+       <command>IMPORT</command> 将失败。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><literal>import_generated</literal> (<type>boolean</type>)</term>
+     <listitem>
+      <para>
+       该选项控制从外部服务器导入的外部表定义中是否包含列的
+       <literal>GENERATED</literal> 表达式。默认值为 <literal>true</literal>。
+       如果导入的生成表达式使用了本地不存在的函数或操作符，则整个
+       <command>IMPORT</command> 将失败。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><literal>import_not_null</literal> (<type>boolean</type>)</term>
+     <listitem>
+      <para>
+       该选项控制从外部服务器导入的外部表定义中是否包含列的
+       <literal>NOT NULL</literal> 约束。默认值为 <literal>true</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+
+   <para>
+    请注意，除 <literal>NOT NULL</literal> 之外的约束永远不会从远程表导入。
+    虽然 <productname>PostgreSQL</productname> 确实支持在外部表上定义
+    检查约束，但由于约束表达式在本地和远程服务器上可能求值不同，系统不会
+    自动导入它们。此类行为不一致的检查约束，可能导致查询优化中难以发现的
+    错误。因此，如果希望导入检查约束，必须手工完成，并应仔细核实每一个
+    约束的语义。有关外部表上检查约束处理方式的更多细节，请参见
+    <xref linkend="sql-createforeigntable"/>。
+   </para>
+
+   <para>
+    作为其他表分区的表或外部表，仅在它们被明确写入
+    <literal>LIMIT TO</literal> 子句时才会导入。否则，它们会被自动排除在
+    <xref linkend="sql-importforeignschema"/> 之外。由于所有数据都可以通过
+    作为分区层次根的分区表访问，因此只导入分区表即可访问全部数据，而无需
+    创建额外对象。
+   </para>
+
+  </sect3>
+
+  <sect3 id="postgres-fdw-options-connection-management">
+    <title>连接管理选项</title>
+
+    <para>
+     默认情况下，<filename>postgres_fdw</filename> 与外部服务器建立的所有
+     连接都会在本地会话中保持打开，以便重复使用。
+    </para>
+
+    <variablelist>
+
+     <varlistentry id="postgres-fdw-option-keep-connections">
+      <term><literal>keep_connections</literal> (<type>boolean</type>)</term>
+      <listitem>
+       <para>
+        该选项控制 <filename>postgres_fdw</filename> 是否保持与外部服务器的
+        连接处于打开状态，以便后续查询重用它们。该选项只能为外部服务器指定。
+        默认值为 <literal>on</literal>。如果设置为 <literal>off</literal>，
+        则到该外部服务器的所有连接都会在每个事务结束时被丢弃。
+      </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="postgres-fdw-option-use-scram-passthrough">
+      <term><literal>use_scram_passthrough</literal> (<type>boolean</type>)</term>
+      <listitem>
+       <para>
+        该选项控制 <filename>postgres_fdw</filename> 在连接到外部服务器时
+        是否使用 SCRAM 透传认证。使用 SCRAM 透传认证时，
+        <filename>postgres_fdw</filename> 使用 SCRAM 哈希后的凭据，而不是
+        明文用户密码连接远程服务器。这样可以避免在 PostgreSQL 系统目录中
+        存储明文用户密码。
+       </para>
+
+       <para>
+        要使用 SCRAM 透传认证：
+        <itemizedlist>
+         <listitem>
+          <para>
+           远程服务器必须请求 <literal>scram-sha-256</literal> 认证方法；
+           否则连接将失败。
+          </para>
+         </listitem>
+
+         <listitem>
+          <para>
+           远程服务器可以是任何支持 SCRAM 的 PostgreSQL 版本。
+           对 <literal>use_scram_passthrough</literal> 的支持只要求客户端
+           一侧（FDW 侧）具备。
+          </para>
+         </listitem>
+
+         <listitem>
+          <para>
+           用户映射密码不会被使用。
+          </para>
+         </listitem>
+
+         <listitem>
+          <para>
+           运行 <filename>postgres_fdw</filename> 的服务器与远程服务器，
+           必须针对用于在 <filename>postgres_fdw</filename> 上认证到外部
+           服务器的该用户，拥有完全相同的 SCRAM secret（加密密码）
+           （盐值和迭代次数都必须相同，而不仅仅是密码相同）。
+          </para>
+
+          <para>
+           因而，如果要建立到多个主机的 FDW 连接，例如用于分区外部表或分片，
+           则所有主机都必须为相关用户保存完全相同的 SCRAM secret。
+          </para>
+         </listitem>
+
+         <listitem>
+          <para>
+           发起对外 FDW 连接的 PostgreSQL 实例中，当前会话的传入客户端连接
+           也必须使用 SCRAM 认证。（因此称为<quote>透传</quote>：SCRAM
+           必须在进入和离开时都被使用。）这是 SCRAM 协议的技术要求。
+          </para>
+         </listitem>
+        </itemizedlist>
+       </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>
+   </sect3>
+ </sect2>
+
+<sect2 id="postgres-fdw-functions">
+  <title>函数</title>
+
+  <variablelist>
+   <varlistentry>
+    <term><function>postgres_fdw_get_connections(
+      IN check_conn boolean DEFAULT false, OUT server_name text,
+      OUT user_name text, OUT valid boolean, OUT used_in_xact boolean,
+      OUT closed boolean, OUT remote_backend_pid int4)
+      returns setof record</function></term>
+    <listitem>
+     <para>
+      此函数返回 postgres_fdw 从本地会话到外部服务器所建立的所有打开连接的
+      信息。如果没有打开的连接，则不返回任何记录。
+     </para>
+     <para>
+      如果将 <literal>check_conn</literal> 设置为 <literal>true</literal>，
+      该函数会检查每个连接的状态，并在 <literal>closed</literal> 列中显示
+      结果。该特性当前仅在支持对 <symbol>poll</symbol> 系统调用的非标准
+      <symbol>POLLRDHUP</symbol> 扩展的系统上可用，包括 Linux。
+      这对于检查事务中使用的所有连接是否仍然打开很有帮助。如果任一连接已经
+      关闭，该事务将无法成功提交，因此在检测到关闭连接后，最好尽快回滚，
+      而不是继续执行到末尾。如果函数报告的某个连接同时满足
+      <literal>used_in_xact</literal> 和 <literal>closed</literal> 都为
+      <literal>true</literal>，用户即可立即回滚事务。
+     </para>
+     <para>
+      此函数的用法示例：
+<screen>
+postgres=# SELECT * FROM postgres_fdw_get_connections(true);
+ server_name | user_name | valid | used_in_xact | closed | remote_backend_pid
+-------------+-----------+-------+--------------+-----------------------------
+ loopback1   | postgres  | t     | t            | f      |            1353340
+ loopback2   | public    | t     | t            | f      |            1353120
+ loopback3   |           | f     | t            | f      |            1353156
+</screen>
+      输出列见 <xref linkend="postgres-fdw-get-connections-columns"/>。
+     </para>
+
+    <table id="postgres-fdw-get-connections-columns">
+     <title><function>postgres_fdw_get_connections</function> 输出列</title>
+     <tgroup cols="3">
+      <thead>
+       <row>
+        <entry>列</entry>
+        <entry>类型</entry>
+        <entry>描述</entry>
+       </row>
+      </thead>
+
+      <tbody>
+       <row>
+        <entry><structfield>server_name</structfield></entry>
+        <entry><type>text</type></entry>
+        <entry>
+         此连接的外部服务器名称。如果服务器已被删除但连接仍保持打开
+         （即被标记为无效），则该值为 <literal>NULL</literal>。
+        </entry>
+       </row>
+       <row>
+        <entry><structfield>user_name</structfield></entry>
+        <entry><type>text</type></entry>
+        <entry>
+         映射到此连接所属外部服务器的本地用户名称；如果使用的是 public
+         映射，则为 <literal>public</literal>。
+         如果用户映射已被删除但连接仍保持打开（即被标记为无效），则该值为
+         <literal>NULL</literal>。
+        </entry>
+       </row>
+       <row>
+        <entry><structfield>valid</structfield></entry>
+        <entry><type>boolean</type></entry>
+        <entry>
+         如果此连接无效，则为假；无效意味着它在当前事务中被使用，但其外部
+         服务器或用户映射已被更改或删除。无效连接将在事务结束时关闭。
+         否则返回真。
+        </entry>
+       </row>
+       <row>
+        <entry><structfield>used_in_xact</structfield></entry>
+        <entry><type>boolean</type></entry>
+        <entry>
+         如果此连接在当前事务中被使用，则为真。
+        </entry>
+       </row>
+       <row>
+        <entry><structfield>closed</structfield></entry>
+        <entry><type>boolean</type></entry>
+        <entry>
+         如果此连接已关闭，则为真，否则为假。如果
+         <literal>check_conn</literal> 被设置为 <literal>false</literal>，
+         或当前平台不提供连接状态检查，则返回 <literal>NULL</literal>。
+        </entry>
+       </row>
+       <row>
+        <entry><structfield>remote_backend_pid</structfield></entry>
+        <entry><type>int4</type></entry>
+        <entry>
+         外部服务器上处理此连接的远程后端进程 ID。如果远程后端已终止且
+         连接已关闭（<literal>closed</literal> 为 <literal>true</literal>），
+         此处仍会显示该已终止后端的进程 ID。
+        </entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>postgres_fdw_disconnect(server_name text) returns boolean</function></term>
+    <listitem>
+     <para>
+      此函数会丢弃 <filename>postgres_fdw</filename> 从本地会话到给定名称的
+      外部服务器所建立的已打开连接。请注意，使用不同的用户映射时，对同一
+      服务器可能存在多个连接。如果这些连接在当前本地事务中正被使用，则不会
+      被丢弃，并会报告警告消息。如果至少丢弃一个连接，则此函数返回
+      <literal>true</literal>，否则返回 <literal>false</literal>。
+      如果找不到给定名称的外部服务器，则报告错误。此函数的用法示例：
+<screen>
+postgres=# SELECT postgres_fdw_disconnect('loopback1');
+ postgres_fdw_disconnect
+-------------------------
+ t
+</screen>
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>postgres_fdw_disconnect_all() returns boolean</function></term>
+    <listitem>
+     <para>
+      此函数会丢弃 <filename>postgres_fdw</filename> 从本地会话到外部服务器
+      所建立的全部已打开连接。如果这些连接在当前本地事务中正被使用，则不会
+      被丢弃，并会报告警告消息。如果至少丢弃一个连接，则此函数返回
+      <literal>true</literal>，否则返回 <literal>false</literal>。
+      此函数的用法示例：
+<screen>
+postgres=# SELECT postgres_fdw_disconnect_all();
+ postgres_fdw_disconnect_all
+-----------------------------
+ t
+</screen>
+     </para>
+    </listitem>
+   </varlistentry>
+   </variablelist>
+
+</sect2>
+
+ <sect2 id="postgres-fdw-connection-management">
+  <title>连接管理</title>
+
+  <para>
+   <filename>postgres_fdw</filename> 在首次执行使用与某个外部服务器关联的
+   外部表的查询时，会建立到该外部服务器的连接。默认情况下，该连接会在同一
+   会话中保留并供后续查询重用。这一行为可通过外部服务器的
+   <literal>keep_connections</literal> 选项控制。如果使用多个用户标识
+   （用户映射）访问该外部服务器，则会为每个用户映射建立一个连接。
+  </para>
+
+  <para>
+   当更改外部服务器或用户映射的定义，或将其删除时，相关连接会被关闭。
+   但请注意，如果任何连接在当前本地事务中正在使用，则会保留到事务结束。
+   关闭的连接会在后续使用外部表的查询需要它们时重新建立。
+  </para>
+
+  <para>
+   一旦与外部服务器建立连接，默认情况下它会一直保留到本地会话或对应的
+   远程会话退出。要显式断开连接，可以禁用外部服务器的
+   <literal>keep_connections</literal> 选项，或使用
+   <function>postgres_fdw_disconnect</function> 和
+   <function>postgres_fdw_disconnect_all</function> 函数。例如，这些函数
+   可用于关闭不再需要的连接，从而释放外部服务器上的连接资源。
+  </para>
+ </sect2>
+
+ <sect2 id="postgres-fdw-transaction-management">
+  <title>事务管理</title>
+
+  <para>
+   在引用某个外部服务器上任意远程表的查询期间，如果当前本地事务尚未在该
+   远程服务器上打开对应的事务，<filename>postgres_fdw</filename> 就会在
+   该远程服务器上打开一个事务。本地事务提交或中止时，远程事务也会提交或
+   中止。保存点也会通过创建对应的远程保存点进行类似管理。
+  </para>
+
+  <para>
+   当本地事务的隔离级别为 <literal>SERIALIZABLE</literal> 时，远程事务使用
+   <literal>SERIALIZABLE</literal>；否则使用
+   <literal>REPEATABLE READ</literal> 隔离级别。这一选择确保如果一个查询
+   在远程服务器上执行多次表扫描，所有扫描都能获得快照一致的结果。其结果是，
+   同一事务中的后续查询会看到来自远程服务器的相同数据，即使远程服务器由于
+   其他活动正在发生并发更新。对于使用 <literal>SERIALIZABLE</literal> 或
+   <literal>REPEATABLE READ</literal> 隔离级别的本地事务，这种行为本来就
+   符合预期；但对于 <literal>READ COMMITTED</literal> 本地事务，则可能令人
+   意外。未来的 <productname>PostgreSQL</productname> 版本可能会修改这些
+   规则。
+  </para>
+
+  <para>
+   远程事务会以与本地事务相同的读写模式打开：如果本地事务是
+   <literal>READ ONLY</literal>，则远程事务以 <literal>READ ONLY</literal>
+   模式打开；否则它以 <literal>READ WRITE</literal> 模式打开。
+   （这一规则也适用于远程和本地子事务。）请注意，这并不会阻止远程服务器上
+   执行的登录触发器写入数据。
+  </para>
+
+  <para>
+   远程事务也会以与本地事务相同的可延迟模式打开：如果本地事务是
+   <literal>DEFERRABLE</literal>，则远程事务以 <literal>DEFERRABLE</literal>
+   模式打开；否则它以 <literal>NOT DEFERRABLE</literal> 模式打开。
+  </para>
+
+  <para>
+   请注意，<filename>postgres_fdw</filename> 当前不支持将远程事务预备为
+   两阶段提交。
+  </para>
+ </sect2>
+
+ <sect2 id="postgres-fdw-remote-query-optimization">
+  <title>远程查询优化</title>
+
+  <para>
+   <filename>postgres_fdw</filename> 会尽力优化远程查询，以减少从外部
+   服务器传输的数据量。这是通过将查询的 <literal>WHERE</literal> 子句发送到
+   远程服务器执行，以及不获取当前查询不需要的表列来实现的。为降低查询被
+   错误执行的风险，除非 <literal>WHERE</literal> 子句仅使用内置数据类型、
+   操作符和函数，或属于外部服务器 <literal>extensions</literal> 选项列出的
+   扩展，否则不会将其发送到远程服务器。这类子句中的操作符和函数还必须是
+   <literal>IMMUTABLE</literal>。对于 <command>UPDATE</command> 或
+   <command>DELETE</command> 查询，<filename>postgres_fdw</filename> 会在
+   查询中不存在无法发送到远程服务器的 <literal>WHERE</literal> 子句、没有
+   本地连接操作、目标表上没有行级本地 <literal>BEFORE</literal> 或
+   <literal>AFTER</literal> 触发器或存储生成列，也没有来自父视图的
+   <literal>CHECK OPTION</literal> 约束时，尝试将整个查询发送到远程服务器
+   以优化执行。在 <command>UPDATE</command> 中，为了降低查询被错误执行的
+   风险，赋给目标列的表达式也必须只使用内置数据类型、
+   <literal>IMMUTABLE</literal> 操作符或 <literal>IMMUTABLE</literal> 函数。
+  </para>
+
+  <para>
+   当 <filename>postgres_fdw</filename> 遇到同一外部服务器上的外部表之间的
+   连接时，除非由于某种原因它认为分别从各表取回行会更高效，或者相关表引用
+   受不同用户映射约束，否则会将整个连接发送到远程服务器。在发送
+   <literal>JOIN</literal> 子句时，它也会采取与前述
+   <literal>WHERE</literal> 子句相同的预防措施。
+  </para>
+
+  <para>
+   可以使用 <command>EXPLAIN VERBOSE</command> 查看实际发送给远程服务器
+   执行的查询。
+  </para>
+ </sect2>
+
+ <sect2 id="postgres-fdw-remote-query-execution-environment">
+  <title>远程查询执行环境</title>
+
+  <para>
+   在 <filename>postgres_fdw</filename> 打开的远程会话中，
+   <xref linkend="guc-search-path"/> 参数会被设置为仅包含
+   <literal>pg_catalog</literal>，这样无需模式限定就只能看到内置对象。
+   这对 <filename>postgres_fdw</filename> 自身生成的查询不是问题，因为它
+   总是提供这种限定。然而，这可能会对那些通过远程表上的触发器或规则在
+   远程服务器上执行的函数带来风险。例如，如果远程表实际上是一个视图，
+   则该视图中使用的任何函数都会在受限的搜索路径下执行。建议在这类函数中
+   对所有名称都写成带模式限定的形式，或者为这类函数附加
+   <literal>SET search_path</literal> 选项（见
+   <xref linkend="sql-createfunction"/>），以建立其预期的搜索路径环境。
+  </para>
+
+  <para>
+   <filename>postgres_fdw</filename> 还会为远程会话设置以下参数：
+   <itemizedlist spacing="compact">
+    <listitem>
+     <para>
+      <xref linkend="guc-timezone"/> 被设置为 <literal>UTC</literal>
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <xref linkend="guc-datestyle"/> 被设置为 <literal>ISO</literal>
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <xref linkend="guc-intervalstyle"/> 被设置为 <literal>postgres</literal>
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      对于 9.0 及以上的远程服务器，
+      <xref linkend="guc-extra-float-digits"/> 被设置为 <literal>3</literal>；
+      对于更早版本，则被设置为 <literal>2</literal>
+     </para>
+    </listitem>
+   </itemizedlist>
+   这些设置通常不像 <varname>search_path</varname> 那样容易出问题，但如果有
+   需要，也可以通过函数的 <literal>SET</literal> 选项处理。
+  </para>
+
+  <para>
+   <emphasis>不</emphasis>建议通过修改这些参数的会话级设置来覆盖这种行为；
+   这很可能导致 <filename>postgres_fdw</filename> 工作异常。
+  </para>
+ </sect2>
+
+ <sect2 id="postgres-fdw-cross-version-compatibility">
+  <title>跨版本兼容性</title>
+
+  <para>
+   <filename>postgres_fdw</filename> 可用于最早追溯到
+   <productname>PostgreSQL</productname> 8.3 的远程服务器。只读能力可追溯到
+   8.1。
+  </para>
+  <para>
+   不过有一个限制是，<filename>postgres_fdw</filename> 通常假定：
+   如果外部表的 <literal>WHERE</literal> 子句中出现不可变的内置函数和
+   操作符，那么把它们发送到远程服务器执行是安全的。因此，某个在远程服务器
+   所属发行版本之后才加入的内置函数，可能仍会被发送到该远程服务器执行，
+   从而导致<quote>function does not exist</quote>或类似错误。可以通过
+   重写查询绕过这类失败，例如把外部表引用放入一个带
+   <literal>OFFSET 0</literal> 的子 <literal>SELECT</literal> 中，作为优化
+   栅栏，并将有问题的函数或操作符放到子 <literal>SELECT</literal> 之外。
+  </para>
+  <para>
+   另一个限制是，在外部表上执行 <command>INSERT</command> 语句并带有
+   <literal>ON CONFLICT DO NOTHING</literal> 子句时，远程服务器必须运行
+   <productname>PostgreSQL</productname> 9.5 或更高版本，因为更早版本
+   不支持此特性。
+  </para>
+ </sect2>
+
+ <sect2 id="postgres-fdw-server-subscription">
+  <title>订阅管理</title>
+
+  <para>
+   <filename>postgres_fdw</filename> 使用与<xref
+   linkend="postgres-fdw-options-connection"/>中描述相同的选项来支持订阅连接。
+  </para>
+
+  <para>
+   例如，假设远程服务器 <literal>foreign-host</literal> 上有一个发布
+   <literal>testpub</literal>：
+<programlisting>
+CREATE SERVER subscription_server FOREIGN DATA WRAPPER postgres_fdw OPTIONS (host 'foreign-host', dbname 'foreign_db');
+CREATE USER MAPPING FOR local_user SERVER subscription_server OPTIONS (user 'foreign_user', password 'password');
+CREATE SUBSCRIPTION my_subscription SERVER subscription_server PUBLICATION testpub;
+</programlisting>
+  </para>
+
+  <para>
+   要创建订阅，用户必须是<xref
+   linkend="predefined-role-pg-create-subscription"/>角色的成员，并且对该服务器
+   具有 <literal>USAGE</literal> 权限。
+  </para>
+ </sect2>
+
+ <sect2 id="postgres-fdw-wait-events">
+  <title>等待事件</title>
+
+  <para>
+   <filename>postgres_fdw</filename> 可以在等待事件类型
+   <literal>Extension</literal> 下报告以下等待事件：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><literal>PostgresFdwCleanupResult</literal></term>
+    <listitem>
+     <para>
+      等待远程服务器上的事务中止。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>PostgresFdwConnect</literal></term>
+    <listitem>
+     <para>
+      等待与远程服务器建立连接。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>PostgresFdwGetResult</literal></term>
+    <listitem>
+     <para>
+      等待接收来自远程服务器的查询结果。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="postgres-fdw-configuration-parameters">
+  <title>配置参数</title>
+
+  <variablelist>
+   <varlistentry id="guc-pgfdw-application-name" xreflabel="postgres_fdw.application_name">
+    <term>
+     <varname>postgres_fdw.application_name</varname> (<type>string</type>)
+     <indexterm>
+      <primary><varname>postgres_fdw.application_name</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      指定用于 <xref linkend="guc-application-name"/> 配置参数的值，
+      该值会在 <filename>postgres_fdw</filename> 建立到外部服务器的连接时使用。这会覆盖
+      服务器对象的 <varname>application_name</varname> 选项。请注意，
+      修改此参数不会影响任何现有连接，除非这些连接重新建立。
+     </para>
+     <para>
+      <varname>postgres_fdw.application_name</varname> 可以是任意长度的任意
+      字符串，甚至可以包含非 ASCII 字符。不过，当它被传递并作为外部服务器中
+      的 <varname>application_name</varname> 使用时，请注意它会被截断到少于
+      <symbol>NAMEDATALEN</symbol> 个字符。所有不可打印 ASCII 字符都会被
+      替换为<link
+      linkend="sql-syntax-strings-escape">C 风格的十六进制逃逸</link>。
+      有关细节见 <xref linkend="guc-application-name"/>。
+     </para>
+
+     <para>
+      <literal>%</literal> 字符表示<quote>逃逸序列</quote>的开始，并会按下述方式
+      替换为状态信息。未识别的逃逸会被忽略。其他字符会原样复制到应用名中。
+      请注意，不允许在 <literal>%</literal> 与选项字母之间指定正负号或数字
+      字面量来进行对齐和填充。
+     </para>
+
+     <informaltable>
+      <tgroup cols="2">
+       <thead>
+        <row>
+         <entry>逃逸序列</entry>
+         <entry>效果</entry>
+        </row>
+       </thead>
+       <tbody>
+        <row>
+         <entry><literal>%a</literal></entry>
+         <entry>本地服务器上的应用名</entry>
+        </row>
+        <row>
+         <entry><literal>%c</literal></entry>
+         <entry>
+          本地服务器上的会话 ID
+          （细节见 <xref linkend="guc-log-line-prefix"/>）
+         </entry>
+        </row>
+        <row>
+         <entry><literal>%C</literal></entry>
+         <entry>
+          本地服务器上的集簇名
+          （细节见 <xref linkend="guc-cluster-name"/>）
+         </entry>
+        </row>
+        <row>
+         <entry><literal>%u</literal></entry>
+         <entry>本地服务器上的用户名</entry>
+        </row>
+        <row>
+         <entry><literal>%d</literal></entry>
+         <entry>本地服务器上的数据库名</entry>
+        </row>
+        <row>
+         <entry><literal>%p</literal></entry>
+         <entry>本地服务器上后端的进程 ID</entry>
+        </row>
+        <row>
+         <entry><literal>%%</literal></entry>
+         <entry>字面值 %</entry>
+        </row>
+       </tbody>
+      </tgroup>
+     </informaltable>
+
+     <para>
+      例如，假设用户 <literal>local_user</literal> 以用户
+      <literal>foreign_user</literal> 身份，从数据库
+      <literal>local_db</literal> 建立到 <literal>foreign_db</literal> 的连接，
+      则设置 <literal>'db=%d, user=%u'</literal> 会被替换为
+      <literal>'db=local_db, user=local_user'</literal>。
+     </para>
+
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="postgres-fdw-examples">
+  <title>示例</title>
+
+  <para>
+   下面是使用 <literal>postgres_fdw</literal> 创建外部表的一个示例。
+   首先安装扩展：
+  </para>
+
+<programlisting>
+CREATE EXTENSION postgres_fdw;
+</programlisting>
+
+  <para>
+   然后使用 <xref linkend="sql-createserver"/> 创建外部服务器。
+   在本示例中，希望连接到一台 <productname>PostgreSQL</productname> 服务器，
+   它运行在主机 <literal>192.83.123.89</literal> 上并监听
+   <literal>5432</literal> 端口。要连接的数据库在远程服务器上名为
+   <literal>foreign_db</literal>：
+
+<programlisting>
+CREATE SERVER foreign_server
+        FOREIGN DATA WRAPPER postgres_fdw
+        OPTIONS (host '192.83.123.89', port '5432', dbname 'foreign_db');
+</programlisting>
+  </para>
+
+  <para>
+   还需要用 <xref linkend="sql-createusermapping"/> 定义一个用户映射，
+   以标识在远程服务器上使用哪个角色：
+
+<programlisting>
+CREATE USER MAPPING FOR local_user
+        SERVER foreign_server
+        OPTIONS (user 'foreign_user', password 'password');
+</programlisting>
+  </para>
+
+  <para>
+   现在就可以使用 <xref linkend="sql-createforeigntable"/> 创建外部表了。
+   在本示例中，希望访问远程服务器上名为
+   <structname>some_schema.some_table</structname> 的表。它在本地的名称将是
+   <structname>foreign_table</structname>：
+
+<programlisting>
+CREATE FOREIGN TABLE foreign_table (
+        id integer NOT NULL,
+        data text
+)
+        SERVER foreign_server
+        OPTIONS (schema_name 'some_schema', table_name 'some_table');
+</programlisting>
+
+   在 <command>CREATE FOREIGN TABLE</command> 中声明的列的数据类型和其他属性，
+   必须与实际远程表匹配。列名也必须匹配，除非为各个列附加
+   <literal>column_name</literal> 选项来指明它们在远程表中的名称。
+   在许多情况下，相比手工构造外部表定义，使用
+   <link linkend="sql-importforeignschema"><command>IMPORT FOREIGN SCHEMA</command></link>
+   更可取。
+  </para>
+ </sect2>
+
+ <sect2 id="postgres-fdw-author">
+  <title>作者</title>
+  <para>
+   Shigeru Hanada <email>shigeru.hanada@gmail.com</email>
+  </para>
+ </sect2>
+
+</sect1>

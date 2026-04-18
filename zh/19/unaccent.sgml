@@ -1,0 +1,172 @@
+<!-- doc/src/sgml/unaccent.sgml -->
+
+<sect1 id="unaccent" xreflabel="unaccent">
+ <title>unaccent &mdash; 去除变音符号的文本搜索词典</title>
+
+ <indexterm zone="unaccent">
+  <primary>unaccent</primary>
+ </indexterm>
+
+ <para>
+  <filename>unaccent</filename>是一个文本搜索词典，它会从词位中移除重音符号（变音符号）。它是一个过滤字典，也就是说，它的输出总会被传递给下一个词典（如果有），这不同于词典的通常行为。这使得全文搜索能够以不区分重音的方式处理文本。
+ </para>
+
+ <para>
+  <filename>unaccent</filename>当前的实现还不能作为<filename>thesaurus</filename>词典的正规化字典使用。
+ </para>
+
+ <para>
+  这个模块被认为是<quote>受信任的</quote>，也就是说，它可以由在当前数据库上具有<literal>CREATE</literal>权限的非超级用户安装。
+ </para>
+
+ <sect2 id="unaccent-configuration">
+  <title>配置</title>
+
+  <para>
+   <literal>unaccent</literal>词典接受下列选项：
+  </para>
+  <itemizedlist>
+   <listitem>
+    <para>
+     <literal>RULES</literal>是包含转换规则列表的文件的基名。该文件必须存放在<filename>$SHAREDIR/tsearch_data/</filename>中（其中<literal>$SHAREDIR</literal>表示<productname>PostgreSQL</productname>安装的共享数据目录）。其名称必须以<literal>.rules</literal>结尾，但在<literal>RULES</literal>参数中不应包含这个后缀。
+    </para>
+   </listitem>
+  </itemizedlist>
+  <para>
+   规则文件的格式如下：
+  </para>
+  <itemizedlist>
+   <listitem>
+    <para>
+     每一行表示一条转换规则，由一个带重音的字符和一个不带重音的字符组成。前者会被转换成后者。例如：
+<programlisting>
+&Agrave;        A
+&Aacute;        A
+&Acirc;        A
+&Atilde;        A
+&Auml;        A
+&Aring;        A
+&AElig;        AE
+</programlisting>
+     这两个字符必须以空白分隔，并且每行开头或结尾的空白都会被忽略。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     另一种情况是，如果某一行只给出一个字符，则该字符的各次出现都会被删除；这对那些用独立字符表示重音的语言很有用。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     实际上，这里的每个<quote>字符</quote>都可以是不包含空白的任意字符串，因此<filename>unaccent</filename>词典除了用于去除变音符号之外，也可用于其他类型的子串替换。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     某些字符（例如数字符号）在其转换规则中可能需要空白字符。在这种情况下，可以用双引号把转换后的字符括起来。如果转换后的字符中本身要包含双引号，则需要再用一个双引号对其转义。例如：
+<programlisting>
+&frac14;      " 1/4"
+&frac12;      " 1/2"
+&frac34;      " 3/4"
+&ldquo;       """"
+&rdquo;       """"
+</programlisting>
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     与其他<productname>PostgreSQL</productname>文本搜索配置文件一样，规则文件必须以 UTF-8 编码存储。加载时，数据会自动转换为当前数据库的编码。任何包含不可转换字符的行都会被静默忽略，因此规则文件中可以包含不适用于当前编码的规则。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   一个更完整并且对大多数欧洲语言都可直接使用的示例可见于<filename>unaccent.rules</filename>。安装<filename>unaccent</filename>模块时，该文件会被安装到<filename>$SHAREDIR/tsearch_data/</filename>中。这个规则文件会把带重音的字符转换成对应的不带重音字符，同时还会把连字展开为等价的一串简单字符（例如，将 &AElig; 转换为 AE）。
+  </para>
+ </sect2>
+
+ <sect2 id="unaccent-usage">
+  <title>用法</title>
+
+  <para>
+   安装<literal>unaccent</literal>扩展会创建一个文本搜索模板<literal>unaccent</literal>以及一个基于该模板的词典<literal>unaccent</literal>。<literal>unaccent</literal>词典的默认参数设置是<literal>RULES='unaccent'</literal>，因此它可立即配合标准的<filename>unaccent.rules</filename>文件使用。如果愿意，也可以修改这个参数，例如
+
+<programlisting>
+mydb=# ALTER TEXT SEARCH DICTIONARY unaccent (RULES='my_rules');
+</programlisting>
+
+   或者基于该模板创建新的词典。
+  </para>
+
+  <para>
+   要测试该词典，可以尝试：
+<programlisting>
+ mydb=# SELECT ts_lexize('unaccent', 'H&ocirc;tel');
+ ts_lexize
+-----------
+ {Hotel}
+(1 row)
+</programlisting>
+  </para>
+
+  <para>
+   下面的示例展示了如何将<filename>unaccent</filename>词典插入到文本搜索配置中：
+<programlisting>
+mydb=# CREATE TEXT SEARCH CONFIGURATION fr ( COPY = french );
+mydb=# ALTER TEXT SEARCH CONFIGURATION fr
+        ALTER MAPPING FOR hword, hword_part, word
+        WITH unaccent, french_stem;
+mydb=# SELECT to_tsvector('fr', 'H&ocirc;tels de la Mer');
+    to_tsvector
+-------------------
+ 'hotel':1 'mer':4
+(1 row)
+
+mydb=# SELECT to_tsvector('fr', 'H&ocirc;tel de la Mer') @@ to_tsquery('fr', 'Hotels');
+ ?column?
+----------
+ t
+(1 row)
+
+mydb=# SELECT ts_headline('fr', 'H&ocirc;tel de la Mer', to_tsquery('fr', 'Hotels'));
+      ts_headline
+------------------------
+ &lt;b&gt;H&ocirc;tel&lt;/b&gt; de la Mer
+(1 row)
+</programlisting>
+  </para>
+ </sect2>
+
+ <sect2 id="unaccent-functions">
+ <title>函数</title>
+
+ <para>
+  <function>unaccent()</function>函数会从给定字符串中移除重音符号（变音符号）。从本质上说，它是对<filename>unaccent</filename>这一类型词典的一个包装器，但也可以在常规文本搜索环境之外使用。
+ </para>
+
+ <indexterm>
+  <primary>unaccent</primary>
+ </indexterm>
+
+<synopsis>
+unaccent(<optional><replaceable class="parameter">dictionary</replaceable> <type>regdictionary</type>, </optional> <replaceable class="parameter">string</replaceable> <type>text</type>) returns <type>text</type>
+</synopsis>
+
+ <para>
+  如果省略<replaceable class="parameter">dictionary</replaceable>参数，则会使用与<function>unaccent()</function>函数本身位于同一模式中、名为<literal>unaccent</literal>的文本搜索词典。
+ </para>
+
+ <para>
+  例如：
+<programlisting>
+SELECT unaccent('unaccent', 'H&ocirc;tel');
+SELECT unaccent('H&ocirc;tel');
+</programlisting>
+ </para>
+ </sect2>
+
+</sect1>

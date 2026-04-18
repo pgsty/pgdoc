@@ -1,0 +1,335 @@
+<!-- doc/src/sgml/xtypes.sgml -->
+
+ <sect1 id="xtypes">
+
+  <title>用户定义的类型</title>
+
+  <indexterm zone="xtypes">
+   <primary>数据类型</primary>
+   <secondary>用户定义的</secondary>
+  </indexterm>
+
+  <para>
+   如<xref linkend="extend-type-system"/>中所述，
+   <productname>PostgreSQL</productname>可以扩展以支持新的数据类型。本节描述
+   如何定义新的基础类型，也就是在<acronym>SQL</acronym>语言层之下定义的
+   数据类型。创建新的基础类型需要用底层语言（通常是 C）实现操作该类型的
+   函数。
+  </para>
+
+  <para>
+   本节中的示例位于源码分发包的<filename>src/tutorial</filename>目录中的
+   <filename>complex.sql</filename>和<filename>complex.c</filename>。关于
+   如何运行这些示例，请参见该目录中的<filename>README</filename>文件。
+  </para>
+
+ <para>
+  <indexterm>
+   <primary>输入函数</primary>
+  </indexterm>
+  <indexterm>
+   <primary>输出函数</primary>
+  </indexterm>
+  用户定义类型必须始终具有输入函数和输出函数。这些函数决定该类型如何
+  以字符串形式出现（供用户输入和向用户输出），以及该类型在内存中如何
+  组织。输入函数接受一个以空字符结尾的字符串作为参数，并返回该类型的
+  内部（内存中）表示。输出函数接受该类型的内部表示作为参数，并返回一
+  个以空字符结尾的字符串。如果我们希望该类型除了存储之外还能做别的事
+  情，就必须提供额外的函数来实现我们希望该类型支持的各种操作。
+ </para>
+
+ <para>
+  假设我们要定义一种表示复数的类型<type>complex</type>。在内存中表示复
+  数的一种自然方式是下面这个 C 结构：
+
+<programlisting>
+typedef struct Complex {
+    double      x;
+    double      y;
+} Complex;
+</programlisting>
+
+  我们需要把它做成按引用传递的类型，因为它太大了，无法放进单个
+  <type>Datum</type>值中。
+ </para>
+
+ <para>
+  作为该类型的外部字符串表示，我们选择形如<literal>(x,y)</literal>的
+  字符串。
+ </para>
+
+ <para>
+  输入函数和输出函数通常都不难编写，尤其是输出函数。但是在定义该类型的
+  外部字符串表示时，要记住，最终你必须为这种表示编写一个完整而健壮的解
+  析器，作为输入函数。例如：
+
+<programlisting><![CDATA[
+PG_FUNCTION_INFO_V1(complex_in);
+
+Datum
+complex_in(PG_FUNCTION_ARGS)
+{
+    char       *str = PG_GETARG_CSTRING(0);
+    double      x,
+                y;
+    Complex    *result;
+
+    if (sscanf(str, " ( %lf , %lf )", &x, &y) != 2)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                 errmsg("invalid input syntax for type %s: \"%s\"",
+                        "complex", str)));
+
+    result = palloc_object(Complex);
+    result->x = x;
+    result->y = y;
+    PG_RETURN_POINTER(result);
+}
+]]>
+</programlisting>
+
+  输出函数可以简单地写成：
+
+<programlisting><![CDATA[
+PG_FUNCTION_INFO_V1(complex_out);
+
+Datum
+complex_out(PG_FUNCTION_ARGS)
+{
+    Complex    *complex = (Complex *) PG_GETARG_POINTER(0);
+    char       *result;
+
+    result = psprintf("(%g,%g)", complex->x, complex->y);
+    PG_RETURN_CSTRING(result);
+}
+]]>
+</programlisting>
+ </para>
+
+ <para>
+  应当注意让输入函数和输出函数互为逆运算。如果不是这样，当你需要把数据
+  转储到文件中再读回时，就会遇到严重问题。这在涉及浮点数时尤为常见。
+ </para>
+
+ <para>
+  可选地，用户定义类型还可以提供二进制输入和输出例程。二进制 I/O 通常
+  比文本 I/O 更快，但可移植性较差。与文本 I/O 一样，外部二进制表示的精
+  确定义完全由你决定。大多数内置数据类型都尽量提供与机器无关的二进制表
+  示。对于<type>complex</type>，我们将借助类型<type>float8</type>的二
+  进制 I/O 转换器：
+
+<programlisting><![CDATA[
+PG_FUNCTION_INFO_V1(complex_recv);
+
+Datum
+complex_recv(PG_FUNCTION_ARGS)
+{
+    StringInfo  buf = (StringInfo) PG_GETARG_POINTER(0);
+    Complex    *result;
+
+    result = (Complex *) palloc(sizeof(Complex));
+    result->x = pq_getmsgfloat8(buf);
+    result->y = pq_getmsgfloat8(buf);
+    PG_RETURN_POINTER(result);
+}
+
+PG_FUNCTION_INFO_V1(complex_send);
+
+Datum
+complex_send(PG_FUNCTION_ARGS)
+{
+    Complex    *complex = (Complex *) PG_GETARG_POINTER(0);
+    StringInfoData buf;
+
+    pq_begintypsend(&buf);
+    pq_sendfloat8(&buf, complex->x);
+    pq_sendfloat8(&buf, complex->y);
+    PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
+}
+]]>
+</programlisting>
+ </para>
+
+ <para>
+  一旦我们写好了 I/O 函数并将它们编译进共享库，就可以在 SQL 中定义
+  <type>complex</type>类型。首先将其声明为一种 shell 类型：
+
+<programlisting>
+CREATE TYPE complex;
+</programlisting>
+
+  这会建立一个占位符，使我们可以在定义其 I/O 函数时引用该类型。现在我们
+  可以定义这些 I/O 函数：
+
+<programlisting>
+CREATE FUNCTION complex_in(cstring)
+    RETURNS complex
+    AS '<replaceable>filename</replaceable>'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION complex_out(complex)
+    RETURNS cstring
+    AS '<replaceable>filename</replaceable>'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION complex_recv(internal)
+   RETURNS complex
+   AS '<replaceable>filename</replaceable>'
+   LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION complex_send(complex)
+   RETURNS bytea
+   AS '<replaceable>filename</replaceable>'
+   LANGUAGE C IMMUTABLE STRICT;
+</programlisting>
+ </para>
+
+ <para>
+  最后，我们可以给出该数据类型的完整定义：
+<programlisting>
+CREATE TYPE complex (
+   internallength = 16,
+   input = complex_in,
+   output = complex_out,
+   receive = complex_recv,
+   send = complex_send,
+   alignment = double
+);
+</programlisting>
+ </para>
+
+ <para>
+  <indexterm>
+    <primary>数组</primary>
+    <secondary>用户定义类型的</secondary>
+  </indexterm>
+  当你定义一种新的基础类型时，<productname>PostgreSQL</productname>会
+  自动提供对该类型数组的支持。该数组类型通常与基础类型同名，只是在前面
+  加一个下划线字符（<literal>_</literal>）。
+ </para>
+
+ <para>
+  一旦该数据类型存在，我们就可以声明额外的函数，为该数据类型提供有用的
+  操作。随后可以在这些函数之上定义操作符；如果需要，还可以创建操作符类
+  以支持该数据类型的索引。这些附加层会在后续各节中讨论。
+ </para>
+
+ <para>
+  如果数据类型的内部表示是可变长度的，则这种内部表示必须遵循可变长度数
+  据的标准布局：前四个字节必须是一个从不直接访问的<type>char[4]</type>
+  字段（惯例上命名为<structfield>vl_len_</structfield>）。必须使用
+  <function>SET_VARSIZE()</function>宏在该字段中存储该值的总大小（包括
+  长度字段本身），并使用<function>VARSIZE()</function>取回它。（这些宏
+  之所以存在，是因为长度字段可能会随平台不同而采用编码形式。）
+ </para>
+
+ <para>
+  更多细节见<xref linkend="sql-createtype"/>命令的说明。
+ </para>
+
+ <sect2 id="xtypes-toast">
+
+  <title>TOAST 注意事项</title>
+
+   <indexterm>
+    <primary>TOAST</primary>
+    <secondary>与用户定义类型</secondary>
+   </indexterm>
+
+ <para>
+  如果你的数据类型的值在内部形式上的大小可变，通常最好让该数据类型支持
+  <acronym>TOAST</acronym>（见<xref linkend="storage-toast"/>）。即使这些
+  值总是小到不需要压缩或外部存储，也应该这样做，因为
+  <acronym>TOAST</acronym>还可以通过减少头部开销来为小数据节省空间。
+ </para>
+
+ <para>
+  为了支持<acronym>TOAST</acronym>存储，操作该数据类型的 C 级函数必须始
+  终使用<function>PG_DETOAST_DATUM</function>对传给它们的任何 TOAST 化
+  值执行去 TOAST 化处理。（这一细节通常通过定义特定于该类型的
+  <function>GETARG_DATATYPE_P</function>宏来隐藏。）然后，在执行
+  <command>CREATE TYPE</command>命令时，把内部长度指定为
+  <literal>variable</literal>，并选择某个不同于<literal>plain</literal>
+  的合适存储选项。
+ </para>
+
+ <para>
+  如果数据对齐并不重要（无论只是对某个特定函数而言，还是因为该数据类型
+  本来就指定了字节对齐），那么就有可能避免
+  <function>PG_DETOAST_DATUM</function>的一部分开销。你可以改用
+  <function>PG_DETOAST_DATUM_PACKED</function>（通常通过定义
+  <function>GETARG_DATATYPE_PP</function>宏来隐藏），并使用
+  <function>VARSIZE_ANY_EXHDR</function>和<function>VARDATA_ANY</function>
+  宏访问一个可能采用打包形式的值。再次注意，即使数据类型定义指定了
+  对齐方式，这些宏返回的数据也不是对齐的。如果对齐很重要，就必须使用常
+  规的<function>PG_DETOAST_DATUM</function>接口。
+ </para>
+
+ <note>
+
+  <para>
+   较旧的代码常把<structfield>vl_len_</structfield>声明为
+   <type>int32</type>字段，而不是<type>char[4]</type>字段。只要结构定
+   义中还有其他至少按<type>int32</type>对齐的字段，这样做是可以的。但
+   在处理可能未对齐的值时使用这种结构定义就很危险；编译器可能据此假定该
+   值实际上是对齐的，从而在对齐要求严格的体系结构上导致核心转储。
+  </para>
+ </note>
+
+ <para>
+  支持<acronym>TOAST</acronym>带来的另一个特性，是可以拥有一种比磁盘上
+  存储的格式更便于处理的<firstterm>展开</firstterm>内存数据表示。常规
+  或<quote>扁平</quote>的 varlena 存储格式归根结底只是一块字节数据；例
+  如，它不能包含指针，因为它可能被复制到内存中的其他位置。对于复杂数据
+  类型，处理扁平格式的代价可能相当高，因此<productname>PostgreSQL</productname>
+  提供了一种办法，把扁平格式<quote>展开</quote>成更适合计算的表示形式，
+  然后在该数据类型的各个函数之间以这种格式在内存中传递。
+ </para>
+
+ <para>
+  要使用展开存储，数据类型必须定义一种遵循
+  <filename>src/include/utils/expandeddatum.h</filename>中规则的展开
+  格式，并提供函数把扁平 varlena 值<quote>展开</quote>为展开格式，再把
+  展开格式<quote>压平</quote>回常规 varlena 表示。然后要确保该数据类型的
+  所有 C 函数都能接受这两种表示，必要时可在收到参数后立即把一种转换成另
+  一种。
+  这并不要求一次性修正该数据类型的全部现有函数，因为标准
+  <function>PG_DETOAST_DATUM</function>宏被定义为会把展开输入转换成常规
+  扁平格式。因此，现有那些处理扁平 varlena 格式的函数，即使效率略低一
+  些，也仍能处理展开输入；除非更好的性能很重要，否则不必转换它们。
+ </para>
+
+ <para>
+  能够处理展开表示的 C 函数通常分为两类：只能处理展开格式的，以及既能处
+  理展开输入也能处理扁平 varlena 输入的。前者更容易编写，但总体上可能效
+  率较低，因为为了让单个函数使用展开格式而把扁平输入转换成展开形式，其
+  代价可能比在展开格式上操作所节省的还要多。只需处理展开格式时，可以把
+  将扁平输入转换为展开形式的过程隐藏在参数提取宏内部，这样函数看起来不
+  会比处理传统 varlena 输入的函数更复杂。要同时处理这两类输入，可以编写
+  一个参数提取函数，对外部、短头部和压缩的 varlena 输入执行去 TOAST 化，
+  但对展开输入则不做处理。这样的函数可以定义为返回一个指向联合体的指
+  针，该联合体包含扁平 varlena 格式与展开格式。调用者可以使用
+  <function>VARATT_IS_EXPANDED_HEADER()</function>宏判断收到的是哪种
+  格式。
+ </para>
+
+ <para>
+  <acronym>TOAST</acronym>基础设施不仅允许区分常规 varlena 值和展开
+  值，还能区分指向展开值的<quote>可读写（read-write）</quote>和
+  <quote>只读（read-only）</quote>指针。只需要查看展开值，或者只会以安
+  全且在语义上不可见的方式修改它的 C 函数，不必关心收到的是哪种指针。
+  那些会生成输入值修改版本的 C 函数，如果收到可读写指针，可以原地修改展
+  开输入值；但如果收到只读指针，则不得修改输入，此时必须先复制该值，生
+  成一个新的可修改值。构造了新展开值的 C 函数应始终返回指向它的可读写指
+  针。另外，原地修改可读写展开值的 C 函数如果在中途失败，应注意让该值保
+  持在合理状态。
+ </para>
+
+ <para>
+  有关如何处理展开值的示例，请参见标准数组基础设施，尤其是
+  <filename>src/backend/utils/adt/array_expanded.c</filename>。
+ </para>
+
+ </sect2>
+
+</sect1>

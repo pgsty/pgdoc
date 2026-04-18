@@ -1,0 +1,913 @@
+<!-- doc/src/sgml/json.sgml -->
+
+<sect1 id="datatype-json">
+ <title><acronym>JSON</acronym> 类型</title>
+
+ <indexterm zone="datatype-json">
+  <primary>JSON</primary>
+ </indexterm>
+
+ <indexterm zone="datatype-json">
+  <primary>JSONB</primary>
+ </indexterm>
+
+ <para>
+  JSON 数据类型用于存储 JSON（JavaScript Object Notation）数据，如
+  <ulink url="https://datatracker.ietf.org/doc/html/rfc7159">RFC
+  7159</ulink> 所定义。这类数据也可以存储为 <type>text</type>，但 JSON
+  数据类型的优势在于会强制每个存储值都符合 JSON 规则。此外，对于存储在
+  这些数据类型中的数据，还提供了各种 JSON 专用的函数和操作符；见
+  <xref linkend="functions-json"/>。
+ </para>
+
+ <para>
+  <productname>PostgreSQL</productname> 提供两种用于存储 JSON 数据的
+  类型：<type>json</type> 和 <type>jsonb</type>。为了为这些数据类型实现
+  高效的查询机制，<productname>PostgreSQL</productname> 还提供了
+  <type>jsonpath</type> 数据类型，其说明见
+  <xref linkend="datatype-jsonpath"/>。
+ </para>
+
+ <para>
+  <type>json</type> 和 <type>jsonb</type> 数据类型接收作为输入的值集合
+  <emphasis>几乎</emphasis> 完全相同。主要的实际区别在于效率。
+  <type>json</type> 数据类型存储输入文本的精确副本，因此处理函数在每次执行
+  时都必须重新解析；而 <type>jsonb</type> 数据则以分解后的二进制格式存储，
+  由于增加了转换开销，输入时会稍慢一些，但处理起来会显著更快，因为不需要
+  重新解析。<type>jsonb</type> 还支持索引，这可能是一个显著优势。
+ </para>
+
+ <para>
+  由于 <type>json</type> 类型存储的是输入文本的精确副本，因此它会保留标记
+  之间在语义上无关紧要的空白，以及 JSON 对象内部键的顺序。此外，如果值中
+  的某个 JSON 对象包含同一个键多次，所有键/值对都会被保留下来（处理函数会
+  将最后一个值视为生效值）。相比之下，<type>jsonb</type> 不保留空白，不保留
+  对象键的顺序，也不保留重复的对象键。如果输入中指定了重复的键，则只保留
+  最后一个值。
+ </para>
+
+ <para>
+  一般而言，大多数应用都应优先将 JSON 数据存储为 <type>jsonb</type>，
+  除非存在相当特殊的需求，例如遗留系统对对象键顺序的假设。
+ </para>
+
+ <para>
+  <acronym>RFC</acronym> 7159 规定 JSON 字符串应使用 UTF8 编码。因此，
+  除非数据库编码是 UTF8，否则 JSON 类型不可能严格符合 JSON 规范。尝试直接
+  包含数据库编码无法表示的字符会失败；反过来，数据库编码可以表示但 UTF8
+  不能表示的字符则会被允许。
+ </para>
+
+ <para>
+  <acronym>RFC</acronym> 7159 允许 JSON 字符串包含以
+  <literal>\u<replaceable>XXXX</replaceable></literal> 表示的 Unicode
+  转义序列。在 <type>json</type> 类型的输入函数中，无论数据库编码为何，
+  都允许 Unicode 转义，并且只检查其语法是否正确（即
+  <literal>\u</literal> 后面是否跟着四个十六进制数字）。但是，
+  <type>jsonb</type> 的输入函数更严格：它不允许对数据库编码无法表示的字符
+  使用 Unicode 转义。<type>jsonb</type> 类型还会拒绝
+  <literal>\u0000</literal>（因为
+  <productname>PostgreSQL</productname> 的 <type>text</type> 类型无法
+  表示它），并且要求任何使用 Unicode 代理对来表示位于 Unicode 基本多文种
+  平面之外字符的写法都必须正确。合法的 Unicode 转义会在存储时转换为等效的
+  单个字符；这也包括把代理对折叠为一个字符。
+ </para>
+
+ <note>
+  <para>
+   <xref linkend="functions-json"/> 中描述的很多 JSON 处理函数都会把
+   Unicode 转义转换为普通字符，因此即使它们的输入是 <type>json</type> 而
+   不是 <type>jsonb</type>，也会抛出前面刚描述过的同类错误。
+   <type>json</type> 的输入函数不做这些检查，可以视为一种历史遗留行为；
+   不过，它确实允许在不支持所表示字符的数据库编码中，简单地存储（而不做
+   处理）带有 JSON Unicode 转义的内容。
+  </para>
+ </note>
+
+ <para>
+  当把文本形式的 JSON 输入转换为 <type>jsonb</type> 时，
+  <acronym>RFC</acronym> 7159 描述的基本类型会有效映射到原生的
+  <productname>PostgreSQL</productname> 类型上，如
+  <xref linkend="json-type-mapping-table"/> 所示。因此，什么样的数据构成
+  有效的 <type>jsonb</type> 会有一些额外但较小的限制，这些限制不适用于
+  <type>json</type> 类型，也不适用于抽象意义上的 JSON；它们对应于底层
+  数据类型可表示范围的限制。特别地，<type>jsonb</type> 会拒绝超出
+  <productname>PostgreSQL</productname> <type>numeric</type> 数据类型
+  范围的数字，而 <type>json</type> 不会。<acronym>RFC</acronym> 7159
+  允许这种由实现定义的限制。不过在实践中，这类问题更可能出现在其他实现中，
+  因为通常会把 JSON 的 <type>number</type> 基本类型表示为 IEEE 754
+  双精度浮点数（<acronym>RFC</acronym> 7159 明确预见并允许了这一点）。
+  当把 JSON 用作与这类系统交换数据的格式时，应考虑与原先由
+  <productname>PostgreSQL</productname> 存储的数据相比丢失数值精度的风险。
+ </para>
+
+ <para>
+  另一方面，正如表中所指出的那样，JSON 基本类型的输入格式还有一些轻微限制，
+  而对应的 <productname>PostgreSQL</productname> 类型并没有这些限制。
+ </para>
+
+  <table id="json-type-mapping-table">
+     <title>JSON 基本类型及其对应的 <productname>PostgreSQL</productname> 类型</title>
+     <tgroup cols="3">
+      <colspec colname="col1" colwidth="1*"/>
+      <colspec colname="col2" colwidth="1*"/>
+      <colspec colname="col3" colwidth="2*"/>
+      <thead>
+       <row>
+        <entry>JSON 基本类型</entry>
+        <entry><productname>PostgreSQL</productname> 类型</entry>
+        <entry>说明</entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+        <entry><type>string</type></entry>
+        <entry><type>text</type></entry>
+        <entry>不允许 <literal>\u0000</literal>，也不允许表示数据库编码中不可用字符的 Unicode 转义</entry>
+       </row>
+       <row>
+        <entry><type>number</type></entry>
+        <entry><type>numeric</type></entry>
+        <entry>不允许 <literal>NaN</literal> 和 <literal>infinity</literal> 值</entry>
+       </row>
+       <row>
+        <entry><type>boolean</type></entry>
+        <entry><type>boolean</type></entry>
+        <entry>只接受小写拼写 <literal>true</literal> 和 <literal>false</literal></entry>
+       </row>
+       <row>
+        <entry><type>null</type></entry>
+        <entry>(无)</entry>
+        <entry>SQL <literal>NULL</literal> 是不同的概念</entry>
+       </row>
+      </tbody>
+     </tgroup>
+   </table>
+
+ <sect2 id="json-keys-elements">
+  <title>JSON 输入和输出语法</title>
+  <para>
+   JSON 数据类型的输入/输出语法遵循 <acronym>RFC</acronym> 7159。
+  </para>
+  <para>
+   以下都是有效的 <type>json</type>（或 <type>jsonb</type>）表达式：
+<programlisting>
+-- Simple scalar/primitive value
+-- Primitive values can be numbers, quoted strings, true, false, or null
+SELECT '5'::json;
+
+-- Array of zero or more elements (elements need not be of same type)
+SELECT '[1, 2, "foo", null]'::json;
+
+-- Object containing pairs of keys and values
+-- Note that object keys must always be quoted strings
+SELECT '{"bar": "baz", "balance": 7.77, "active": false}'::json;
+
+-- Arrays and objects can be nested arbitrarily
+SELECT '{"foo": [true, "bar"], "tags": {"a": 1, "b": null}}'::json;
+</programlisting>
+  </para>
+
+  <para>
+   如前所述，当一个 JSON 值被输入后又在不进行任何额外处理的情况下输出时，
+   <type>json</type> 会输出与输入完全相同的文本，而 <type>jsonb</type>
+   不会保留诸如空白这类语义上无关紧要的细节。例如，请注意这里的差异：
+<programlisting>
+SELECT '{"bar": "baz", "balance": 7.77, "active":false}'::json;
+                      json
+-------------------------------------------------
+ {"bar": "baz", "balance": 7.77, "active":false}
+(1 row)
+
+SELECT '{"bar": "baz", "balance": 7.77, "active":false}'::jsonb;
+                      jsonb
+--------------------------------------------------
+ {"bar": "baz", "active": false, "balance": 7.77}
+(1 row)
+</programlisting>
+   一个值得注意的语义无关细节是，在 <type>jsonb</type> 中，数字会按照
+   底层 <type>numeric</type> 类型的行为输出。在实践中，这意味着使用
+   <literal>E</literal> 记数法输入的数字在输出时将不再使用这种写法，例如：
+<programlisting>
+SELECT '{"reading": 1.230e-5}'::json, '{"reading": 1.230e-5}'::jsonb;
+         json          |          jsonb
+-----------------------+-------------------------
+ {"reading": 1.230e-5} | {"reading": 0.00001230}
+(1 row)
+</programlisting>
+   不过，正如这个例子所示，<type>jsonb</type> 会保留小数部分末尾的零，
+   尽管对于等值检查之类的用途来说，这些零在语义上并不重要。
+  </para>
+
+  <para>
+    关于可用于构造和处理 JSON 值的内置函数和操作符列表，见
+    <xref linkend="functions-json"/>。
+  </para>
+ </sect2>
+
+ <sect2 id="json-doc-design">
+  <title>设计 JSON 文档</title>
+  <para>
+   以 JSON 形式表示数据，可能比传统的关系数据模型灵活得多，这在需求变化较
+   大的环境中尤其有吸引力。这两种方法完全可能在同一个应用中共存并互为补充。
+   但是，即使对于追求最大灵活性的应用，也仍然建议 JSON 文档拥有某种相对固定
+   的结构。这种结构通常并不受强制约束（尽管也可以用声明式方式强制某些业务规则），
+   但具有可预测的结构会让编写查询更容易，从而能够有效地汇总表中一组
+   <quote>文档</quote>（数据项）。
+  </para>
+  <para>
+   当 JSON 数据存储在表中时，它与任何其他数据类型一样，都要面对相同的并发控
+   制考量。虽然存储大型文档是可行的，但要记住，任何更新都会在整行上获取一个
+   行级锁。应考虑将 JSON 文档限制在可管理的大小，以减少更新事务之间的锁争用。
+   理想情况下，每个 JSON 文档都应表示一个原子数据项，按照业务规则，它不应被
+   合理地进一步拆分为更小且可独立修改的数据项。
+  </para>
+ </sect2>
+
+ <sect2 id="json-containment">
+  <title><type>jsonb</type> 包含与存在</title>
+  <indexterm>
+    <primary>jsonb</primary>
+    <secondary>containment</secondary>
+  </indexterm>
+  <indexterm>
+    <primary>jsonb</primary>
+    <secondary>existence</secondary>
+  </indexterm>
+  <para>
+    测试 <firstterm>包含</firstterm>是 <type>jsonb</type> 的一项重要能力。
+    对于 <type>json</type> 类型，则没有与之对应的一组功能。包含测试用于检查
+    一个 <type>jsonb</type> 文档中是否包含另一个文档。除特别说明外，下面这些
+    示例都返回真：
+  </para>
+<programlisting>
+-- Simple scalar/primitive values contain only the identical value:
+SELECT '"foo"'::jsonb @&gt; '"foo"'::jsonb;
+
+-- The array on the right side is contained within the one on the left:
+SELECT '[1, 2, 3]'::jsonb @&gt; '[1, 3]'::jsonb;
+
+-- Order of array elements is not significant, so this is also true:
+SELECT '[1, 2, 3]'::jsonb @&gt; '[3, 1]'::jsonb;
+
+-- Duplicate array elements don't matter either:
+SELECT '[1, 2, 3]'::jsonb @&gt; '[1, 2, 2]'::jsonb;
+
+-- The object with a single pair on the right side is contained
+-- within the object on the left side:
+SELECT '{"product": "PostgreSQL", "version": 9.4, "jsonb": true}'::jsonb @&gt; '{"version": 9.4}'::jsonb;
+
+-- The array on the right side is <emphasis>not</emphasis> considered contained within the
+-- array on the left, even though a similar array is nested within it:
+SELECT '[1, 2, [1, 3]]'::jsonb @&gt; '[1, 3]'::jsonb;  -- yields false
+
+-- But with a layer of nesting, it is contained:
+SELECT '[1, 2, [1, 3]]'::jsonb @&gt; '[[1, 3]]'::jsonb;
+
+-- Similarly, containment is not reported here:
+SELECT '{"foo": {"bar": "baz"}}'::jsonb @&gt; '{"bar": "baz"}'::jsonb;  -- yields false
+
+-- A top-level key and an empty object is contained:
+SELECT '{"foo": {"bar": "baz"}}'::jsonb @&gt; '{"foo": {}}'::jsonb;
+</programlisting>
+
+  <para>
+   一般原则是，被包含对象在结构和数据内容上都必须与包含对象匹配；必要时，
+   可以从包含对象中丢弃某些不匹配的数组元素或对象键/值对后再进行这种匹配。
+   但要记住，在进行包含匹配时，数组元素的顺序并不重要，重复的数组元素实际
+   上也只会被考虑一次。
+  </para>
+
+  <para>
+   对于结构必须匹配这一一般原则，有一个特殊例外：数组可以包含一个基本值：
+  </para>
+<programlisting>
+-- This array contains the primitive string value:
+SELECT '["foo", "bar"]'::jsonb @&gt; '"bar"'::jsonb;
+
+-- This exception is not reciprocal -- non-containment is reported here:
+SELECT '"bar"'::jsonb @&gt; '["bar"]'::jsonb;  -- yields false
+</programlisting>
+
+  <para>
+    <type>jsonb</type> 还有一个 <firstterm>存在</firstterm>操作符，它可看作
+    包含的一种变体：它测试某个字符串（以 <type>text</type> 值给出）
+    是否在 <type>jsonb</type> 值的顶层作为对象键或数组元素出现。除特别说明
+    外，下面这些示例都返回真：
+  </para>
+<programlisting>
+-- String exists as array element:
+SELECT '["foo", "bar", "baz"]'::jsonb ? 'bar';
+
+-- String exists as object key:
+SELECT '{"foo": "bar"}'::jsonb ? 'foo';
+
+-- Object values are not considered:
+SELECT '{"foo": "bar"}'::jsonb ? 'bar';  -- yields false
+
+-- As with containment, existence must match at the top level:
+SELECT '{"foo": {"bar": "baz"}}'::jsonb ? 'bar'; -- yields false
+
+-- A string is considered to exist if it matches a primitive JSON string:
+SELECT '"foo"'::jsonb ? 'foo';
+</programlisting>
+
+  <para>
+    当涉及很多键或元素时，JSON 对象比数组更适合用于测试包含或存在，因为对象
+    与数组不同，内部已针对搜索做了优化，不需要进行线性搜索。
+  </para>
+
+  <tip>
+   <para>
+    由于 JSON 包含是嵌套的，因此适当的查询可以跳过对子对象的显式选择。例如，
+    假设我们有一个 <structfield>doc</structfield> 列，其顶层是对象，而且大
+    多数对象都带有 <literal>tags</literal> 字段，该字段中包含子对象数组。下面
+    这个查询会找出那些包含同时带有 <literal>"term":"paris"</literal> 和
+    <literal>"term":"food"</literal> 的子对象的项，同时忽略
+    <literal>tags</literal> 数组之外的任何此类键：
+<programlisting>
+SELECT doc-&gt;'site_name' FROM websites
+  WHERE doc @&gt; '{"tags":[{"term":"paris"}, {"term":"food"}]}';
+</programlisting>
+    例如，也可以用下面的写法完成同样的事情：
+<programlisting>
+SELECT doc-&gt;'site_name' FROM websites
+  WHERE doc-&gt;'tags' @&gt; '[{"term":"paris"}, {"term":"food"}]';
+</programlisting>
+    但这种做法的灵活性较差，而且通常效率也更低。
+   </para>
+
+   <para>
+    另一方面，JSON 的存在操作符并不是嵌套的：它只会在 JSON 值的顶层查找指定
+    的键或数组元素。
+   </para>
+  </tip>
+
+  <para>
+    各种包含和存在操作符，以及所有其他 JSON 操作符和函数，均见
+    <xref linkend="functions-json"/>。
+  </para>
+ </sect2>
+
+ <sect2 id="json-indexing">
+  <title><type>jsonb</type> 索引</title>
+  <indexterm>
+    <primary>jsonb</primary>
+    <secondary>indexes on</secondary>
+  </indexterm>
+
+  <para>
+    GIN 索引可用于高效搜索大量 <type>jsonb</type> 文档（数据项）中出现的键
+    或键/值对。提供了两种 GIN <quote>操作符类</quote>，它们在性能和灵活性
+    之间提供不同的权衡。
+  </para>
+  <para>
+    <type>jsonb</type> 的默认 GIN 操作符类支持使用键存在操作符
+    <literal>?</literal>、<literal>?|</literal> 和 <literal>?&amp;</literal>，
+    包含操作符 <literal>@&gt;</literal>，以及 <type>jsonpath</type> 匹配操作符
+    <literal>@?</literal> 和 <literal>@@</literal> 的查询。（关于这些操作符
+    所实现语义的细节，见 <xref linkend="functions-jsonb-op-table"/>。）
+    使用此操作符类创建索引的例子如下：
+<programlisting>
+CREATE INDEX idxgin ON api USING GIN (jdoc);
+</programlisting>
+    非默认的 GIN 操作符类 <literal>jsonb_path_ops</literal> 不支持键存在
+    操作符，但支持 <literal>@&gt;</literal>、<literal>@?</literal> 和
+    <literal>@@</literal>。使用此操作符类创建索引的例子如下：
+<programlisting>
+CREATE INDEX idxginp ON api USING GIN (jdoc jsonb_path_ops);
+</programlisting>
+  </para>
+
+  <para>
+    假设有一个表，用于存储从第三方 Web 服务检索到的 JSON 文档，而且该服务的
+    模式定义已有文档说明。一个典型文档如下：
+<programlisting>
+{
+    "guid": "9c36adc1-7fb5-4d5b-83b4-90356a46061a",
+    "name": "Angela Barton",
+    "is_active": true,
+    "company": "Magnafone",
+    "address": "178 Howard Place, Gulf, Washington, 702",
+    "registered": "2009-11-07T08:53:22 +08:00",
+    "latitude": 19.793713,
+    "longitude": 86.513373,
+    "tags": [
+        "enim",
+        "aliquip",
+        "qui"
+    ]
+}
+</programlisting>
+    我们把这些文档存储在名为 <structname>api</structname> 的表中，存放于
+    名为 <structfield>jdoc</structfield> 的 <type>jsonb</type> 列里。
+    如果在该列上创建了 GIN 索引，那么下面这样的查询就可以利用这个索引：
+<programlisting>
+-- Find documents in which the key "company" has value "Magnafone"
+SELECT jdoc-&gt;'guid', jdoc-&gt;'name' FROM api WHERE jdoc @&gt; '{"company": "Magnafone"}';
+</programlisting>
+    但是，类似下面这样的查询就无法使用该索引，因为虽然操作符
+    <literal>?</literal> 可索引，但它并未直接应用到被索引的列
+    <structfield>jdoc</structfield> 上：
+<programlisting>
+-- Find documents in which the key "tags" contains key or array element "qui"
+SELECT jdoc-&gt;'guid', jdoc-&gt;'name' FROM api WHERE jdoc -&gt; 'tags' ? 'qui';
+</programlisting>
+    不过，只要适当地使用表达式索引，上述查询也可以利用索引。如果经常查询
+    <literal>"tags"</literal> 键中的特定项，那么定义如下索引可能是值得的：
+<programlisting>
+CREATE INDEX idxgintags ON api USING GIN ((jdoc -&gt; 'tags'));
+</programlisting>
+    现在，<literal>WHERE</literal> 子句
+    <literal>jdoc -&gt; 'tags' ? 'qui'</literal> 会被识别为把可索引操作符
+    <literal>?</literal> 应用于被索引表达式
+    <literal>jdoc -&gt; 'tags'</literal>。（表达式索引的更多信息见 <xref
+    linkend="indexes-expressional"/>。）
+  </para>
+
+  <para>
+    另一种查询方法是利用包含，例如：
+<programlisting>
+-- Find documents in which the key "tags" contains array element "qui"
+SELECT jdoc-&gt;'guid', jdoc-&gt;'name' FROM api WHERE jdoc @&gt; '{"tags": ["qui"]}';
+</programlisting>
+    <structfield>jdoc</structfield> 列上的简单 GIN 索引可以支持这个查询。
+    但要注意，这样的索引会存储 <structfield>jdoc</structfield> 列中每个键和
+    值的副本，而前一个例子中的表达式索引只存储 <literal>tags</literal> 键下
+    出现的数据。虽然简单索引方法灵活得多（因为它支持对任意键的查询），但有针
+    对性的表达式索引通常会比简单索引更小，搜索起来也更快。
+  </para>
+
+  <para>
+    GIN 索引还支持 <literal>@?</literal> 和 <literal>@@</literal> 操作符，
+    它们执行 <type>jsonpath</type> 匹配。示例如下：
+<programlisting>
+SELECT jdoc->'guid', jdoc->'name' FROM api WHERE jdoc @? '$.tags[*] ? (@ == "qui")';
+</programlisting>
+<programlisting>
+SELECT jdoc->'guid', jdoc->'name' FROM api WHERE jdoc @@ '$.tags[*] == "qui"';
+</programlisting>
+    对于这些操作符，GIN 索引会从
+    <type>jsonpath</type> 模式中提取出形如
+    <literal><replaceable>accessors_chain</replaceable>
+    == <replaceable>constant</replaceable></literal> 的子句，并根据其中提到
+    的键和值进行索引搜索。访问器链可以包含
+    <literal>.<replaceable>key</replaceable></literal>、
+    <literal>[*]</literal> 和
+    <literal>[<replaceable>index</replaceable>]</literal> 访问器。
+    <literal>jsonb_ops</literal> 操作符类还支持 <literal>.*</literal> 和
+    <literal>.**</literal> 访问器，但 <literal>jsonb_path_ops</literal>
+    操作符类不支持。
+  </para>
+
+  <para>
+    虽然 <literal>jsonb_path_ops</literal> 操作符类只支持带有
+    <literal>@&gt;</literal>、<literal>@?</literal> 和
+    <literal>@@</literal> 操作符的查询，但相较于默认操作符类
+    <literal>jsonb_ops</literal>，它具有显著的性能优势。
+    <literal>jsonb_path_ops</literal> 索引通常比相同数据上的
+    <literal>jsonb_ops</literal> 索引小得多，而且搜索条件也更具特异性，尤其是在
+    查询中包含数据里频繁出现的键时。因此，搜索操作通常比使用默认操作符类时
+    性能更佳。
+  </para>
+
+  <para>
+    <literal>jsonb_ops</literal> 与 <literal>jsonb_path_ops</literal>
+    GIN 索引之间的技术差异在于，前者会为数据中的每个键和值分别创建独立的
+    索引项，而后者只会为数据中的每个值创建索引项。
+    <footnote>
+     <para>
+      在这里，术语 <quote>值</quote> 也包括数组元素，尽管在 JSON 术语中，
+      有时会把数组元素与对象中的值区分开来。
+     </para>
+    </footnote>
+    基本上，每个 <literal>jsonb_path_ops</literal> 索引项都是该值连同
+    通向该值的键一起计算出的哈希。例如，要索引
+    <literal>{"foo": {"bar": "baz"}}</literal>，会创建一个单独的索引项，
+    其哈希值中同时纳入 <literal>foo</literal>、<literal>bar</literal> 和
+    <literal>baz</literal> 这三者。因此，查找这一结构的包含查询会得到一次
+    非常精确的索引搜索；但完全没有办法据此找出 <literal>foo</literal> 是否
+    作为键出现。另一方面，<literal>jsonb_ops</literal> 索引会分别创建三个
+    索引项来表示 <literal>foo</literal>、<literal>bar</literal> 和
+    <literal>baz</literal>；然后为了执行包含查询，它会查找包含这三个项的行。
+    尽管 GIN 索引可以相当高效地执行这种 AND 搜索，但它仍然会比等效的
+    <literal>jsonb_path_ops</literal> 搜索更不精确、也更慢，尤其是在包含这
+    三个索引项中任意一个的行数非常多时。
+  </para>
+
+  <para>
+    <literal>jsonb_path_ops</literal> 方法的一个缺点是，它不会为不包含任何值
+    的 JSON 结构产生索引项，例如 <literal>{"a": {}}</literal>。如果请求查
+    找包含此类结构的文档，就需要执行一次全索引扫描，这会相当慢。因此，
+    <literal>jsonb_path_ops</literal> 并不适合经常执行此类搜索的应用。
+  </para>
+
+  <para>
+    <type>jsonb</type> 还支持 <literal>btree</literal> 和
+    <literal>hash</literal> 索引。通常只有在需要检查完整 JSON 文档是否相等时，
+    它们才有用。<literal>btree</literal> 对 <type>jsonb</type> 数据项的
+    排序通常没什么太大意义，但为了完整起见，其规则如下：
+<synopsis>
+<replaceable>对象</replaceable> > <replaceable>数组</replaceable> > <replaceable>布尔值</replaceable> > <replaceable>数字</replaceable> > <replaceable>字符串</replaceable> > <replaceable>null</replaceable>
+
+<replaceable>包含 n 个键值对的对象</replaceable> > <replaceable>包含 n - 1 个键值对的对象</replaceable>
+
+<replaceable>包含 n 个元素的数组</replaceable> > <replaceable>包含 n - 1 个元素的数组</replaceable>
+</synopsis>
+      其中有一个例外：出于历史原因，顶层空数组的排序小于
+      <replaceable>null</replaceable>。如果对象所含键值对数量相同，则按如下顺序比较：
+<synopsis>
+<replaceable>键-1</replaceable>, <replaceable>值-1</replaceable>, <replaceable>键-2</replaceable> ...
+</synopsis>
+      注意，对象键按照其存储顺序进行比较；尤其是由于较短的键会先于较长的键
+      存储，因此这可能导致一些不太直观的结果，例如：
+<programlisting>
+{ "aa": 1, "c": 1} > {"b": 1, "d": 1}
+</programlisting>
+      同样，如果数组所含元素数量相同，则按如下顺序比较：
+<synopsis>
+<replaceable>元素-1</replaceable>, <replaceable>元素-2</replaceable> ...
+</synopsis>
+      JSON 基本值使用与底层 <productname>PostgreSQL</productname> 数据类
+      型相同的比较规则。字符串使用默认数据库排序规则进行比较。
+  </para>
+ </sect2>
+
+ <sect2 id="jsonb-subscripting">
+  <title><type>jsonb</type> 下标</title>
+  <para>
+   <type>jsonb</type> 数据类型支持数组风格的下标表达式，用于提取和修改元素。
+   嵌套值可以通过串接下标表达式来表示，其规则与 <literal>jsonb_set</literal>
+   函数中的 <literal>path</literal> 参数相同。如果一个 <type>jsonb</type>
+   值是数组，数值下标从零开始，负整数则从数组最后一个元素开始反向计数。
+   不支持切片表达式。下标表达式的结果始终是 jsonb 数据类型。
+  </para>
+
+  <para>
+   <command>UPDATE</command> 语句可以在 <literal>SET</literal> 子句中使用
+   下标来修改 <type>jsonb</type> 值。对于所有受影响的值，只要路径上的相应层级
+   已存在，就必须能够沿着该下标路径继续遍历。例如，如果每个 <literal>val</literal>、
+   <literal>val['a']</literal> 和 <literal>val['a']['b']</literal> 都是对象，
+   那么路径 <literal>val['a']['b']['c']</literal> 就可以一路遍历到
+   <literal>c</literal>。如果 <literal>val['a']</literal> 或
+   <literal>val['a']['b']</literal> 尚未定义，就会把它创建为空对象并按需要填
+   充。但如果 <literal>val</literal> 本身或某个中间值被定义为字符串、数字或
+   <literal>jsonb</literal> <literal>null</literal> 之类的非对象，就无法继
+   续遍历，因此会报错并中止事务。
+  </para>
+
+  <para>
+   下标语法示例：
+
+<programlisting>
+
+-- Extract object value by key
+SELECT ('{"a": 1}'::jsonb)['a'];
+
+-- Extract nested object value by key path
+SELECT ('{"a": {"b": {"c": 1}}}'::jsonb)['a']['b']['c'];
+
+-- Extract array element by index
+SELECT ('[1, "2", null]'::jsonb)[1];
+
+-- Update object value by key. Note the quotes around '1': the assigned
+-- value must be of the jsonb type as well
+UPDATE table_name SET jsonb_field['key'] = '1';
+
+-- This will raise an error if any record's jsonb_field['a']['b'] is something
+-- other than an object. For example, the value {"a": 1} has a numeric value
+-- of the key 'a'.
+UPDATE table_name SET jsonb_field['a']['b']['c'] = '1';
+
+-- Filter records using a WHERE clause with subscripting. Since the result of
+-- subscripting is jsonb, the value we compare it against must also be jsonb.
+-- The double quotes make "value" also a valid jsonb string.
+SELECT * FROM table_name WHERE jsonb_field['key'] = '"value"';
+</programlisting>
+
+   通过下标进行的 <type>jsonb</type> 赋值在若干边界情况下与
+   <literal>jsonb_set</literal> 的行为不同。当源 <type>jsonb</type>
+   值为 <literal>NULL</literal> 时，下标赋值会把它当作由下标键所暗示类型
+   （对象或数组）的空 JSON 值来处理：
+
+<programlisting>
+-- Where jsonb_field was NULL, it is now {"a": 1}
+UPDATE table_name SET jsonb_field['a'] = '1';
+
+-- Where jsonb_field was NULL, it is now [1]
+UPDATE table_name SET jsonb_field[0] = '1';
+</programlisting>
+
+   如果对一个元素数量不足的数组指定了某个索引，就会不断追加
+   <literal>NULL</literal> 元素，直到该索引可达并且可以设置该值为止。
+
+<programlisting>
+-- Where jsonb_field was [], it is now [null, null, 2];
+-- where jsonb_field was [0], it is now [0, null, 2]
+UPDATE table_name SET jsonb_field[2] = '2';
+</programlisting>
+
+   只要沿路径遍历时最后一个已存在的元素是对象或数组（与对应下标所暗示的类
+   型一致；路径中最后一个下标指向的元素本身不会被遍历，因此它可以是任何值），
+   那么 <type>jsonb</type> 值就接受对不存在下标路径的赋值。系统会根据下标
+   路径创建嵌套的数组和对象结构；在前一种情况下还会按需要以
+   <literal>null</literal> 填充，直到能够放入被赋值的值为止。
+
+<programlisting>
+-- Where jsonb_field was {}, it is now {"a": [{"b": 1}]}
+UPDATE table_name SET jsonb_field['a'][0]['b'] = '1';
+
+-- Where jsonb_field was [], it is now [null, {"a": 1}]
+UPDATE table_name SET jsonb_field[1]['a'] = '1';
+</programlisting>
+
+  </para>
+ </sect2>
+
+ <sect2 id="datatype-json-transforms">
+  <title>转换</title>
+
+  <para>
+   还提供了一些附加扩展，为不同过程语言实现了 <type>jsonb</type> 类型的转换。
+  </para>
+
+  <para>
+   PL/Perl 的扩展名为 <literal>jsonb_plperl</literal> 和
+   <literal>jsonb_plperlu</literal>。如果使用它们，
+   <type>jsonb</type> 值会按适当方式映射为 Perl 数组、哈希和标量。
+  </para>
+
+  <para>
+   PL/Python 的扩展名为 <literal>jsonb_plpython3u</literal>。如果使用它，
+   <type>jsonb</type> 值会按适当方式映射为 Python 字典、列表和标量。
+  </para>
+
+  <para>
+   在这些扩展中，<literal>jsonb_plperl</literal> 被视为
+   <quote>受信任的</quote>，也就是说，它可以由在当前数据库上拥有
+   <literal>CREATE</literal> 权限的非超级用户安装。其余扩展则需要超级用户
+   权限才能安装。
+  </para>
+ </sect2>
+
+ <sect2 id="datatype-jsonpath">
+  <title>jsonpath 类型</title>
+
+  <indexterm zone="datatype-jsonpath">
+   <primary>jsonpath</primary>
+  </indexterm>
+
+  <para>
+   <type>jsonpath</type> 类型在 <productname>PostgreSQL</productname> 中
+   实现了对 SQL/JSON 路径语言的支持，以便高效查询 JSON 数据。它提供了解析后
+   的 SQL/JSON 路径表达式的二进制表示，该表达式指定路径引擎应从 JSON 数据中
+   检索哪些项，以便由 SQL/JSON 查询函数做进一步处理。
+  </para>
+
+  <para>
+   SQL/JSON 路径谓词和操作符的语义通常遵循 SQL。同时，为了以更自然的方式处
+   理 JSON 数据，SQL/JSON 路径语法采用了一些 JavaScript 约定：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     点号（<literal>.</literal>）用于成员访问。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     方括号（<literal>[]</literal>）用于数组访问。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     与从 1 开始的普通 SQL 数组不同，SQL/JSON 数组以下标 0 为起点。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   SQL/JSON 路径表达式中的数字字面量遵循 JavaScript 规则，这在一些细节上
+   与 SQL 和 JSON 都不同。例如，SQL/JSON 路径允许
+   <literal>.1</literal> 和 <literal>1.</literal>，而它们在 JSON 中是无效
+   的。还支持非十进制整数字面量和下划线分隔符，例如
+   <literal>1_000_000</literal>、<literal>0x1EEE_FFFF</literal>、
+   <literal>0o273</literal>、<literal>0b100101</literal>。在 SQL/JSON
+   路径中（以及 JavaScript 中，但不包括严格意义上的 SQL），基数前缀后面不能
+   直接出现下划线分隔符。
+  </para>
+
+  <para>
+   SQL/JSON 路径表达式通常在 SQL 查询中写成 SQL 字符串字面量，因此它必须用
+   单引号括起来，而值中若要出现单引号，则必须写成两个单引号（见
+   <xref linkend="sql-syntax-strings"/>）。某些形式的路径表达式还要求其中
+   再包含字符串字面量。这些嵌入式字符串字面量遵循 JavaScript/ECMAScript
+   约定：它们必须用双引号括起，并且可以在其中使用反斜杠转义来表示其他难以输
+   入的字符。特别地，在嵌入式字符串字面量中写双引号要使用
+   <literal>\"</literal>，写反斜杠本身则必须写成 <literal>\\</literal>。
+   其他特殊反斜杠序列包括 JavaScript 字符串中识别的：
+   <literal>\b</literal>、
+   <literal>\f</literal>、
+   <literal>\n</literal>、
+   <literal>\r</literal>、
+   <literal>\t</literal>、
+   <literal>\v</literal>，
+   用于各种 ASCII 控制字符；
+   <literal>\x<replaceable>NN</replaceable></literal> 表示仅用两个十六进制
+   数字写出的字符码；
+   <literal>\u<replaceable>NNNN</replaceable></literal> 表示由 4 位十六进
+   制码点标识的 Unicode 字符；
+   <literal>\u{<replaceable>N...</replaceable>}</literal> 则表示用 1 到 6
+   位十六进制数字写出的 Unicode 字符码点。
+  </para>
+
+  <para>
+   路径表达式由一系列路径元素构成，可以是下列任意一种：
+   <itemizedlist>
+    <listitem>
+     <para>
+      JSON 基本类型的路径字面量：Unicode 文本、数值、true、false 或 null。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <xref linkend="type-jsonpath-variables"/> 中列出的路径变量。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <xref linkend="type-jsonpath-accessors"/> 中列出的访问器操作符。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <type>jsonpath</type> 操作符和方法，列于
+      <xref linkend="functions-sqljson-path-operators"/>。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      括号，可用于提供过滤表达式或定义路径求值顺序。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+
+  <para>
+   关于在 SQL/JSON 查询函数中使用 <type>jsonpath</type> 表达式的细节，见
+   <xref linkend="functions-sqljson-path"/>。
+  </para>
+
+  <table id="type-jsonpath-variables">
+   <title><type>jsonpath</type> 变量</title>
+   <tgroup cols="2">
+    <colspec colname="col1" colwidth="1*"/>
+    <colspec colname="col2" colwidth="2*"/>
+    <thead>
+     <row>
+      <entry>变量</entry>
+      <entry>描述</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry><literal>$</literal></entry>
+      <entry>表示正在被查询的 JSON 值的变量（<firstterm>上下文项</firstterm>）。
+      </entry>
+     </row>
+     <row>
+      <entry><literal>$varname</literal></entry>
+      <entry>
+        命名变量。它的值可以由若干 JSON 处理函数的
+        <parameter>vars</parameter> 参数设置（详见
+        <xref linkend="functions-json-processing-table"/>），或者通过
+        SQL/JSON <literal>PASSING</literal> 子句来设置，如
+        <xref linkend="sqljson-query-functions"/> 所述。
+      </entry>
+     </row>
+     <row>
+      <entry><literal>@</literal></entry>
+      <entry>表示过滤表达式中路径求值结果的变量。
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <table id="type-jsonpath-accessors">
+   <title><type>jsonpath</type> 访问器</title>
+   <tgroup cols="2">
+    <colspec colname="col1" colwidth="1*"/>
+    <colspec colname="col2" colwidth="2*"/>
+    <thead>
+     <row>
+      <entry>访问器操作符</entry>
+      <entry>描述</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>
+       <para>
+        <literal>.<replaceable>key</replaceable></literal>
+       </para>
+       <para>
+        <literal>."$<replaceable>varname</replaceable>"</literal>
+       </para>
+      </entry>
+      <entry>
+       <para>
+        成员访问器，用于返回指定键对应的对象成员。如果键名与某个以
+        <literal>$</literal> 开头的命名变量相同，或者不符合 JavaScript
+        对标识符的规则，就必须用双引号将其括起，使其成为字符串字面量。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        <literal>.*</literal>
+       </para>
+      </entry>
+      <entry>
+       <para>
+        通配符成员访问器，返回当前对象顶层所有成员的值。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        <literal>.**</literal>
+       </para>
+      </entry>
+      <entry>
+       <para>
+        递归通配符成员访问器，处理当前对象 JSON 层次结构的所有层级，并返回
+        所有成员值，而不论其嵌套层级如何。这是
+        <productname>PostgreSQL</productname> 对 SQL/JSON 标准的扩展。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        <literal>.**{<replaceable>level</replaceable>}</literal>
+       </para>
+       <para>
+        <literal>.**{<replaceable>start_level</replaceable> to
+        <replaceable>end_level</replaceable>}</literal>
+       </para>
+      </entry>
+      <entry>
+       <para>
+        类似 <literal>.**</literal>，但只选择 JSON 层次结构中指定的层级。
+        嵌套层级以整数指定。层级零对应当前对象。若要访问最低的嵌套层级，
+        可以使用 <literal>last</literal> 关键字。这是
+        <productname>PostgreSQL</productname> 对 SQL/JSON 标准的扩展。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        <literal>[<replaceable>subscript</replaceable>, ...]</literal>
+       </para>
+      </entry>
+      <entry>
+       <para>
+        数组元素访问器。<literal><replaceable>subscript</replaceable></literal>
+        可以用两种形式给出：
+        <literal><replaceable>index</replaceable></literal> 或
+        <literal><replaceable>start_index</replaceable> to <replaceable>end_index</replaceable></literal>。
+        第一种形式按索引返回单个数组元素。第二种形式按索引范围返回数组切片，
+        其中包括与给定 <replaceable>start_index</replaceable> 和
+        <replaceable>end_index</replaceable> 对应的元素。
+       </para>
+       <para>
+        指定的 <replaceable>index</replaceable> 可以是整数，也可以是返回单个
+        数值的表达式，该表达式会自动转换为整数。索引零对应第一个数组元素。
+        你也可以使用 <literal>last</literal> 关键字来表示最后一个数组元素，
+        这对于处理长度未知的数组很有用。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        <literal>[*]</literal>
+       </para>
+      </entry>
+      <entry>
+       <para>
+        通配符数组元素访问器，返回所有数组元素。
+       </para>
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+ </sect2>
+</sect1>

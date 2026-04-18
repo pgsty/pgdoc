@@ -1,0 +1,321 @@
+<!--
+doc/src/sgml/ref/wait_for.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-wait-for">
+ <indexterm zone="sql-wait-for">
+  <primary>WAIT FOR</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>WAIT FOR</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>WAIT FOR</refname>
+  <refpurpose>等待 WAL 达到目标 <acronym>LSN</acronym></refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+<synopsis>
+WAIT FOR LSN '<replaceable class="parameter">lsn</replaceable>'
+    [ WITH ( <replaceable class="parameter">option</replaceable> [, ...] ) ]
+
+<phrase>where <replaceable class="parameter">option</replaceable> can be:</phrase>
+
+    MODE '<replaceable class="parameter">mode</replaceable>'
+    TIMEOUT '<replaceable class="parameter">timeout</replaceable>'
+    NO_THROW
+
+<phrase>and <replaceable class="parameter">mode</replaceable> can be:</phrase>
+
+    standby_replay | standby_write | standby_flush | primary_flush
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>描述</title>
+
+  <para>
+   等待直到根据指定的 <parameter>mode</parameter> 达到指定的 <parameter>lsn</parameter>，
+   其中 <parameter>mode</parameter> 决定等待 WAL 被写入、刷盘还是回放。
+   如果没有指定 <parameter>timeout</parameter>，或者其值为零，则此命令会无限期等待
+   <parameter>lsn</parameter>。
+  </para>
+
+  <para>
+   超时时会发出错误，除非在 WITH 子句中指定了 <literal>NO_THROW</literal>。
+   对于备库模式（<literal>standby_replay</literal>、<literal>standby_write</literal>、
+   <literal>standby_flush</literal>），如果在达到 <parameter>lsn</parameter> 之前服务器被提升，
+   也会发出错误。如果指定了 <parameter>NO_THROW</parameter>，命令会返回一个状态字符串，而不是抛出错误。
+  </para>
+
+  <para>
+   可能的返回值是 <literal>success</literal>、<literal>timeout</literal> 和
+   <literal>not in recovery</literal>。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>参数</title>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-wait_for-varlistentry-1">
+    <term><replaceable class="parameter">lsn</replaceable></term>
+    <listitem>
+     <para>
+      指定要等待的目标 <acronym>LSN</acronym>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-wait_for-varlistentry-2">
+    <term><literal>WITH ( <replaceable class="parameter">option</replaceable> [, ...] )</literal></term>
+    <listitem>
+     <para>
+      此子句指定等待操作的可选参数。支持以下参数：
+
+      <variablelist>
+       <varlistentry id="zh18-auto-wait_for-varlistentry-3">
+        <term><literal>MODE</literal> '<replaceable class="parameter">mode</replaceable>'</term>
+        <listitem>
+         <para>
+          指定要等待的 LSN 处理类型。如果未指定，默认值为
+          <literal>standby_replay</literal>。有效模式如下：
+         </para>
+         <itemizedlist>
+          <listitem>
+           <para>
+            <literal>standby_replay</literal>：等待该 LSN 在备库上被回放（应用到数据库）。
+            成功完成后，<function>pg_last_wal_replay_lsn()</function> 将返回大于或等于目标 LSN 的值。
+            此模式只能在恢复期间使用。
+           </para>
+          </listitem>
+          <listitem>
+           <para>
+            <literal>standby_write</literal>：等待包含该 LSN 的 WAL 从主库接收并写入备库磁盘，
+            但尚未刷盘。这比 <literal>standby_flush</literal> 更快，但持久性保证更弱，因为数据可能仍在操作系统缓冲区中。
+            成功完成后，<link linkend="monitoring-pg-stat-wal-receiver-view">
+            <structname>pg_stat_wal_receiver</structname></link> 中的
+            <structfield>written_lsn</structfield> 列将显示大于或等于目标 LSN 的值。
+            此模式只能在恢复期间使用。
+           </para>
+          </listitem>
+          <listitem>
+           <para>
+            <literal>standby_flush</literal>：等待包含该 LSN 的 WAL 从主库接收并刷盘到备库磁盘。
+            这提供了持久性保证，而无需等待 WAL 被应用。成功完成后，
+            <function>pg_last_wal_receive_lsn()</function> 将返回大于或等于目标 LSN 的值。
+            该值也可作为 <link linkend="monitoring-pg-stat-wal-receiver-view">
+            <structname>pg_stat_wal_receiver</structname></link> 中的
+            <structfield>flushed_lsn</structfield> 列获取。此模式只能在恢复期间使用。
+           </para>
+          </listitem>
+          <listitem>
+           <para>
+            <literal>primary_flush</literal>：等待包含该 LSN 的 WAL 在主库上刷盘。
+            成功完成后，<function>pg_current_wal_flush_lsn()</function> 将返回大于或等于目标 LSN 的值。
+            此模式只能在主库上使用（不能在恢复期间使用）。
+           </para>
+          </listitem>
+         </itemizedlist>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-wait_for-varlistentry-4">
+        <term><literal>TIMEOUT</literal> '<replaceable class="parameter">timeout</replaceable>'</term>
+        <listitem>
+         <para>
+          在指定且 <parameter>timeout</parameter> 大于零时，命令会一直等待到
+          <parameter>lsn</parameter> 达到，或者直到指定的 <parameter>timeout</parameter> 到期为止。
+         </para>
+         <para>
+          <parameter>timeout</parameter> 可以给定为整数毫秒数。
+          也可以给定为字符串字面量，表示整数毫秒数，或者带单位的数值
+          （见 <xref linkend="config-setting-names-values"/>）。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-wait_for-varlistentry-5">
+        <term><literal>NO_THROW</literal></term>
+        <listitem>
+         <para>
+          指定在超时或在主库上运行时不抛出错误。在这种情况下，可以从返回值中获取结果状态。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>输出</title>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-wait_for-varlistentry-6">
+    <term><literal>success</literal></term>
+    <listitem>
+     <para>
+      此返回值表示已成功达到目标 <parameter>lsn</parameter>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-wait_for-varlistentry-7">
+    <term><literal>timeout</literal></term>
+    <listitem>
+     <para>
+      此返回值表示在达到目标 <parameter>lsn</parameter> 之前发生了超时。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-wait_for-varlistentry-8">
+    <term><literal>not in recovery</literal></term>
+    <listitem>
+     <para>
+      此返回值表示数据库服务器不处于恢复状态。
+      这可能意味着数据库服务器在接收到命令时并不处于恢复状态（即在主库上执行），
+      也可能意味着它在达到目标 <parameter>lsn</parameter> 之前被提升。
+      在提升的情况下，此状态表示发生了时间线变更，而正在等待的目标 LSN 可能仍指向旧时间线中的 WAL。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>备注</title>
+  <para>
+   <command>WAIT FOR</command> 必须作为顶层命令执行。
+   它不能在函数、过程或 <command>DO</command> 块中执行。
+   它还要求不存在活动或已注册的快照，因此不能在必须保持此类快照处于活动状态的上下文中使用，
+   包括隔离级别高于 <literal>READ COMMITTED</literal> 的事务。
+  </para>
+
+  <para>
+   <command>WAIT FOR</command> 会根据指定的 <parameter>mode</parameter> 一直等待直到达到指定的
+   <parameter>lsn</parameter>。<literal>standby_replay</literal> 模式会等待该 LSN 被回放（应用到数据库），
+   这有助于在使用异步副本读取和主库写入时实现读己之写一致性。
+   <literal>standby_flush</literal> 模式会等待 WAL 在副本上刷入持久存储，从而在不等待回放的情况下提供持久性保证。
+   <literal>standby_write</literal> 模式会等待 WAL 写入操作系统，这比刷盘更快，但持久性保证更弱。
+   <literal>primary_flush</literal> 模式会等待 WAL 在主库上刷盘。
+   在所有情况下，最后一次修改的 <acronym>LSN</acronym> 应当存储在客户端应用程序一侧或连接池一侧。
+  </para>
+
+  <para>
+   备库模式（<literal>standby_replay</literal>、<literal>standby_write</literal>、
+   <literal>standby_flush</literal>）只能在恢复期间使用，而 <literal>primary_flush</literal>
+   只能在主库上使用。对当前服务器状态使用错误的模式会导致错误。
+   如果在使用备库模式等待期间备库被提升，命令将返回 <literal>not in recovery</literal>（或者在未指定
+   <literal>NO_THROW</literal> 时抛出错误）。提升会创建新的时间线，而正在等待的 LSN 可能指向旧时间线中的 WAL。
+  </para>
+
+  <para>
+   在备库服务器上，<command>WAIT FOR</command> 会话可能会被恢复冲突中断。
+   某些恢复冲突是不可避免的：例如，回放一个表空间删除操作时，无论后端正在执行什么，都会通过终止所有后端来解决冲突。
+   在备库上使用 <command>WAIT FOR</command> 的应用程序应准备好处理此类中断，例如通过重试命令或回退到其他机制。
+  </para>
+
+</refsect1>
+
+ <refsect1>
+  <title>示例</title>
+
+  <para>
+   可以使用 <command>WAIT FOR</command> 命令等待 <type>pg_lsn</type> 值。
+   例如，应用程序可以更新 <literal>movie</literal> 表，并在刚刚完成更改后获取 <acronym>lsn</acronym>。
+   由于 <varname>synchronous_commit</varname> 可能设置为 <literal>off</literal>，此示例在主库上使用
+   <function>pg_current_wal_insert_lsn</function> 获取 <acronym>lsn</acronym>。
+
+   <programlisting>
+postgres=# UPDATE movie SET genre = 'Dramatic' WHERE genre = 'Drama';
+UPDATE 100
+postgres=# SELECT pg_current_wal_insert_lsn();
+ pg_current_wal_insert_lsn
+---------------------------
+ 0/306EE20
+(1 row)
+</programlisting>
+
+   然后，应用程序可以使用从主库获得的 <parameter>lsn</parameter> 运行 <command>WAIT FOR</command>。
+   之后，主库上所做的更改应当保证在副本上可见。
+
+<programlisting>
+postgres=# WAIT FOR LSN '0/306EE20';
+ status
+---------
+ success
+(1 row)
+postgres=# SELECT * FROM movie WHERE genre = 'Drama';
+ genre
+-------
+(0 rows)
+</programlisting>
+  </para>
+
+  <para>
+   等待刷盘（数据在副本上持久化）：
+
+<programlisting>
+postgres=# WAIT FOR LSN '0/306EE20' WITH (MODE 'standby_flush');
+ status
+---------
+ success
+(1 row)
+</programlisting>
+  </para>
+
+  <para>
+   带超时的等待写入：
+
+<programlisting>
+postgres=# WAIT FOR LSN '0/306EE20' WITH (MODE 'standby_write', TIMEOUT '100ms', NO_THROW);
+ status
+---------
+ success
+(1 row)
+</programlisting>
+  </para>
+
+  <para>
+   等待主库刷盘：
+
+<programlisting>
+postgres=# WAIT FOR LSN '0/306EE20' WITH (MODE 'primary_flush');
+ status
+---------
+ success
+(1 row)
+</programlisting>
+  </para>
+
+  <para>
+   如果在超时之前未达到目标 LSN，则会抛出错误：
+
+<programlisting>
+postgres=# WAIT FOR LSN '0/306EE20' WITH (TIMEOUT '0.1s');
+ERROR:  timed out while waiting for target LSN 0/306EE20 to be replayed; current replay LSN 0/306EA60
+</programlisting>
+  </para>
+
+  <para>
+   同一个示例使用带 <parameter>NO_THROW</parameter> 选项的 <command>WAIT FOR</command>：
+
+<programlisting>
+postgres=# WAIT FOR LSN '0/306EE20' WITH (TIMEOUT '100ms', NO_THROW);
+ status
+---------
+ timeout
+(1 row)
+</programlisting>
+  </para>
+ </refsect1>
+</refentry>

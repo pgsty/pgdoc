@@ -1,0 +1,601 @@
+<!-- doc/src/sgml/array.sgml -->
+
+<sect1 id="arrays">
+ <title>数组</title>
+
+ <indexterm>
+  <primary>array</primary>
+ </indexterm>
+
+ <para>
+  <productname>PostgreSQL</productname> 允许把表的列定义为变长多维数组。可以创建内置或用户定义的基础类型、枚举类型、复合类型、范围类型或域的数组。
+ </para>
+
+ <sect2 id="arrays-declaration">
+  <title>数组类型的声明</title>
+
+  <indexterm>
+   <primary>array</primary>
+   <secondary>declaration</secondary>
+  </indexterm>
+
+ <para>
+  为了说明数组类型的用法，我们创建下面这个表：
+<programlisting>
+CREATE TABLE sal_emp (
+    name            text,
+    pay_by_quarter  integer[],
+    schedule        text[][]
+);
+</programlisting>
+  如上所示，数组数据类型通过在数组元素的数据类型名后附加方括号（<literal>[]</literal>）来命名。上述命令将创建一个名为 <structname>sal_emp</structname> 的表，其中有一个 <type>text</type> 类型的列（<structfield>name</structfield>）、一个表示员工各季度薪资的一维 <type>integer</type> 数组（<structfield>pay_by_quarter</structfield>），以及一个表示员工每周日程安排的二维 <type>text</type> 数组（<structfield>schedule</structfield>）。
+ </para>
+
+ <para>
+  <command>CREATE TABLE</command> 的语法允许指定数组的确切大小，例如：
+
+<programlisting>
+CREATE TABLE tictactoe (
+    squares   integer[3][3]
+);
+</programlisting>
+
+  不过，当前实现会忽略给出的任何数组大小限制，也就是说，其行为与未指定长度的数组相同。
+ </para>
+
+ <para>
+  当前实现也不会强制执行所声明的维度数。对于某一特定元素类型的数组，无论大小或维度数如何，都会被视为同一种类型。因此，在 <command>CREATE TABLE</command> 中声明数组大小或维度数仅仅是文档说明；它不会影响运行时行为。
+ </para>
+
+ <para>
+  另一种使用关键字 <literal>ARRAY</literal>、并且符合 SQL 标准的语法可用于一维数组。<structfield>pay_by_quarter</structfield> 也可以定义为：
+<programlisting>
+    pay_by_quarter  integer ARRAY[4],
+</programlisting>
+  或者，如果不指定数组大小：
+<programlisting>
+    pay_by_quarter  integer ARRAY,
+</programlisting>
+  不过，与前面一样，<productname>PostgreSQL</productname> 在任何情况下都不会强制执行大小限制。
+ </para>
+ </sect2>
+
+ <sect2 id="arrays-input">
+  <title>数组值输入</title>
+
+  <indexterm>
+   <primary>array</primary>
+   <secondary>constant</secondary>
+  </indexterm>
+
+  <para>
+   要把数组值写成字面常量，请将元素值放在花括号内，并用逗号分隔。（如果你了解 C，这与 C 中初始化结构的语法有些类似。）你可以给任意元素值加上双引号；如果它包含逗号或花括号，则必须这样做。（更多细节见下文。）因此，数组常量的一般格式如下：
+<synopsis>
+'{ <replaceable>val1</replaceable> <replaceable>delim</replaceable> <replaceable>val2</replaceable> <replaceable>delim</replaceable> ... }'
+</synopsis>
+   其中 <replaceable>delim</replaceable> 是该类型的分隔符字符，它记录在其 <literal>pg_type</literal> 条目中。在 <productname>PostgreSQL</productname> 发行版提供的标准数据类型里，除类型 <type>box</type> 使用分号（<literal>;</literal>）外，其余都使用逗号（<literal>,</literal>）。每个 <replaceable>val</replaceable> 要么是数组元素类型的常量，要么是一个子数组。数组常量的一个示例是：
+<programlisting>
+'{{1,2,3},{4,5,6},{7,8,9}}'
+</programlisting>
+   这个常量是一个 3 x 3 的二维数组，由三个整数子数组构成。
+  </para>
+
+  <para>
+   要把数组常量中的某个元素设为 NULL，请把该元素值写成 <literal>NULL</literal>。（<literal>NULL</literal> 的任意大小写变体都可以。）如果你想要实际的字符串值 <quote>NULL</quote>，就必须为它加上双引号。
+  </para>
+
+  <para>
+   （这类数组常量实际上只是<xref
+   linkend="sql-syntax-constants-generic"/>中讨论的通用类型常量的一种特例。该常量最初会被当作字符串处理，然后传递给数组输入转换例程。必要时可能需要显式指定类型。）
+  </para>
+
+  <para>
+   现在我们来看几个 <command>INSERT</command> 语句：
+
+<programlisting>
+INSERT INTO sal_emp
+    VALUES ('Bill',
+    '{10000, 10000, 10000, 10000}',
+    '{{"meeting", "lunch"}, {"training", "presentation"}}');
+
+INSERT INTO sal_emp
+    VALUES ('Carol',
+    '{20000, 25000, 25000, 25000}',
+    '{{"breakfast", "consulting"}, {"meeting", "lunch"}}');
+</programlisting>
+  </para>
+
+ <para>
+  前两条插入语句的结果如下：
+
+<programlisting>
+SELECT * FROM sal_emp;
+ name  |      pay_by_quarter       |                 schedule
+-------+---------------------------+-------------------------------------------
+ Bill  | {10000,10000,10000,10000} | {{meeting,lunch},{training,presentation}}
+ Carol | {20000,25000,25000,25000} | {{breakfast,consulting},{meeting,lunch}}
+(2 rows)
+</programlisting>
+ </para>
+
+ <para>
+  多维数组在每个维度上的范围必须匹配。不匹配会导致错误，例如：
+
+<programlisting>
+INSERT INTO sal_emp
+    VALUES ('Bill',
+    '{10000, 10000, 10000, 10000}',
+    '{{"meeting", "lunch"}, {"meeting"}}');
+ERROR:  malformed array literal: "{{"meeting", "lunch"}, {"meeting"}}"
+DETAIL:  Multidimensional arrays must have sub-arrays with matching dimensions.
+</programlisting>
+ </para>
+
+ <para>
+  也可以使用 <literal>ARRAY</literal> 构造器语法：
+<programlisting>
+INSERT INTO sal_emp
+    VALUES ('Bill',
+    ARRAY[10000, 10000, 10000, 10000],
+    ARRAY[['meeting', 'lunch'], ['training', 'presentation']]);
+
+INSERT INTO sal_emp
+    VALUES ('Carol',
+    ARRAY[20000, 25000, 25000, 25000],
+    ARRAY[['breakfast', 'consulting'], ['meeting', 'lunch']]);
+</programlisting>
+  注意，数组元素是普通的 SQL 常量或表达式；例如，字符串字面值用单引号而不是双引号包围，而在数组字面量中则会用双引号。关于 <literal>ARRAY</literal> 构造器语法的更多细节见<xref linkend="sql-syntax-array-constructors"/>。
+ </para>
+ </sect2>
+
+ <sect2 id="arrays-accessing">
+  <title>访问数组</title>
+
+  <indexterm>
+   <primary>array</primary>
+   <secondary>accessing</secondary>
+  </indexterm>
+
+ <para>
+  现在，我们可以对该表执行一些查询。首先，演示如何访问数组中的单个元素。下面的查询取回第二季度薪资发生变化的员工姓名：
+
+<programlisting>
+SELECT name FROM sal_emp WHERE pay_by_quarter[1] &lt;&gt; pay_by_quarter[2];
+
+ name
+-------
+ Carol
+(1 row)
+</programlisting>
+
+  数组下标写在方括号内。默认情况下，<productname>PostgreSQL</productname> 对数组采用从 1 开始的编号约定，也就是说，一个有 <replaceable>n</replaceable> 个元素的数组从 <literal>array[1]</literal> 开始，到 <literal>array[<replaceable>n</replaceable>]</literal> 结束。
+ </para>
+
+ <para>
+  下面这个查询取回所有员工第三季度的薪资：
+
+<programlisting>
+SELECT pay_by_quarter[3] FROM sal_emp;
+
+ pay_by_quarter
+----------------
+          10000
+          25000
+(2 rows)
+</programlisting>
+ </para>
+
+ <para>
+  我们还可以访问数组或子数组的任意矩形切片。数组切片通过在一个或多个数组维度上写成
+  <literal><replaceable>lower-bound</replaceable>:<replaceable>upper-bound</replaceable></literal>
+  的形式来表示。例如，下面这个查询取回 Bill 在一周前两天日程安排中的第一个项目：
+
+<programlisting>
+SELECT schedule[1:2][1:1] FROM sal_emp WHERE name = 'Bill';
+
+        schedule
+------------------------
+ {{meeting},{training}}
+(1 row)
+</programlisting>
+
+  如果任何一个维度写成切片形式，也就是包含冒号，那么所有维度都会被当作切片处理。任何只有单个数字（没有冒号）的维度都会被视为从 1 到该数字指定的范围。例如，<literal>[2]</literal> 会被当作 <literal>[1:2]</literal>，如下例所示：
+
+<programlisting>
+SELECT schedule[1:2][2] FROM sal_emp WHERE name = 'Bill';
+
+                 schedule
+-------------------------------------------
+ {{meeting,lunch},{training,presentation}}
+(1 row)
+</programlisting>
+
+  为了避免与非切片情况混淆，最好对所有维度都使用切片语法，例如写成 <literal>[1:2][1:1]</literal>，而不是 <literal>[2][1:1]</literal>。
+ </para>
+
+ <para>
+  切片说明符中的 <replaceable>lower-bound</replaceable> 和/或
+  <replaceable>upper-bound</replaceable> 可以省略；缺失的边界会分别由数组下标的下界或上界代替。例如：
+
+<programlisting>
+SELECT schedule[:2][2:] FROM sal_emp WHERE name = 'Bill';
+
+        schedule
+------------------------
+ {{lunch},{presentation}}
+(1 row)
+
+SELECT schedule[:][1:1] FROM sal_emp WHERE name = 'Bill';
+
+        schedule
+------------------------
+ {{meeting},{training}}
+(1 row)
+</programlisting>
+ </para>
+
+ <para>
+  如果数组本身或任一下标表达式为 NULL，则数组下标表达式将返回空值。此外，如果下标超出数组边界，也会返回空值（这种情况不会报错）。例如，如果 <literal>schedule</literal> 当前的维度是 <literal>[1:3][1:2]</literal>，那么引用 <literal>schedule[3][3]</literal> 会得到 NULL。类似地，使用错误数量的下标访问数组，得到的也是空值而不是错误。
+ </para>
+
+ <para>
+  同样地，如果数组本身或任一下标表达式为 NULL，数组切片表达式也会返回空值。不过，在其他情况下，例如选择一个完全位于当前数组边界之外的数组切片时，切片表达式返回的是空（零维）数组而不是空值。（这与非切片行为不一致，是出于历史原因。）如果所请求的切片与数组边界仅部分重叠，那么它会被静默缩减为重叠区域，而不是返回空值。
+ </para>
+
+ <para>
+  任意数组值的当前维度都可以用 <function>array_dims</function> 函数取回：
+
+<programlisting>
+SELECT array_dims(schedule) FROM sal_emp WHERE name = 'Carol';
+
+ array_dims
+------------
+ [1:2][1:2]
+(1 row)
+</programlisting>
+
+  <function>array_dims</function> 产生的是一个 <type>text</type> 结果，这对人工阅读比较方便，但对程序来说可能不太方便。也可以用 <function>array_upper</function> 和 <function>array_lower</function> 取回维度信息，它们分别返回指定数组维度的上界和下界：
+
+<programlisting>
+SELECT array_upper(schedule, 1) FROM sal_emp WHERE name = 'Carol';
+
+ array_upper
+-------------
+           2
+(1 row)
+</programlisting>
+
+ <function>array_length</function> 会返回指定数组维度的长度：
+
+<programlisting>
+SELECT array_length(schedule, 1) FROM sal_emp WHERE name = 'Carol';
+
+ array_length
+--------------
+            2
+(1 row)
+</programlisting>
+
+ <function>cardinality</function> 返回数组跨所有维度的元素总数。它实际上就是调用 <function>unnest</function> 会产生的行数：
+
+<programlisting>
+SELECT cardinality(schedule) FROM sal_emp WHERE name = 'Carol';
+
+ cardinality
+-------------
+           4
+(1 row)
+</programlisting>
+ </para>
+ </sect2>
+
+ <sect2 id="arrays-modifying">
+  <title>修改数组</title>
+
+  <indexterm>
+   <primary>array</primary>
+   <secondary>modifying</secondary>
+  </indexterm>
+
+ <para>
+  数组值可以被整体替换：
+
+<programlisting>
+UPDATE sal_emp SET pay_by_quarter = '{25000,25000,27000,27000}'
+    WHERE name = 'Carol';
+</programlisting>
+
+  或者使用 <literal>ARRAY</literal> 表达式语法：
+
+<programlisting>
+UPDATE sal_emp SET pay_by_quarter = ARRAY[25000,25000,27000,27000]
+    WHERE name = 'Carol';
+</programlisting>
+
+  也可以更新数组中的单个元素：
+
+<programlisting>
+UPDATE sal_emp SET pay_by_quarter[4] = 15000
+    WHERE name = 'Bill';
+</programlisting>
+
+  或者更新其中一个切片：
+
+<programlisting>
+UPDATE sal_emp SET pay_by_quarter[1:2] = '{27000,27000}'
+    WHERE name = 'Carol';
+</programlisting>
+
+  也可以使用省略 <replaceable>lower-bound</replaceable> 和/或
+  <replaceable>upper-bound</replaceable> 的切片语法，但前提是被更新的数组值不是 NULL，也不是零维数组（否则就没有现有的下标边界可供替代）。
+ </para>
+
+ <para>
+  已存储的数组值可以通过给尚不存在的元素赋值来扩展。原有元素与新赋值元素之间的任何位置都将用空值填充。例如，如果数组 <literal>myarray</literal> 当前有 4 个元素，那么在一次更新把值赋给 <literal>myarray[6]</literal> 之后，它将有 6 个元素；<literal>myarray[5]</literal> 将包含空值。目前，以这种方式扩展只允许用于一维数组，不允许用于多维数组。
+ </para>
+
+ <para>
+  带下标的赋值也允许创建不使用从 1 开始下标的数组。例如，可以给 <literal>myarray[-2:7]</literal> 赋值，从而创建一个下标值范围为 -2 到 7 的数组。
+ </para>
+
+ <para>
+  新的数组值也可以使用连接操作符 <literal>||</literal> 构造：
+<programlisting>
+SELECT ARRAY[1,2] || ARRAY[3,4];
+ ?column?
+-----------
+ {1,2,3,4}
+(1 row)
+
+SELECT ARRAY[5,6] || ARRAY[[1,2],[3,4]];
+      ?column?
+---------------------
+ {{5,6},{1,2},{3,4}}
+(1 row)
+</programlisting>
+ </para>
+
+ <para>
+  连接操作符允许把单个元素添加到一维数组的开头或末尾。它也接受两个 <replaceable>N</replaceable> 维数组，或者一个 <replaceable>N</replaceable> 维数组与一个 <replaceable>N+1</replaceable> 维数组。
+ </para>
+
+ <para>
+  当把单个元素添加到一维数组的开头或末尾时，结果数组会保留该数组操作数的下界下标。例如：
+<programlisting>
+SELECT array_dims(1 || '[0:1]={2,3}'::int[]);
+ array_dims
+------------
+ [0:2]
+(1 row)
+
+SELECT array_dims(ARRAY[1,2] || 3);
+ array_dims
+------------
+ [1:3]
+(1 row)
+</programlisting>
+ </para>
+
+ <para>
+  当连接两个维度数相同的数组时，结果会保留左侧操作数外层维度的下界下标。结果数组由左侧操作数的所有元素后跟右侧操作数的所有元素组成。例如：
+<programlisting>
+SELECT array_dims(ARRAY[1,2] || ARRAY[3,4,5]);
+ array_dims
+------------
+ [1:5]
+(1 row)
+
+SELECT array_dims(ARRAY[[1,2],[3,4]] || ARRAY[[5,6],[7,8],[9,0]]);
+ array_dims
+------------
+ [1:5][1:2]
+(1 row)
+</programlisting>
+ </para>
+
+ <para>
+  当把一个 <replaceable>N</replaceable> 维数组添加到一个 <replaceable>N+1</replaceable> 维数组的开头或末尾时，其结果与前面“单个元素与数组相连”的情况类似。每个 <replaceable>N</replaceable> 维子数组本质上都是该 <replaceable>N+1</replaceable> 维数组外层维度中的一个元素。例如：
+<programlisting>
+SELECT array_dims(ARRAY[1,2] || ARRAY[[3,4],[5,6]]);
+ array_dims
+------------
+ [1:3][1:2]
+(1 row)
+</programlisting>
+ </para>
+
+ <para>
+  也可以使用 <function>array_prepend</function>、<function>array_append</function> 或 <function>array_cat</function> 函数来构造数组。前两个只支持一维数组，而 <function>array_cat</function> 支持多维数组。示例如下：
+
+<programlisting>
+SELECT array_prepend(1, ARRAY[2,3]);
+ array_prepend
+---------------
+ {1,2,3}
+(1 row)
+
+SELECT array_append(ARRAY[1,2], 3);
+ array_append
+--------------
+ {1,2,3}
+(1 row)
+
+SELECT array_cat(ARRAY[1,2], ARRAY[3,4]);
+ array_cat
+-----------
+ {1,2,3,4}
+(1 row)
+
+SELECT array_cat(ARRAY[[1,2],[3,4]], ARRAY[5,6]);
+      array_cat
+---------------------
+ {{1,2},{3,4},{5,6}}
+(1 row)
+
+SELECT array_cat(ARRAY[5,6], ARRAY[[1,2],[3,4]]);
+      array_cat
+---------------------
+ {{5,6},{1,2},{3,4}}
+</programlisting>
+ </para>
+
+ <para>
+  在简单情况下，优先使用上面讨论的连接操作符，而不是直接调用这些函数。不过，由于连接操作符被重载以同时服务于这三种情形，所以在某些场景下使用这些函数之一有助于避免歧义。例如，考虑：
+
+<programlisting>
+SELECT ARRAY[1, 2] || '{3, 4}';  -- the untyped literal is taken as an array
+ ?column?
+-----------
+ {1,2,3,4}
+
+SELECT ARRAY[1, 2] || '7';                 -- so is this one
+ERROR:  malformed array literal: "7"
+
+SELECT ARRAY[1, 2] || NULL;                -- so is an undecorated NULL
+ ?column?
+----------
+ {1,2}
+(1 row)
+
+SELECT array_append(ARRAY[1, 2], NULL);    -- this might have been meant
+ array_append
+--------------
+ {1,2,NULL}
+</programlisting>
+
+  在上面的示例中，解析器看到连接操作符的一侧是整数数组，另一侧是类型未定的常量。它用来解析该常量类型的启发式规则是假定其类型与该操作符另一侧的输入相同，在这里就是整数数组。因此，连接操作符会被假定为表示 <function>array_cat</function>，而不是 <function>array_append</function>。如果这是错误的选择，可以通过把常量显式转换为数组的元素类型来修正；但显式使用 <function>array_append</function> 也许是更好的解决方案。
+ </para>
+ </sect2>
+
+ <sect2 id="arrays-searching">
+  <title>在数组中搜索</title>
+
+  <indexterm>
+   <primary>array</primary>
+   <secondary>searching</secondary>
+  </indexterm>
+
+ <para>
+  要在数组中搜索某个值，就必须检查每一个值。如果你知道数组的大小，这可以手工完成。例如：
+
+<programlisting>
+SELECT * FROM sal_emp WHERE pay_by_quarter[1] = 10000 OR
+                            pay_by_quarter[2] = 10000 OR
+                            pay_by_quarter[3] = 10000 OR
+                            pay_by_quarter[4] = 10000;
+</programlisting>
+
+  不过，对于大型数组，这样很快就会变得繁琐；而在数组大小未知时，这也没有帮助。另一种方法见<xref linkend="functions-comparisons"/>。上面的查询可以改写为：
+
+<programlisting>
+SELECT * FROM sal_emp WHERE 10000 = ANY (pay_by_quarter);
+</programlisting>
+
+  此外，如果要查找数组中所有值都等于 10000 的行，可以使用：
+
+<programlisting>
+SELECT * FROM sal_emp WHERE 10000 = ALL (pay_by_quarter);
+</programlisting>
+
+ </para>
+
+ <para>
+  另外，也可以使用 <function>generate_subscripts</function> 函数。例如：
+
+<programlisting>
+SELECT * FROM
+   (SELECT pay_by_quarter,
+           generate_subscripts(pay_by_quarter, 1) AS s
+      FROM sal_emp) AS foo
+ WHERE pay_by_quarter[s] = 10000;
+</programlisting>
+
+  关于该函数的说明见<xref linkend="functions-srf-subscripts"/>。
+ </para>
+
+ <para>
+  也可以使用 <literal>&amp;&amp;</literal> 操作符来搜索数组，它会检查左操作数是否与右操作数有重叠。例如：
+
+<programlisting>
+SELECT * FROM sal_emp WHERE pay_by_quarter &amp;&amp; ARRAY[10000];
+</programlisting>
+
+  关于该操作符和其他数组操作符的更多说明见<xref linkend="functions-array"/>。如<xref linkend="indexes-types"/>所述，也可以通过适当的索引加速。
+ </para>
+
+ <para>
+  也可以使用 <function>array_position</function> 和 <function>array_positions</function> 函数在数组中搜索特定值。前者返回某个值在数组中首次出现位置的下标；后者返回一个数组，其中包含该值在数组中所有出现位置的下标。例如：
+
+<programlisting>
+SELECT array_position(ARRAY['sun','mon','tue','wed','thu','fri','sat'], 'mon');
+ array_position
+----------------
+              2
+(1 row)
+
+SELECT array_positions(ARRAY[1, 4, 3, 1, 3, 4, 2, 1], 1);
+ array_positions
+-----------------
+ {1,4,8}
+(1 row)
+</programlisting>
+ </para>
+
+ <tip>
+  <para>
+   数组不是集合；搜索特定数组元素可能是数据库设计不当的信号。可以考虑使用一个独立的表，让原本会成为数组元素的每个项各占一行。这样会更容易搜索，而且在元素数量很多时通常也有更好的可伸缩性。
+  </para>
+ </tip>
+ </sect2>
+
+ <sect2 id="arrays-io">
+  <title>数组输入和输出语法</title>
+
+  <indexterm>
+   <primary>array</primary>
+   <secondary>I/O</secondary>
+  </indexterm>
+
+  <para>
+   数组值的外部文本表示由若干项构成，这些项会按照数组元素类型的 I/O 转换规则进行解释，再加上一些表示数组结构的修饰。修饰部分包括数组值外层的花括号（<literal>{</literal> 和 <literal>}</literal>），以及相邻项之间的分隔符字符。分隔符字符通常是逗号（<literal>,</literal>），但也可能是别的字符：它由数组元素类型的 <literal>typdelim</literal> 设置决定。在 <productname>PostgreSQL</productname> 发行版提供的标准数据类型中，除类型 <type>box</type> 使用分号（<literal>;</literal>）外，其余都使用逗号。在多维数组中，每个维度（行、平面、立方体等）都有自己的一层花括号，并且同一级别相邻的花括号实体之间必须写出分隔符。
+  </para>
+
+  <para>
+   如果元素值是空字符串、包含花括号、分隔符字符、双引号、反斜线或空白，或者与单词 <literal>NULL</literal> 匹配，数组输出例程就会在元素值外面加上双引号。元素值中嵌入的双引号和反斜线会用反斜线转义。对于数字数据类型，可以安全地假定不会出现双引号；但对于文本数据类型，则应准备好处理带引号和不带引号两种情况。
+  </para>
+
+  <para>
+   默认情况下，数组各维度的下界索引值都设为 1。要表示具有其他下界的数组，可以在写出数组内容之前显式指定数组下标范围。这种修饰由包围每个数组维度上下界的方括号（<literal>[]</literal>）构成，中间以冒号（<literal>:</literal>）作为分隔符字符。数组维度修饰后面再跟一个等号（<literal>=</literal>）。例如：
+<programlisting>
+SELECT f1[1][-2][3] AS e1, f1[1][-1][5] AS e2
+ FROM (SELECT '[1:1][-2:-1][3:5]={{{1,2,3},{4,5,6}}}'::int[] AS f1) AS ss;
+
+ e1 | e2
+----+----
+  1 |  6
+(1 row)
+</programlisting>
+   只有当一个或多个下界不等于 1 时，数组输出例程才会在结果中包含显式维度信息。
+  </para>
+
+  <para>
+   如果某个元素写入的值是 <literal>NULL</literal>（任何大小写变体都可以），该元素就会被视为 NULL。若存在任何引号或反斜线，则会禁用这种行为，从而可以输入字面字符串值 <quote>NULL</quote>。另外，为了与 <productname>PostgreSQL</productname> 8.2 之前的版本保持向后兼容，可以将<xref
+   linkend="guc-array-nulls"/>配置参数设为 <literal>off</literal>，从而禁止把 <literal>NULL</literal> 识别为 NULL。
+  </para>
+
+  <para>
+   如前所述，在写数组值时，可以给任意单个数组元素加上双引号。如果元素值在其他情况下会让数组值解析器产生混淆，那么你<emphasis>必须</emphasis>这样做。例如，包含花括号、逗号（或者该数据类型的分隔符字符）、双引号、反斜线，或者前后带有空白的元素值，必须使用双引号。空字符串以及与单词 <literal>NULL</literal> 匹配的字符串也必须加引号。要在一个带双引号的数组元素值中放入双引号或反斜线，需要在它前面加反斜线。或者，你也可以避免使用引号，而改用反斜线转义来保护所有原本会被当作数组语法的数据字符。
+  </para>
+
+  <para>
+   你可以在左花括号之前或右花括号之后添加空白。也可以在任意单个项字符串之前或之后添加空白。在所有这些情况下，这些空白都会被忽略。不过，双引号元素内部的空白，或者元素中夹在两个非空白字符之间的空白，不会被忽略。
+  </para>
+
+ <tip>
+  <para>
+   在 SQL 命令中写数组值时，<literal>ARRAY</literal> 构造器语法（见<xref linkend="sql-syntax-array-constructors"/>）通常比数组字面量语法更容易使用。在 <literal>ARRAY</literal> 中，各个元素值的写法与它们不作为数组成员时完全相同。
+  </para>
+ </tip>
+ </sect2>
+
+</sect1>

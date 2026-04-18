@@ -1,0 +1,358 @@
+<!-- doc/src/sgml/rowtypes.sgml -->
+
+<sect1 id="rowtypes">
+
+ <title>复合类型</title>
+
+ <indexterm>
+  <primary>复合类型</primary>
+ </indexterm>
+
+ <indexterm>
+  <primary>行类型</primary>
+ </indexterm>
+
+ <para>
+  <firstterm>复合类型</firstterm>表示一行或一条记录的结构；本质上它就是字段名及其数据类型的列表。<productname>PostgreSQL</productname>允许像使用简单类型那样，在许多相同的场合使用复合类型。例如，表中的一列可以声明为复合类型。
+ </para>
+
+ <sect2 id="rowtypes-declaring">
+
+  <title>复合类型的声明</title>
+
+ <para>
+  下面是两个定义复合类型的简单示例：
+<programlisting>
+CREATE TYPE complex AS (
+    r       double precision,
+    i       double precision
+);
+
+CREATE TYPE inventory_item AS (
+    name            text,
+    supplier_id     integer,
+    price           numeric
+);
+</programlisting>
+  这种语法与<command>CREATE TABLE</command>类似，但只能指定字段名和类型；目前还不能包含约束（例如<literal>NOT NULL</literal>）。注意，<literal>AS</literal>关键字必不可少；如果没有它，系统会认为你想使用另一种<command>CREATE TYPE</command>命令，并产生令人费解的语法错误。
+ </para>
+
+ <para>
+  定义了这些类型之后，我们可以用它们来创建表：
+
+<programlisting>
+CREATE TABLE on_hand (
+    item      inventory_item,
+    count     integer
+);
+
+INSERT INTO on_hand VALUES (ROW('fuzzy dice', 42, 1.99), 1000);
+</programlisting>
+
+  或者创建函数：
+
+<programlisting>
+CREATE FUNCTION price_extension(inventory_item, integer) RETURNS numeric
+AS 'SELECT $1.price * $2' LANGUAGE SQL;
+
+SELECT price_extension(item, 10) FROM on_hand;
+</programlisting>
+
+ </para>
+
+ <para>
+  每当你创建一个表时，系统也会自动创建一个与该表同名的复合类型，用来表示该表的行类型。例如，如果我们这样写：
+<programlisting>
+CREATE TABLE inventory_item (
+    name            text,
+    supplier_id     integer REFERENCES suppliers,
+    price           numeric CHECK (price &gt; 0)
+);
+</programlisting>
+  那么上面展示的同一个<literal>inventory_item</literal>复合类型也会顺带生成，并且同样可以像前面那样使用。不过，当前实现有一个重要限制：由于复合类型本身不关联任何约束，表定义中给出的那些约束在表之外的复合类型值上<emphasis>并不适用</emphasis>。（解决办法是：在该复合类型之上创建一个<glossterm linkend="glossary-domain">域</glossterm>，并把所需的约束作为该域的<literal>CHECK</literal>约束。）
+ </para>
+ </sect2>
+
+ <sect2 id="rowtypes-constructing">
+
+  <title>构造组合值</title>
+
+  <indexterm>
+   <primary>复合类型</primary>
+   <secondary>常量</secondary>
+  </indexterm>
+
+  <para>
+   要把组合值写成字面常量，请将各字段值放在圆括号内，并用逗号分隔。你可以给任意字段值加双引号；如果它包含逗号或圆括号，则必须这样做。（更多细节见<link linkend="rowtypes-io-syntax">下文</link>。）因此，组合常量的一般格式如下：
+<synopsis>
+'( <replaceable>val1</replaceable> , <replaceable>val2</replaceable> , ... )'
+</synopsis>
+   一个示例是：
+<programlisting>
+'("fuzzy dice",42,1.99)'
+</programlisting>
+   这就是上文定义的<literal>inventory_item</literal>类型的一个合法值。要让某个字段为 NULL，就在列表中对应的位置什么也不写。例如，这个常量指定第三个字段为 NULL：
+<programlisting>
+'("fuzzy dice",42,)'
+</programlisting>
+   如果想写空字符串而不是 NULL，请写双引号：
+<programlisting>
+'("",42,)'
+</programlisting>
+   这里第一个字段是非 NULL 的空字符串，第三个字段是 NULL。
+  </para>
+
+  <para>
+   （这些常量实际上只是<xref linkend="sql-syntax-constants-generic"/>中讨论的通用类型常量的一种特例。该常量最初会被当作字符串处理，然后传递给复合类型输入转换例程。必要时可能需要显式指定类型。）
+  </para>
+
+ <para>
+  <literal>ROW</literal>表达式语法也可以用于构造组合值。在大多数情况下，它比字符串字面量语法简单得多，因为你不必担心多层引号。我们在上文已经用过这种方法：
+<programlisting>
+ROW('fuzzy dice', 42, 1.99)
+ROW('', 42, NULL)
+</programlisting>
+  只要表达式中有多个字段，<literal>ROW</literal>关键字实际上是可选的，因此这些可以简写为：
+<programlisting>
+('fuzzy dice', 42, 1.99)
+('', 42, NULL)
+</programlisting>
+  关于<literal>ROW</literal>表达式语法的更多细节，见<xref linkend="sql-syntax-row-constructors"/>。
+ </para>
+ </sect2>
+
+ <sect2 id="rowtypes-accessing">
+
+  <title>访问复合类型</title>
+
+ <para>
+  要访问组合列中的某个字段，可以写一个点号再加字段名，这很像通过表名选取字段。实际上，它与通过表名选取字段太像了，以至于你通常必须使用圆括号，以免让解析器混淆。例如，你可能尝试从示例表<literal>on_hand</literal>中选取一些子字段：
+
+<programlisting>
+SELECT item.name FROM on_hand WHERE item.price &gt; 9.99;
+</programlisting>
+
+  这不会起作用，因为根据 SQL 语法规则，名称<literal>item</literal>会被当成表名，而不是<literal>on_hand</literal>的列名。你必须写成这样：
+
+<programlisting>
+SELECT (item).name FROM on_hand WHERE (item).price &gt; 9.99;
+</programlisting>
+
+  或者，如果你还需要使用表名（例如在多表查询中），可以这样写：
+
+<programlisting>
+SELECT (on_hand.item).name FROM on_hand WHERE (on_hand.item).price &gt; 9.99;
+</programlisting>
+
+  现在，加上括号的对象就会被正确解释为对<literal>item</literal>列的引用，然后就可以从中选出子字段。
+ </para>
+
+ <para>
+  无论何时从组合值中选择字段，都会遇到类似的语法问题。例如，要从一个返回组合值的函数结果中只选取一个字段，你需要这样写：
+
+<programlisting>
+SELECT (my_func(...)).field FROM ...
+</programlisting>
+
+  如果没有额外的圆括号，这将生成一个语法错误。
+ </para>
+
+ <para>
+  特殊字段名<literal>*</literal>表示<quote>所有字段</quote>，其进一步解释见<xref linkend="rowtypes-usage"/>。
+ </para>
+ </sect2>
+
+ <sect2 id="rowtypes-modifying">
+
+  <title>修改组合值</title>
+
+ <para>
+  下面是一些插入和更新组合列时正确语法的示例。先看插入或更新整个列值的情况：
+
+<programlisting>
+INSERT INTO mytab (complex_col) VALUES((1.1,2.2));
+
+UPDATE mytab SET complex_col = ROW(1.1,2.2) WHERE ...;
+</programlisting>
+
+  第一个示例省略了<literal>ROW</literal>，第二个示例使用了它；两种写法都可以。
+ </para>
+
+ <para>
+  我们也可以更新组合列中的单个子字段：
+
+<programlisting>
+UPDATE mytab SET complex_col.r = (complex_col).r + 1 WHERE ...;
+</programlisting>
+
+  注意，这里不需要（事实上也不能）给紧跟在<literal>SET</literal>后面的列名加圆括号，但在等号右侧的表达式中引用同一列时，则需要加圆括号。
+ </para>
+
+ <para>
+  我们也可以把子字段指定为<command>INSERT</command>的目标：
+
+<programlisting>
+INSERT INTO mytab (complex_col.r, complex_col.i) VALUES(1.1, 2.2);
+</programlisting>
+
+  如果我们没有为该列的所有子字段提供值，其余子字段就会填充为 NULL 值。
+ </para>
+ </sect2>
+
+ <sect2 id="rowtypes-usage">
+
+  <title>在查询中使用复合类型</title>
+
+  <para>
+   在查询中，复合类型有多种特殊的语法规则和行为。这些规则提供了有用的简写形式，但如果不了解背后的逻辑，也可能让人困惑。
+  </para>
+
+  <para>
+   在<productname>PostgreSQL</productname>中，查询中对表名（或别名）的引用，实际上就是对该表当前行的组合值的引用。例如，如果我们有一个如<link linkend="rowtypes-declaring">上文</link>所示的表<structname>inventory_item</structname>，就可以写：
+<programlisting>
+SELECT c FROM inventory_item c;
+</programlisting>
+   这个查询会产生一个单独的组合值列，因此我们可能得到如下输出：
+<programlisting>
+           c
+------------------------
+ ("fuzzy dice",42,1.99)
+(1 row)
+</programlisting>
+   不过要注意，简单名称会先与列名匹配，再与表名匹配，因此这个示例之所以可行，只是因为该查询涉及的表中没有名为<structfield>c</structfield>的列。
+  </para>
+
+  <para>
+   普通的限定列名语法<replaceable>table_name</replaceable><literal>.</literal><replaceable>column_name</replaceable>可以理解为对该表当前行的组合值进行<link linkend="field-selection">字段选择</link>。（出于效率原因，实际上并不是这样实现的。）
+  </para>
+
+  <para>
+   当我们写
+<programlisting>
+SELECT c.* FROM inventory_item c;
+</programlisting>
+   时，根据 SQL 标准，应该得到把该表内容展开为独立列后的结果：
+<programlisting>
+    name    | supplier_id | price
+------------+-------------+-------
+ fuzzy dice |          42 |  1.99
+(1 row)
+</programlisting>
+   就好像查询写成了
+<programlisting>
+SELECT c.name, c.supplier_id, c.price FROM inventory_item c;
+</programlisting>
+   <productname>PostgreSQL</productname>会对任何结果为复合类型的表达式应用这种展开行为，不过正如<link linkend="rowtypes-accessing">上文</link>所示，只要<literal>.*</literal>所作用的值不是简单表名，就需要给该值加圆括号。例如，如果<function>myfunc()</function>是一个返回复合类型的函数，该复合类型有<structfield>a</structfield>、<structfield>b</structfield>和<structfield>c</structfield>三列，那么下面两个查询的结果相同：
+<programlisting>
+SELECT (myfunc(x)).* FROM some_table;
+SELECT (myfunc(x)).a, (myfunc(x)).b, (myfunc(x)).c FROM some_table;
+</programlisting>
+  </para>
+
+  <tip>
+
+   <para>
+    <productname>PostgreSQL</productname>处理列展开时，实际上会把第一种形式转换成第二种形式。因此，在这个示例中，无论使用哪种语法，<function>myfunc()</function>每行都会被调用三次。如果它是一个开销较大的函数，你可能希望避免这种情况，可以使用如下查询：
+<programlisting>
+SELECT m.* FROM some_table, LATERAL myfunc(x) AS m;
+</programlisting>
+    把该函数放在<literal>LATERAL</literal> <literal>FROM</literal>项中，可以防止它对每一行被调用多于一次。<literal>m.*</literal>仍会展开为<literal>m.a, m.b, m.c</literal>，但现在这些变量只是对该<literal>FROM</literal>项输出的引用。（这里的<literal>LATERAL</literal>关键字其实是可选的，不过我们把它写出来，是为了明确该函数会从<structname>some_table</structname>中取得<structfield>x</structfield>。）
+   </para>
+  </tip>
+
+  <para>
+   当<replaceable>composite_value</replaceable><literal>.*</literal>出现在<link linkend="queries-select-lists"><command>SELECT</command>输出列表</link>、<command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command>/<command>MERGE</command>中的<link linkend="dml-returning"><literal>RETURNING</literal>列表</link>、<link linkend="queries-values"><literal>VALUES</literal>子句</link>或<link linkend="sql-syntax-row-constructors">行构造器</link>的顶层时，就会产生这种列展开行为。在所有其他上下文中（包括嵌套在上述结构之内时），给组合值附加<literal>.*</literal>不会改变其值，因为它表示<quote>所有列</quote>，因此结果仍然是同一个组合值。例如，如果<function>somefunc()</function>接受一个组合值参数，这些查询就是等价的：
+
+<programlisting>
+SELECT somefunc(c.*) FROM inventory_item c;
+SELECT somefunc(c) FROM inventory_item c;
+</programlisting>
+
+   在这两种情况下，<structname>inventory_item</structname>的当前行都会作为单个组合值参数传递给该函数。尽管<literal>.*</literal>在这种场合并不起作用，使用它仍是一种良好风格，因为它能明确表明这里想要的是组合值。特别是，解析器会把<literal>c.*</literal>中的<literal>c</literal>视为表名或别名，而不是列名，因此不会产生歧义；而没有<literal>.*</literal>时，就不清楚<literal>c</literal>究竟表示表名还是列名，而且如果存在名为<literal>c</literal>的列，实际上会优先按列名解释。
+  </para>
+
+  <para>
+   另一个说明这些概念的例子是，下面这些查询的含义都相同：
+<programlisting>
+SELECT * FROM inventory_item c ORDER BY c;
+SELECT * FROM inventory_item c ORDER BY c.*;
+SELECT * FROM inventory_item c ORDER BY ROW(c.*);
+</programlisting>
+   所有这些<literal>ORDER BY</literal>子句都指定了该行的组合值，因此会按照<xref linkend="composite-type-comparison"/>中描述的规则对行进行排序。不过，如果<structname>inventory_item</structname>包含一个名为<structfield>c</structfield>的列，第一种情况就会不同于其他情况，因为它表示只按那一列排序。按照前面展示的列名，下面这些查询也与上述查询等效：
+<programlisting>
+SELECT * FROM inventory_item c ORDER BY ROW(c.name, c.supplier_id, c.price);
+SELECT * FROM inventory_item c ORDER BY (c.name, c.supplier_id, c.price);
+</programlisting>
+   （最后一种情况使用的是省略了关键字<literal>ROW</literal>的行构造器。）
+  </para>
+
+  <para>
+   另一种与组合值有关的特殊语法行为是，我们可以使用<firstterm>函数记法</firstterm>来提取组合值中的字段。简单来说，记法<literal><replaceable>field</replaceable>(<replaceable>table</replaceable>)</literal>和<literal><replaceable>table</replaceable>.<replaceable>field</replaceable></literal>可以互换。例如，这些查询是等价的：
+
+<programlisting>
+SELECT c.name FROM inventory_item c WHERE c.price &gt; 1000;
+SELECT name(c) FROM inventory_item c WHERE price(c) &gt; 1000;
+</programlisting>
+
+   此外，如果我们有一个接受单个复合类型参数的函数，也可以用这两种记法来调用它。这些查询都等价：
+
+<programlisting>
+SELECT somefunc(c) FROM inventory_item c;
+SELECT somefunc(c.*) FROM inventory_item c;
+SELECT c.somefunc FROM inventory_item c;
+</programlisting>
+  </para>
+
+  <para>
+   函数记法与字段记法之间的这种等价性，使得我们可以通过在复合类型上使用函数来实现<quote>计算字段</quote>。
+   <indexterm>
+    <primary>computed field</primary>
+   </indexterm>
+   <indexterm>
+    <primary>field</primary>
+    <secondary>computed</secondary>
+   </indexterm>
+   使用上面最后一种查询形式的应用程序，无需直接知道<literal>somefunc</literal>并不是该表中的真实列。
+  </para>
+
+  <tip>
+
+   <para>
+    由于这种行为，不宜让接受单个复合类型参数的函数与该复合类型中的任何字段同名。如果存在歧义，在使用字段名语法时会选择字段名解释，而在使用函数调用语法时会选择函数解释。不过，在 11 之前的<productname>PostgreSQL</productname>版本中，除非调用的语法要求它必须是函数调用，否则总是选择字段名解释。在旧版本中，强制按函数解释的一种方法是为函数名加模式限定，也就是写成<literal><replaceable>schema</replaceable>.<replaceable>func</replaceable>(<replaceable>compositevalue</replaceable>)</literal>。
+   </para>
+  </tip>
+ </sect2>
+
+ <sect2 id="rowtypes-io-syntax">
+
+  <title>复合类型的输入和输出语法</title>
+
+  <para>
+   组合值的外部文本表示由两部分组成：一部分是按照各字段类型的 I/O 转换规则解释的项，另一部分是表明组合结构的附加符号。这些附加符号包括包围整个值的圆括号（<literal>(</literal>和<literal>)</literal>），以及相邻项之间的逗号（<literal>,</literal>）。圆括号外部的空白会被忽略；但在圆括号内部，空白会被视为字段值的一部分，其是否有意义取决于该字段数据类型的输入转换规则。例如，在
+<programlisting>
+'(  42)'
+</programlisting>
+   中，如果字段类型是 integer，则空白会被忽略；如果是 text，则不会被忽略。
+  </para>
+
+  <para>
+   如前所示，在写组合值时，你可以给任意单个字段值加双引号。如果字段值本身可能让组合值解析器混淆，则<emphasis>必须</emphasis>这样做。特别是，包含圆括号、逗号、双引号或反斜杠的字段必须用双引号括起来。要在带引号的组合字段值中写入双引号或反斜杠，需要在其前面加一个反斜杠。（另外，带双引号的字段值内部成对出现的双引号会被视为一个双引号字符，这与 SQL 字面字符串中单引号的规则类似。）或者，你也可以完全不使用引号，而改用反斜杠转义，保护所有原本会被当作组合语法的数据字符。
+  </para>
+
+  <para>
+   完全空的字段值（即逗号或圆括号之间一个字符也没有）表示 NULL。要写一个空字符串值而不是 NULL，可以写成<literal>""</literal>。
+  </para>
+
+  <para>
+   如果字段值是空字符串，或者包含圆括号、逗号、双引号、反斜杠或空白字符，复合类型输出例程就会在其周围加上双引号。（对空白字符这样做并非必需，但有助于提高可读性。）嵌入字段值中的双引号和反斜杠会被加倍。
+  </para>
+
+ <tip>
+
+  <para>
+   在 SQL 命令中编写组合值时，<literal>ROW</literal>构造器语法通常比组合字面量语法更容易使用。在<literal>ROW</literal>中，各个字段值的写法与它们不是组合成员时完全相同。
+  </para>
+ </tip>
+ </sect2>
+
+</sect1>

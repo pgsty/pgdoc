@@ -1,0 +1,405 @@
+<!-- doc/src/sgml/seg.sgml -->
+
+<sect1 id="seg" xreflabel="seg">
+
+ <title>seg &mdash; 用于线段或浮点区间的数据类型</title>
+
+ <indexterm zone="seg">
+  <primary>seg</primary>
+ </indexterm>
+
+ <para>
+  该模块实现了一个用于表示线段或浮点区间的<type>seg</type>数据类型。
+  <type>seg</type>可以表示区间端点中的不确定性，因此特别适合表示实验室测量结果。
+ </para>
+
+ <para>
+  该模块被视为<quote>受信任的</quote>，也就是说，拥有当前数据库
+  <literal>CREATE</literal>权限的非超级用户也可以安装它。
+ </para>
+
+ <sect2 id="seg-rationale">
+
+  <title>原理</title>
+
+  <para>
+   测量值的几何形态通常比数值连续体中的一个点更复杂。一次测量通常是该
+   连续体上的一段，其边界多少有些模糊。测量结果之所以会呈现为区间，
+   一方面是由于不确定性和随机性，另一方面也是因为被测值本身可能天然就是
+   表示某种状态的区间，例如蛋白质的稳定温度范围。
+  </para>
+
+  <para>
+   凭常识也能看出，把这类数据存储为区间比存储为一对数字更方便。实际上，
+   在大多数应用中，这样做甚至更高效。
+  </para>
+
+  <para>
+   再顺着这一常识往下想，边界的模糊性说明，使用传统数值数据类型会造成
+   一定的信息损失。设想一下：你的仪器读数是 6.50，而你把这个读数输入到
+   数据库。取出来时会得到什么？请看：
+
+<screen>
+test=&gt; SELECT 6.50::float8 AS "pH";
+ pH
+---
+6.5
+(1 row)
+</screen>
+
+   在测量领域，6.50 与 6.5 并不相同。有时这种差别至关重要。实验人员通常会
+   记下（并发表）他们认为可靠的那些数位。6.50 实际上是一个模糊区间，它包含在
+   更大、也更模糊的区间 6.5 之中；它们共享的特征（大概）只有中心点。
+   我们当然不希望这类不同的数据项看起来却一样。
+  </para>
+
+  <para>
+   结论是什么？最好能有一种专门的数据类型，能够以任意可变的精度记录区间边界。
+   这里所谓“可变”，是指每个数据元素都记录其自身的精度。
+  </para>
+
+  <para>
+   看看这个：
+
+<screen>
+test=&gt; SELECT '6.25 .. 6.50'::seg AS "pH";
+          pH
+------------
+6.25 .. 6.50
+(1 row)
+</screen>
+  </para>
+ </sect2>
+
+ <sect2 id="seg-syntax">
+
+  <title>语法</title>
+
+  <para>
+   区间的外部表示由一个或两个浮点数通过范围操作符（<literal>..</literal>
+   或 <literal>...</literal>）连接而成。另一种写法是指定中心点再加减一个
+   偏差值。还可以存储可选的确定性指示符（<literal>&lt;</literal>、
+   <literal>&gt;</literal>或 <literal>~</literal>）。（不过，所有内置操作符
+   都会忽略这些确定性指示符。）<xref linkend="seg-repr-table"/>概述了允许的
+   表示形式；<xref linkend="seg-input-examples"/>给出了一些示例。
+  </para>
+
+  <para>
+   在<xref linkend="seg-repr-table"/>中，<replaceable>x</replaceable>、
+   <replaceable>y</replaceable>和<replaceable>delta</replaceable>表示浮点数。
+   <replaceable>x</replaceable>和<replaceable>y</replaceable>前面可以带确定性
+   指示符，而<replaceable>delta</replaceable>不可以。
+  </para>
+
+  <table id="seg-repr-table">
+
+   <title><type>seg</type> 外部表示</title>
+   <tgroup cols="2">
+    <tbody>
+
+     <row>
+      <entry><literal><replaceable>x</replaceable></literal></entry>
+      <entry>单个值（零长度区间）
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><replaceable>x</replaceable> .. <replaceable>y</replaceable></literal></entry>
+      <entry>从<replaceable>x</replaceable>到<replaceable>y</replaceable>的区间
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><replaceable>x</replaceable> (+-) <replaceable>delta</replaceable></literal></entry>
+      <entry>从<replaceable>x</replaceable> - <replaceable>delta</replaceable>到
+      <replaceable>x</replaceable> + <replaceable>delta</replaceable>的区间
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><replaceable>x</replaceable> ..</literal></entry>
+      <entry>下界为<replaceable>x</replaceable>、上界开放的区间
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal>.. <replaceable>x</replaceable></literal></entry>
+      <entry>上界为<replaceable>x</replaceable>、下界开放的区间
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <table id="seg-input-examples">
+
+   <title>合法 <type>seg</type> 输入示例</title>
+   <tgroup cols="2">
+    <colspec colname="col1" colwidth="1*"/>
+    <colspec colname="col2" colwidth="2*"/>
+    <tbody>
+
+     <row>
+      <entry><literal>5.0</literal></entry>
+      <entry>
+       创建一个零长度线段（如果你愿意，也可以把它看成一个点）
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal>~5.0</literal></entry>
+      <entry>
+       创建一个零长度线段，并在数据中记录<literal>~</literal>。
+       <literal>~</literal>会被<type>seg</type>操作忽略，但会作为注释保留下来。
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal>&lt;5.0</literal></entry>
+      <entry>
+       在 5.0 处创建一个点。<literal>&lt;</literal>会被忽略，但会作为注释保留下来。
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal>&gt;5.0</literal></entry>
+      <entry>
+       在 5.0 处创建一个点。<literal>&gt;</literal>会被忽略，但会作为注释保留下来。
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal>5(+-)0.3</literal></entry>
+      <entry>
+        创建区间<literal>4.7 .. 5.3</literal>。注意，<literal>(+-)</literal>记法不会被保留。
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal>50 .. </literal></entry>
+      <entry>所有大于或等于 50 的值</entry>
+     </row>
+
+     <row>
+      <entry><literal>.. 0</literal></entry>
+      <entry>所有小于或等于 0 的值</entry>
+     </row>
+
+     <row>
+      <entry><literal>1.5e-2 .. 2E-2 </literal></entry>
+      <entry>创建区间<literal>0.015 .. 0.02</literal></entry>
+     </row>
+
+     <row>
+      <entry><literal>1 ... 2</literal></entry>
+      <entry>
+       与<literal>1...2</literal>、<literal>1 .. 2</literal>或<literal>1..2</literal>相同
+       （范围操作符两侧的空格会被忽略）
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   由于<literal>...</literal>操作符在数据源中被广泛使用，因此允许把它作为
+   <literal>..</literal>操作符的另一种写法。不幸的是，这会带来解析歧义：
+   无法确定<literal>0...23</literal>中的上界是<literal>23</literal>还是
+   <literal>0.23</literal>。解决办法是要求<type>seg</type>输入中的所有
+   数字在小数点前至少有一位数字。
+  </para>
+
+  <para>
+   作为合理性检查，<type>seg</type>会拒绝下界大于上界的区间，例如
+   <literal>5 .. 2</literal>。
+  </para>
+
+ </sect2>
+
+ <sect2 id="seg-precision">
+
+  <title>精度</title>
+
+  <para>
+   <type>seg</type>值在内部存储为一对 32 位浮点数。这意味着有效位数超过 7 位的
+   数字会被截断。
+  </para>
+
+  <para>
+   有效位数不超过 7 位的数字会保留其原始精度。也就是说，如果你的查询返回
+   0.00，你可以确信末尾的零不是格式化造成的假象，而是反映了原始数据的精度。
+   前导零的个数不影响精度：值 0.0067 被认为只有 2 位有效数字。
+  </para>
+ </sect2>
+
+ <sect2 id="seg-usage">
+
+  <title>用法</title>
+
+  <para>
+   <filename>seg</filename>模块包含适用于<type>seg</type>值的一个 GiST 索引
+   操作符类。该 GiST 操作符类支持的操作符见<xref linkend="seg-gist-operators"/>。
+  </para>
+
+  <table id="seg-gist-operators">
+
+   <title>seg GiST 操作符</title>
+    <tgroup cols="1">
+     <thead>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        操作符
+       </para>
+       <para>
+        描述
+       </para></entry>
+      </row>
+     </thead>
+
+     <tbody>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>seg</type> <literal>&lt;&lt;</literal> <type>seg</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        第一个<type>seg</type>是否完全位于第二个的左侧？
+        [a, b] &lt;&lt; [c, d] 在 b &lt; c 时为真。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>seg</type> <literal>&gt;&gt;</literal> <type>seg</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        第一个<type>seg</type>是否完全位于第二个的右侧？
+        [a, b] &gt;&gt; [c, d] 在 a &gt; d 时为真。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>seg</type> <literal>&amp;&lt;</literal> <type>seg</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        第一个<type>seg</type>是否没有向右超出第二个？
+        [a, b] &amp;&lt; [c, d] 在 b &lt;= d 时为真。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>seg</type> <literal>&amp;&gt;</literal> <type>seg</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        第一个<type>seg</type>是否没有向左超出第二个？
+        [a, b] &amp;&gt; [c, d] 在 a &gt;= c 时为真。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>seg</type> <literal>=</literal> <type>seg</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        两个<type>seg</type>是否相等？
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>seg</type> <literal>&amp;&amp;</literal> <type>seg</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        两个<type>seg</type>是否重叠？
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>seg</type> <literal>@&gt;</literal> <type>seg</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        第一个<type>seg</type>是否包含第二个？
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <type>seg</type> <literal>&lt;@</literal> <type>seg</type>
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        第一个<type>seg</type>是否被第二个包含？
+       </para></entry>
+      </row>
+     </tbody>
+    </tgroup>
+  </table>
+
+  <para>
+   除上述操作符外，<xref linkend="functions-comparison-op-table"/>中列出的常用
+   比较操作符也可用于<type>seg</type>类型。这些操作符先比较 (a) 和 (c)，
+   若二者相等，再比较 (b) 和 (d)。这在大多数情况下都能得到相当不错的排序
+   效果，因此如果你想将该类型用于 ORDER BY，会很有帮助。
+  </para>
+ </sect2>
+
+ <sect2 id="seg-notes">
+
+  <title>注意</title>
+
+  <para>
+   有关用法示例，请参见回归测试<filename>sql/seg.sql</filename>。
+  </para>
+
+  <para>
+   把<literal>(+-)</literal>转换为常规范围的机制，在确定边界的有效位数时
+   并不完全准确。例如，如果结果区间包含 10 的幂，它会在下边界上多加一位：
+
+<screen>
+postgres=&gt; SELECT '10(+-)1'::seg AS seg;
+      seg
+---------
+9.0 .. 11             -- should be: 9 .. 11
+</screen>
+  </para>
+
+  <para>
+   R 树索引的性能很大程度上取决于输入值的初始顺序。按<type>seg</type>列
+   对输入表排序，可能会很有帮助；示例见脚本
+   <filename>sort-segments.pl</filename>。
+  </para>
+ </sect2>
+
+ <sect2 id="seg-credits">
+
+  <title>致谢</title>
+
+  <para>
+   原作者：Gene Selkov, Jr. <email>selkovjr@mcs.anl.gov</email>，
+   阿贡国家实验室数学与计算机科学部。
+  </para>
+
+  <para>
+   我首先要感谢 Joe Hellerstein 教授
+   (<ulink url="https://dsf.berkeley.edu/jmh/"></ulink>)，
+   他为我阐明了 GiST
+   (<ulink url="http://gist.cs.berkeley.edu/"></ulink>) 的要旨。
+   我同样感谢过去和现在所有的 Postgres 开发者，
+   他们使我得以创造自己的世界并在其中不受打扰地生活。
+   我还要感谢阿贡实验室以及美国能源部，多年来始终如一地支持我的数据库研究。
+  </para>
+
+ </sect2>
+
+</sect1>

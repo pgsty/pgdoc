@@ -1,0 +1,482 @@
+<!-- doc/src/sgml/amcheck.sgml -->
+
+<sect1 id="amcheck" xreflabel="amcheck">
+ <title>amcheck &mdash; 用于验证表和索引一致性的工具</title>
+
+ <indexterm zone="amcheck">
+  <primary>amcheck</primary>
+ </indexterm>
+
+ <para>
+  <filename>amcheck</filename>模块提供了一组函数，可用于验证关系结构的逻辑一致性。
+ </para>
+
+ <para>
+  B-树检查函数会验证特定关系表示结构中的多种<emphasis>不变式</emphasis>。
+  索引扫描以及其他重要操作背后的访问方法函数是否正确，依赖于这些不变式始终成立。
+  例如，某些函数除其他事项外，还会验证所有 B-树页面中的项都按<quote>逻辑</quote>顺序排列
+  （例如，对于<type>text</type>上的 B-树索引，索引元组应当按排序规则定义的词法顺序排列）。
+  如果这种特定不变式由于某种原因不再成立，那么受影响页面上的二分查找就可能错误地引导索引扫描，
+  从而使 SQL 查询返回错误答案。如果结构看起来有效，就不会引发错误。
+  这些检查函数运行期间，<xref linkend="guc-search-path"/>会被临时改为
+  <literal>pg_catalog, pg_temp</literal>。
+ </para>
+ <para>
+  验证工作使用的过程与索引扫描本身所使用的过程相同，而这些过程可能是用户定义的操作符类代码。
+  例如，B-树索引验证依赖于一个或多个 B-树支持函数 1 例程执行的比较。
+  关于操作符类支持函数的细节，见<xref linkend="xindex-support"/>。
+ </para>
+ <para>
+  与通过抛出错误来报告损坏的 B-树检查函数不同，堆检查函数
+  <function>verify_heapam</function>会检查一个表，并尝试返回一组行，
+  每检测到一处损坏就返回一行。尽管如此，如果
+  <function>verify_heapam</function>所依赖的设施本身已经损坏，
+  该函数也可能无法继续执行，而改为抛出错误。
+ </para>
+ <para>
+  执行<filename>amcheck</filename>函数的权限可以授予非超级用户，但在授予这些权限之前，
+  应认真考虑数据安全和隐私方面的顾虑。虽然这些函数生成的损坏报告关注的重点，
+  与其说是损坏数据的内容，不如说是该数据的结构以及所发现损坏的性质，但攻击者一旦获得执行这些函数的权限，
+  尤其是在还能诱发损坏的情况下，仍可能从这类消息中推断出某些数据本身的信息。
+ </para>
+
+ <sect2 id="amcheck-functions">
+  <title>函数</title>
+
+  <variablelist>
+   <varlistentry>
+    <term>
+     <function>bt_index_check(index regclass, heapallindexed boolean, checkunique boolean) returns void</function>
+     <indexterm>
+      <primary>bt_index_check</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>bt_index_check</function>测试其目标 B-树索引是否满足多种不变式。示例用法如下：
+<screen>
+test=# SELECT bt_index_check(index =&gt; c.oid, heapallindexed =&gt; i.indisunique),
+               c.relname,
+               c.relpages
+FROM pg_index i
+JOIN pg_opclass op ON i.indclass[0] = op.oid
+JOIN pg_am am ON op.opcmethod = am.oid
+JOIN pg_class c ON i.indexrelid = c.oid
+JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE am.amname = 'btree' AND n.nspname = 'pg_catalog'
+-- Don't check temp tables, which may be from another session:
+AND c.relpersistence != 't'
+-- Function may throw an error when this is omitted:
+AND c.relkind = 'i' AND i.indisready AND i.indisvalid
+ORDER BY c.relpages DESC LIMIT 10;
+ bt_index_check |             relname             | relpages
+----------------+---------------------------------+----------
+                | pg_depend_reference_index       |       43
+                | pg_depend_depender_index        |       40
+                | pg_proc_proname_args_nsp_index  |       31
+                | pg_description_o_c_o_index      |       21
+                | pg_attribute_relid_attnam_index |       14
+                | pg_proc_oid_index               |       10
+                | pg_attribute_relid_attnum_index |        9
+                | pg_amproc_fam_proc_index        |        5
+                | pg_amop_opr_fam_index           |        5
+                | pg_amop_fam_strat_index         |        5
+(10 rows)
+</screen>
+      本例展示了一个会话，它对数据库<quote>test</quote>中最大的 10 个系统目录索引执行验证。
+      对其中属于唯一索引的那一部分，还要求验证所有堆元组在索引中都有对应的索引元组。
+      由于没有引发错误，因此所有受测索引看起来都具有逻辑一致性。
+      当然，也很容易把这个查询改成对数据库中每一个支持验证的索引调用
+      <function>bt_index_check</function>。
+     </para>
+     <para>
+      <function>bt_index_check</function>会在目标索引及其所属的堆关系上获取
+      <literal>AccessShareLock</literal>。这种锁模式与简单
+      <literal>SELECT</literal>语句在关系上获取的锁模式相同。
+      <function>bt_index_check</function>不会验证跨越父子关系的不变式，
+      但如果<parameter>heapallindexed</parameter>为<literal>true</literal>，
+      它会验证所有堆元组在索引中都有对应的索引元组。
+      如果<parameter>checkunique</parameter>为<literal>true</literal>，
+      <function>bt_index_check</function>还会检查唯一索引中重复条目里可见的项不超过一个。
+      当在线生产环境中需要一种例行的、轻量级的损坏检查时，
+      <function>bt_index_check</function>通常能在验证彻底程度与对应用性能、可用性的影响之间提供最佳权衡。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>bt_index_parent_check(index regclass, heapallindexed boolean, rootdescend boolean, checkunique boolean) returns void</function>
+     <indexterm>
+      <primary>bt_index_parent_check</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>bt_index_parent_check</function>测试其目标 B-树索引是否满足多种不变式。
+      如果可选参数<parameter>heapallindexed</parameter>为<literal>true</literal>，
+      该函数还会验证索引中是否包含所有本应出现的堆元组。
+      如果<parameter>checkunique</parameter>为<literal>true</literal>，
+      <function>bt_index_parent_check</function>还会检查唯一索引中重复条目里可见的项不超过一个。
+      如果可选参数<parameter>rootdescend</parameter>为<literal>true</literal>，
+      则会对每个元组都从根页重新搜索一次，从而在叶子层重新定位这些元组。
+      <function>bt_index_parent_check</function>能够执行的检查，
+      是<function>bt_index_check</function>所能执行检查的超集。
+      可以把<function>bt_index_parent_check</function>看作
+      <function>bt_index_check</function>更彻底的变体：
+      与<function>bt_index_check</function>不同，
+      <function>bt_index_parent_check</function>还会检查跨越父子关系的不变式，
+      包括验证索引结构中不存在缺失的下行链接。
+      如果发现逻辑不一致或其他问题，该函数就会引发错误。
+     </para>
+     <para>
+      <function>bt_index_parent_check</function>要求在目标索引上持有
+      <literal>ShareLock</literal>（并且在堆关系上也会获取
+      <literal>ShareLock</literal>）。这些锁会阻止
+      <command>INSERT</command>、<command>UPDATE</command>以及
+      <command>DELETE</command>命令并发修改数据。
+      这些锁还会阻止底层关系被并发<command>VACUUM</command>处理，以及执行所有其他实用命令。
+      注意，该函数只在运行期间持有这些锁，而不是在整个事务期间持有。
+     </para>
+     <para>
+      <function>bt_index_parent_check</function>所做的额外验证，更有可能检测出各种异常情形。
+      这些情形可能涉及被检查索引所使用的 B-树操作符类实现错误，
+      或者假设存在的、底层 B-树索引访问方法代码中尚未发现的缺陷。
+      请注意，与<function>bt_index_check</function>不同，
+      在启用热备模式时（即在只读物理副本上），不能使用
+      <function>bt_index_parent_check</function>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>gin_index_check(index regclass) returns void</function>
+     <indexterm>
+      <primary>gin_index_check</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>gin_index_check</function>测试其目标 GIN 索引是否满足以下条件：
+      父子元组关系一致（不存在需要调整元组的父元组），并且页面图满足平衡树不变式
+      （内部页面只能引用叶子页面，或者只能引用内部页面）。
+     </para>
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+  <tip>
+   <para>
+    <function>bt_index_check</function>和
+    <function>bt_index_parent_check</function>都会以
+    <literal>DEBUG1</literal>和<literal>DEBUG2</literal>严重性级别输出关于验证过程的日志消息。
+    这些消息提供了验证过程的详细信息，可能会让
+    <productname>PostgreSQL</productname>开发者感兴趣。高级用户也可能觉得这些信息有帮助，
+    因为一旦验证确实检测到不一致，它们就能提供额外的上下文。若在交互式
+    <application>psql</application>会话中于运行验证查询之前执行：
+<programlisting>
+SET client_min_messages = DEBUG1;
+</programlisting>
+    则会以一个便于掌控的细节层次显示关于验证进度的消息。
+   </para>
+  </tip>
+
+  <variablelist>
+   <varlistentry>
+    <term>
+     <function>
+      verify_heapam(relation regclass,
+                    on_error_stop boolean,
+                    check_toast boolean,
+                    skip text,
+                    startblock bigint,
+                    endblock bigint,
+                    blkno OUT bigint,
+                    offnum OUT integer,
+                    attnum OUT integer,
+                    msg OUT text)
+      returns setof record
+     </function>
+    </term>
+    <listitem>
+     <para>
+      检查一个表、序列或物化视图是否存在结构损坏或逻辑损坏。
+      结构损坏是指关系中的页面包含格式无效的数据；
+      逻辑损坏则是指页面在结构上有效，但与数据库集簇的其余部分不一致。
+     </para>
+     <para>
+      支持以下可选参数：
+     </para>
+     <variablelist>
+      <varlistentry>
+       <term><literal>on_error_stop</literal></term>
+       <listitem>
+        <para>
+         如果为真，则一旦在某个块中发现任何损坏，检查会在该块末尾停止。
+        </para>
+        <para>
+         默认为假。
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term><literal>check_toast</literal></term>
+       <listitem>
+        <para>
+         如果为真，则会根据目标关系的 TOAST 表检查 toasted 值。
+        </para>
+        <para>
+         众所周知，这个选项比较慢。另外，如果 TOAST 表或其索引本身已损坏，
+         使用 TOAST 值对其进行检查在理论上可能会使服务器崩溃，尽管在很多情况下只会产生一个错误。
+        </para>
+        <para>
+         默认为假。
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term><literal>skip</literal></term>
+       <listitem>
+        <para>
+         如果不是<literal>none</literal>，则会按指定方式跳过那些被标记为全可见或全冻结的块。
+         有效选项为<literal>all-visible</literal>、<literal>all-frozen</literal>和
+         <literal>none</literal>。
+        </para>
+        <para>
+         默认为<literal>none</literal>。
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term><literal>startblock</literal></term>
+       <listitem>
+        <para>
+         如果指定，则损坏检查从给定块开始，并跳过之前所有块。
+         如果<parameter>startblock</parameter>超出目标表块号范围，则会报错。
+        </para>
+        <para>
+         默认从第一个块开始检查。
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term><literal>endblock</literal></term>
+       <listitem>
+        <para>
+         如果指定，则损坏检查在指定块结束，并跳过后面所有块。
+         如果<parameter>endblock</parameter>超出目标表块号范围，则会报错。
+        </para>
+        <para>
+         默认会检查所有块。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+     <para>
+      对于每一处检测到的损坏，<function>verify_heapam</function>都会返回一行，
+      其中包含下列列：
+     </para>
+     <variablelist>
+      <varlistentry>
+       <term><literal>blkno</literal></term>
+       <listitem>
+        <para>
+         包含损坏页面的块号。
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term><literal>offnum</literal></term>
+       <listitem>
+        <para>
+         损坏元组的 OffsetNumber。
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term><literal>attnum</literal></term>
+       <listitem>
+        <para>
+         如果损坏只针对元组中的某个列而不是整个元组，则表示该损坏列的属性编号。
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term><literal>msg</literal></term>
+       <listitem>
+        <para>
+         描述所检测到问题的消息。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="amcheck-optional-heapallindexed-verification">
+  <title>可选的<parameter>heapallindexed</parameter>验证</title>
+ <para>
+  当 B-树验证函数的<parameter>heapallindexed</parameter>参数为
+  <literal>true</literal>时，会针对与目标索引关系相关联的表执行一个额外的验证阶段。
+  这一阶段由一次<quote>伪</quote><command>CREATE INDEX CONCURRENTLY</command>操作构成，
+  它会借助一个临时的、位于内存中的汇总结构，检查所有假想的新索引元组是否存在。
+  这个汇总结构会在基本验证第一阶段中按需构建，并为目标索引中找到的每个元组生成<quote>指纹</quote>。
+  <parameter>heapallindexed</parameter>验证背后的总体原则是：一个与现有目标索引等价的新索引，
+  只能包含那些可以在现有结构中找到的项。
+ </para>
+ <para>
+  额外的<parameter>heapallindexed</parameter>阶段会带来显著开销：
+  验证通常需要耗费数倍于平常的时间。不过，执行<parameter>heapallindexed</parameter>验证时，
+  所获取的关系级锁并不会发生变化。
+ </para>
+ <para>
+  这个汇总结构的大小受<varname>maintenance_work_mem</varname>限制。
+  为了确保对每个本应在索引中有表示的堆元组而言，漏检一处不一致的概率不超过 2%，
+  每个元组大约需要 2 字节内存。为每个元组提供的内存越少，漏掉不一致的概率就会缓慢上升。
+  这种方法显著限制了验证开销，同时只会轻微降低发现问题的概率，
+  对那些将验证视为例行维护任务的部署环境尤其如此。
+  每次重新执行验证时，任何单个缺失或格式错误的元组都会再次获得被检测到的机会。
+ </para>
+
+ </sect2>
+
+ <sect2 id="amcheck-using-amcheck-effectively">
+  <title>有效使用<filename>amcheck</filename></title>
+
+ <para>
+  <filename>amcheck</filename>能够有效检测出多种
+  <link linkend="app-initdb-data-checksums"><application>数据校验和</application></link>
+  无法捕捉的故障模式，包括：
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     由操作符类实现错误导致的结构不一致。
+    </para>
+    <para>
+     这也包括因操作系统排序规则的比较规则发生变化而引起的问题。
+     像<type>text</type>这类可排序类型的数据值之间的比较必须是不可变的
+     （正如用于 B-树索引扫描的所有比较都必须不可变一样），
+     这就意味着操作系统排序规则绝不能发生变化。
+     虽然这种情况比较少见，但操作系统排序规则的更新确实可能导致此类问题。
+     更常见的是主库与备库之间的排序顺序不一致，
+     这可能是因为两边使用的操作系统<emphasis>主</emphasis>版本不同。
+     这类不一致通常只会出现在备库上，因此通常也只能在备库上检测到。
+    </para>
+    <para>
+     如果出现此类问题，它未必会影响每一个按受影响排序规则排序的索引，
+     因为被<emphasis>索引</emphasis>的值也可能恰好在行为不一致的情况下仍具有相同的绝对顺序。
+     关于<productname>PostgreSQL</productname>如何使用操作系统区域设置和排序规则的更多细节，
+     见<xref linkend="locale"/>和<xref linkend="collation"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     索引与其所索引的堆关系之间的结构不一致
+     （在执行<parameter>heapallindexed</parameter>验证时）。
+    </para>
+    <para>
+     在正常运行期间，索引并不会与其堆关系进行交叉核对。
+     堆损坏的症状可能十分隐蔽。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     假设存在的、底层<productname>PostgreSQL</productname>访问方法代码、
+     排序代码或事务管理代码中尚未发现的缺陷所导致的损坏。
+    </para>
+    <para>
+     对索引结构完整性的自动验证，在对新的或拟议中的
+     <productname>PostgreSQL</productname>特性进行一般性测试时具有作用，
+     因为这些特性完全可能引入逻辑不一致。
+     对表结构以及相关可见性、事务状态信息的验证，也起着类似作用。
+     一种显而易见的测试策略，是在运行标准回归测试时持续调用
+     <filename>amcheck</filename>函数。
+     关于如何运行测试，见<xref linkend="regress-run"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     在禁用数据校验和时，由文件系统或存储子系统故障造成的损坏。
+    </para>
+    <para>
+     请注意，如果访问某个块时只是命中了共享缓冲区，
+     那么<filename>amcheck</filename>检查的是验证时该页面在某个共享内存缓冲区中的表示。
+     因此，<filename>amcheck</filename>并不一定会检查验证时从文件系统读入的数据。
+     另请注意，当启用了校验和时，如果某个损坏块被读入缓冲区，
+     <filename>amcheck</filename>可能会因为校验和失败而引发错误。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     由有缺陷的 RAM 或更广义的内存子系统导致的损坏。
+    </para>
+    <para>
+     <productname>PostgreSQL</productname>并不防御可纠正的内存错误，
+     并且假定所用 RAM 采用业界标准的纠错码（ECC）或更强的保护机制。
+     然而，ECC 内存通常只对单比特错误有效，
+     不应被视为能对导致内存损坏的故障提供<emphasis>绝对</emphasis>保护。
+    </para>
+    <para>
+     执行<parameter>heapallindexed</parameter>验证时，
+     由于会测试严格的二进制相等性，并且还会检查堆中的被索引属性，
+     因而检测出单比特错误的机会通常会大大增加。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </para>
+
+ <para>
+  结构损坏可能是由于存储硬件故障，或者关系文件被无关软件覆盖或修改而产生的。
+  这类损坏也可以通过<link linkend="checksums"><application>数据页校验和</application></link>检测到。
+ </para>
+
+ <para>
+  关系页面即使格式正确、内部一致，并且相对于其自身内部校验和也是正确的，
+  仍然可能包含逻辑损坏。因此，这类损坏无法通过<application>校验和</application>检测到。
+  例如，主表中的某个 toasted 值在 TOAST 表中缺少对应条目，
+  或者主表中的某个元组具有比数据库或集簇中最早的有效事务 ID 更旧的事务 ID。
+ </para>
+
+ <para>
+  在生产系统中，已经观察到多种导致逻辑损坏的根本原因，
+  包括<productname>PostgreSQL</productname>服务器软件中的缺陷、
+  设计欠妥的备份恢复工具，以及用户错误。
+ </para>
+
+ <para>
+  受损关系在在线生产环境中最令人担忧，而恰恰这些环境最不欢迎高风险活动。
+  基于这个原因，<function>verify_heapam</function>被设计成能够在不过度增加风险的前提下诊断损坏。
+  它无法防范所有导致后端崩溃的原因，因为在严重损坏的系统上，甚至执行调用它的查询本身都可能不安全。
+  该函数会访问<link linkend="catalogs-overview">系统目录表</link>；如果系统目录自身已损坏，这也可能带来问题。
+ </para>
+
+ <para>
+  一般来说，<filename>amcheck</filename>只能证明损坏存在，无法证明损坏不存在。
+ </para>
+
+ </sect2>
+ <sect2 id="amcheck-repairing-corruption">
+  <title>修复损坏</title>
+ <para>
+  <filename>amcheck</filename>报告的与损坏有关的错误绝不应被当作误报。
+  <filename>amcheck</filename>会在那些按定义绝不应该发生的情况下抛出错误，
+  因此通常需要对这类错误进行仔细分析。
+ </para>
+ <para>
+  对于<filename>amcheck</filename>检测到的问题，并不存在通用的修复方法。
+  应当查明导致不变式遭到破坏的根本原因。
+  在诊断<filename>amcheck</filename>检测到的损坏时，
+  <xref linkend="pageinspect"/>可能会发挥有用作用。
+  <command>REINDEX</command>未必能够有效修复损坏。
+ </para>
+
+ </sect2>
+
+</sect1>

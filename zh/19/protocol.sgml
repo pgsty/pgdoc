@@ -1,0 +1,7506 @@
+<!-- doc/src/sgml/protocol.sgml -->
+
+<chapter id="protocol">
+
+ <title>前端/后端协议</title>
+
+ <indexterm zone="protocol">
+  <primary>协议</primary>
+  <secondary>前端-后端</secondary>
+ </indexterm>
+
+ <para>
+  <productname>PostgreSQL</productname>使用一种基于消息的协议在前端和后端（客户端与服务器）之间进行通信。该协议既支持<acronym>TCP/IP</acronym>，也支持 Unix 域套接字。端口号 5432 已在 IANA 注册为支持该协议的服务器的惯用 TCP 端口号，但实际上任何非特权端口号都可以使用。
+ </para>
+
+ <para>
+  本文描述协议 3.2 版本，该版本在 <productname>PostgreSQL</productname> 18 中引入。服务器和 libpq 客户端库向后兼容 <productname>PostgreSQL</productname> 7.4 及以后版本实现的协议 3.0。
+ </para>
+
+  <para>
+   为了高效地为多个客户端提供服务，服务器会为每个客户端启动一个新的<quote>后端</quote>进程。在当前实现中，一旦检测到传入连接，就会立刻创建新的子进程。不过，这一点对协议而言是透明的。就协议而言，术语<quote>后端</quote>和<quote>服务器</quote>可以互换；同样，<quote>前端</quote>和<quote>客户端</quote>也可以互换。
+  </para>
+
+ <sect1 id="protocol-overview">
+
+  <title>概述</title>
+
+  <para>
+   协议在启动和正常操作过程中有不同的阶段。在启动阶段里，前端打开一个到服务器的连接并且认证自身以满足服务器（这可能涉及到一条或多条消息，取决于使用的认证方法）。 如果一切正常，服务器就发送状态信息给前端，并最后进入正常操作。除了最初的启动请求消息之外，协议的这个部分是服务器驱动的。
+  </para>
+
+  <para>
+   在正常操作中，前端发送查询和其它命令到后端，然后后端返回查询结果和其它响应。在少数几种情况（比如<command>NOTIFY</command>）中，后端会发送未被请求的消息，但这个会话中的绝大多部分都是由前端请求驱动的。
+  </para>
+
+  <para>
+   会话的终止通常是由前端来选择的，但是也可以在某些情况下由后端强制执行。不管在那种情况下，如果后端关闭连接，那么它将在退出之前回滚所有打开的（未完成的）事务。
+  </para>
+
+  <para>
+   在正常操作中，SQL 命令可以通过两种子协议之一执行。在<quote>简单查询</quote>协议中，前端只需发送文本形式的查询字符串，后端会立即对其进行解析并执行。在<quote>扩展查询</quote>协议中，查询处理被拆分为多个步骤：解析、参数值绑定以及执行。这带来了更高的灵活性和性能收益，但代价是额外的复杂性。
+  </para>
+
+  <para>
+   正常操作还包含用于<command>COPY</command>等特殊操作的额外子协议。
+  </para>
+
+ <sect2 id="protocol-message-concepts">
+
+  <title>消息概述</title>
+
+  <para>
+   所有通信都通过消息流进行。消息的第一个字节标识消息类型，接下来的四个字节给出消息其余部分的长度（该长度计数包含自身，但不包括消息类型字节）。消息剩余内容由消息类型决定。由于历史原因，客户端发送的第一条消息（启动消息）没有开头的消息类型字节。
+  </para>
+
+  <para>
+   为了避免与消息流失去同步，服务器和客户端通常都会先根据字节计数把整条消息读入缓冲区，然后再处理其内容。这样一来，如果在处理内容时检测到错误，就比较容易恢复。在极端情况下（例如没有足够内存缓冲整条消息），接收方也可以利用字节计数判断在恢复读取消息之前需要跳过多少输入。
+  </para>
+
+  <para>
+   反过来，服务器和客户端也必须注意绝不能发送不完整的消息。通常的做法是在开始发送之前，先在缓冲区中整理好整条消息。如果在发送或接收消息的途中发生通信故障，唯一合理的做法就是放弃连接，因为几乎不可能重新恢复消息边界的同步。
+  </para>
+ </sect2>
+
+  <sect2 id="protocol-query-concepts">
+
+   <title>扩展查询概述</title>
+
+   <para>
+    在扩展查询协议中，SQL 命令的执行被拆分为多个步骤。各步骤之间保留的状态由两类对象表示：<firstterm>预备语句</firstterm>和<firstterm>portal</firstterm>。预备语句表示对文本查询字符串完成解析和语义分析后的结果。预备语句本身还不能直接执行，因为它可能缺少特定的<firstterm>参数</firstterm>值。portal 表示一条已经可以执行、或已经部分执行过的语句，其中所有缺失的参数值都已补齐。（对于<command>SELECT</command>语句，portal 等价于一个打开的游标；但由于游标不能处理非<command>SELECT</command>语句，这里采用不同术语。）
+   </para>
+
+   <para>
+    整个执行周期包括一个<firstterm>解析</firstterm>步骤，它从文本查询字符串创建预备语句；
+    一个<firstterm>绑定</firstterm>步骤，它根据预备语句和所需参数值创建 portal；
+    以及一个<firstterm>执行</firstterm>步骤，用于执行 portal 中的查询。对于返回行的查询
+    （<command>SELECT</command>、<command>SHOW</command>等），可以要求执行步骤只取回
+    有限数量的行，因此可能需要多次执行步骤才能完成整个操作。
+   </para>
+
+   <para>
+    后端可以跟踪多个预备语句和 portal（但请注意，它们只存在于单个会话内，绝不会在会话之间共享）。已有的预备语句和 portal 都通过创建时赋予的名称来引用。此外，还存在一个<quote>未命名</quote>的预备语句和 portal。虽然它们的行为与有名对象大体相同，但对未命名对象的操作是为“只执行一次然后丢弃”的场景优化的，而对有名对象的操作则是基于会被多次使用的预期进行优化的。
+   </para>
+  </sect2>
+
+  <sect2 id="protocol-format-codes">
+
+   <title>格式和格式代码</title>
+
+   <para>
+    某一特定数据类型的数据可以使用多种不同的<firstterm>格式</firstterm>之一进行传输。自 <productname>PostgreSQL</productname> 7.4 起，当前只支持<quote>文本</quote>和<quote>二进制</quote>两种格式，但协议为未来扩展留出了空间。任意值所需的格式由<firstterm>格式代码</firstterm>指定。客户端可以为每个传输的参数值以及查询结果的每一列指定格式代码。文本格式的代码为零，二进制格式的代码为一，其他格式代码则保留供将来定义。
+   </para>
+
+   <para>
+    文本形式的数值是特定数据类型的输入/输出转换函数生成或接受的任何字符串。在传输形式上，字符串没有末尾空字符；如果前端要想把收到的值当作C字符串处理，那么必须自己加上一个（顺便说一下，文本格式不允许嵌入空字符）。
+   </para>
+
+  <para>
+   整数的二进制表示采用网络字节序（最高有效字节在前）。至于其他数据类型，请查阅文档或源代码了解其二进制表示形式。要注意，复杂数据类型的二进制表示可能会在不同服务器版本之间发生变化；文本格式通常是可移植性更好的选择。
+  </para>
+  </sect2>
+
+  <sect2 id="protocol-versions">
+   <title>协议版本</title>
+
+   <para>
+    当前最新协议版本为 3.2。不过，为了兼容尚不支持版本协商的旧服务器和中间件，libpq 默认仍使用 3.0。
+   </para>
+
+   <note>
+    <para>
+     在 PostgreSQL 19 的 beta 期间，libpq 会改为默认请求协议版本 3.9999，
+     用于测试服务器和中间件是否正确实现协议版本协商。支持协商的服务器会自动降级到 3.2 或 3.0。
+     用户可以在连接字符串中显式设置 <literal>max_protocol_version=3.0</literal>，
+     来绕过这种仅限 beta 期间的行为。
+    </para>
+   </note>
+
+   <para>
+    单个服务器可以支持多个协议版本。初始启动请求消息会告诉服务器客户端尝试使用的协议版本。如果客户端请求的主版本服务器不支持，则连接会被拒绝（例如客户端请求 4.0，而截至本文编写时并不存在该版本）。如果客户端请求的次版本服务器不支持（例如客户端请求 3.2，但服务器只支持 3.0），服务器可以拒绝连接，也可以返回 NegotiateProtocolVersion 消息并给出其支持的最高次版本。客户端随后可以选择按该版本继续连接，或中止连接。
+   </para>
+
+   <para>
+    协议版本协商在 <productname>PostgreSQL</productname> 9.3.21 中引入。更早版本在客户端请求不支持的次版本时会直接拒绝连接。
+   </para>
+
+   <para>
+    <xref linkend="protocol-versions-table"/> 给出了当前支持的协议版本。
+    <xref linkend="other-protocol-versions-table"/> 说明了不受支持或保留的协议版本。
+   </para>
+
+   <table id="protocol-versions-table">
+    <title>支持的协议版本</title>
+
+    <tgroup cols="3">
+     <thead>
+      <row>
+       <entry>版本</entry>
+       <entry>支持范围</entry>
+       <entry>说明</entry>
+      </row>
+     </thead>
+     <tbody>
+      <row>
+       <entry>3.2</entry>
+       <entry>PostgreSQL 18 及以后</entry>
+       <entry>当前最新版本。用于取消查询的 secret key 从 4 字节扩展为可变长度字段；BackendKeyData 与 CancelRequest 消息相应调整为可变长度负载。</entry>
+      </row>
+      <row>
+       <entry>3.0</entry>
+       <entry>PostgreSQL 7.4 及以后</entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
+
+   <table id="other-protocol-versions-table">
+    <title>其他协议版本</title>
+
+    <tgroup cols="3">
+     <thead>
+      <row>
+       <entry>版本</entry>
+       <entry>支持范围</entry>
+       <entry>说明</entry>
+      </row>
+     </thead>
+
+     <tbody>
+      <row>
+       <entry>3.9999</entry>
+       <entry>-</entry>
+       <entry>保留用于协议 greasing。libpq 可能会使用这个版本，它高于项目预期会用到的任何次版本，用于测试服务器和中间件是否正确实现协议版本协商。服务器<emphasis>不得</emphasis>为这个版本加入特例逻辑；它们只需把它与自己支持的最新版本比较（后者总会更小），然后通过 NegotiateProtocolVersion 消息进行降级。</entry>
+      </row>
+      <row>
+       <entry>3.1</entry>
+       <entry>-</entry>
+       <entry>保留。PostgreSQL 从未使用 3.1；之所以跳过该版本，是因为旧版 pgbouncer 在协议协商中存在缺陷，会错误宣称支持 3.1。</entry>
+      </row>
+      <row>
+       <entry>2.0</entry>
+       <entry>至 PostgreSQL 13</entry>
+       <entry>已废弃。详见旧版本 <productname>PostgreSQL</productname> 文档。</entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
+  </sect2>
+
+  <sect2 id="protocol-extensions">
+   <title>协议扩展</title>
+
+   <para>
+    服务器和客户端还可以就当前使用的协议版本中的单项扩展进行协商。这些扩展由客户端在启动消息中作为特殊命名的参数提供，参数名前缀为 <literal>_pq_.</literal>。服务器会通过发送 NegotiateProtocolVersion 消息来拒绝任何未知或不受支持的扩展，并在消息中给出被拒绝的参数名列表，随后客户端可以选择是否继续连接。<xref linkend="protocol-extensions-table"/> 和 <xref linkend="reserved-protocol-extensions-table"/> 分别记录了受支持的协议扩展参数和保留的协议扩展参数。
+   </para>
+
+   <table id="protocol-extensions-table">
+    <title>受支持的协议扩展</title>
+
+    <tgroup cols="4">
+     <colspec colname="last" colnum="4"/>
+
+     <thead>
+      <row>
+       <entry>参数名</entry>
+       <entry>值</entry>
+       <entry>支持范围</entry>
+       <entry>说明</entry>
+      </row>
+     </thead>
+
+     <tbody>
+      <row>
+       <entry namest="last" align="center" valign="middle">
+        <emphasis>（当前未定义任何受支持的协议扩展。）</emphasis>
+       </entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
+
+   <table id="reserved-protocol-extensions-table">
+    <title>保留的协议扩展</title>
+
+    <tgroup cols="2">
+     <thead>
+      <row>
+       <entry>参数名</entry>
+       <entry>说明</entry>
+      </row>
+     </thead>
+
+     <tbody>
+      <row>
+       <entry><literal>_pq_.<replaceable>[name]</replaceable></literal></entry>
+       <entry>上面未定义的、任何其他以 <literal>_pq_.</literal> 开头的参数名都保留供未来协议扩展使用。服务器<emphasis>必须</emphasis>拒绝从客户端收到的任何这类参数，并在 <link linkend="protocol-flow-start-up">启动流程</link>中通过发送 NegotiateProtocolVersion 消息来完成这一点，然后应继续处理连接的其他部分。</entry>
+      </row>
+
+      <row>
+       <entry><literal>_pq_.test_protocol_negotiation</literal></entry>
+       <entry>保留用于协议 greasing。libpq 可能发送这个扩展，用于测试服务器和中间件是否正确实现协议扩展协商。服务器<emphasis>不得</emphasis>为这个参数加入特例逻辑；它们只需通过 NegotiateProtocolVersion 消息发送所有不受支持选项的列表（包括这个选项）即可。</entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
+  </sect2>
+ </sect1>
+
+ <sect1 id="protocol-flow">
+
+  <title>消息流</title>
+
+  <para>
+   本节描述消息流以及各种消息类型的语义（每种消息的精确格式见<xref linkend="protocol-message-formats"/>）。根据连接所处的状态不同，存在若干不同的子协议：启动、查询、函数调用、<command>COPY</command>以及终止。对于异步操作（包括通知响应和命令取消）还有专门规定，它们可能在启动阶段结束后的任何时刻发生。
+  </para>
+
+  <sect2 id="protocol-flow-start-up">
+
+   <title>启动</title>
+
+   <para>
+    要开始一个会话，前端会打开到服务器的连接并发送一条启动消息。该消息包含用户名以及用户希望连接的数据库名；它还指明要使用的协议版本。（启动消息也可以选择性地请求协议扩展，并包含运行时参数的附加设置。）随后服务器会结合这些信息以及配置文件（例如 <filename>pg_hba.conf</filename>）的内容，判断该连接在初步上是否可接受，以及是否需要额外的认证。
+   </para>
+
+   <para>
+    接着服务器会发送适当的认证请求消息，前端必须以适当的认证响应消息进行回应（例如密码）。对于除 GSSAPI、SSPI 和 SASL 之外的认证方法，最多只会有一次请求和一次响应。在某些方法中，前端根本不需要发送响应，因此也不会出现认证请求。对于 GSSAPI、SSPI 和 SASL，则可能需要多轮报文交换才能完成认证。
+   </para>
+
+   <para>
+    认证周期要么以服务器拒绝连接（ErrorResponse）结束，要么以 AuthenticationOk 结束。
+   </para>
+
+   <para>
+    在这个阶段，服务器可能发送以下消息：
+
+    <variablelist>
+     <varlistentry id="zh18-auto-protocol-varlistentry-14">
+      <term>ErrorResponse</term>
+      <listitem>
+       <para>
+        连接请求被拒绝。然后服务器马上关闭连接。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-15">
+      <term>AuthenticationOk</term>
+      <listitem>
+       <para>
+        认证交换成功完成。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-16">
+      <term>AuthenticationKerberosV5</term>
+      <listitem>
+       <para>
+        前端现在必须参与与服务器之间的 Kerberos V5 认证对话（此处不再描述，它属于 Kerberos 规范的一部分）。如果对话成功，服务器会响应 AuthenticationOk；否则响应 ErrorResponse。该机制已不再受支持。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-17">
+      <term>AuthenticationCleartextPassword</term>
+      <listitem>
+       <para>
+        前端现在必须发送一个以明文形式包含密码的 PasswordMessage。如果密码正确，服务器响应 AuthenticationOk；否则响应 ErrorResponse。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-18">
+     <term>AuthenticationMD5Password</term>
+      <listitem>
+       <para>
+        前端现在必须发送一个 PasswordMessage，其中包含密码；该密码先与用户名一起经过 MD5 加密，再使用 AuthenticationMD5Password 消息中指定的 4 字节随机盐重新加密。如果密码正确，服务器响应 AuthenticationOk；否则响应 ErrorResponse。实际的 PasswordMessage 可以用 SQL 计算：<literal>concat('md5',        md5(concat(md5(concat(password, username)), random-salt)))</literal>。（请记住 <function>md5()</function> 函数返回的是十六进制字符串。）
+       </para>
+       <warning>
+        <para>
+         对 MD5 加密密码的支持已弃用，并将在未来版本 <productname>PostgreSQL</productname> 中移除。关于迁移到其他密码类型，请参阅 <xref linkend="auth-password"/>。
+        </para>
+       </warning>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-19">
+      <term>AuthenticationGSS</term>
+      <listitem>
+       <para>
+        前端现在必须发起一次 GSSAPI 协商。前端将发送一条带有 GSSAPI 数据流第一部分的 GSSResponse 消息作为响应。如果还需要进一步的消息，服务器会响应 AuthenticationGSSContinue。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-20">
+      <term>AuthenticationSSPI</term>
+      <listitem>
+       <para>
+        前端现在必须发起一次 SSPI 协商。前端将发送一条带有 SSPI 数据流第一部分的 GSSResponse 作为响应。如果还需要进一步的消息，服务器会响应 AuthenticationGSSContinue。
+       </para>
+      </listitem>
+
+     </varlistentry>
+     <varlistentry id="zh18-auto-protocol-varlistentry-21">
+      <term>AuthenticationGSSContinue</term>
+      <listitem>
+       <para>
+        该消息包含前一步 GSSAPI 或 SSPI 协商（AuthenticationGSS、AuthenticationSSPI 或前一个 AuthenticationGSSContinue）的响应数据。如果该消息中的 GSSAPI 或 SSPI 数据表明完成认证还需要更多数据，前端必须把所需数据作为另一条 GSSResponse 发送。如果该消息已完成 GSSAPI 或 SSPI 认证，服务器接下来会发送 AuthenticationOk 表示认证成功，或发送 ErrorResponse 表示认证失败。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-22">
+      <term>AuthenticationSASL</term>
+      <listitem>
+       <para>
+        前端现在必须发起一次 SASL 协商，使用该消息中列出的一种 SASL 机制。前端将发送一条 SASLInitialResponse，其中包含所选机制的名称以及 SASL 数据流的第一部分。如果还需要进一步的消息，服务器会响应 AuthenticationSASLContinue。详见<xref linkend="sasl-authentication"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-23">
+      <term>AuthenticationSASLContinue</term>
+      <listitem>
+       <para>
+        该消息包含 SASL 协商前一步（AuthenticationSASL 或前一个 AuthenticationSASLContinue）的挑战数据。前端必须用一条 SASLResponse 消息响应。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-24">
+      <term>AuthenticationSASLFinal</term>
+      <listitem>
+       <para>
+        SASL 认证已完成，并附带了面向客户端的额外机制相关数据。服务器接下来会发送 AuthenticationOk 表示认证成功，或发送 ErrorResponse 表示认证失败。只有当 SASL 机制规定在完成时要从服务器向客户端发送附加数据时，才会发送该消息。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-25">
+     <term>NegotiateProtocolVersion</term>
+      <listitem>
+       <para>
+        如果服务器不支持客户端请求的协议次版本，但支持更早的协议版本，就会发送该消息并指明其支持的最高次版本。如果客户端在启动包中请求了不受支持的协议选项（即以 <literal>_pq_.</literal> 开头），也会发送该消息。
+        </para>
+        <para>
+        在该消息之后，认证会继续使用服务器指明的协议版本。如果客户端不支持该较旧版本，就应立即关闭连接。如果服务器没有发送该消息，则表示它支持客户端请求的协议版本以及所有协议选项。
+        </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>
+   </para>
+
+   <para>
+    如果前端不支持服务器要求的认证方式，那么它应该马上关闭连接。
+   </para>
+
+   <para>
+    在收到 AuthenticationOk 消息之后，前端必须继续等待来自服务器的后续消息。在这个阶段，一个后端进程正在启动，而前端只是旁观者。启动尝试仍可能失败（ErrorResponse），服务器也可能拒绝支持所请求的协议次版本（NegotiateProtocolVersion）；但通常情况下，后端会发送一些 ParameterStatus 消息、BackendKeyData，以及最后的 ReadyForQuery。
+   </para>
+
+   <para>
+    在这个阶段，后端会尝试应用启动消息中给出的任何额外运行时参数设置。如果成功，这些值就会成为会话的默认值。发生错误则会导致 ErrorResponse 并退出。
+   </para>
+
+   <para>
+    这个阶段来自后端的可能消息是：
+
+    <variablelist>
+     <varlistentry id="zh18-auto-protocol-varlistentry-31">
+     <term>BackendKeyData</term>
+      <listitem>
+       <para>
+        该消息提供密钥数据。如果前端希望稍后发送取消请求，就必须保存这些数据。前端不应响应该消息，而应继续等待 ReadyForQuery 消息。
+       </para>
+       <para>
+        <productname>PostgreSQL</productname> 服务器总会发送该消息，但已知一些不支持查询取消的第三方后端实现不会发送。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-32">
+      <term>ParameterStatus</term>
+      <listitem>
+       <para>
+        该消息告知前端后端参数的当前（初始）设置，例如<xref linkend="guc-client-encoding"/>或<xref linkend="guc-datestyle"/>。前端可以忽略这些信息，也可以记录下来供后续使用；详见<xref linkend="protocol-async"/>。前端不应响应该消息，而应继续等待 ReadyForQuery 消息。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-33">
+      <term>ReadyForQuery</term>
+      <listitem>
+       <para>
+        启动成功，前端现在可以发出命令。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-34">
+      <term>ErrorResponse</term>
+      <listitem>
+       <para>
+        启动失败，在发送完这个消息之后连接被关闭。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-35">
+      <term>NoticeResponse</term>
+      <listitem>
+       <para>
+        已发出一条警告消息。前端应显示该消息，但仍应继续等待 ReadyForQuery 或 ErrorResponse。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    ReadyForQuery 消息与后端在每个命令周期结束后发出的消息是同一个。前端可根据自身编码需要，将 ReadyForQuery 视为一个命令周期的开始，或视为启动阶段以及后续每个命令周期的结束。
+   </para>
+  </sect2>
+
+  <sect2 id="protocol-flow-simple-query">
+
+   <title>简单查询</title>
+
+   <para>
+    一个简单查询周期由前端向后端发送一条 Query 消息来启动。该消息包含一条或多条以文本字符串表示的 SQL 命令。后端随后会根据查询命令串的内容向前端发送一条或多条响应消息，最后再发送一条 ReadyForQuery 响应消息。ReadyForQuery 通知前端它现在可以安全地发送新的命令。（实际上，前端并不一定非要等到收到 ReadyForQuery 才发送下一条命令，但这样一来，前端就必须自己处理“先前命令失败而后续已发出的命令成功”这种情况。）
+   </para>
+
+   <para>
+    后端可能返回的响应消息有：
+
+    <variablelist>
+     <varlistentry id="zh18-auto-protocol-varlistentry-45">
+      <term>CommandComplete</term>
+      <listitem>
+       <para>
+        一条 SQL 命令正常完成。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-46">
+      <term>CopyInResponse</term>
+      <listitem>
+       <para>
+        后端已准备好把数据从前端复制到表中；参见<xref linkend="protocol-copy"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-47">
+      <term>CopyOutResponse</term>
+      <listitem>
+       <para>
+        后端已准备好把数据从表中复制到前端；参见<xref linkend="protocol-copy"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-48">
+      <term>RowDescription</term>
+      <listitem>
+       <para>
+        表示即将返回行作为对<command>SELECT</command>、<command>FETCH</command>等查询的响应。
+        此消息的内容描述了行的列布局。这将跟随每个返回给前端的行的DataRow消息。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-49">
+      <term>DataRow</term>
+      <listitem>
+       <para>
+        由<command>SELECT</command>、<command>FETCH</command>等查询返回的一组行中的一个。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-50">
+      <term>EmptyQueryResponse</term>
+      <listitem>
+       <para>
+        识别出了一条空查询字符串。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-51">
+      <term>ErrorResponse</term>
+      <listitem>
+       <para>
+        发生了一个错误。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-52">
+      <term>ReadyForQuery</term>
+      <listitem>
+       <para>
+        查询字符串的处理已完成。发送一个单独的消息来指示这一点，因为查询字符串可能包含多个SQL命令。
+        （CommandComplete标记了一个SQL命令的处理结束，而不是整个字符串的结束。）
+        无论处理是成功还是出现错误，都将始终发送ReadyForQuery。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-53">
+      <term>NoticeResponse</term>
+      <listitem>
+       <para>
+        与查询相关的警告消息已发出。
+        通知是其他响应的补充，即后端将继续处理命令。
+       </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>
+   </para>
+
+   <para>
+    对 <command>SELECT</command> 查询（或其他返回行集的查询，如 <command>EXPLAIN</command> 或 <command>SHOW</command>）的响应，通常包含 RowDescription、零条或多条 DataRow 消息，以及最后的 CommandComplete。向前端 <command>COPY</command> 或从前端 <command>COPY</command> 会调用<xref linkend="protocol-copy"/>中描述的特殊协议。所有其他类型的查询通常只产生一条 CommandComplete 消息。
+   </para>
+
+   <para>
+    由于查询字符串可能包含若干条查询（以分号分隔），因此在后端完成整个查询字符串的处理之前，可能会出现多个这样的响应序列。只有在整个字符串处理完毕且后端已准备好接受新的查询字符串时，才会发出 ReadyForQuery 消息。
+   </para>
+
+   <para>
+    如果收到的是一条完全为空的查询字符串（除了空白字符之外没有任何内容），响应就是一条 EmptyQueryResponse，后面跟着 ReadyForQuery。
+   </para>
+
+   <para>
+    一旦发生错误，就会发出一条 ErrorResponse 消息，后面跟着 ReadyForQuery。ErrorResponse 会中止该查询字符串中后续所有处理（即使其中还包含其他查询）。请注意，这种情况可能发生在处理单条查询所生成的消息序列中途。
+   </para>
+
+   <para>
+    在简单查询模式中，取回值的格式总是文本，除非给出的命令是在使用 <literal>BINARY</literal> 选项声明的游标上执行<command>FETCH</command>。在这种情况下，取回的值将采用二进制格式。RowDescription 消息中给出的格式代码会告诉我们使用的是哪种格式。
+   </para>
+
+   <para>
+    当前端正在等待其他类型的消息时，也必须准备好接收 ErrorResponse 和 NoticeResponse 消息。参见<xref linkend="protocol-async"/>，了解后端因外部事件而可能生成的消息。
+   </para>
+
+   <para>
+    我们建议的方法是把前端代码写成状态机的风格，它可以在任何时刻接受任何有意义的消息类型，而不是假设消息的序列总是准确。
+   </para>
+
+   <sect3 id="protocol-flow-multi-statement">
+
+    <title>一个简单查询中的多条语句</title>
+
+    <para>
+     当一个简单查询消息中包含多于一条SQL语句（被分号分隔）时，那些语句会被当做一个事务中执行，除非其中包括显式事务控制命令来强制不同的行为。例如，如果消息包括
+<programlisting>
+INSERT INTO mytable VALUES(1);
+SELECT 1/0;
+INSERT INTO mytable VALUES(2);
+</programlisting>
+     则<command>SELECT</command>中的除零失败将强制回滚第一个<command>INSERT</command>。进而，因为该消息的执行在第一个错误时就被放弃，第二个<command>INSERT</command>根本都不会被尝试。
+    </para>
+
+    <para>
+     如果该消息包含的是
+<programlisting>
+BEGIN;
+INSERT INTO mytable VALUES(1);
+COMMIT;
+INSERT INTO mytable VALUES(2);
+SELECT 1/0;
+</programlisting>
+     那么第一个<command>INSERT</command>会被这个显式的<command>COMMIT</command>命令提交。第二个<command>INSERT</command>以及<command>SELECT</command>仍会被当作一个单一事务，这样除零失败将回滚第二个<command>INSERT</command>，但不会回滚第一个。
+    </para>
+
+    <para>
+     这种行为通过在一个<firstterm>隐式事务块</firstterm>中的一个多语句Query消息中运行那些语句来实现，除非它们运行在某个显式事务块中。隐式事务块与常规事务块之间的区别在于隐式块会在Query消息结束时自动被关闭，或者是在没有错误的情况下由一个隐式提交关闭，或者是在有错误时由一个隐式的回滚关闭。这类似于一个语句自己执行（当不在事务块中时）时发生的隐式提交或回滚。
+    </para>
+
+    <para>
+     如果会话已经在一个事务块中，作为前面某个消息中<command>BEGIN</command>的结果，那么Query消息会简单地继续那个事务块，不管该消息包含一个语句还是多个语句。不过，如果该Query消息包含一个关闭现有事务块的<command>COMMIT</command>或者<command>ROLLBACK</command>，那么任何接下来的语句都会在一个隐式事务块中被执行。反过来，如果在多语句Query消息中出现一个<command>BEGIN</command>，那么它会开始一个常规事务块，这个常规事务块将只能被一个显式的<command>COMMIT</command>或者<command>ROLLBACK</command>终止，不管这两种命令是出现在这个Query消息还是后面的一个Query消息中。如果<command>BEGIN</command>跟在一些作为隐式事务块执行的语句后面，那些语句不会被立刻提交。实际上，它们会被包括到新的常规事务块中。
+    </para>
+
+    <para>
+     出现在一个隐式事务块中的<command>COMMIT</command>或者<command>ROLLBACK</command>会被正常执行并且关闭该隐式块。不过，由于没有先前的<command>BEGIN</command>配对的<command>COMMIT</command>或者<command>ROLLBACK</command>表示一种错误，所以将会发出一个警告。如果后面还有更多语句，将会为它们开始一个新的隐式事务块。
+    </para>
+
+    <para>
+     在隐式事务块中不允许保存点，因为它们会与发生错误时自动关闭块的行为发生冲突。
+    </para>
+
+    <para>
+     记住，不管任何事务控制命令存不存在，Query消息的执行会在第一个错误时停止。因此，对于下面的在一个Query消息中的示例
+<programlisting>
+BEGIN;
+SELECT 1/0;
+ROLLBACK;
+</programlisting>
+     会话中将留下一个失败的常规事务块，因为在出现除零错误后不会到达<command>ROLLBACK</command>。将需要另一个<command>ROLLBACK</command>把会话恢复到一种可用的状态。
+    </para>
+
+    <para>
+     另一种要注意的行为是，最初的词法和语法分析是在整个查询字符串被执行之前进行的。因此后面的语句中的简单错误（例如拼写错误的关键词）可能会阻止任何语句的执行。这通常对用户是不可见的，因为在当作一个隐式事务块执行时，这些语句不管怎样都会全部被回滚。不过，在尝试于一个多语句Query中执行多个事务时，这种现象可能是可见的。例如，如果一个拼写错误把我们之前的示例变成
+<programlisting>
+BEGIN;
+INSERT INTO mytable VALUES(1);
+COMMIT;
+INSERT INTO mytable VALUES(2);
+SELCT 1/0;<!-- this typo is intentional -->
+</programlisting>
+     那么这些语句都不会被运行，导致可见的差别，即第一个<command>INSERT</command>没有被提交。在语义分析及其后阶段检测到的错误（例如拼错的表名或者列名）不会有这种效果。
+    </para>
+
+    <para>
+     最后要注意，单个 Query 消息中的所有语句会观察到相同的 <function>statement_timestamp()</function>，因为该时间戳只在接收 Query 消息时更新。因此它们通常也会观察到相同的 <function>transaction_timestamp()</function>，除非查询串恰好结束了一个已开始的事务并开启了新事务。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 id="protocol-flow-ext-query">
+
+   <title>扩展查询</title>
+
+   <para>
+    扩展查询协议把上文描述的简单查询协议拆分成多个步骤。准备步骤的结果可以重复使用，从而提高效率。此外，它还提供了额外特性，例如可以把数据值作为独立参数提供，而不必直接插入查询字符串中。
+   </para>
+
+   <para>
+    在扩展协议中，前端首先发送一条 Parse 消息，其中包含文本查询字符串、可选的参数占位符数据类型信息，以及目标预备语句对象的名称（空字符串表示未命名预备语句）。响应要么是 ParseComplete，要么是 ErrorResponse。参数数据类型可以用 OID 指定；如果未给出，解析器会像处理无类型字面字符串常量那样尝试推断其数据类型。
+   </para>
+
+   <note>
+
+    <para>
+     一个参数的数据类型可以通过设为零，或让参数类型 OID 数组短于查询字符串中参数符号（<literal>$</literal><replaceable>n</replaceable>）的数量来保持未指定。另一个特例是，参数类型可以指定为 <type>void</type>（即伪类型 <type>void</type> 的 OID）。这样做是为了允许参数符号用于那些实际上是 OUT 参数的函数参数。通常并不存在可使用 <type>void</type> 参数的上下文，但如果这样的参数符号出现在函数参数列表中，它实际上会被忽略。例如，像 <literal>foo($1,$2,$3,$4)</literal> 这样的函数调用，如果 <literal>$3</literal> 和 <literal>$4</literal> 被指定为 <type>void</type> 类型，就可能匹配一个带有两个 IN 参数和两个 OUT 参数的函数。
+    </para>
+   </note>
+
+   <note>
+
+    <para>
+     Parse 消息中的查询字符串不能包含多于一条 SQL 语句；否则会报告语法错误。这个限制在简单查询协议中并不存在，但在扩展协议中必须如此，因为若允许预备语句或 portal 包含多条命令，会使协议变得过于复杂。
+    </para>
+   </note>
+
+   <para>
+    如果成功创建了一个有名的预备语句对象，它会一直持续到当前会话结束，除非被显式销毁。未命名预备语句只会持续到下一条把未命名语句作为目标的 Parse 消息发出为止。（注意，简单 Query 消息也会销毁未命名语句。）有名预备语句在被另一条 Parse 消息重新定义之前必须显式关闭，但未命名语句则无此要求。有名预备语句也可以在 SQL 命令级别通过<command>PREPARE</command>和<command>EXECUTE</command>来创建和访问。
+   </para>
+
+   <para>
+    一旦预备语句存在，就可以用 Bind 消息把它准备为可执行状态。Bind 消息给出源预备语句的名称（空字符串表示未命名预备语句）、目标 portal 的名称（空字符串表示未命名 portal），以及预备语句中所有参数占位符应使用的值。所提供的参数集必须与预备语句所需参数相匹配。（如果你在 Parse 消息中声明了任何 <type>void</type> 参数，那么在 Bind 消息中应为它们传递 NULL 值。）Bind 还会指定查询返回数据所使用的格式；格式既可以统一指定，也可以按列指定。响应要么是 BindComplete，要么是 ErrorResponse。
+   </para>
+
+   <note>
+
+    <para>
+     输出采用文本还是二进制格式，由 Bind 中给出的格式代码决定，而与涉及的 SQL 命令无关。在使用扩展查询协议时，游标声明中的 <literal>BINARY</literal> 属性并不起作用。
+    </para>
+   </note>
+
+   <para>
+    通常会在处理 Bind 消息时进行查询规划。如果预备语句没有参数，或者会被重复执行，服务器可能会保存生成的计划，并在后续针对同一预备语句的 Bind 消息中重用它。不过，只有当它发现可以创建一个效率并不比依赖具体参数值的计划差很多的通用计划时，才会这样做。就协议而言，这一切都是透明的。
+   </para>
+
+   <para>
+    如果成功创建了一个有名 portal 对象，它会一直持续到当前事务结束，除非被显式销毁。未命名 portal 会在事务结束时销毁，或者在下一条把未命名 portal 作为目标的 Bind 消息发出时立即销毁。（注意，简单 Query 消息也会销毁未命名 portal。）有名 portal 在被另一条 Bind 消息重新定义之前必须显式关闭，而未命名 portal 则无此要求。有名 portal 也可以在 SQL 命令级别通过<command>DECLARE CURSOR</command>和<command>FETCH</command>来创建和访问。
+   </para>
+
+   <para>
+    一旦 portal 存在，就可以使用 Execute 消息执行它。Execute 消息指定 portal 的名称（空字符串表示未命名 portal）以及一个最大的结果行计数（零表示<quote>取回全部行</quote>）。结果行计数只对包含返回行集命令的 portal 有意义；在其他情况下，命令总会执行到完成，而行计数会被忽略。Execute 的可能响应与通过简单查询协议发出的查询相同，只是执行不会导致后端发送 ReadyForQuery 或 RowDescription。
+   </para>
+
+   <para>
+    如果 Execute 在 portal 执行完成之前终止（因为达到了非零的结果行计数），它会发送一条 PortalSuspended 消息；该消息表明前端应当针对同一个 portal 再发出一条 Execute 消息，以完成此次操作。在 portal 执行完成之前，不会发送表示源 SQL 命令结束的 CommandComplete 消息。因此，一个 Execute 阶段总会以下列消息之一结束：CommandComplete、EmptyQueryResponse（如果 portal 是从空查询字符串创建的）、ErrorResponse 或 PortalSuspended。
+   </para>
+
+   <para>
+    每一组扩展查询消息完成后，前端都应发送一条 Sync 消息。这条无参数消息会让后端关闭当前事务，如果当前事务并不处在 <command>BEGIN</command>/<command>COMMIT</command> 事务块内（这里的<quote>关闭</quote>指的是：无错误则提交，有错误则回滚）。随后会发送一条 ReadyForQuery 响应。Sync 的目的是为错误恢复提供一个重新同步点。如果在处理任何扩展查询消息时检测到错误，后端会发出 ErrorResponse，然后持续读取并丢弃消息，直到遇到 Sync，再发送 ReadyForQuery 并回到正常的消息处理流程。（但要注意，如果是在处理 Sync <emphasis>期间</emphasis>检测到错误，则不会跳过任何消息，这样就能保证每条 Sync 恰好对应一条 ReadyForQuery。）
+   </para>
+
+   <note>
+
+    <para>
+     Sync 不会关闭由<command>BEGIN</command>打开的事务块。之所以能够检测出这种情况，是因为 ReadyForQuery 消息中包含事务状态信息。
+    </para>
+   </note>
+
+   <para>
+    除了这些基本的、必须的操作之外，在扩展查询协议里还有几种可选的操作可以使用。
+   </para>
+
+   <para>
+    Describe 消息（portal 变体）指定一个现有 portal 的名称（或者用空字符串表示未命名 portal）。响应要么是一条 RowDescription 消息，用于描述执行该 portal 时将返回的行；要么是一条 NoData 消息，如果该 portal 不包含会返回行的查询；要么是 ErrorResponse，如果不存在这样的 portal。
+   </para>
+
+   <para>
+    Describe 消息（语句变体）指定一个现有预备语句的名称（或者用空字符串表示未命名预备语句）。响应是一条 ParameterDescription 消息，用于描述该语句所需的参数，随后是一条 RowDescription 消息，用于描述该语句最终执行时将返回的行（如果该语句不返回行，则为 NoData 消息）。如果不存在这样的预备语句，则返回 ErrorResponse。请注意，由于还没有发出 Bind，后端尚不知道返回列将使用什么格式；因此在这种情况下，RowDescription 消息中的格式代码字段将为零。
+   </para>
+
+   <tip>
+
+    <para>
+     在大多数场景下，前端都应在发出 Execute 之前先发送某一种 Describe 变体，以确保它知道应如何解释接收到的结果。
+    </para>
+   </tip>
+
+   <para>
+    Close 消息会关闭一个现有的预备语句或 portal，并释放相关资源。针对不存在的语句或 portal 发出 Close 并不算错误。响应通常是 CloseComplete，但如果在释放资源时遇到困难，也可能返回 ErrorResponse。请注意，关闭预备语句会隐式关闭所有基于该语句构造出的打开 portal。
+   </para>
+
+   <para>
+    Flush 消息本身不会产生任何特定输出，但会强制后端发送其输出缓冲区中所有尚待发送的数据。如果前端希望在发出更多命令之前检查某条扩展查询命令的结果，那么除了 Sync 之外，任何扩展查询命令之后都必须发送 Flush。如果没有 Flush，后端返回的消息会尽量合并成最少的数据包，以降低网络开销。
+   </para>
+
+   <note>
+
+    <para>
+     简单 Query 消息大致等价于一串 Parse、Bind、portal Describe、Execute、Close、Sync 操作，它们使用未命名预备语句和未命名 portal 对象，并且不带参数。不同之处在于，简单 Query 会接受包含多条 SQL 语句的查询字符串，并依次自动为每条语句执行绑定、描述和执行序列；另一个区别是它不会返回 ParseComplete、BindComplete、CloseComplete 或 NoData 消息。
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 id="protocol-flow-pipelining">
+
+   <title>流水线处理</title>
+
+   <indexterm zone="protocol-flow-pipelining">
+    <primary>流水线处理</primary>
+    <secondary>协议规范</secondary>
+</indexterm>
+
+   <para>
+    使用扩展查询协议允许<firstterm>流水线处理</firstterm>，这意味着发送一系列查询而无需等待先前的查询完成。
+    这减少了完成一系列操作所需的网络往返次数。然而，用户必须仔细考虑所需的行为，如果其中一步失败，
+    因为后续查询已经在传输到服务器的过程中。
+</para>
+
+   <para>
+    处理这个问题的一种方法是将整个查询系列作为一个事务处理，即将其包装在<command>BEGIN</command>...
+    <command>COMMIT</command>中。然而，如果希望其中一些命令独立于其他命令提交，这并没有帮助。
+   </para>
+
+   <para>
+    扩展查询协议提供了另一种管理这个问题的方式，即在依赖的步骤之间省略发送同步消息。
+    由于在错误后，后端会跳过命令消息直到找到同步消息，这允许在管道中的后续命令在前面的命令失败时自动跳过，而无需客户端明确地使用<command>BEGIN</command>和<command>COMMIT</command>来管理。
+    管道中可以通过同步消息分隔独立可提交的段。
+   </para>
+
+   <para>
+    如果客户端没有发出显式 <command>BEGIN</command>，则会启动一个隐式事务块。每个 Sync 通常会在前序步骤成功时导致隐式 <command>COMMIT</command>，失败时导致隐式 <command>ROLLBACK</command>。服务器只有在第一个命令结束且尚未收到 Sync 时，才能识别这种隐式事务块。有一些 DDL 命令（例如 <command>CREATE DATABASE</command>）不能在事务块内执行；若这类命令在管道中执行，除非它是某个 Sync 之后的第一条命令，否则会失败。此外，它成功后会强制立即提交以保持数据库一致性。因此，紧随这些命令之后的 Sync 除了返回 ReadyForQuery 外不会产生额外效果。
+   </para>
+
+   <para>
+    当使用这种方法时，必须通过计算ReadyForQuery消息的数量并等待达到发送的Syncs数量来确定管道的完成。
+    计算命令完成响应是不可靠的，因为其中一些命令可能会被跳过，因此不会产生完成消息。
+</para>
+  </sect2>
+
+  <sect2 id="protocol-flow-function-call">
+
+   <title>函数调用</title>
+
+   <para>
+    函数调用子协议允许客户端请求一个对存在于数据库<structname>pg_proc</structname>系统表中的任意函数的直接调用。客户端必须在该函数上有执行的权限。
+   </para>
+
+   <note>
+
+    <para>
+     函数调用子协议是一个遗留的特性，在新代码里可能最好避免用它。类似的结果可以通过设置一个执行<literal>SELECT function($1, ...)</literal>的预备语句得到。这样函数调用周期就可以用 Bind/Execute 代替。
+    </para>
+   </note>
+
+   <para>
+    一个函数调用周期是由前端向后端发送一条FunctionCall消息初始化的。然后后端根据函数调用的结果发送一条或者更多响应消息，并且最后是一条ReadyForQuery响应消息。ReadyForQuery通知前端它可以安全地发送一个新的查询或者函数调用了。
+   </para>
+
+   <para>
+    来自后端的可能的响应消息是：
+
+    <variablelist>
+     <varlistentry id="zh18-auto-protocol-varlistentry-58">
+      <term>ErrorResponse</term>
+      <listitem>
+       <para>
+        发生了一个错误。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-59">
+      <term>FunctionCallResponse</term>
+      <listitem>
+       <para>
+        函数调用完成并且在消息中返回一个结果（请注意函数调用协议只能处理单个标量结果，不能处理行类型或者集合类型的结果）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-60">
+      <term>ReadyForQuery</term>
+      <listitem>
+       <para>
+        函数调用处理完成。ReadyForQuery将总是被发送，不管是成功完成处理还是发生一个错误。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-protocol-varlistentry-61">
+      <term>NoticeResponse</term>
+      <listitem>
+       <para>
+        发出了一条有关该函数调用的警告信息。通知是附加在其他响应上的，也就是说，后端将继续处理该命令。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+  </sect2>
+
+  <sect2 id="protocol-copy">
+
+   <title>COPY操作</title>
+
+   <para>
+    <command>COPY</command>命令允许在服务器和客户端之间进行高速大批量数据传输。拷贝入和拷贝出操作每个都把连接切换到一个独立的子协议中，并且持续到操作结束。
+   </para>
+
+   <para>
+    拷贝入模式（向服务器传输数据）在后端执行<command>COPY FROM STDIN</command> SQL 语句时启动。后端会向前端发送一条 CopyInResponse 消息。随后前端应发送零条或多条 CopyData 消息，构成一条输入数据流。（消息边界与行边界之间没有任何对应关系要求，尽管让它们对齐通常是合理的选择。）前端可以通过发送 CopyDone 消息来结束拷贝入模式（表示成功结束），也可以发送 CopyFail 消息（这会使<command>COPY</command>语句以错误失败）。然后后端会恢复到<command>COPY</command>开始之前的命令处理模式，也就是简单查询协议或扩展查询协议。接下来它会发送 CommandComplete（成功时）或 ErrorResponse（失败时）。
+   </para>
+
+   <para>
+    如果在拷贝入模式期间后端检测到错误（包括收到 CopyFail 消息），后端会发出一条 ErrorResponse 消息。如果<command>COPY</command>命令是通过扩展查询消息发出的，那么后端会从此开始丢弃前端消息，直到收到一条 Sync 消息，然后发出 ReadyForQuery 并恢复正常处理。如果<command>COPY</command>命令是在简单 Query 消息中发出的，那么该消息的剩余部分会被丢弃，并发送 ReadyForQuery。无论哪种情况，前端随后发出的任何 CopyData、CopyDone 或 CopyFail 消息都会被直接丢弃。
+   </para>
+
+   <para>
+    在拷贝入模式下，后端将忽略所收到的Flush和Sync消息。收到任何其他非拷贝消息类型都会造成一个错误，它将导致上面所描述的拷贝入状态中断（Flush和Sync的例外是为了方便客户端库，它们总是在一个Execute消息之后发送Flush和Sync，而不检查被执行的命令是否为一个<command>COPY FROM STDIN</command>）。
+   </para>
+
+   <para>
+    拷贝出模式（数据从服务器发出）是在后端执行一个<command>COPY TO STDOUT</command>语句的时候初始化的。后端发出一个CopyOutResponse消息给前端，后面跟着零或者多个CopyData消息（总是每行一个），然后跟着CopyDone。然后后端回退到它在<command>COPY</command>开始之前的命令处理模式，然后发送CommandComplete。前端不能退出传输（除非是关闭连接或者发出一个Cancel请求），但是它可以抛弃不需要的CopyData和CopyDone消息。
+   </para>
+
+   <para>
+    在拷贝出模式中，如果后端检测到错误，那么它将发出一个ErrorResponse消息并且回到正常的处理。前端应该把收到ErrorResponse当作终止拷贝出模式的标志。
+   </para>
+
+   <para>
+    在CopyData消息中间可能会散布有NoticeResponse和ParameterStatus消息。前端必须处理这些情况，并且应该也为异步消息类型（参见<xref linkend="protocol-async"/>）准备好。否则任何除CopyData或CopyDone之外的消息类型都会被认为是要中止拷贝出模式。
+   </para>
+
+   <para>
+    还有另一种与拷贝相关的模式，称为双向拷贝（copy-both），它允许数据以高速批量方式在客户端与服务器之间双向传输。当处于 walsender 模式的后端执行<command>START_REPLICATION</command>语句时，会启动双向拷贝模式。后端会向前端发送一条 CopyBothResponse 消息。此后，前端和后端都可以发送 CopyData 消息，直到任一方发送 CopyDone 消息。客户端发送 CopyDone 后，连接会从双向拷贝模式切换到拷贝出模式，客户端也不得再发送 CopyData。类似地，当服务器发送 CopyDone 后，连接会进入拷贝入模式，服务器也不得再发送 CopyData。当双方都发送完 CopyDone 后，拷贝模式结束，后端恢复到原先的命令处理模式。如果双向拷贝模式期间发生后端检测到的错误，后端会发出 ErrorResponse，丢弃前端消息直到收到 Sync，然后发出 ReadyForQuery 并返回正常处理。前端应将收到 ErrorResponse 视为双向拷贝终止的信号；在这种情况下不应再发送 CopyDone。关于在双向拷贝模式上传输的子协议，见<xref linkend="protocol-replication"/>。
+   </para>
+
+   <para>
+    CopyInResponse、CopyOutResponse和CopyBothResponse消息包括域和格式代码，域告诉前端每行的列数，而格式代码则用于具体每个列（就目前的实现而言，一个给定<command>COPY</command>操作中的所有列都将使用同样的格式，但是消息设计并不做这个假设）。
+   </para>
+
+  </sect2>
+
+  <sect2 id="protocol-async">
+
+   <title>异步操作</title>
+
+   <para>
+    在若干情况下，后端会发送并非由前端命令流直接触发的消息。前端必须随时准备处理这些消息，即使当前并未处于查询过程中。至少，在开始读取查询响应之前应检查这些情况。
+   </para>
+
+   <para>
+    NoticeResponse 消息可能因外部活动而产生；例如，如果数据库管理员发起一次<quote>快速</quote>数据库关闭，后端会在关闭连接之前发送一条 NoticeResponse 说明这一事实。因此，前端应始终准备好接收并显示 NoticeResponse 消息，即使连接表面上处于空闲状态。
+   </para>
+
+   <para>
+    只要后端认为前端应当知晓的某个参数的当前有效值发生变化，就会生成 ParameterStatus 消息。最常见的情况是响应前端执行的<command>SET</command>命令，这种情况实际上是同步的；但也可能是管理员修改了配置文件，然后向服务器发送<systemitem>SIGHUP</systemitem>信号，从而导致参数状态发生变化。同样，如果某条<command>SET</command>命令被回滚，也会生成适当的 ParameterStatus 消息，用于报告当前生效的值。
+   </para>
+
+   <para>
+    目前，系统会为以下参数发送 ParameterStatus：
+    <simplelist type="vert" columns="2">
+     <member><varname>application_name</varname></member>
+     <member><varname>client_encoding</varname></member>
+     <member><varname>DateStyle</varname></member>
+     <member><varname>default_transaction_read_only</varname></member>
+     <member><varname>in_hot_standby</varname></member>
+     <member><varname>integer_datetimes</varname></member>
+     <member><varname>IntervalStyle</varname></member>
+     <member><varname>is_superuser</varname></member>
+     <member><varname>scram_iterations</varname></member>
+     <member><varname>search_path</varname></member>
+     <member><varname>server_encoding</varname></member>
+     <member><varname>server_version</varname></member>
+     <member><varname>session_authorization</varname></member>
+     <member><varname>standard_conforming_strings</varname></member>
+     <member><varname>TimeZone</varname></member>
+    </simplelist>
+    （<varname>default_transaction_read_only</varname> 与 <varname>in_hot_standby</varname> 在 14 之前不报告；
+    <varname>scram_iterations</varname> 在 16 之前不报告；
+    <varname>search_path</varname> 在 18 之前不报告。）
+    注意 <varname>server_version</varname>、<varname>server_encoding</varname> 与 <varname>integer_datetimes</varname> 是启动后不可更改的伪参数。未来该集合可能变化，甚至可能变为可配置。因此，前端应忽略其不理解或不关心的 ParameterStatus。
+   </para>
+
+   <para>
+    如果前端发出一个<command>LISTEN</command>命令， 那么无论何时在为同一个通道名<command>NOTIFY</command>时，后端将发送一个NotificationResponse消息（不要和NoticeResponse搞混！）。
+   </para>
+
+   <note>
+
+    <para>
+     目前，NotificationResponse只能在一个事务外面发送，因此它将不会在一个命令响应序列中间出现，但是它可能正好在ReadyForQuery之前出现。不过，在前端逻辑中做上述假设是不明智的。好的做法是在协议的任何点上都可以接受NotificationResponse。
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 id="protocol-flow-canceling-requests">
+
+   <title>取消正在处理的请求</title>
+
+   <para>
+    在一条查询正在处理的时候，前端可以请求取消该查询。这种取消请求不是直接通过打开的连接发送给后端的，这么做是因为实现的效率：我们不希望后端在处理查询的过程中不停地检查前端来的输入。 取消请求应该相对而言比较少见，所以我们把取消做得稍微笨拙一些，以便不影响正常状况的性能。
+   </para>
+
+   <para>
+    要发出一条取消请求，前端打开一个与服务器的新连接并且发送一条CancelRequest消息， 而不是通常在新连接中经常发送的StartupMessage消息。服务器将处理这个请求然后关闭连接。 出于安全原因，对取消请求消息不做直接的响应。
+   </para>
+
+   <para>
+    除非CancelRequest消息包含在连接启动过程中传递给前端的相同的关键数据（PID和密钥），否则它将被忽略。如果该请求匹配当前运行着的后端的PID和密钥， 则退出当前查询的处理（目前的实现里采用的方法是向正在处理该查询的后端进程发送一个特殊的信号）。
+   </para>
+
+   <para>
+    取消信号可能有效，也可能无效；例如，如果它在后端已经处理完查询之后才到达，就不会起作用。如果取消生效，当前命令就会以一条错误消息提前终止。
+   </para>
+
+   <para>
+    这么做是对安全性和有效性通盘考虑的结果，前端没有直接的方法获知一个取消请求是否成功。它必须继续等待后端对查询响应。发出一个取消仅仅是增加了当前查询快些结束的可能性， 同时也增加了当前查询会伴随着一条错误消息失败而不是成功执行的可能性。
+   </para>
+
+   <para>
+    由于取消请求是通过一条新的连接发送给服务器，而不是通过常规的前端/后端通信链路发送，因此发出取消请求的可以是任意进程，而不一定非要是要取消查询的那个前端。这为构建多进程应用提供了额外的灵活性，同时也带来了安全风险，因为未授权用户可能会尝试取消查询。通过要求在取消请求中提供动态生成的密钥，可以缓解这一安全风险。
+   </para>
+  </sect2>
+
+  <sect2 id="protocol-flow-termination">
+
+   <title>终止</title>
+
+   <para>
+    通常优雅的终止过程是前端发送一条Terminate消息并且立刻关闭连接。一旦收到消息，后端马上关闭连接并且终止。
+   </para>
+
+   <para>
+    在少数情况下（比如一个管理员命令数据库关闭），后端可能在没有任何前端请求的情况下断开连接。在这种情况下，后端将在它断开连接之前尝试发送一个错误或者通知消息给出断开的原因。
+   </para>
+
+   <para>
+    其他终止场景来自各种故障，例如任一端发生内核转储、通信链路中断、消息边界同步丢失等。如果前端或后端看到连接意外关闭，就应清理并终止。若前端不想自行终止，也可以重新联系服务器以启动一个新的后端。如果收到无法识别的消息类型，同样建议关闭连接，因为这通常意味着消息边界同步已经丢失。
+   </para>
+
+   <para>
+    不管是正常还是不正常的终止，任何打开的事务都会回滚而不是提交。不过，我们应该注意的是如果一个前端在一个非<command>SELECT</command>查询正在处理的时候断开， 那么后端很可能在发现断开之前先完成查询的处理。如果查询处于任何事务块之外（<command>BEGIN</command> ... <command>COMMIT</command>序列），那么其结果很可能在得知断开之前被提交。
+   </para>
+  </sect2>
+
+  <sect2 id="protocol-flow-ssl">
+
+   <title><acronym>SSL</acronym>会话加密</title>
+
+   <para>
+    如果编译<productname>PostgreSQL</productname>时启用了<acronym>SSL</acronym>支持，那么前端/后端通信就可以使用<acronym>SSL</acronym>加密。这为攻击者可能截获会话流量的环境提供了通信安全性。有关使用<acronym>SSL</acronym>加密<productname>PostgreSQL</productname>会话的更多信息，请参阅<xref linkend="ssl-tcp"/>。
+   </para>
+
+   <para>
+    要发起一条使用<acronym>SSL</acronym>加密的连接，前端首先发送 SSLRequest 消息，而不是 StartupMessage。随后服务器会响应一个包含<literal>S</literal>或<literal>N</literal>的单字节，分别表示它愿意或不愿意执行<acronym>SSL</acronym>加密。如果前端对该响应不满意，此时可以关闭连接。若要在收到<literal>S</literal>后继续，就先与服务器完成<acronym>SSL</acronym>启动握手（这里不做描述，它属于<acronym>SSL</acronym>规范的一部分）。如果成功，再继续发送通常的 StartupMessage。在这种情况下，StartupMessage 以及后续所有数据都会被<acronym>SSL</acronym>加密。若要在收到<literal>N</literal>后继续，则发送通常的 StartupMessage，并在不使用加密的情况下继续。
+    (另外，可以在 <literal>N</literal> 响应之后发出 GSSENCRequest 消息，尝试使用 <acronym>GSSAPI</acronym> 加密代替 <acronym>SSL</acronym>。)
+   </para>
+
+   <para>
+    前端也应准备处理服务器对 SSLRequest 返回的 ErrorMessage。前端不应将该错误直接展示给用户/应用，因为此时服务器尚未完成认证（<ulink url="https://www.postgresql.org/support/security/CVE-2024-10977/">CVE-2024-10977</ulink>）。遇到这种情况必须关闭连接，但前端可以选择重新建立连接并在不请求 <acronym>SSL</acronym> 的情况下继续。
+   </para>
+
+   <para>
+       当可以执行 <acronym>SSL</acronym> 加密时，服务器预计仅发送单个 <literal>S</literal> 字节，然后等待前端启动 <acronym>SSL</acronym> 握手。如果此时有其他可读取的字节，则很可能意味着中间人正在尝试执行缓冲区填充攻击（<ulink url="https://www.postgresql.org/support/security/CVE-2021-23222/">CVE-2021-23222</ulink>）。前端应该编写代码，要么从套接字中恰好读取一个字节，然后将套接字交给他们的 SSL 库，要么在发现他们已经读取到额外的字节时将其视为协议违规。
+   </para>
+
+  <para>
+    同样，服务器也期望客户端在收到服务器对 SSLRequest 的单字节响应之后，再开始<acronym>SSL</acronym>协商。如果客户端不等服务器响应到达就立即开始<acronym>SSL</acronym>协商，可以减少一次网络往返时延；但代价是无法处理服务器对<acronym>SSL</acronym>请求返回否定响应的情况。在这种情况下，服务器通常会直接断开连接，而不会继续回退到 GSSAPI、未加密连接或协议错误流程。
+   </para>
+
+   <para>
+    初始 SSLRequest 也可以用于那些正在建立、目的是发送 CancelRequest 消息的连接。
+   </para>
+
+   <para>
+    还支持第二种发起<acronym>SSL</acronym>加密的方式：客户端可以在不发送任何 SSLRequest 包的情况下，直接开始<acronym>SSL</acronym>协商。<acronym>SSL</acronym>连接建立后，服务器会在加密通道上继续等待普通的启动请求包并继续协商。在这种情况下，任何其他的加密请求都会被拒绝。这种方法不适合通用工具，因为它既不能协商出最佳的连接加密方式，也不能处理未加密连接；但在客户端和服务器都由同一方控制的环境中，它很有用，因为它可以减少一次往返时延，并允许使用依赖标准<acronym>SSL</acronym>连接的网络工具。使用这种风格的<acronym>SSL</acronym>连接时，客户端必须使用由 <ulink url="https://tools.ietf.org/html/rfc7301">RFC 7301</ulink> 定义的 ALPN 扩展，以防范协议混淆攻击。<productname>PostgreSQL</productname> 协议对应的 ALPN 标识是 <literal>postgresql</literal>，见 <ulink url="https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids">IANA TLS ALPN Protocol IDs</ulink> 注册表。
+   </para>
+
+   <para>
+    虽然协议本身并不提供让服务器强制启用<acronym>SSL</acronym>加密的方法，但管理员可以把服务器配置为拒绝未加密会话，把它作为认证检查的一个副作用。
+   </para>
+  </sect2>
+
+  <sect2 id="protocol-flow-gssapi">
+
+   <title><acronym>GSSAPI</acronym> 会话加密</title>
+
+   <para>
+    如果<productname>PostgreSQL</productname>构建时启用了<acronym>GSSAPI</acronym>支持，就可以使用<acronym>GSSAPI</acronym>对前端/后端通信进行加密。这为攻击者可能截获会话流量的环境提供了通信安全性。有关使用<acronym>GSSAPI</acronym>加密<productname>PostgreSQL</productname>会话的详细信息，请参阅<xref linkend="gssapi-enc"/>。
+   </para>
+
+   <para>
+    要启动一个<acronym>GSSAPI</acronym>加密连接，前端最初发送一个GSSENCRequest消息，而不是一个StartupMessage。
+    服务器随后会响应一个包含<literal>G</literal>或<literal>N</literal>的单个字节，分别表示愿意或不愿意执行<acronym>GSSAPI</acronym>加密。
+    如果前端对响应不满意，可能会在此时关闭连接。
+    要在<literal>G</literal>之后继续，使用GSSAPI C绑定，如在<ulink url="https://datatracker.ietf.org/doc/html/rfc2744">RFC 2744</ulink>
+    中讨论的，或等效的，通过在循环中调用<function>gss_init_sec_context()</function>来执行<acronym>GSSAPI</acronym>初始化，
+    并将结果发送给服务器，从一个空输入开始，然后对每个来自服务器的结果进行处理，直到不再返回输出为止。
+    在将<function>gss_init_sec_context()</function>的结果发送给服务器时，在消息前加上以网络字节顺序表示的四字节整数的长度。
+    要在<literal>N</literal>之后继续，发送通常的StartupMessage，并在没有加密的情况下继续进行。
+    （或者，可以在<literal>N</literal>响应后发出一个SSLRequest消息，尝试使用<acronym>SSL</acronym>加密代替<acronym>GSSAPI</acronym>。）
+</para>
+
+   <para>
+    前端也应准备处理服务器对 GSSENCRequest 返回的 ErrorMessage。前端不应将该错误直接展示给用户/应用，因为此时服务器尚未完成认证（<ulink url="https://www.postgresql.org/support/security/CVE-2024-10977/">CVE-2024-10977</ulink>）。遇到这种情况必须关闭连接，但前端可以选择重新建立连接并在不请求 <acronym>GSSAPI</acronym> 加密的情况下继续。
+    </para>
+
+   <para>
+    当<acronym>GSSAPI</acronym>加密可用时，服务器预计只发送单个<literal>G</literal>字节，然后等待前端启动<acronym>GSSAPI</acronym>握手。此时如果还有其他可读字节，很可能意味着中间人正在尝试执行缓冲区填充攻击（<ulink url="https://www.postgresql.org/support/security/CVE-2021-23222/">CVE-2021-23222</ulink>）。前端应编写代码，要么从套接字中恰好读取一个字节后再把套接字交给其 GSSAPI 库，要么在发现自己已经读到额外字节时将其视为协议违规。
+   </para>
+
+   <para>
+    初始 GSSENCRequest 也可用于那些正在建立、目的是发送 CancelRequest 消息的连接。
+   </para>
+
+   <para>
+       一旦成功建立<acronym>GSSAPI</acronym>加密连接，就应使用<function>gss_wrap()</function>加密通常的 StartupMessage 以及后续所有数据，并在实际加密负载前附上<function>gss_wrap()</function>结果长度，该长度以网络字节序的四字节整数表示。请注意，服务器只接受来自客户端、长度小于 16kB 的加密数据包。客户端应使用<function>gss_wrap_size_limit()</function>确定符合该限制的未加密消息大小，较大的消息则应拆分为多次<function>gss_wrap()</function>调用。典型分段是 8kB 的未加密数据，对应得到略大于 8kB 但明显小于 16kB 的加密数据包。通常可以认为，服务器不会向客户端发送大于 16kB 的加密数据包。
+   </para>
+
+   <para>
+    虽然协议本身并不为服务器提供强制启用<acronym>GSSAPI</acronym>加密的方法，但管理员可以把服务器配置为拒绝未加密会话，把它作为认证检查的一个副作用。
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="sasl-authentication">
+
+  <title>SASL认证</title>
+
+  <para>
+   <firstterm>SASL</firstterm>是面向连接协议中的认证框架。目前，<productname>PostgreSQL</productname>实现了三种 SASL 机制：SCRAM-SHA-256、SCRAM-SHA-256-PLUS 和 OAUTHBEARER。未来可能继续增加。下面的步骤说明 SASL 认证的一般流程，后续小节将介绍具体机制细节。
+</para>
+
+  <procedure>
+
+   <title>SASL认证消息流</title>
+
+   <step id="sasl-auth-begin">
+
+    <para>
+     要开始一个SASL认证交换，服务器发送一个AuthenticationSASL消息。它包括服务器可以接受的SASL认证机制列表，按照服务器的首选顺序排列。
+    </para>
+   </step>
+
+   <step id="sasl-auth-initial-response">
+
+    <para>
+     客户端从列表中选择一个支持的机制，并向服务器发送一个SASLInitialResponse消息。
+     该消息包括所选机制的名称，以及如果所选机制使用的话，还包括一个可选的初始客户端响应。
+</para>
+   </step>
+
+   <step id="sasl-auth-continue">
+
+    <para>
+     一个或多个服务器挑战和客户端响应消息将随后而来。每个服务器挑战都是在一个
+     AuthenticationSASLContinue 消息中发送的，随后是客户端在一个 SASLResponse
+     消息中的响应。这些消息的具体内容是特定于机制的。
+    </para>
+   </step>
+
+   <step id="sasl-auth-end">
+
+    <para>
+     最后，当认证交换成功完成时，服务器会发送可选的 AuthenticationSASLFinal 消息，随后立即发送 AuthenticationOk。AuthenticationSASLFinal 包含机制特定的附加数据；若该机制不需要完成时附加数据，则不会发送 AuthenticationSASLFinal。
+</para>
+   </step>
+  </procedure>
+
+  <para>
+   在错误情况下，服务器可以在任何阶段中止认证，并发送一个<emphasis>ErrorMessage</emphasis>。
+</para>
+
+  <sect2 id="sasl-scram-sha-256">
+
+   <title>SCRAM-SHA-256认证</title>
+
+   <para>
+    <literal>SCRAM-SHA-256</literal> 及其带通道绑定的变体
+    <literal>SCRAM-SHA-256-PLUS</literal> 是基于密码的认证机制。它们在
+    <ulink url="https://datatracker.ietf.org/doc/html/rfc7677">RFC 7677</ulink>
+    和<ulink url="https://datatracker.ietf.org/doc/html/rfc5802">RFC 5802</ulink>中有详细描述。
+   </para>
+
+   <para>
+    当在PostgreSQL中使用SCRAM-SHA-256时，服务器将忽略客户端在<structname>client-first-message</structname>中发送的用户名。
+    而是使用已经在启动消息中发送的用户名。
+    <productname>PostgreSQL</productname>支持多种字符编码，而SCRAM规定用户名必须使用UTF-8，因此可能无法用UTF-8表示PostgreSQL用户名。
+   </para>
+
+   <para>
+    SCRAM规范规定密码也必须是UTF-8编码，并且使用<firstterm>SASLprep</firstterm>算法处理。
+    然而，<productname>PostgreSQL</productname>不要求密码必须使用UTF-8编码。
+    当用户设置密码时，无论实际使用的编码是什么，都会像使用UTF-8一样使用SASLprep进行处理。
+    但是，如果密码不是合法的UTF-8字节序列，或者包含SASLprep算法禁止的UTF-8字节序列，
+    则会使用原始密码而不进行SASLprep处理，而不是抛出错误。这样可以在密码为UTF-8时对其进行规范化，
+    但仍允许使用非UTF-8密码，并且不需要系统知道密码使用的编码方式。
+</para>
+
+   <para>
+    <firstterm>Channel binding</firstterm>在支持SSL的PostgreSQL构建中受支持。带有通道绑定的SCRAM的SASL机制名称是
+    <literal>SCRAM-SHA-256-PLUS</literal>。PostgreSQL使用的通道绑定类型是
+    <literal>tls-server-end-point</literal>。
+   </para>
+
+   <para>
+    在没有通道绑定的<acronym>SCRAM</acronym>中，服务器选择一个随机数，
+    传输给客户端，与用户提供的密码在传输的密码哈希中混合。虽然这可以
+    防止密码哈希在后续会话中被成功重新传输，但无法阻止真实服务器和客
+    户端之间的虚假服务器通过服务器的随机值并成功进行认证。
+   </para>
+
+   <para>
+    <acronym>SCRAM</acronym>与通道绑定一起防止这种中间人攻击，通过将服务器证书的签名混合到传输的密码哈希中。
+    虽然伪造服务器可以重新传输真实服务器的证书，但它无法访问与该证书匹配的私钥，因此无法证明自己是所有者，导致SSL连接失败。
+</para>
+
+   <procedure>
+
+    <title>示例</title>
+    <step id="scram-begin">
+
+     <para>
+      服务器发送一个AuthenticationSASL消息。它包括服务器可以接受的SASL认证机制列表。
+      如果服务器构建时支持SSL，这将是<literal>SCRAM-SHA-256-PLUS</literal>和<literal>SCRAM-SHA-256</literal>，
+      否则只是后者。
+     </para>
+    </step>
+
+    <step id="scram-client-first">
+
+     <para>
+      客户端通过发送SASLInitialResponse消息做出响应，该消息指示选择的机制，<literal>SCRAM-SHA-256</literal>或<literal>SCRAM-SHA-256-PLUS</literal>。
+	  （客户端可以自由选择任一机制，但为了更好的安全性，如果支持的话应选择通道绑定变体。）
+	  在初始客户端响应字段中，消息包含SCRAM <structname>client-first-message</structname>。
+	  <structname>client-first-message</structname>还包含客户端选择的通道绑定类型。
+</para>
+    </step>
+
+    <step id="scram-server-first">
+
+     <para>
+      服务器发送一个AuthenticationSASLContinue消息，其中包含一个SCRAM<structname>server-first-message</structname>作为内容。
+     </para>
+    </step>
+
+    <step id="scram-client-final">
+
+     <para>
+      客户端发送一个SASLResponse消息，其中包含SCRAM
+      <structname>client-final-message</structname>作为内容。
+     </para>
+    </step>
+
+    <step id="scram-server-final">
+
+     <para>
+      服务器发送一个AuthenticationSASLFinal消息，带有SCRAM
+      <structname>server-final-message</structname>，紧接着是一个AuthenticationOk消息。
+     </para>
+    </step>
+  </procedure>
+ </sect2>
+
+  <sect2 id="sasl-oauthbearer">
+   <title>OAUTHBEARER 认证</title>
+
+   <para>
+    <literal>OAUTHBEARER</literal> 是一种基于令牌的联合认证机制，详见
+    <ulink url="https://datatracker.ietf.org/doc/html/rfc7628">RFC 7628</ulink>。
+   </para>
+
+   <para>
+    典型交互取决于客户端是否已经为当前用户缓存 bearer token。若没有，通常会经历两次连接：第一次“发现连接”用于从服务器获取 OAuth 元数据，第二次连接在客户端拿到 token 后再发送 token。（libpq 当前内置流程尚未实现缓存，因此使用两连接流程。）
+   </para>
+
+   <para>
+    该机制与 SCRAM 一样由客户端发起。客户端初始响应由 SCRAM 使用的标准 GS2 头部加上一组 <literal>key=value</literal> 对组成。当前服务器仅支持 <literal>auth</literal> 键（即 bearer token）。<literal>OAUTHBEARER</literal> 还定义了三个可选组成（GS2 头部中的 <literal>authzid</literal>，以及 <structfield>host</structfield>/<structfield>port</structfield>），当前服务器会忽略它们。
+   </para>
+
+   <para>
+    <literal>OAUTHBEARER</literal> 不支持通道绑定，因此不存在 “OAUTHBEARER-PLUS”。该机制在成功认证时不使用额外服务器数据，所以不会使用 AuthenticationSASLFinal 消息。
+   </para>
+
+   <procedure>
+    <title>示例</title>
+    <step>
+     <para>
+      第一次交互时，服务器发送 AuthenticationSASL，并在机制列表中声明 <literal>OAUTHBEARER</literal>。
+     </para>
+    </step>
+    <step>
+     <para>
+      客户端发送 SASLInitialResponse 并选择 <literal>OAUTHBEARER</literal>。若尚无可用 token，则 <structfield>auth</structfield> 为空，表示这是发现连接。
+     </para>
+    </step>
+    <step>
+     <para>
+      服务器发送 AuthenticationSASLContinue，包含错误 <literal>status</literal>、well-known URI 以及客户端应使用的 scopes。
+     </para>
+    </step>
+    <step>
+     <para>
+      客户端发送 SASLResponse，内容为空集合（单个 <literal>0x01</literal> 字节），结束发现阶段的客户端半程。
+     </para>
+    </step>
+    <step>
+     <para>
+      服务器发送 ErrorMessage，使第一次交互失败。随后客户端按配置和服务器提供的元数据执行 OAuth 流程以获取 token。（具体获取方式由客户端实现决定，OAUTHBEARER 不强制规定。）
+     </para>
+    </step>
+    <step>
+     <para>
+      客户端拿到 token 后重新连接；服务器再次发送 AuthenticationSASL，并声明 <literal>OAUTHBEARER</literal>。
+     </para>
+    </step>
+    <step>
+     <para>
+      客户端再次发送 SASLInitialResponse，这次在 <structfield>auth</structfield> 中携带 bearer token。
+     </para>
+    </step>
+    <step>
+     <para>
+      服务器按令牌提供方规则校验 token。若客户端被授权连接，服务器发送 AuthenticationOk，认证完成。
+     </para>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+
+ <sect1 id="protocol-replication">
+
+  <title>流复制协议</title>
+
+  <para>
+   要启动流复制，前端在启动消息中发送<literal>replication</literal>参数。布尔值<literal>true</literal>
+   （或<literal>on</literal>、<literal>yes</literal>、<literal>1</literal>）告诉后端进入物理复制
+   walsender 模式，在此模式下，可以发出下面列出的一小组复制命令，而不是 SQL 语句。
+</para>
+
+  <para>
+   将<literal>database</literal>作为<literal>replication</literal>参数的值传递给后端，
+   指示其进入逻辑复制 walsender 模式，并连接到<literal>dbname</literal>参数中指定的数据库。
+   在逻辑复制 walsender 模式下，可以发出下文所示的复制命令以及普通 SQL 命令。
+</para>
+
+  <para>
+   无论是物理复制还是逻辑复制的 walsender 模式，都只能使用简单查询协议。
+  </para>
+
+  <para>
+   为了测试复制命令，可以通过<application>psql</application>或任何其他使用连接字符串且包含<literal>replication</literal>选项的<application>libpq</application>工具建立复制连接，
+   例如：
+<programlisting>
+psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
+</programlisting>
+   然而，更常用的是使用<xref linkend="app-pgreceivewal"/>（用于物理复制）或<xref linkend="app-pgrecvlogical"/>（用于逻辑复制）。
+</para>
+
+  <para>
+   复制命令在服务器日志中记录，当启用<xref linkend="guc-log-replication-commands"/>时。
+  </para>
+
+  <para>
+   复制模式中接受的命令包括：
+
+   <variablelist>
+    <varlistentry id="protocol-replication-identify-system">
+
+     <term><literal>IDENTIFY_SYSTEM</literal>
+      <indexterm><primary>识别系统</primary></indexterm>
+     </term>
+     <listitem>
+
+      <para>
+       请求服务器标识自身。服务器会返回一个包含四个字段的单行结果集：
+      </para>
+
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-62">
+
+        <term><literal>systemid</literal> (<type>text</type>)</term>
+        <listitem>
+
+         <para>
+          用于标识该集簇的唯一系统标识符。它可用于检查初始化备库所用的基础备份是否来自同一个集簇。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-63">
+
+        <term><literal>timeline</literal> (<type>int8</type>)</term>
+        <listitem>
+
+         <para>
+          当前时间线 ID。也可用于检查备库是否与主库一致。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-64">
+
+        <term><literal>xlogpos</literal> (<type>text</type>)</term>
+        <listitem>
+
+         <para>
+          当前 WAL 刷新位置。用于获得预写式日志中的一个已知位置，以便从该处开始流复制。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-65">
+
+        <term><literal>dbname</literal> (<type>text</type>)</term>
+        <listitem>
+
+         <para>
+          当前连接到的数据库，或为 null。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="protocol-replication-show">
+
+     <term><literal>SHOW</literal> <replaceable class="parameter">name</replaceable>
+      <indexterm><primary>SHOW</primary></indexterm>
+     </term>
+     <listitem>
+
+      <para>
+       请求服务器发送运行时参数的当前设置。这类似于SQL命令<xref linkend="sql-show"/>。
+      </para>
+
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-66">
+        <term><replaceable class="parameter">name</replaceable></term>
+        <listitem>
+
+         <para>
+          一个运行时参数的名称。可用参数在<xref linkend="runtime-config"/>中有文档记录。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="protocol-replication-timeline-history">
+
+     <term>
+      <literal>TIMELINE_HISTORY</literal> <replaceable class="parameter">tli</replaceable>
+      <indexterm><primary>TIMELINE_HISTORY</primary></indexterm>
+</term>
+     <listitem>
+
+      <para>
+       请求服务器发送时间线历史文件以获取时间线<replaceable class="parameter">tli</replaceable>。
+       服务器回复一行结果集，包含两个字段。虽然这些字段被标记为<type>text</type>，
+       但它们实际上返回原始字节，没有编码转换：
+      </para>
+
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-67">
+
+        <term><literal>filename</literal> (<type>text</type>)</term>
+        <listitem>
+
+         <para>
+          时间线历史文件的文件名，例如，<filename>00000002.history</filename>。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-68">
+
+        <term><literal>content</literal> (<type>text</type>)</term>
+        <listitem>
+
+         <para>
+          时间线历史文件的内容。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="protocol-replication-create-replication-slot" xreflabel="CREATE_REPLICATION_SLOT">
+
+     <term>
+      <literal>CREATE_REPLICATION_SLOT</literal> <replaceable class="parameter">slot_name</replaceable> [ <literal>TEMPORARY</literal> ] { <literal>PHYSICAL</literal> | <literal>LOGICAL</literal> <replaceable class="parameter">output_plugin</replaceable> } [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ]
+      <indexterm><primary>创建复制槽</primary></indexterm>
+</term>
+     <listitem>
+
+      <para>
+       创建一个物理或逻辑复制槽。查看<xref linkend="streaming-replication-slots"/>了解更多关于复制槽的信息。
+      </para>
+
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-69">
+        <term><replaceable class="parameter">slot_name</replaceable></term>
+        <listitem>
+
+         <para>
+          要创建的复制槽名称。必须是合法的复制槽名称（参见<xref linkend="streaming-replication-slots-manipulation"/>）。
+          名称不能是 <literal>pg_conflict_detection</literal>，因为它保留给冲突检测使用。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-70">
+        <term><replaceable class="parameter">output_plugin</replaceable></term>
+        <listitem>
+
+         <para>
+          用于逻辑解码的输出插件的名称（参见<xref linkend="logicaldecoding-output-plugin"/>）。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-71">
+        <term><literal>TEMPORARY</literal></term>
+        <listitem>
+
+         <para>
+          指定此复制槽为临时槽。临时槽不会保存到磁盘，并且在错误或会话结束时会自动删除。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+
+      <para>支持以下选项：</para>
+
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-72">
+        <term><literal>TWO_PHASE [ <replaceable class="parameter">boolean</replaceable> ]</literal></term>
+        <listitem>
+
+         <para>
+          如果为 true，则该逻辑复制槽支持两阶段提交的解码。使用此选项后，与两阶段提交相关的命令，如
+          <literal>PREPARE TRANSACTION</literal>，<literal>COMMIT PREPARED</literal>
+          和<literal>ROLLBACK PREPARED</literal>将被解码和传输。
+          事务将在<literal>PREPARE TRANSACTION</literal>时解码和传输。
+          默认值为false。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-73">
+        <term><literal>FAILOVER [ <replaceable class="parameter">boolean</replaceable> ]</literal></term>
+        <listitem>
+         <para>
+          若为 true，则该复制槽会同步到备库，从而在故障切换后恢复逻辑复制。默认值为 false。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-74">
+        <term><literal>RESERVE_WAL [ <replaceable class="parameter">boolean</replaceable> ]</literal></term>
+        <listitem>
+
+         <para>
+          如果为 true，则该物理复制槽会立即保留<acronym>WAL</acronym>。
+          否则，<acronym>WAL</acronym>仅在从流复制客户端连接时保留。
+          默认值为false。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-75">
+        <term><literal>SNAPSHOT { 'export' | 'use' | 'nothing' }</literal></term>
+        <listitem>
+
+         <para>
+          决定在逻辑复制槽初始化期间如何处理所创建的快照。<literal>'export'</literal>
+          这是默认选项，将导出快照供其他会话使用。此选项不能在事务内使用。
+          <literal>'use'</literal>将为执行命令的当前事务使用快照。此选项必须在事务中使用，
+          并且<literal>CREATE_REPLICATION_SLOT</literal>必须是在该事务中运行的第一个命令。
+          最后，<literal>'nothing'</literal>将像往常一样仅用于逻辑解码使用快照，但不会执行其他操作。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+
+      <para>
+       在响应此命令时，服务器将发送一个包含以下字段的单行结果集：
+
+       <variablelist>
+        <varlistentry id="zh18-auto-protocol-varlistentry-80">
+         <term><literal>slot_name</literal> (<type>text</type>)</term>
+         <listitem>
+          <para>
+           新创建的复制槽的名称。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-81">
+         <term><literal>consistent_point</literal> (<type>text</type>)</term>
+         <listitem>
+          <para>
+           复制槽达到一致状态时的 WAL 位置。这是可从该复制槽开始流复制的最早位置。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-82">
+         <term><literal>snapshot_name</literal> (<type>text</type>)</term>
+         <listitem>
+          <para>
+           该命令导出的快照标识符。该快照在此连接上执行下一条命令之前，或复制连接关闭之前有效。如果所创建的是物理复制槽，则为 null。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-83">
+         <term><literal>output_plugin</literal> (<type>text</type>)</term>
+         <listitem>
+          <para>
+           新建复制槽所使用的输出插件名称。如果所创建的是物理复制槽，则为 null。
+          </para>
+         </listitem>
+        </varlistentry>
+       </variablelist>
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="protocol-replication-create-replication-slot-legacy">
+
+     <term>
+      <literal>CREATE_REPLICATION_SLOT</literal> <replaceable class="parameter">slot_name</replaceable> [ <literal>TEMPORARY</literal> ] { <literal>PHYSICAL</literal> [ <literal>RESERVE_WAL</literal> ] | <literal>LOGICAL</literal> <replaceable class="parameter">output_plugin</replaceable> [ <literal>EXPORT_SNAPSHOT</literal> | <literal>NOEXPORT_SNAPSHOT</literal> | <literal>USE_SNAPSHOT</literal> | <literal>TWO_PHASE</literal> ] }
+     </term>
+     <listitem>
+
+      <para>
+       为了与旧版本兼容，仍支持<literal>CREATE_REPLICATION_SLOT</literal>命令的这种
+       替代语法。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="protocol-replication-alter-replication-slot" xreflabel="ALTER_REPLICATION_SLOT">
+     <term><literal>ALTER_REPLICATION_SLOT</literal> <replaceable class="parameter">slot_name</replaceable> ( <replaceable class="parameter">option</replaceable> [, ...] )
+      <indexterm><primary>ALTER_REPLICATION_SLOT</primary></indexterm>
+     </term>
+     <listitem>
+      <para>
+       修改复制槽定义。参见 <xref linkend="streaming-replication-slots"/>。当前仅支持逻辑复制槽。
+      </para>
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-84">
+        <term><replaceable class="parameter">slot_name</replaceable></term>
+        <listitem>
+         <para>
+          要修改的复制槽名称，必须是合法复制槽名（见 <xref linkend="streaming-replication-slots-manipulation"/>）。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+      <para>支持以下选项：</para>
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-85">
+        <term><literal>TWO_PHASE [ <replaceable class="parameter">boolean</replaceable> ]</literal></term>
+        <listitem>
+         <para>
+          若为 true，则该逻辑复制槽支持两阶段提交解码。与两阶段提交相关的命令（如 <literal>PREPARE TRANSACTION</literal>、<literal>COMMIT PREPARED</literal>、<literal>ROLLBACK PREPARED</literal>）会被解码并发送；事务在 <literal>PREPARE TRANSACTION</literal> 时解码并发送。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-86">
+        <term><literal>FAILOVER [ <replaceable class="parameter">boolean</replaceable> ]</literal></term>
+        <listitem>
+         <para>
+          若为 true，则该复制槽会同步到备库，从而在故障切换后恢复逻辑复制。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="protocol-replication-read-replication-slot">
+
+     <term>
+    <literal>READ_REPLICATION_SLOT</literal> <replaceable class="parameter">slot_name</replaceable>
+    <indexterm><primary>读取复制槽</primary></indexterm>
+</term>
+     <listitem>
+
+      <para>
+       读取与复制槽相关的一些信息。如果复制槽不存在，则返回一个包含<literal>NULL</literal>值的元组。
+       当前仅支持物理复制槽的此命令。
+      </para>
+
+      <para>
+       在响应此命令时，服务器将返回一个包含以下字段的单行结果集：
+       <variablelist>
+        <varlistentry id="zh18-auto-protocol-varlistentry-90">
+         <term><literal>slot_type</literal>（<type>text</type>）</term>
+         <listitem>
+          <para>
+           复制槽的类型，可以是<literal>physical</literal>或<literal>NULL</literal>。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-91">
+         <term><literal>restart_lsn</literal>（<type>text</type>）</term>
+         <listitem>
+          <para>
+           复制槽的<literal>restart_lsn</literal>。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-92">
+         <term><literal>restart_tli</literal>（<type>int8</type>）</term>
+         <listitem>
+          <para>
+           与<literal>restart_lsn</literal>相关联的时间线ID，遵循当前时间线历史。
+          </para>
+         </listitem>
+        </varlistentry>
+       </variablelist>
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="protocol-replication-start-replication">
+
+     <term>
+      <literal>START_REPLICATION</literal> [ <literal>SLOT</literal> <replaceable class="parameter">slot_name</replaceable> ] [ <literal>PHYSICAL</literal> ] <replaceable class="parameter">XXX/XXX</replaceable> [ <literal>TIMELINE</literal> <replaceable class="parameter">tli</replaceable> ]
+      <indexterm><primary>开始复制</primary></indexterm>
+</term>
+     <listitem>
+
+      <para>
+       指示服务器开始流式传输WAL，从WAL位置<replaceable class="parameter">XXX/XXX</replaceable>开始。
+       如果指定了<literal>TIMELINE</literal>选项，则流式传输将从时间线<replaceable class="parameter">tli</replaceable>开始；
+       否则，将选择服务器当前的时间线。如果请求的WAL部分已经被回收，服务器可能会回复错误。
+       成功时，服务器将用CopyBothResponse消息回复，然后开始向前端流式传输WAL。
+      </para>
+
+      <para>
+       如果通过<replaceable class="parameter">slot_name</replaceable>提供了复制槽名称，
+       那么在复制进行期间会更新该复制槽，以便服务器知道哪些 WAL 段，
+       以及在启用了 <varname>hot_standby_feedback</varname> 时，哪些事务
+       仍然被备库所需要。
+      </para>
+
+      <para>
+       如果客户端请求的 timeline 不是最新的，但属于服务器历史的一部分，服务器会从请求的起点开始流传输该 timeline 上的全部 WAL，直到服务器切换到另一个 timeline 的位置为止。如果客户端请求的位置正好是旧 timeline 的末尾，服务器将完全跳过 COPY 模式。
+      </para>
+
+      <para>
+       在非最新时间线上流传输完全部 WAL 后，服务器会通过退出 COPY 模式来结束流传输。当客户端也通过退出 COPY 模式来确认时，服务器会发送一个包含一行两列的结果集，指示该服务器历史中的下一条时间线。第一列是下一条时间线的 ID（类型为 <type>int8</type>），第二列是发生切换的 WAL 位置（类型为 <type>text</type>）。通常，切换位置就是所流传输 WAL 的末尾，但也存在一些边界情况，服务器可能会先发送一些自己在提升前尚未重放的旧时间线 WAL。最后，服务器会发送两个 CommandComplete 消息（一个结束 CopyData，另一个结束 <literal>START_REPLICATION</literal> 本身），然后准备接受新的命令。
+      </para>
+
+      <para>
+       WAL 数据会作为一系列 CopyData 消息发送；详见 <xref linkend="protocol-message-types"/> 与 <xref linkend="protocol-message-formats"/>。（这使其他信息可与之交错发送；特别是服务器在开始流传输后若遇到失败，仍可发送 ErrorResponse。）从服务器到客户端的每个 CopyData 消息负载都属于以下格式之一：
+      </para>
+
+      <variablelist>
+       <varlistentry id="protocol-replication-waldata">
+
+        <term>WALData (B)</term>
+        <listitem>
+         <variablelist>
+          <varlistentry id="zh18-auto-protocol-varlistentry-93">
+
+           <term>Byte1('w')</term>
+           <listitem>
+
+            <para>
+             将消息标识为WAL数据。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-94">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             该消息中 WAL 数据的起始点。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-95">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             服务器上当前的WAL结束位置。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-96">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             传输时服务器的系统时钟，以2000-01-01午夜以来的微秒计算。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-97">
+
+           <term>Byte<replaceable>n</replaceable></term>
+           <listitem>
+
+            <para>
+             WAL数据流的一个部分。
+            </para>
+
+            <para>
+             单个 WAL 记录绝不会拆分为两个 WALData 消息。
+             当 WAL 记录跨越 WAL 页面边界，并因此已使用连续记录进行拆分时，它可以在页面边界处进行拆分。
+             换句话说，第一个主 WAL 记录及其连续记录可以在不同的 WALData 消息中发送。
+            </para>
+           </listitem>
+          </varlistentry>
+         </variablelist>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="protocol-replication-primary-keepalive-message">
+
+        <term>主库 keepalive 消息 (B)</term>
+        <listitem>
+         <variablelist>
+          <varlistentry id="zh18-auto-protocol-varlistentry-98">
+
+           <term>Byte1('k')</term>
+           <listitem>
+
+            <para>
+             将该消息标识为发送方 keepalive。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-99">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             服务器上当前的WAL结束位置。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-100">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             传输时服务器的系统时钟，以2000-01-01午夜以来的微秒计算。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-101">
+
+           <term>Byte1</term>
+           <listitem>
+
+            <para>
+             1 表示客户端应尽快回复此消息，以避免超时断开连接。否则为0。
+            </para>
+           </listitem>
+          </varlistentry>
+         </variablelist>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="protocol-replication-primary-status-update">
+
+        <term>主库状态更新 (B)</term>
+        <listitem>
+         <variablelist>
+          <varlistentry id="zh19-auto-protocol-primary-status-1">
+
+           <term>Byte1('s')</term>
+           <listitem>
+
+            <para>
+             将该消息标识为主库状态更新。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh19-auto-protocol-primary-status-2">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             服务器上最新的 WAL 写入位置。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh19-auto-protocol-primary-status-3">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             服务器上当前处于提交阶段的最老事务 ID，以及其 epoch。最重要的 32 位是 epoch，最不重要的 32 位是事务 ID。如果服务器上没有活跃事务，则该数值为将要分配的下一个事务 ID。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh19-auto-protocol-primary-status-4">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             服务器上将要分配的下一个事务 ID，以及其 epoch。最重要的 32 位是 epoch，最不重要的 32 位是事务 ID。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh19-auto-protocol-primary-status-5">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             传输时服务器的系统时钟，以 2000-01-01 午夜以来的微秒计算。
+            </para>
+           </listitem>
+          </varlistentry>
+         </variablelist>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+
+      <para>
+       接收进程可以随时使用以下某种消息格式向发送方回传响应（同样放在 CopyData 消息的负载中）：
+      </para>
+
+      <variablelist>
+       <varlistentry id="protocol-replication-standby-status-update">
+
+        <term>备库状态更新 (F)</term>
+        <listitem>
+         <variablelist>
+          <varlistentry id="zh18-auto-protocol-varlistentry-102">
+
+           <term>Byte1('r')</term>
+           <listitem>
+
+            <para>
+             将该消息标识为接收方状态更新。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-103">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             备库中最后一个已接收并写入磁盘的 WAL 字节位置 + 1。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-104">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             备库中最后一个已刷写到磁盘的 WAL 字节位置 + 1。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-105">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             备库中最后一个已应用的 WAL 字节位置 + 1。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-106">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             客户端在传输时的系统时钟，以2000-01-01午夜以来的微秒计算。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-107">
+
+           <term>Byte1</term>
+           <listitem>
+
+            <para>
+             如果为 1，则客户端请求服务器立即回复此消息。这可用于 ping 服务器，以测试连接是否仍然健康。
+            </para>
+           </listitem>
+          </varlistentry>
+         </variablelist>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="protocol-replication-hot-standby-feedback-message">
+
+        <term>热备反馈消息 (F)</term>
+        <listitem>
+         <variablelist>
+          <varlistentry id="zh18-auto-protocol-varlistentry-108">
+
+           <term>Byte1('h')</term>
+           <listitem>
+
+            <para>
+             将该消息标识为热备反馈消息。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-109">
+
+           <term>Int64</term>
+           <listitem>
+
+            <para>
+             客户端在传输时的系统时钟，以2000-01-01午夜以来的微秒计算。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-110">
+
+           <term>Int32</term>
+           <listitem>
+
+            <para>
+             备库当前的全局 <literal>xmin</literal>，不包括任何复制槽中的 <literal>catalog_xmin</literal>。如果该值和后面的 <literal>catalog_xmin</literal> 都为 0，则视为通知：此连接后续将不再发送热备反馈。之后的非零消息可能会重新启动反馈机制。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-111">
+
+           <term>Int32</term>
+           <listitem>
+
+            <para>
+             备库上全局 <literal>xmin</literal> xid 的纪元。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-112">
+
+           <term>Int32</term>
+           <listitem>
+
+            <para>
+             备库上任何复制槽中的最低 <literal>catalog_xmin</literal>。如果备库上不存在 <literal>catalog_xmin</literal>，或已禁用热备反馈，则设为 0。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-113">
+
+           <term>Int32</term>
+           <listitem>
+
+            <para>
+             备库上 catalog_xmin xid 的纪元。
+            </para>
+           </listitem>
+          </varlistentry>
+         </variablelist>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="protocol-replication-start-replication-slot-logical">
+
+     <term>
+    <literal>START_REPLICATION</literal> <literal>SLOT</literal> <replaceable class="parameter">slot_name</replaceable> 
+    <literal>LOGICAL</literal> <replaceable class="parameter">XXX/XXX</replaceable> [ ( <replaceable>option_name</replaceable> 
+    [ <replaceable>option_value</replaceable> ] [, ...] ) ]
+</term>
+     <listitem>
+
+      <para>
+       指示服务器开始为逻辑复制流传输 WAL，起点为 WAL 位置 <replaceable class="parameter">XXX/XXX</replaceable> 或该复制槽的 <literal>confirmed_flush_lsn</literal>（参见<xref linkend="view-pg-replication-slots"/>）中的较大者。这种行为让客户端在没有数据可处理时更容易避免更新本地 LSN 状态。不过，从与请求值不同的 LSN 开始，可能无法捕获某些类型的客户端错误；因此，客户端在发出 <literal>START_REPLICATION</literal> 之前，可能希望先确认 <literal>confirmed_flush_lsn</literal> 是否符合预期。
+      </para>
+
+      <para>
+       服务器可以返回错误，例如复制槽不存在时。成功时，服务器会响应一条 CopyBothResponse
+       消息，然后开始向前端流传输 WAL。
+      </para>
+
+      <para>
+       CopyBothResponse 中承载的消息采用与 <literal>START_REPLICATION ... PHYSICAL</literal>
+       文档中记载的相同格式，包括两个 CommandComplete 消息。
+      </para>
+
+      <para>
+       与所选复制槽关联的输出插件将用于处理流式输出。
+      </para>
+
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-114">
+        <term><literal>SLOT</literal> <replaceable class="parameter">slot_name</replaceable></term>
+        <listitem>
+
+         <para>
+          要从中流传输更改的复制槽名称。该参数是必需的，并且必须对应于使用 <literal>CREATE_REPLICATION_SLOT</literal> 在 <literal>LOGICAL</literal> 模式下创建的现有逻辑复制槽。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-115">
+        <term><replaceable class="parameter">XXX/XXX</replaceable></term>
+        <listitem>
+
+         <para>
+          开始流式传输的WAL位置。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-116">
+        <term><replaceable class="parameter">option_name</replaceable></term>
+        <listitem>
+
+         <para>
+          传递给复制槽逻辑解码输出插件的选项名称。请参阅<xref linkend="protocol-logical-replication"/>，
+          了解标准（<literal>pgoutput</literal>）插件接受的选项。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-117">
+        <term><replaceable class="parameter">option_value</replaceable></term>
+        <listitem>
+
+         <para>
+          指定选项相关的可选值，以字符串常量的形式表示。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="protocol-replication-drop-replication-slot">
+
+     <term>
+      <literal>DROP_REPLICATION_SLOT</literal> <replaceable class="parameter">slot_name</replaceable> <optional> <literal>WAIT</literal> </optional>
+      <indexterm><primary>删除复制槽</primary></indexterm>
+</term>
+     <listitem>
+
+      <para>
+       删除复制槽，释放任何保留的服务器端资源。
+      </para>
+
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-118">
+        <term><replaceable class="parameter">slot_name</replaceable></term>
+        <listitem>
+
+         <para>
+          要删除的复制槽名称。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-119">
+        <term><literal>WAIT</literal></term>
+        <listitem>
+
+         <para>
+          该选项会让命令在复制槽处于活跃状态时等待，直到其变为非活跃，而不是按默认行为报错。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="protocol-replication-upload-manifest">
+     <term>
+      <literal>UPLOAD_MANIFEST</literal>
+      <indexterm><primary>UPLOAD_MANIFEST</primary></indexterm>
+     </term>
+     <listitem>
+      <para>
+       上传备份清单（backup manifest），为执行增量备份做准备。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="protocol-replication-base-backup" xreflabel="BASE_BACKUP">
+
+     <term>
+      <literal>BASE_BACKUP</literal> [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ]
+      <indexterm><primary>BASE_BACKUP</primary></indexterm>
+</term>
+
+     <listitem>
+      <para>
+       指示服务器开始流式传输基本备份。
+       在备份开始之前，系统将自动进入备份模式，并在备份完成后退出备份模式。
+       接受以下选项：
+
+       <variablelist>
+        <varlistentry id="zh18-auto-protocol-varlistentry-121">
+         <term><literal>LABEL</literal> <replaceable>'label'</replaceable></term>
+         <listitem>
+
+          <para>
+           设置备份的标签。如果未指定，则将使用<literal>base backup</literal>作为备份标签。
+           标签的引用规则与打开<xref linkend="guc-standard-conforming-strings"/>的标准SQL字符串相同。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-122">
+         <term><literal>TARGET</literal> <replaceable>'target'</replaceable></term>
+         <listitem>
+
+          <para>
+           告诉服务器备份数据发送的位置。如果目标是<literal>client</literal>，这是默认值，备份数据将发送到客户端。
+           如果是<literal>server</literal>，备份数据将写入到由<literal>TARGET_DETAIL</literal>选项指定的服务器路径。
+           如果是<literal>blackhole</literal>，备份数据不会发送到任何地方；它会被简单地丢弃。
+          </para>
+
+          <para>
+           <literal>server</literal>目标需要超级用户权限或被授予<literal>pg_write_server_files</literal>角色。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-123">
+         <term><literal>TARGET_DETAIL</literal> <replaceable>'detail'</replaceable></term>
+         <listitem>
+
+          <para>
+           提供有关备份目标的额外信息。
+          </para>
+
+          <para>
+           目前，此选项仅在备份目标为<literal>server</literal>时才能使用。它指定了备份应写入的服务器目录。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-124">
+         <term><literal>PROGRESS [ <replaceable class="parameter">boolean</replaceable> ]</literal></term>
+         <listitem>
+
+          <para>
+           如果设置为true，则请求生成进度报告所需的信息。这将在每个表空间的头部发送一个近似大小，
+           可用于计算流的进度。这是通过在传输开始之前先枚举所有文件大小来计算的，
+           可能会对性能产生负面影响。特别是，在流式传输数据之前可能需要更长的时间。
+           由于备份期间数据库文件可能会发生变化，因此大小仅为近似值，
+           在近似值和实际文件发送之间可能会增长或缩小。默认值为false。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-125">
+         <term><literal>CHECKPOINT { 'fast' | 'spread' }</literal></term>
+         <listitem>
+
+          <para>
+           设置在基本备份开始时执行的检查点类型。默认值为<literal>spread</literal>。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-126">
+         <term><literal>WAL [ <replaceable class="parameter">boolean</replaceable> ]</literal></term>
+         <listitem>
+
+          <para>
+           如果设置为true，则在备份中包含必要的WAL段。这将包括在开始和停止备份之间的所有文件在基本目录tar文件的<filename>pg_wal</filename>目录中。默认值为false。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-127">
+         <term><literal>WAIT [ <replaceable class="parameter">boolean</replaceable> ]</literal></term>
+         <listitem>
+
+          <para>
+           如果设置为 true，备份会等待直到最后一个所需 WAL 段已归档；若未启用 WAL 归档则发出警告。
+           如果设置为 false，备份既不等待也不警告，而由客户端负责确保所需 WAL 可用。
+           默认值为true。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-128">
+         <term><literal>COMPRESSION</literal> <replaceable>'method'</replaceable></term>
+         <listitem>
+
+          <para>
+           指示服务器使用指定的方法压缩备份。目前支持的方法有<literal>gzip</literal>、
+           <literal>lz4</literal>和<literal>zstd</literal>。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-129">
+         <term><literal>COMPRESSION_DETAIL</literal> <replaceable>detail</replaceable></term>
+         <listitem>
+
+          <para>
+           指定所选压缩方法的详细信息。这应该只与<literal>COMPRESSION</literal>选项一起使用。
+           如果该值是一个整数，则指定压缩级别。否则，它应该是一个逗号分隔的项目列表，
+           每个项目的形式为<replaceable>keyword</replaceable>或<replaceable>keyword=value</replaceable>。
+           目前，支持的关键字是<literal>level</literal>、<literal>long</literal>和<literal>workers</literal>。
+          </para>
+
+          <para>
+           <literal>level</literal>关键字设置压缩级别。
+           对于<literal>gzip</literal>，压缩级别应该是一个介于<literal>1</literal>和<literal>9</literal>之间的整数
+           （默认为<literal>Z_DEFAULT_COMPRESSION</literal>或<literal>-1</literal>），
+           对于<literal>lz4</literal>，压缩级别应该是介于1和12之间的整数
+           （默认为<literal>0</literal>用于快速压缩模式），
+           对于<literal>zstd</literal>，压缩级别应该是介于<literal>ZSTD_minCLevel()</literal>
+           （通常为<literal>-131072</literal>）和<literal>ZSTD_maxCLevel()</literal>
+           （通常为<literal>22</literal>）之间，
+           （默认为<literal>ZSTD_CLEVEL_DEFAULT</literal>或<literal>3</literal>）。
+          </para>
+
+          <para>
+           <literal>long</literal> 关键字用于启用长距离匹配模式，可提高压缩比，但会增加内存使用。长距离模式仅支持 <literal>zstd</literal>。
+          </para>
+
+          <para>
+           <literal>workers</literal>关键字设置应该用于并行压缩的线程数。并行压缩仅支持<literal>zstd</literal>。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-130">
+         <term><literal>MAX_RATE</literal> <replaceable>rate</replaceable></term>
+         <listitem>
+
+          <para>
+           限制（节流）每单位时间从服务器传输到客户端的最大数据量。预期的单位是每秒千字节。
+           如果指定了此选项，则该值必须等于零，或者必须在32 kB到1 GB（含）的范围内。
+           如果传递零或未指定该选项，则不对传输施加任何限制。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-131">
+         <term><literal>TABLESPACE_MAP [ <replaceable class="parameter">boolean</replaceable> ]</literal></term>
+         <listitem>
+
+          <para>
+           如果为true，则在名为<filename>tablespace_map</filename>的文件中包含目录<filename>pg_tblspc</filename>中存在的符号链接的信息。
+           表空间映射文件包括目录<filename>pg_tblspc/</filename>中每个符号链接的名称及该符号链接的完整路径。默认值为false。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-132">
+         <term><literal>VERIFY_CHECKSUMS [ <replaceable class="parameter">boolean</replaceable> ]</literal></term>
+         <listitem>
+
+          <para>
+           如果为true，则在进行基本备份时验证校验和（如果已启用）。如果为false，则跳过此步骤。默认值为true。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-133">
+         <term><literal>MANIFEST</literal> <replaceable>manifest_option</replaceable></term>
+         <listitem>
+
+          <para>
+           当指定此选项的值为<literal>yes</literal>或<literal>force-encode</literal>时，
+           将创建一个备份清单并随备份一起发送。该清单是备份中每个文件的列表，
+           除了可能包含的任何WAL文件。它还存储每个文件的大小、最后修改时间，
+           以及可选的校验和。
+           值为<literal>force-encode</literal>会强制对所有文件名进行十六进制编码；
+           否则，仅对文件名为非UTF8八位序列的文件执行此类型的编码。
+           <literal>force-encode</literal>主要用于测试目的，以确保读取备份清单的客户端
+           能够处理这种情况。为了与之前的版本兼容，默认值为<literal>MANIFEST 'no'</literal>。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-134">
+         <term><literal>MANIFEST_CHECKSUMS</literal> <replaceable>checksum_algorithm</replaceable></term>
+         <listitem>
+
+          <para>
+           指定应用于备份清单中包含的每个文件的校验和算法。
+           目前，可用的算法有<literal>NONE</literal>、<literal>CRC32C</literal>、
+           <literal>SHA224</literal>、<literal>SHA256</literal>、
+           <literal>SHA384</literal>和<literal>SHA512</literal>。
+           默认值为<literal>CRC32C</literal>。
+         </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-135">
+         <term><literal>INCREMENTAL</literal></term>
+         <listitem>
+          <para>
+           请求执行增量备份。使用该选项执行基础备份前，必须先执行 <literal>UPLOAD_MANIFEST</literal> 命令。
+          </para>
+         </listitem>
+        </varlistentry>
+       </variablelist>
+      </para>
+
+      <para>
+       当备份开始时，服务器将首先发送两个普通的结果集，然后是一个或多个CopyOutResponse结果。
+      </para>
+
+      <para>
+       第一个普通结果集包含备份的起始位置，在一个包含两列的单行中。第一列包含以XLogRecPtr格式给出的起始位置，第二列包含相应的时间线ID。
+      </para>
+
+      <para>
+       第二个普通结果集中的每个表空间都有一行。
+       这一行中的字段是:
+
+       <variablelist>
+        <varlistentry id="zh18-auto-protocol-varlistentry-139">
+         <term><literal>spcoid</literal> (<type>oid</type>)</term>
+         <listitem>
+          <para>
+           表空间的OID，如果是基本目录则为null。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-140">
+         <term><literal>spclocation</literal> (<type>text</type>)</term>
+         <listitem>
+          <para>
+           表空间目录的完整路径，如果是基本目录则为null。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="zh18-auto-protocol-varlistentry-141">
+         <term><literal>size</literal> (<type>int8</type>)</term>
+         <listitem>
+          <para>
+           表空间的大致大小，以千字节（1024字节）为单位，如果已请求进度报告；否则为null。
+          </para>
+         </listitem>
+        </varlistentry>
+       </variablelist>
+      </para>
+
+      <para>
+       在第二个常规结果集之后，将发送一个CopyOutResponse。
+       每个CopyData消息的有效负载将包含以下格式之一的消息：
+      </para>
+
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-142">
+
+        <term>new archive (B)</term>
+        <listitem>
+         <variablelist>
+          <varlistentry id="zh18-auto-protocol-varlistentry-143">
+
+           <term>Byte1('n')</term>
+           <listitem>
+
+<para>
+            标识消息表示新归档的开始。主数据目录将有一个归档，每个额外的表空间将有一个归档；
+            每个归档将使用tar格式（遵循POSIX 1003.1-2008标准中指定的<quote>ustar interchange format</quote>）。
+           </para>
+</listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-144">
+
+           <term>String</term>
+           <listitem>
+
+<para>
+            这个归档的文件名。
+           </para>
+</listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-145">
+
+           <term>String</term>
+           <listitem>
+
+<para>
+            对于主数据目录，使用空字符串。对于其他表空间，使用从创建此归档的目录的完整路径。
+           </para>
+</listitem>
+          </varlistentry>
+         </variablelist>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-146">
+
+        <term>manifest (B)</term>
+        <listitem>
+         <variablelist>
+          <varlistentry id="zh18-auto-protocol-varlistentry-147">
+
+           <term>Byte1('m')</term>
+           <listitem>
+
+<para>
+            标识消息表示备份清单的开始。
+           </para>
+</listitem>
+          </varlistentry>
+         </variablelist>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-148">
+
+        <term>归档或清单数据 (B)</term>
+        <listitem>
+         <variablelist>
+          <varlistentry id="zh18-auto-protocol-varlistentry-149">
+
+           <term>Byte1('d')</term>
+           <listitem>
+
+<para>
+            标识消息包含归档或清单数据。
+           </para>
+</listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-150">
+
+           <term>Byte<replaceable>n</replaceable></term>
+           <listitem>
+
+<para>
+            数据字节。
+           </para>
+</listitem>
+          </varlistentry>
+         </variablelist>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-151">
+
+        <term>progress report (B)</term>
+        <listitem>
+         <variablelist>
+          <varlistentry id="zh18-auto-protocol-varlistentry-152">
+
+           <term>Byte1('p')</term>
+           <listitem>
+
+<para>
+            标识消息为进度报告。
+           </para>
+</listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-153">
+
+           <term>Int64</term>
+           <listitem>
+
+<para>
+            已完成处理的来自当前表空间的字节数。
+           </para>
+</listitem>
+          </varlistentry>
+         </variablelist>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+
+      <para>
+       在发送了CopyOutResponse或所有这些响应之后，将发送最终的普通结果集，其中包含备份的WAL结束位置，格式与起始位置相同。
+      </para>
+
+      <para>
+       数据目录和每个表空间的tar归档将包含目录中的所有文件，无论它们是<productname>PostgreSQL</productname>文件还是添加到同一目录的其他文件。唯一排除的文件是：
+
+       <itemizedlist spacing="compact" mark="bullet">
+        <listitem>
+         <para>
+          <filename>postmaster.pid</filename>
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <filename>postmaster.opts</filename>
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <filename>pg_internal.init</filename>（在多个目录中找到）
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          PostgreSQL 服务器运行期间创建的各种临时文件和目录，例如以<filename>pgsql_tmp</filename>开头的任何文件或目录以及临时关系。
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          未记录的关系(Unlogged表)，除了需要在恢复时重新创建（空的）未记录的关系的init fork。
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <filename>pg_wal</filename>，包括子目录。如果备份包含WAL文件，则将包含<filename>pg_wal</filename>的合成版本，但它只包含备份工作所需的文件，而不包含其余内容。
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <filename>pg_dynshmem</filename>，<filename>pg_notify</filename>，
+          <filename>pg_replslot</filename>，<filename>pg_serial</filename>，
+          <filename>pg_snapshots</filename>，<filename>pg_stat_tmp</filename>和
+          <filename>pg_subtrans</filename>将作为空目录复制（即使它们是符号链接）。
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          除了常规文件和目录之外的文件，如符号链接（除了上述列出的目录之外的符号链接）以及特殊设备和操作系统文件，将被跳过。（<filename>pg_tblspc</filename>中的符号链接将被保留。）
+         </para>
+        </listitem>
+       </itemizedlist>
+       如果服务器上的底层文件系统支持，将设置所有者、组和文件模式。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+ </sect1>
+
+<sect1 id="protocol-logical-replication">
+
+ <title>逻辑复制协议</title>
+
+ <para>
+  本节介绍逻辑复制协议，它是一种以复制命令<literal>START_REPLICATION</literal>
+  <literal>SLOT</literal> <replaceable class="parameter">slot_name</replaceable>
+  <literal>LOGICAL</literal>开始的消息流。
+ </para>
+
+ <para>
+  逻辑复制协议构建在物理流复制协议的底层机制之上。
+ </para>
+
+ <para>
+  <productname>PostgreSQL</productname> 的逻辑解码支持输出插件。
+  <literal>pgoutput</literal> 是内置逻辑复制使用的标准插件。
+ </para>
+
+ <sect2 id="protocol-logical-replication-params">
+
+  <title>逻辑复制参数</title>
+
+  <para>
+   使用 <literal>START_REPLICATION</literal> 命令时，<literal>pgoutput</literal> 接受以下选项：
+
+   <variablelist>
+    <varlistentry id="zh18-auto-protocol-varlistentry-160">
+     <term>
+      proto_version
+     </term>
+     <listitem>
+      <para>
+       协议版本。目前支持的版本有 <literal>1</literal>、<literal>2</literal>、<literal>3</literal> 和 <literal>4</literal>。必须指定一个有效版本。
+      </para>
+      <para>
+       版本<literal>2</literal>仅支持服务器版本14及以上，并允许流式传输大型进行中的事务。
+      </para>
+      <para>
+       版本<literal>3</literal>仅支持服务器版本15及以上，并允许流式传输两阶段提交。
+      </para>
+      <para>
+       版本<literal>4</literal>仅支持服务器版本 16 及以上，并允许对大型进行中事务的流进行并行应用。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-protocol-varlistentry-161">
+     <term>
+      publication_names
+     </term>
+     <listitem>
+      <para>
+       用于订阅（接收更改）的发布名称的逗号分隔列表。各个发布名称按标准对象名处理，可按需加引号。
+       至少需要一个发布名称。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-protocol-varlistentry-162">
+     <term>
+      binary
+     </term>
+     <listitem>
+      <para>
+       使用二进制传输模式的布尔选项。二进制模式比文本模式更快，但略微不够稳健。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-protocol-varlistentry-163">
+     <term>
+      messages
+     </term>
+     <listitem>
+      <para>
+       一个布尔选项，用于启用发送由 <function>pg_logical_emit_message</function> 写入的消息。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-protocol-varlistentry-164">
+     <term>
+      streaming
+     </term>
+     <listitem>
+      <para>
+       启用进行中事务流式传输的选项。可选值为 <literal>off</literal>（默认）、<literal>on</literal> 和 <literal>parallel</literal>。<literal>parallel</literal> 会在部分消息中附带用于并行化的额外信息。设置为 <literal>on</literal> 需要最低协议版本 2；设置为 <literal>parallel</literal> 需要最低协议版本 4。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-protocol-varlistentry-165">
+     <term>
+      two_phase
+     </term>
+     <listitem>
+      <para>
+       启用两阶段事务的布尔选项。需要最低协议版本3才能启用。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-protocol-varlistentry-166">
+     <term>
+      origin
+     </term>
+     <listitem>
+      <para>
+       按来源发送变更的选项。可选值为 <literal>none</literal>（仅发送无来源信息的变更）或 <literal>any</literal>（无论来源均发送）。该选项可用于避免复制节点之间形成循环（同一数据无限复制）。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+
+  </para>
+  <para>
+   在上述命令中，若参数类型为 <type>boolean</type>，可省略 <replaceable class="parameter">value</replaceable> 部分；省略等同于指定 <literal>TRUE</literal>。
+  </para>
+ </sect2>
+
+ <sect2 id="protocol-logical-messages">
+
+  <title>逻辑复制协议消息</title>
+
+  <para>
+   各种协议消息将在后续小节中分别讨论。每种消息的具体格式见<xref linkend="protocol-logicalrep-message-formats"/>。
+  </para>
+
+  <para>
+   所有顶层协议消息都以一个消息类型字节开头。虽然它通常写作字符代码，但本质上它是一个与任何字符编码无关的有符号字节。
+  </para>
+
+  <para>
+   由于流复制协议本身提供了消息长度，因此顶层协议消息无需在其头部内嵌长度字段。
+  </para>
+
+ </sect2>
+
+ <sect2 id="protocol-logical-messages-flow">
+
+  <title>逻辑复制协议消息流</title>
+
+  <para>
+   除 <literal>START_REPLICATION</literal> 命令和重放进度消息之外，所有信息流方向都是从后端到前端。
+  </para>
+
+  <para>
+   逻辑复制协议按事务逐个发送数据。这意味着，一对 Begin 与 Commit 消息之间的所有消息都属于同一事务。
+   同样，一对 Begin Prepare 与 Prepare 消息之间的所有消息也属于同一事务。
+   对于大型进行中事务，它还会在一对 Stream Start 与 Stream Stop 消息之间发送其更改。
+   这类事务的最后一个流会包含 Stream Commit 或 Stream Abort 消息。
+  </para>
+
+  <para>
+   每个被发送的事务都包含零条或多条 DML 消息（插入、更新、删除）。在级联场景下，它还会包含 Origin 消息。Origin 消息表示该事务产生于另一个复制节点。由于逻辑复制协议中的复制节点可以是任意实现，因此唯一标识符就是该源头的名称。下游是否以及如何处理这一信息，由其自行决定。Origin 消息总是在事务中的任何 DML 消息之前发送。
+  </para>
+
+  <para>
+   每条 DML 消息都包含一个关系 OID，用于标识被操作的发布者关系。在某个关系 OID 的第一条 DML 消息之前，
+   会先发送一条 Relation 消息，描述该关系的模式。之后，如果该关系的定义自上次发送 Relation 消息以来发生了变化，
+   就会再发送一条新的 Relation 消息。（协议假定客户端能够缓存所需关系的元数据。）
+  </para>
+
+  <para>
+   Relation 消息通过 OID 标识列类型。对于内置类型，假定客户端可以在本地查找该类型的 OID，因此无需额外数据。
+   对于非内置类型 OID，会在 Relation 消息之前发送一条 Type 消息，以提供与该 OID 关联的类型名称。
+   因此，需要明确识别关系列类型的客户端应缓存 Type 消息内容，并先检查该缓存中是否已经定义了对应的类型 OID；
+   若没有，再在本地查找该类型 OID。
+  </para>
+ </sect2>
+</sect1>
+
+ <sect1 id="protocol-message-types">
+
+  <title>消息数据类型</title>
+
+  <para>
+   本节描述了消息中使用的基本数据类型。
+</para>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-protocol-varlistentry-167">
+
+    <term>Int<replaceable>n</replaceable>(<replaceable>i</replaceable>)</term>
+    <listitem>
+
+     <para>
+      以网络字节序（最高有效字节在前）表示的 <replaceable>n</replaceable> 位整数。
+      如果指定了 <replaceable>i</replaceable>，则表示其精确值；否则表示该值可变。例如：Int16、Int32(42)。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-168">
+
+    <term>Int<replaceable>n</replaceable>[<replaceable>k</replaceable>]</term>
+    <listitem>
+
+     <para>
+      由 <replaceable>k</replaceable> 个 <replaceable>n</replaceable> 位整数组成的数组，每个整数都按网络字节序排列。
+      数组长度 <replaceable>k</replaceable> 总是由消息中更早的某个字段确定。例如：Int16[M]。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-169">
+
+    <term>String(<replaceable>s</replaceable>)</term>
+    <listitem>
+
+     <para>
+      一个以空字符结尾的字符串（C 风格字符串）。字符串没有特定的长度限制。
+      如果指定了 <replaceable>s</replaceable>，则表示其精确值；否则表示该值可变。
+      例如：String、String("user")。
+     </para>
+
+     <note>
+
+      <para>
+       对后端返回的字符串长度，<emphasis>没有预定义的限制</emphasis>。
+       前端较好的编码策略是使用可扩展缓冲区，以便接收所有能放进内存的内容。
+       如果做不到这一点，就应读取完整字符串，并丢弃不适合固定大小缓冲区的尾随字符。
+      </para>
+     </note>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-170">
+
+    <term>Byte<replaceable>n</replaceable>(<replaceable>c</replaceable>)</term>
+    <listitem>
+
+     <para>
+      精确 <replaceable>n</replaceable> 字节。如果字段宽度 <replaceable>n</replaceable> 不是常数，
+      它总是可以由消息中更早的字段确定。如果指定了 <replaceable>c</replaceable>，则表示其精确值。
+      例如：Byte2、Byte1('\n')。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+
+ <sect1 id="protocol-message-formats">
+
+  <title>消息格式</title>
+
+  <para>
+   本节描述每条消息的详细格式。每条消息都标记了可由前端（F）、后端（B）或双方（F&amp;B）发送。
+   请注意，虽然每条消息开头都带有字节计数，但大多数消息格式都定义为无需参考该计数也能确定消息边界。这一设计最初是出于历史原因（早期已废弃的协议 v2 没有显式长度字段），同时也有助于有效性校验。
+</para>
+
+  <variablelist>
+   <varlistentry id="protocol-message-formats-AuthenticationOk">
+
+    <term>AuthenticationOk (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-171">
+
+       <term>Byte1('R')</term>
+       <listitem>
+
+        <para>
+         标识消息为认证请求。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-172">
+
+       <term>Int32(8)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-173">
+
+       <term>Int32(0)</term>
+       <listitem>
+
+        <para>
+         指定认证成功。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-AuthenticationKerberosV5">
+
+    <term>AuthenticationKerberosV5 (B)</term>
+    <listitem>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-174">
+
+       <term>Byte1('R')</term>
+       <listitem>
+
+        <para>
+         标识消息为认证请求。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-175">
+
+       <term>Int32(8)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-176">
+
+       <term>Int32(2)</term>
+       <listitem>
+
+        <para>
+         指定需要 Kerberos V5 认证。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-AuthenticationCleartextPassword">
+
+    <term>AuthenticationCleartextPassword (B)</term>
+    <listitem>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-177">
+
+       <term>Byte1('R')</term>
+       <listitem>
+
+        <para>
+         标识消息为认证请求。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-178">
+
+       <term>Int32(8)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-179">
+
+       <term>Int32(3)</term>
+       <listitem>
+
+        <para>
+         指定需要明文密码。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-AuthenticationMD5Password">
+
+    <term>AuthenticationMD5Password (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-180">
+
+       <term>Byte1('R')</term>
+       <listitem>
+
+        <para>
+         标识消息为认证请求。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-181">
+
+       <term>Int32(12)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-182">
+
+       <term>Int32(5)</term>
+       <listitem>
+
+        <para>
+         指定需要MD5加密的密码。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-183">
+
+       <term>Byte4</term>
+       <listitem>
+
+        <para>
+         用于加密密码时使用的盐。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-AuthenticationGSS">
+
+    <term>AuthenticationGSS (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-184">
+
+       <term>Byte1('R')</term>
+       <listitem>
+
+        <para>
+         标识消息为认证请求。
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry id="zh18-auto-protocol-varlistentry-185">
+
+       <term>Int32(8)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-186">
+
+       <term>Int32(7)</term>
+       <listitem>
+
+        <para>
+         指定需要 GSSAPI 认证。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-AuthenticationGSSContinue">
+
+    <term>AuthenticationGSSContinue (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-187">
+
+       <term>Byte1('R')</term>
+       <listitem>
+
+        <para>
+         标识消息为认证请求。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-188">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-189">
+
+       <term>Int32(8)</term>
+       <listitem>
+
+        <para>
+         指定此消息包含GSSAPI或SSPI数据。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-190">
+
+       <term>Byte<replaceable>n</replaceable></term>
+       <listitem>
+
+        <para>
+         GSSAPI 或 SSPI 认证数据。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-AuthenticationSSPI">
+
+    <term>AuthenticationSSPI (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-191">
+
+       <term>Byte1('R')</term>
+       <listitem>
+
+        <para>
+         标识消息为认证请求。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-192">
+
+       <term>Int32(8)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-193">
+
+       <term>Int32(9)</term>
+       <listitem>
+
+        <para>
+         指定需要 SSPI 认证。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-AuthenticationSASL">
+
+    <term>AuthenticationSASL (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-194">
+
+       <term>Byte1('R')</term>
+       <listitem>
+
+        <para>
+         标识消息为认证请求。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-195">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-196">
+
+       <term>Int32(10)</term>
+       <listitem>
+
+        <para>
+         指定需要 SASL 认证。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      消息正文是服务器首选的 SASL 认证机制列表。在最后一个认证机制名称后需要一个零字节作为终止符。对于每个机制，有以下内容：
+
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-198">
+        <term>String</term>
+        <listitem>
+         <para>
+          SASL 认证机制的名称。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-AuthenticationSASLContinue">
+
+    <term>AuthenticationSASLContinue (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-199">
+
+       <term>Byte1('R')</term>
+       <listitem>
+
+        <para>
+         标识消息为认证请求。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-200">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-201">
+
+       <term>Int32(11)</term>
+       <listitem>
+
+        <para>
+         指定此消息包含一个SASL挑战。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-202">
+
+       <term>Byte<replaceable>n</replaceable></term>
+       <listitem>
+
+        <para>
+         SASL数据，特定于正在使用的SASL机制。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-AuthenticationSASLFinal">
+
+    <term>AuthenticationSASLFinal (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-203">
+
+       <term>Byte1('R')</term>
+       <listitem>
+
+        <para>
+         标识消息为认证请求。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-204">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-205">
+
+       <term>Int32(12)</term>
+       <listitem>
+
+        <para>
+         指定SASL认证已完成。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-206">
+
+       <term>Byte<replaceable>n</replaceable></term>
+       <listitem>
+
+        <para>
+         SASL结果"附加数据"，特定于正在使用的SASL机制。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-BackendKeyData">
+
+    <term>BackendKeyData (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-207">
+
+       <term>Byte1('K')</term>
+       <listitem>
+
+        <para>
+         标识消息为取消键数据。
+         如果前端希望能够稍后发出CancelRequest消息，必须保存这些值。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-208">
+
+       <term>Int32(12)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-209">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         这个后端的进程ID。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-210">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         该后端的 secret key。该字段长度由消息总长度决定，并一直延伸到消息末尾。
+        </para>
+        <para>
+         key 的最小与最大长度分别为 4 和 256 字节。<productname>PostgreSQL</productname> 服务器当前发送不超过 32 字节的 key；更大的上限用于兼容未来版本及连接池/中间件使用更长 key 的需求。中间件也不宜用满全部字节，以便多层中间件叠加时仍可附加自身数据。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+     <para>
+      在协议 3.2 之前，secret key 固定为 4 字节。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-Bind">
+
+    <term>Bind (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-211">
+
+       <term>Byte1('B')</term>
+       <listitem>
+
+        <para>
+         将消息标识为绑定命令。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-212">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-213">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         目标 portal 的名称（空字符串选择未命名的 portal）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-214">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         源预备语句的名称（空字符串选择未命名的预备语句）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-215">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         后面跟着的参数格式代码的数量（以下标记为<replaceable>C</replaceable>）。
+         这可以是零，表示没有参数或者所有参数都使用默认格式（文本）；
+         或者是一个，这种情况下指定的格式代码应用于所有参数；
+         或者等于实际参数的数量。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-216">
+
+       <term>Int16[<replaceable>C</replaceable>]</term>
+       <listitem>
+
+        <para>
+         参数格式代码。每个目前必须是零（文本）或一（二进制）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-217">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         后面跟着的参数值的数量（可能为零）。
+         这个数量必须与查询所需的参数数量匹配。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      接下来，对于每个参数，都会出现以下一对字段：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-218">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         参数值的长度，以字节为单位（此计数不包括自身）。可以为零。
+         作为特殊情况，-1表示空参数值。
+         在空参数值的情况下，不会跟随任何值字节。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-219">
+
+       <term>Byte<replaceable>n</replaceable></term>
+       <listitem>
+
+        <para>
+         参数的值，以相关格式代码指示的格式表示。
+         <replaceable>n</replaceable>是上述长度。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      在最后一个参数之后，出现以下字段：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-220">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         后跟的结果列格式代码数量（以下标记为<replaceable>R</replaceable>）。
+         这可以是零，表示没有结果列，或者所有结果列应该使用默认格式（文本）；
+         或者是一个，此时指定的格式代码将应用于所有结果列（如果有）；
+         或者等于查询的实际结果列数。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-221">
+
+       <term>Int16[<replaceable>R</replaceable>]</term>
+       <listitem>
+
+        <para>
+         结果列格式代码。每个目前必须是零（文本）或一（二进制）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-BindComplete">
+
+    <term>BindComplete (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-222">
+
+       <term>Byte1('2')</term>
+       <listitem>
+
+        <para>
+         标识消息为绑定完成指示器。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-223">
+
+       <term>Int32(4)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-CancelRequest">
+
+    <term>CancelRequest (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-224">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-225">
+
+       <term>Int32(80877102)</term>
+       <listitem>
+
+        <para>
+         取消请求代码。该值被选择为在最高的16位中包含<literal>1234</literal>，在最低的16位中包含<literal>5678</literal>。
+         （为避免混淆，此代码不得与任何协议版本号相同。）
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-226">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         目标后端的进程ID。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-227">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         目标后端的 secret key。该字段长度由消息总长度决定并延伸至消息末尾，最大长度为 256 字节。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+     <para>
+      在协议 3.2 之前，secret key 固定为 4 字节。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-Close">
+
+    <term>Close (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-228">
+
+       <term>Byte1('C')</term>
+       <listitem>
+
+        <para>
+         将消息标识为关闭命令。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-229">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-230">
+
+       <term>Byte1</term>
+       <listitem>
+
+        <para>
+         '<literal>S</literal>' 表示关闭一个预备语句；或者
+         '<literal>P</literal>' 表示关闭一个 portal。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-231">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         要关闭的预备语句或 portal 的名称（空字符串选择未命名的预备语句或 portal）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-CloseComplete">
+
+    <term>CloseComplete (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-232">
+
+       <term>Byte1('3')</term>
+       <listitem>
+
+        <para>
+         标识消息为关闭完成指示符。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-233">
+
+       <term>Int32(4)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-CommandComplete">
+
+    <term>CommandComplete (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-234">
+
+       <term>Byte1('C')</term>
+       <listitem>
+
+        <para>
+         标识消息为命令完成响应。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-235">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-236">
+
+       <term>String</term>
+       <listitem>
+
+       <para>
+        命令标签。这通常是一个单词，用于标识已完成的SQL命令。
+       </para>
+
+       <para>
+        对于<command>INSERT</command>命令，标签是
+        <literal>INSERT <replaceable>oid</replaceable>
+        <replaceable>rows</replaceable></literal>，其中
+        <replaceable>rows</replaceable>是插入的行数。
+        如果<replaceable>rows</replaceable>为1且目标表具有OIDs，
+        则<replaceable>oid</replaceable>曾经是插入行的对象ID，
+        但不再支持OIDs系统列；因此<replaceable>oid</replaceable>
+        总是0。
+       </para>
+
+       <para>
+        对于<command>DELETE</command>命令，标签是<literal>DELETE <replaceable>rows</replaceable></literal>，
+        其中<replaceable>rows</replaceable>表示删除的行数。
+       </para>
+
+       <para>
+        对于<command>UPDATE</command>命令，标签是<literal>UPDATE <replaceable>rows</replaceable></literal>，
+        其中<replaceable>rows</replaceable>是更新的行数。
+       </para>
+
+       <para>
+        对于<command>MERGE</command>命令，标签是<literal>MERGE <replaceable>rows</replaceable></literal>，
+        其中<replaceable>rows</replaceable>是插入、更新或删除的行数。
+       </para>
+
+       <para>
+        对于<command>SELECT</command>或<command>CREATE TABLE AS</command>命令，标签是<literal>SELECT <replaceable>rows</replaceable></literal>，
+        其中<replaceable>rows</replaceable>是检索到的行数。
+       </para>
+
+       <para>
+        对于<command>MOVE</command>命令，标签是<literal>MOVE <replaceable>rows</replaceable></literal>，
+        其中<replaceable>rows</replaceable>表示游标位置改变的行数。
+       </para>
+
+       <para>
+        对于<command>FETCH</command>命令，标签是<literal>FETCH <replaceable>rows</replaceable></literal>，
+        其中<replaceable>rows</replaceable>是从游标中检索出的行数。
+       </para>
+
+       <para>
+        对于<command>COPY</command>命令，标签是
+        <literal>COPY <replaceable>rows</replaceable></literal>，其中
+        <replaceable>rows</replaceable>是复制的行数。
+        （注意：行数仅出现在<productname>PostgreSQL</productname> 8.2及更高版本中。）
+       </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-CopyData">
+
+    <term>CopyData (F &amp; B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-237">
+
+       <term>Byte1('d')</term>
+       <listitem>
+
+        <para>
+         标识消息为<command>COPY</command>数据。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-238">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-239">
+
+       <term>Byte<replaceable>n</replaceable></term>
+       <listitem>
+
+        <para>
+         数据是<command>COPY</command>数据流的一部分。来自后端的消息始终对应单个数据行，
+         但来自前端的消息可能会任意划分数据流。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-CopyDone">
+
+    <term>CopyDone (F &amp; B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-240">
+
+       <term>Byte1('c')</term>
+       <listitem>
+
+        <para>
+         将消息标识为<command>COPY</command>完成指示符。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-241">
+
+       <term>Int32(4)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-CopyFail">
+
+    <term>CopyFail (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-242">
+
+       <term>Byte1('f')</term>
+       <listitem>
+
+        <para>
+         将消息标识为<command>COPY</command>失败指示器。
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry id="zh18-auto-protocol-varlistentry-243">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-244">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         作为失败原因报告的错误消息。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-CopyInResponse">
+
+    <term>CopyInResponse (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-245">
+
+       <term>Byte1('G')</term>
+       <listitem>
+
+        <para>
+         标识消息为开始复制响应。
+         前端现在必须发送复制数据（如果没有准备好，发送CopyFail消息）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-246">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-247">
+
+       <term>Int8</term>
+       <listitem>
+
+        <para>
+         0表示整体<command>COPY</command>格式是文本的（行由换行符分隔，列由分隔符分隔等）。
+         1表示整体复制格式是二进制的（类似于DataRow格式）。
+         更多信息请参见<xref linkend="sql-copy"/>。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-248">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         要复制的数据中的列数（以下用<replaceable>N</replaceable>表示）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-249">
+
+       <term>Int16[<replaceable>N</replaceable>]</term>
+       <listitem>
+
+        <para>
+         每列要使用的格式代码。
+         每个必须目前为零（文本）或一（二进制）。
+         如果整体复制格式为文本，则所有必须为零。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-CopyOutResponse">
+
+    <term>CopyOutResponse (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-250">
+
+       <term>Byte1('H')</term>
+       <listitem>
+
+        <para>
+         标识消息为开始复制输出响应。
+         该消息将被复制输出数据跟随。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-251">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-252">
+
+       <term>Int8</term>
+       <listitem>
+
+        <para>
+         0表示整体<command>COPY</command>格式为文本格式（行由换行符分隔，列由分隔符字符分隔等）。
+         1表示整体复制格式为二进制格式（类似于DataRow格式）。更多信息请参见<xref linkend="sql-copy"/>。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-253">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         要复制的数据中的列数（以下用<replaceable>N</replaceable>表示）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-254">
+
+       <term>Int16[<replaceable>N</replaceable>]</term>
+       <listitem>
+
+        <para>
+         每列要使用的格式代码。
+         每个必须目前为零（文本）或一（二进制）。
+         如果整体复制格式为文本，则所有必须为零。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-CopyBothResponse">
+
+    <term>CopyBothResponse (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-255">
+
+       <term>Byte1('W')</term>
+       <listitem>
+
+        <para>
+         标识消息为开始复制双响应。此消息仅用于流复制。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-256">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-257">
+
+       <term>Int8</term>
+       <listitem>
+
+        <para>
+         0表示整体<command>COPY</command>格式为文本格式（行由换行符分隔，列由分隔符字符分隔等）。
+         1表示整体复制格式为二进制格式（类似于DataRow格式）。更多信息请参见<xref linkend="sql-copy"/>。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-258">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         要复制的数据中的列数（以下用<replaceable>N</replaceable>表示）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-259">
+
+       <term>Int16[<replaceable>N</replaceable>]</term>
+       <listitem>
+
+        <para>
+         每列要使用的格式代码。
+         每个必须目前为零（文本）或一（二进制）。
+         如果整体复制格式为文本，则所有必须为零。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-DataRow">
+
+    <term>DataRow (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-260">
+
+       <term>Byte1('D')</term>
+       <listitem>
+
+        <para>
+         标识消息为数据行。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-261">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-262">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         后面跟着的列值的数量（可能为零）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      接下来，对于每一列，都会出现以下一对字段：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-263">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         列值的长度，以字节为单位（此计数不包括其本身）。可以为零。
+         作为特殊情况，-1表示空列值。在空值情况下，不跟随任何值字节。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-264">
+
+       <term>Byte<replaceable>n</replaceable></term>
+       <listitem>
+
+        <para>
+         列的值，格式由相关的格式代码指示。
+         <replaceable>n</replaceable>是上述长度。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-Describe">
+
+    <term>Describe (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-265">
+
+       <term>Byte1('D')</term>
+       <listitem>
+
+        <para>
+         标识消息为描述命令。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-266">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-267">
+
+       <term>Byte1</term>
+       <listitem>
+
+        <para>
+         '<literal>S</literal>' 表示描述一个预备语句；或者
+         '<literal>P</literal>' 表示描述一个 portal。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-268">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         要描述的预备语句或 portal 的名称（空字符串选择未命名的预备语句或 portal）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-EmptyQueryResponse">
+
+    <term>EmptyQueryResponse (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-269">
+
+       <term>Byte1('I')</term>
+       <listitem>
+
+        <para>
+         将消息标识为对空查询字符串的响应。(这相当于CommandComplete。)
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-270">
+
+       <term>Int32(4)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-ErrorResponse">
+
+    <term>ErrorResponse (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-271">
+
+       <term>Byte1('E')</term>
+       <listitem>
+
+        <para>
+         将消息标识为错误。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-272">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      消息正文由一个或多个已识别的字段组成，后跟一个零字节作为终止符。字段可以以任何顺序出现。对于每个字段，都有以下内容：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-273">
+
+       <term>Byte1</term>
+       <listitem>
+
+        <para>
+         一个用于标识字段类型的代码；如果为零，则这是消息终止符，后面没有字符串。
+         目前定义的字段类型列在<xref linkend="protocol-error-fields"/>中。
+         由于将来可能会添加更多的字段类型，前端应该静默地忽略未识别类型的字段。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-274">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         字段数值。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-Execute">
+
+    <term>Execute (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-275">
+
+       <term>Byte1('E')</term>
+       <listitem>
+
+        <para>
+         标识消息为一个执行命令。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-276">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-277">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         要执行的 portal 的名称（空字符串选择未命名的 portal）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-278">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         如果 portal 包含返回行的查询，则为要返回的最大行数（否则忽略）。零表示<quote>没有限制</quote>。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-Flush">
+
+    <term>Flush (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-279">
+
+       <term>Byte1('H')</term>
+       <listitem>
+
+        <para>
+         将消息标识为Flush命令。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-280">
+
+       <term>Int32(4)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-FunctionCall">
+
+    <term>FunctionCall (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-281">
+
+       <term>Byte1('F')</term>
+       <listitem>
+
+        <para>
+         标识消息为函数调用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-282">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-283">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         指定要调用的函数的对象ID。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-284">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         后面跟着的参数格式代码的数量（以下标记为<replaceable>C</replaceable>）。
+         这可以是零，表示没有参数或所有参数都使用默认格式（文本）；
+         或者是一个，这种情况下指定的格式代码应用于所有参数；
+         或者等于实际参数的数量。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-285">
+
+       <term>Int16[<replaceable>C</replaceable>]</term>
+       <listitem>
+
+        <para>
+         参数格式代码。每个目前必须是零（文本）或一（二进制）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-286">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         指定传递给函数的参数数量。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      接下来，对于每个参数，都会出现以下一对字段：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-287">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         参数值的长度，以字节为单位（此计数不包括自身）。可以为零。
+         作为特殊情况，-1表示空参数值。
+         在空参数值的情况下，不会跟随任何值字节。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-288">
+
+       <term>Byte<replaceable>n</replaceable></term>
+       <listitem>
+
+        <para>
+         参数的值，以相关格式代码指示的格式表示。
+         <replaceable>n</replaceable>是上述长度。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      在最后一个参数之后，出现以下字段：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-289">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         函数结果的格式代码。目前必须是零（文本）或一（二进制）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-FunctionCallResponse">
+
+    <term>FunctionCallResponse (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-290">
+
+       <term>Byte1('V')</term>
+       <listitem>
+
+        <para>
+         标识消息为函数调用结果。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-291">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-292">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         函数结果值的长度，以字节为单位（此计数不包括本身）。可以为零。
+         作为特殊情况，-1表示NULL函数结果。
+         在NULL情况下，不会跟随任何值字节。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-293">
+
+       <term>Byte<replaceable>n</replaceable></term>
+       <listitem>
+
+        <para>
+         函数结果的值，格式由相关的格式代码指示。
+         <replaceable>n</replaceable>是上述长度。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-GSSENCRequest">
+
+    <term>GSSENCRequest (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-294">
+
+       <term>Int32(8)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-295">
+
+       <term>Int32(80877104)</term>
+       <listitem>
+
+        <para>
+         <acronym>GSSAPI</acronym>加密请求代码。该值被选择为包含最高16位中的<literal>1234</literal>，
+         以及最低16位中的<literal>5680</literal>。（为避免混淆，此代码不得与任何协议版本号相同。）
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-GSSResponse">
+
+    <term>GSSResponse (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-296">
+
+       <term>Byte1('p')</term>
+       <listitem>
+
+        <para>
+         识别消息为GSSAPI或SSPI响应。请注意，这也用于SASL和密码响应消息。
+         可以从上下文中推断出确切的消息类型。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-297">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-298">
+
+       <term>Byte<replaceable>n</replaceable></term>
+       <listitem>
+
+        <para>
+         GSSAPI/SSPI 特定的消息数据。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-NegotiateProtocolVersion">
+
+    <term>NegotiateProtocolVersion (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-299">
+
+       <term>Byte1('v')</term>
+       <listitem>
+
+        <para>
+         标识消息为协议版本协商消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-300">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-301">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         服务器支持的最新次要协议版本，用于客户端请求的主要协议版本。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-302">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         服务器未识别的协议选项数量。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      然后，对于服务器未识别的协议选项，有以下内容：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-303">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         选项名称。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-NoData">
+
+    <term>NoData (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-304">
+
+       <term>Byte1('n')</term>
+       <listitem>
+
+        <para>
+         将消息标识为无数据指示器。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-305">
+
+       <term>Int32(4)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-NoticeResponse">
+
+    <term>NoticeResponse (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-306">
+
+       <term>Byte1('N')</term>
+       <listitem>
+
+        <para>
+         将消息标识为通知。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-307">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      消息正文由一个或多个已识别的字段组成，后跟一个零字节作为终止符。字段可以以任何顺序出现。对于每个字段，都有以下内容：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-308">
+
+       <term>Byte1</term>
+       <listitem>
+
+        <para>
+         一个用于标识字段类型的代码；如果为零，则这是消息终止符，后面没有字符串。
+         目前定义的字段类型列在<xref linkend="protocol-error-fields"/>中。
+         由于将来可能会添加更多的字段类型，前端应该静默地忽略未识别类型的字段。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-309">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         字段数值。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-NotificationResponse">
+
+    <term>NotificationResponse (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-310">
+
+       <term>Byte1('A')</term>
+       <listitem>
+
+        <para>
+         标识消息为通知响应。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-311">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-312">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         通知后端进程的进程ID。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-313">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         通知被触发的频道名称。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-314">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         从通知进程传递的<quote>有效负载</quote>字符串。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-ParameterDescription">
+
+    <term>ParameterDescription (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-315">
+
+       <term>Byte1('t')</term>
+       <listitem>
+
+        <para>
+         标识消息为参数描述。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-316">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-317">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         语句使用的参数数量（可以为零）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      然后，对于每个参数，都有以下内容：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-318">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         指定参数数据类型的对象ID。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-ParameterStatus">
+
+    <term>ParameterStatus (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-319">
+
+       <term>Byte1('S')</term>
+       <listitem>
+
+        <para>
+         标识消息为运行时参数状态报告。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-320">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-321">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         正在报告的运行时参数的名称。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-322">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         参数的当前值。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-Parse">
+
+    <term>Parse (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-323">
+
+       <term>Byte1('P')</term>
+       <listitem>
+
+        <para>
+         将消息标识为解析命令。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-324">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-325">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         目标预备语句的名称（空字符串选择未命名的预备语句）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-326">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         要解析的查询字符串。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-327">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         指定的参数数据类型的数量（可以为零）。请注意，这不是查询字符串中可能出现的参数数量的指示，
+		 而是前端希望为其预先指定类型的参数数量。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      然后，对于每个参数，都有以下内容：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-328">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         指定参数数据类型的对象ID。在这里放置零相当于未指定类型。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-ParseComplete">
+
+    <term>ParseComplete (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-329">
+
+       <term>Byte1('1')</term>
+       <listitem>
+
+        <para>
+         将消息标识为解析完成指示器。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-330">
+
+       <term>Int32(4)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-PasswordMessage">
+
+    <term>PasswordMessage (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-331">
+
+       <term>Byte1('p')</term>
+       <listitem>
+
+        <para>
+         标识消息为密码响应。请注意，这也用于GSSAPI、SSPI和SASL响应消息。
+         可以从上下文中推断出确切的消息类型。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-332">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-333">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         密码（如果需要，已加密）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-PortalSuspended">
+
+    <term>PortalSuspended (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-334">
+
+       <term>Byte1('s')</term>
+       <listitem>
+
+        <para>
+         标识消息为 portal 挂起指示器。
+         请注意，仅当执行消息的行数限制达到时才会出现此消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-335">
+
+       <term>Int32(4)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-Query">
+
+    <term>Query (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-336">
+
+       <term>Byte1('Q')</term>
+       <listitem>
+
+        <para>
+         标识消息为简单查询。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-337">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-338">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         查询字符串本身。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-ReadyForQuery">
+
+    <term>ReadyForQuery (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-339">
+
+       <term>Byte1('Z')</term>
+       <listitem>
+
+        <para>
+         标识消息类型。ReadyForQuery在后端准备好进行新的查询周期时发送。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-340">
+
+       <term>Int32(5)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-341">
+
+       <term>Byte1</term>
+       <listitem>
+
+        <para>
+         当前后端事务状态指示器。
+         可能的值为'<literal>I</literal>'，如果空闲（不在事务块中）；'<literal>T</literal>'，如果在事务块中；
+         或'<literal>E</literal>'，如果在失败的事务块中（查询将被拒绝，直到块结束）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-RowDescription">
+
+    <term>RowDescription (B)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-342">
+
+       <term>Byte1('T')</term>
+       <listitem>
+
+        <para>
+         标识消息为行描述。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-343">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-344">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         指定一行中的字段数（可以为零）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      然后，对于每个字段，都有以下内容：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-345">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         字段名称。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-346">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         如果该字段可以被识别为特定表的列，则为该表的对象ID；否则为零。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-347">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         如果该字段可以被识别为特定表的列，则为该列的属性编号；否则为零。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-348">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         字段数据类型的对象ID。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-349">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         数据类型大小（参见<varname>pg_type.typlen</varname>）。
+         注意，负值表示可变宽度类型。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-350">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         类型修饰符（参见<varname>pg_attribute.atttypmod</varname>）。
+         修饰符的含义是特定于类型的。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-351">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         正在使用的字段格式代码。目前将为零（文本）或一（二进制）。在从描述语句变体返回的RowDescription中，格式代码尚未知晓，将始终为零。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-SASLInitialResponse">
+
+    <term>SASLInitialResponse (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-352">
+
+       <term>Byte1('p')</term>
+       <listitem>
+
+        <para>
+         标识消息为初始SASL响应。请注意，这也用于GSSAPI、SSPI和密码响应消息。
+         精确的消息类型是从上下文中推断出来的。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-353">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-354">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         客户端选择的SASL认证机制的名称。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-355">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         长度为SASL机制特定的“初始客户端响应”，如果没有初始响应，则为-1。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-356">
+
+       <term>Byte<replaceable>n</replaceable></term>
+       <listitem>
+
+        <para>
+         SASL机制特定的“初始响应”。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-SASLResponse">
+
+    <term>SASLResponse (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-357">
+
+       <term>Byte1('p')</term>
+       <listitem>
+
+        <para>
+         标识消息为SASL响应。请注意，这也用于GSSAPI、SSPI和密码响应消息。
+         可以从上下文中推断出确切的消息类型。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-358">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-359">
+
+       <term>Byte<replaceable>n</replaceable></term>
+       <listitem>
+
+        <para>
+         SASL机制特定的消息数据。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-SSLRequest">
+
+    <term>SSLRequest (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-360">
+
+       <term>Int32(8)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-361">
+
+       <term>Int32(80877103)</term>
+       <listitem>
+
+        <para>
+         <acronym>SSL</acronym>请求代码。该值被选择为在最高的16位中包含<literal>1234</literal>，
+         在最低的16位中包含<literal>5679</literal>。（为避免混淆，此代码
+         不得与任何协议版本号相同。）
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-StartupMessage">
+
+    <term>StartupMessage (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-362">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-363">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         协议版本号。最重要的16位是主版本号。最不重要的16位是次版本号。
+         例如，协议版本 3.2 在十进制中表示为 <literal>196610</literal>，
+         在十六进制中则更清楚地表示为 <literal>0x00030002</literal>。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      协议版本号后面跟着一个或多个参数名和值字符串对。在最后一个名/值对之后需要一个零字节作为终止符。
+      参数可以以任何顺序出现。<literal>user</literal>是必需的，其他是可选的。
+      每个参数的指定方式为：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-364">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         参数名称。当前识别的名称包括：
+
+         <variablelist>
+          <varlistentry id="zh18-auto-protocol-varlistentry-369">
+           <term><literal>user</literal></term>
+           <listitem>
+            <para>
+             要连接的数据库用户名称。必填项；没有默认值。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-370">
+           <term><literal>database</literal></term>
+           <listitem>
+            <para>
+             要连接的数据库。默认为用户名。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-371">
+           <term><literal>options</literal></term>
+           <listitem>
+            <para>
+             后端的命令行参数。（已弃用，建议设置单独的运行时参数。）此字符串中的空格被视为分隔参数，除非用反斜杠（<literal>\</literal>）转义；写<literal>\\</literal>表示字面反斜杠。
+            </para>
+           </listitem>
+          </varlistentry>
+
+          <varlistentry id="zh18-auto-protocol-varlistentry-372">
+           <term><literal>replication</literal></term>
+           <listitem>
+            <para>
+             用于以流式复制模式连接，可以发出一小组复制命令而不是SQL语句。值可以是<literal>true</literal>、<literal>false</literal>或<literal>database</literal>，默认为<literal>false</literal>。详细信息请参见<xref linkend="protocol-replication"/>。
+            </para>
+           </listitem>
+          </varlistentry>
+         </variablelist>
+
+         除上述之外，还可以列出其他参数。以<literal>_pq_.</literal>开头的参数名称保留用于<link linkend="protocol-extensions">协议扩展</link>，而其他参数被视为后端启动时设置的运行时参数。这些设置将在后端启动时应用（在解析命令行参数后，如果有的话），并将作为会话默认值。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-373">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         参数数值。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-Sync">
+
+    <term>Sync (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-374">
+
+       <term>Byte1('S')</term>
+       <listitem>
+
+        <para>
+         将消息标识为同步命令。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-375">
+
+       <term>Int32(4)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-message-formats-Terminate">
+
+    <term>Terminate (F)</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-376">
+
+       <term>Byte1('X')</term>
+       <listitem>
+
+        <para>
+         标识消息为终止。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-377">
+
+       <term>Int32(4)</term>
+       <listitem>
+
+        <para>
+         消息内容的长度（以字节为单位），包括其自身。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+
+ <sect1 id="protocol-error-fields">
+
+  <title>错误和通知消息域</title>
+
+  <para>
+   本节描述了ErrorResponse和NoticeResponse消息中可能出现的字段。每个字段类型都有一个单字节的标识符。
+   请注意，任何给定的字段类型在消息中最多只能出现一次。
+</para>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-protocol-varlistentry-378">
+    <term><literal>S</literal></term>
+    <listitem>
+
+     <para>
+      严重性: 字段内容为<literal>ERROR</literal>, <literal>FATAL</literal>, 或
+      <literal>PANIC</literal> (在错误消息中), 或
+      <literal>WARNING</literal>, <literal>NOTICE</literal>, <literal>DEBUG</literal>,
+      <literal>INFO</literal>, 或 <literal>LOG</literal> (在通知消息中),
+      或者这些内容的本地化翻译。始终存在。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-379">
+    <term><literal>V</literal></term>
+    <listitem>
+
+     <para>
+      严重性:字段内容为<literal>ERROR</literal>、<literal>FATAL</literal>或
+      <literal>PANIC</literal>(在错误消息中)，或<literal>WARNING</literal>、<literal>NOTICE</literal>、<literal>DEBUG</literal>、
+      <literal>INFO</literal>或<literal>LOG</literal>(在通知消息中)。
+      这与<literal>S</literal>字段相同，只是内容不会被本地化。仅在由<productname>PostgreSQL</productname>版本9.6
+      及更高版本生成的消息中存在。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-380">
+    <term><literal>C</literal></term>
+    <listitem>
+
+     <para>
+      Code: 错误的SQLSTATE代码（参见<xref linkend="errcodes-appendix"/>）。不可本地化。始终存在。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-381">
+    <term><literal>M</literal></term>
+    <listitem>
+
+     <para>
+      消息: 主要的人类可读错误消息。
+      这应该准确但简洁（通常一行）。
+      总是存在。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-382">
+    <term><literal>D</literal></term>
+    <listitem>
+
+     <para>
+      详细信息：一个可选的次要错误消息，提供有关问题的更多详细信息。可能会跨多行。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-383">
+    <term><literal>H</literal></term>
+    <listitem>
+
+     <para>
+      提示: 关于问题应该怎么做的一个可选建议。
+      这意在与细节不同，它提供建议（可能不合适）而不是硬性事实。
+      可能会跨越多行。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-384">
+    <term><literal>P</literal></term>
+    <listitem>
+
+     <para>
+      位置：字段值是一个十进制ASCII整数，表示错误光标位置，作为原始查询字符串的索引。
+      第一个字符的索引为1，位置以字符而非字节计量。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-385">
+    <term><literal>p</literal></term>
+    <listitem>
+
+     <para>
+      内部位置：这与<literal>P</literal>字段的定义相同，但在光标位置指向内部生成的命令而不是客户端提交的命令时使用。
+      当此字段出现时，<literal>q</literal>字段将始终出现。
+</para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-386">
+    <term><literal>q</literal></term>
+    <listitem>
+
+     <para>
+      内部查询: 一个失败的内部生成命令的文本。
+      例如，这可能是由PL/pgSQL函数发出的SQL查询。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-387">
+    <term><literal>W</literal></term>
+    <listitem>
+
+     <para>
+      Where: 错误发生的上下文指示。
+      目前包括活动的过程语言函数和内部生成查询的调用堆栈回溯。
+      跟踪每行一个条目，最近的在前。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-388">
+    <term><literal>s</literal></term>
+    <listitem>
+
+     <para>
+      Schema name: 如果错误与特定数据库对象相关联，则为包含该对象的模式的名称（如果有）。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-389">
+    <term><literal>t</literal></term>
+    <listitem>
+
+     <para>
+      表名: 如果错误与特定表相关联，则为表的名称。(有关表模式名称的名称，请参考模式名称字段。)
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-390">
+    <term><literal>c</literal></term>
+    <listitem>
+
+     <para>
+      列名: 如果错误与特定表列相关联，则为列的名称。(请参考模式和表名字段以识别表。)
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-391">
+    <term><literal>d</literal></term>
+    <listitem>
+
+     <para>
+      数据类型名称: 如果错误与特定数据类型相关联，则为数据类型的名称。
+      (有关数据类型模式的名称，请参阅模式名称字段。)
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-392">
+    <term><literal>n</literal></term>
+    <listitem>
+
+     <para>
+      约束名称: 如果错误与特定约束相关联，则为约束的名称。请参考上面列出的字段，了解相关表或域。
+      （为此，即使索引不是使用约束语法创建的，也将其视为约束。）
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-393">
+    <term><literal>F</literal></term>
+    <listitem>
+
+     <para>
+      文件: 报告错误的源代码位置的文件名。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-394">
+    <term><literal>L</literal></term>
+    <listitem>
+
+     <para>
+      Line: 源代码位置的行号，报告错误的位置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-protocol-varlistentry-395">
+    <term><literal>R</literal></term>
+    <listitem>
+
+     <para>
+      Routine: 报告错误的源代码例程的名称。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <note>
+
+   <para>
+    模式名称、表名称、列名称、数据类型名称和约束名称的字段仅针对有限数量的错误类型提供；
+    请参阅<xref linkend="errcodes-appendix"/>。前端不应假设任何这些字段的存在就保证了另一个字段的存在。
+    核心错误源观察到上述相互关系，但用户定义的函数可能以其他方式使用这些字段。
+    同样地，客户端不应假设这些字段表示当前数据库中的当代对象。
+</para>
+  </note>
+
+  <para>
+   客户端负责格式化显示的信息以满足其需求；特别是应根据需要换行。错误消息字段中出现的换行符应被视为段落分隔符，而不是换行符。
+  </para>
+ </sect1>
+
+ <sect1 id="protocol-logicalrep-message-formats">
+
+  <title>逻辑复制消息格式</title>
+
+  <para>
+   本节描述了每个逻辑复制消息的详细格式。这些消息要么由复制槽SQL接口返回，要么由walsender发送。
+   对于walsender，它们被封装在复制协议WAL消息中，如<xref linkend="protocol-replication"/>所述，
+   并且通常遵循与物理复制相同的消息流程。
+</para>
+
+  <variablelist>
+   <varlistentry id="protocol-logicalrep-message-formats-Begin">
+
+    <term>Begin</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-396">
+
+       <term>Byte1('B')</term>
+       <listitem>
+
+        <para>
+         将消息标识为开始消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-397">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         事务的最终LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-398">
+
+       <term>Int64 (TimestampTz)</term>
+       <listitem>
+
+        <para>
+         事务的提交时间戳。该值是自PostgreSQL纪元（2000-01-01）以来的微秒数。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-399">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Message">
+
+    <term>Message</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-400">
+
+       <term>Byte1('M')</term>
+       <listitem>
+
+        <para>
+         将消息标识为逻辑解码消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-401">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid（仅适用于流式事务）。
+         该字段自协议版本2起可用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-402">
+
+       <term>Int8</term>
+       <listitem>
+
+        <para>
+         标志; 逻辑解码消息是非事务性的时为0，是事务性的时为1。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-403">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         逻辑解码消息的LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-404">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         逻辑解码消息的前缀。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-405">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         内容的长度。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-406">
+
+       <term>Byte<replaceable>n</replaceable></term>
+       <listitem>
+
+        <para>
+         逻辑解码消息的内容。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Commit">
+
+    <term>Commit</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-407">
+
+       <term>Byte1('C')</term>
+       <listitem>
+
+        <para>
+         标识消息为提交消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-408">
+
+       <term>Int8(0)</term>
+       <listitem>
+
+        <para>
+         标志; 目前未使用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-409">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         提交的LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-410">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         事务的结束LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-411">
+
+       <term>Int64 (TimestampTz)</term>
+       <listitem>
+
+        <para>
+         事务的提交时间戳。该值是自PostgreSQL纪元（2000-01-01）以来的微秒数。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Origin">
+
+    <term>Origin</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-412">
+
+       <term>Byte1('O')</term>
+       <listitem>
+
+        <para>
+         将消息标识为原始消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-413">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         原始服务器上提交的LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-414">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         原点的名称。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      请注意，在单个事务中可能存在多个Origin消息。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Relation">
+
+    <term>Relation</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-415">
+
+       <term>Byte1('R')</term>
+       <listitem>
+
+        <para>
+         标识消息为关系消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-416">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid（仅适用于流式事务）。
+         该字段自协议版本2起可用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-417">
+
+       <term>Int32 (Oid)</term>
+       <listitem>
+
+        <para>
+         关系的OID。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-418">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         命名空间（<literal>pg_catalog</literal>为空字符串）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-419">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         关系名称。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-420">
+
+       <term>Int8</term>
+       <listitem>
+
+        <para>
+         关系的复制标识设置（与<structfield>relreplident</structfield>在<structname>pg_class</structname>中相同）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-421">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         列数。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      接下来，对于出版物中包含的每一列（除了生成的列），会出现以下消息部分：
+     </para>
+
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-422">
+
+       <term>Int8</term>
+       <listitem>
+
+        <para>
+         列的标志。目前可以是0表示没有标志，或者是1表示将该列标记为键的一部分。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-423">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         列的名称。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-424">
+
+       <term>Int32 (Oid)</term>
+       <listitem>
+
+        <para>
+         列数据类型的OID。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-425">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         列的类型修饰符 (<structfield>atttypmod</structfield>)。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Type">
+
+    <term>Type</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-426">
+
+       <term>Byte1('Y')</term>
+       <listitem>
+
+        <para>
+         将消息标识为类型消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-427">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid（仅适用于流式事务）。
+         该字段自协议版本2起可用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-428">
+
+       <term>Int32 (Oid)</term>
+       <listitem>
+
+        <para>
+         数据类型的OID。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-429">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         命名空间（<literal>pg_catalog</literal>为空字符串）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-430">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         数据类型的名称。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Insert">
+
+    <term>Insert</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-431">
+
+       <term>Byte1('I')</term>
+       <listitem>
+
+        <para>
+         标识消息为插入消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-432">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid（仅适用于流式事务）。
+         该字段自协议版本2起可用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-433">
+
+       <term>Int32 (Oid)</term>
+       <listitem>
+
+        <para>
+         与关系消息中ID对应的关系的OID。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-434">
+
+       <term>Byte1('N')</term>
+       <listitem>
+
+        <para>
+         标识以下TupleData消息为新元组。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-435">
+
+       <term>TupleData</term>
+       <listitem>
+
+        <para>
+         TupleData消息部分，表示新元组的内容。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Update">
+
+    <term>Update</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-436">
+
+       <term>Byte1('U')</term>
+       <listitem>
+
+        <para>
+         标识消息为更新消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-437">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid（仅适用于流式事务）。
+         该字段自协议版本2起可用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-438">
+
+       <term>Int32 (Oid)</term>
+       <listitem>
+
+        <para>
+         与关系消息中ID对应的关系的OID。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-439">
+
+       <term>Byte1('K')</term>
+       <listitem>
+
+        <para>
+         标识以下TupleData子消息为键。
+         此字段是可选的，仅在更新更改了属于REPLICA IDENTITY索引的任何列的数据时才存在。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-440">
+
+       <term>Byte1('O')</term>
+       <listitem>
+
+        <para>
+         标识以下TupleData子消息为旧元组。
+         此字段是可选的，仅在发生更新的表中REPLICA IDENTITY设置为FULL时才存在。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-441">
+
+       <term>TupleData</term>
+       <listitem>
+
+        <para>
+         TupleData消息部分表示旧元组或主键的内容。仅在先前的'O'或'K'部分存在时才存在。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-442">
+
+       <term>Byte1('N')</term>
+       <listitem>
+
+        <para>
+         标识以下TupleData消息为新元组。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-443">
+
+       <term>TupleData</term>
+       <listitem>
+
+        <para>
+         TupleData消息部分表示新元组的内容。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      更新消息可能包含一个'K'消息部分，也可能包含一个'O'消息部分，或者两者都不包含，但绝不会同时包含两者。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Delete">
+
+    <term>Delete</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-444">
+
+       <term>Byte1('D')</term>
+       <listitem>
+
+        <para>
+         标识消息为删除消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-445">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid（仅适用于流式事务）。
+         该字段自协议版本2起可用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-446">
+
+       <term>Int32 (Oid)</term>
+       <listitem>
+
+        <para>
+         与关系消息中ID对应的关系的OID。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-447">
+
+       <term>Byte1('K')</term>
+       <listitem>
+
+        <para>
+         标识以下TupleData子消息为键。
+         如果发生删除操作的表使用索引作为REPLICA IDENTITY，则存在此字段。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-448">
+
+       <term>Byte1('O')</term>
+       <listitem>
+
+        <para>
+         标识以下TupleData消息为旧元组。
+         如果发生删除操作的表的REPLICA IDENTITY设置为FULL，则存在此字段。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-449">
+
+       <term>TupleData</term>
+       <listitem>
+
+        <para>
+         TupleData消息部分，表示旧元组或主键的内容，取决于前一个字段。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      删除消息可能包含一个'K'消息部分或一个'O'消息部分，但绝不会同时包含两者。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Truncate">
+
+    <term>Truncate</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-450">
+
+       <term>Byte1('T')</term>
+       <listitem>
+
+        <para>
+         将消息标识为截断消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-451">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid（仅适用于流式事务）。
+         该字段自协议版本2起可用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-452">
+
+       <term>Int32</term>
+       <listitem>
+
+        <para>
+         关系数量
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-453">
+
+       <term>Int8</term>
+       <listitem>
+
+        <para>
+         选项位用于<command>TRUNCATE</command>命令：
+         1表示<literal>CASCADE</literal>，2表示<literal>RESTART IDENTITY</literal>
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-454">
+
+       <term>Int32 (Oid)</term>
+       <listitem>
+
+        <para>
+         与关系消息中ID对应的关系的OID。该字段对每个关系都重复。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   以下消息（Stream Start，Stream Stop，Stream Commit和Stream Abort）自协议版本2起可用。
+  </para>
+
+  <variablelist>
+   <varlistentry id="protocol-logicalrep-message-formats-Stream-Start">
+
+    <term>Stream Start</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-455">
+
+       <term>Byte1('S')</term>
+       <listitem>
+
+        <para>
+         标识消息为流开始消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-456">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-457">
+
+       <term>Int8</term>
+       <listitem>
+
+        <para>
+         值为1表示这是该XID的第一个流段，值为0表示其他任何流段。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Stream-Stop">
+
+    <term>Stream Stop</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-458">
+
+       <term>Byte1('E')</term>
+       <listitem>
+
+        <para>
+         标识消息为流停止消息。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Stream-Commit">
+
+    <term>Stream Commit</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-459">
+
+       <term>Byte1('c')</term>
+       <listitem>
+
+        <para>
+         将消息标识为流提交消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-460">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-461">
+
+       <term>Int8(0)</term>
+       <listitem>
+
+        <para>
+         标志; 目前未使用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-462">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         提交的LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-463">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         事务的结束LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-464">
+
+       <term>Int64 (TimestampTz)</term>
+       <listitem>
+
+        <para>
+         事务的提交时间戳。该值是自PostgreSQL纪元（2000-01-01）以来的微秒数。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Stream-Abort">
+
+    <term>Stream Abort</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-465">
+
+       <term>Byte1('A')</term>
+       <listitem>
+
+        <para>
+         将消息标识为流中止消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-466">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-467">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         子事务的Xid（对于顶层事务，将与事务的xid相同）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   以下消息（Begin Prepare，Prepare，Commit Prepared，Rollback Prepared，Stream Prepare）自协议版本3起可用。
+  </para>
+
+  <variablelist>
+   <varlistentry id="protocol-logicalrep-message-formats-Begin-Prepare">
+
+    <term>Begin Prepare</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-468">
+
+       <term>Byte1('b')</term>
+       <listitem>
+
+        <para>
+         标识消息为预备事务开始消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-469">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         PREPARE 的 LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-470">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         预备事务的结束 LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-471">
+
+       <term>Int64 (TimestampTz)</term>
+       <listitem>
+
+        <para>
+         预备事务的时间戳。该值是自 PostgreSQL 纪元（2000-01-01）以来的微秒数。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-472">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-473">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         预备事务的用户定义 GID。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Prepare">
+
+    <term>Prepare</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-474">
+
+       <term>Byte1('P')</term>
+       <listitem>
+
+        <para>
+         标识消息为预备事务消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-475">
+
+       <term>Int8(0)</term>
+       <listitem>
+
+        <para>
+         标志; 目前未使用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-476">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         PREPARE 的 LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-477">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         预备事务的结束 LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-478">
+
+       <term>Int64 (TimestampTz)</term>
+       <listitem>
+
+        <para>
+         预备事务的时间戳。该值是自 PostgreSQL 纪元（2000-01-01）以来的微秒数。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-479">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-480">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         预备事务的用户定义 GID。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Commit-Prepared">
+
+    <term>Commit Prepared</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-481">
+
+       <term>Byte1('K')</term>
+       <listitem>
+
+        <para>
+         标识消息为预备事务提交消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-482">
+
+       <term>Int8(0)</term>
+       <listitem>
+
+        <para>
+         标志; 目前未使用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-483">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         预备事务提交的 LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-484">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         预备事务提交的结束 LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-485">
+
+       <term>Int64 (TimestampTz)</term>
+       <listitem>
+
+        <para>
+         事务的提交时间戳。该值是自PostgreSQL纪元（2000-01-01）以来的微秒数。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-486">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-487">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         预备事务的用户定义 GID。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Rollback-Prepared">
+
+    <term>Rollback Prepared</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-488">
+
+       <term>Byte1('r')</term>
+       <listitem>
+
+        <para>
+         标识消息为预备事务回滚消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-489">
+
+       <term>Int8(0)</term>
+       <listitem>
+
+        <para>
+         标志; 目前未使用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-490">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         预备事务的结束 LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-491">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         回滚预备事务的结束 LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-492">
+
+       <term>Int64 (TimestampTz)</term>
+       <listitem>
+
+        <para>
+         预备事务的时间戳。该值是自 PostgreSQL 纪元（2000-01-01）以来的微秒数。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-493">
+
+       <term>Int64 (TimestampTz)</term>
+       <listitem>
+
+        <para>
+         事务的回滚时间戳。该值是自PostgreSQL纪元（2000-01-01）以来的微秒数。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-494">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-495">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         预备事务的用户定义 GID。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="protocol-logicalrep-message-formats-Stream-Prepare">
+
+    <term>Stream Prepare</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-496">
+
+       <term>Byte1('p')</term>
+       <listitem>
+
+        <para>
+         标识消息为流式预备事务消息。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-497">
+
+       <term>Int8(0)</term>
+       <listitem>
+
+        <para>
+         标志; 目前未使用。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-498">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         PREPARE 的 LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-499">
+
+       <term>Int64（XLogRecPtr）</term>
+       <listitem>
+
+        <para>
+         预备事务的结束 LSN。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-500">
+
+       <term>Int64 (TimestampTz)</term>
+       <listitem>
+
+        <para>
+         预备事务的时间戳。该值是自 PostgreSQL 纪元（2000-01-01）以来的微秒数。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-501">
+
+       <term>Int32 (TransactionId)</term>
+       <listitem>
+
+        <para>
+         事务的Xid。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-protocol-varlistentry-502">
+
+       <term>String</term>
+       <listitem>
+
+        <para>
+         预备事务的用户定义 GID。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   以上消息共享以下消息部分。
+</para>
+
+  <variablelist>
+   <varlistentry id="protocol-logicalrep-message-formats-TupleData">
+
+    <term>TupleData</term>
+    <listitem>
+     <variablelist>
+      <varlistentry id="zh18-auto-protocol-varlistentry-503">
+
+       <term>Int16</term>
+       <listitem>
+
+        <para>
+         列数。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <para>
+      接下来，对于每一列（除了生成的列），会出现以下子消息之一：
+
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-510">
+        <term>Byte1('n')</term>
+        <listitem>
+         <para>
+          将数据标识为NULL值。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+      或者
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-511">
+        <term>Byte1('u')</term>
+        <listitem>
+         <para>
+          将TOASTed值标识为未更改的值（实际值未发送）。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+      或者
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-512">
+        <term>Byte1('t')</term>
+        <listitem>
+         <para>
+          将数据标识为文本格式化值。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+      或者
+      <variablelist>
+       <varlistentry id="zh18-auto-protocol-varlistentry-513">
+        <term>Byte1('b')</term>
+        <listitem>
+         <para>
+          将数据标识为二进制格式化值。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-514">
+        <term>Int32</term>
+        <listitem>
+         <para>
+          列值的长度。
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry id="zh18-auto-protocol-varlistentry-515">
+        <term>Byte<replaceable>n</replaceable></term>
+        <listitem>
+         <para>
+          列的值，以二进制或文本格式呈现。
+          （如前述格式字节中指定）。
+          <replaceable>n</replaceable>是上述长度。
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist>
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+
+ <sect1 id="protocol-changes">
+
+  <title>自协议2.0以来的变化总结</title>
+
+  <para>
+   本节为那些试图将现有客户端库更新到协议3.0的开发人员提供了一个快速变更清单。
+  </para>
+
+  <para>
+   初始启动数据包使用灵活的字符串列表格式，而不是固定格式。请注意，现在可以直接在启动数据包中指定运行时参数的会话默认值。
+   （实际上，以前可以使用<literal>options</literal>字段来做到这一点，但考虑到<literal>options</literal>的有限宽度以及缺乏引用值中空格的任何方法，这并不是一种非常安全的技术。）
+</para>
+
+  <para>
+   所有消息现在都在消息类型字节后面立即跟着长度计数（除了启动数据包，它们没有类型字节）。另外请注意，PasswordMessage现在有一个类型字节。
+  </para>
+
+  <para>
+   ErrorResponse和NoticeResponse（'<literal>E</literal>'和'<literal>N</literal>'）
+   消息现在包含多个字段，客户端代码可以从中组装出所需级别的错误消息。请注意，
+   单个字段通常不会以换行符结尾，而在旧协议中发送的单个字符串总是以换行符结尾。
+</para>
+
+  <para>
+   ReadyForQuery（'<literal>Z</literal>'）消息包括事务状态指示器。
+  </para>
+
+  <para>
+   二进制行和数据行消息类型之间的区别已经消失；单个数据行消息类型用于以所有格式返回数据。
+   请注意，DataRow的布局已更改，以使其更容易解析。
+   此外，二进制值的表示已更改：它不再直接与服务器的内部表示形式绑定。
+</para>
+
+  <para>
+   有一个新的<quote>扩展查询</quote>子协议，它增加了前端消息类型Parse、Bind、Execute、Describe、Close、Flush和Sync，
+   以及后端消息类型ParseComplete、BindComplete、PortalSuspended、ParameterDescription、NoData和CloseComplete。
+   现有客户端不必关心这个子协议，但利用它可能会提高性能或功能。
+</para>
+
+  <para>
+   <command>COPY</command>数据现在封装到CopyData和CopyDone消息中。在<command>COPY</command>期间有一种明确定义的错误恢复方式。
+   特殊的<quote><literal>\.</literal></quote>最后一行不再需要，并且在<command>COPY OUT</command>期间不发送。
+   （在文本模式的<command>COPY IN</command>期间仍然被识别为终止符，但在CSV模式中不会被识别。文本模式中的这种行为已弃用，并且最终可能会被移除。）支持二进制<command>COPY</command>。
+   CopyInResponse和CopyOutResponse消息包括指示列数和每列格式的字段。
+</para>
+
+  <para>
+   FunctionCall和FunctionCallResponse消息的布局已更改。
+   FunctionCall现在可以支持将NULL参数传递给函数。它还可以处理以文本或二进制格式传递参数和检索结果。
+   不再需要考虑FunctionCall可能存在安全漏洞，因为它不提供对内部服务器数据表示的直接访问。
+</para>
+
+  <para>
+   后端在连接启动期间向客户端库发送ParameterStatus（'<literal>S</literal>'）消息，以传达其认为对客户端库有趣的所有参数。
+   随后，每当这些参数中任何一个的活动值发生变化时，都会发送ParameterStatus消息。
+</para>
+
+  <para>
+   RowDescription（'<literal>T</literal>'）消息携带了描述行的每列的新表OID和列号字段。它还显示了每列的格式代码。
+  </para>
+
+  <para>
+   CursorResponse（'<literal>P</literal>'）消息不再由后端生成。
+  </para>
+
+  <para>
+   NotificationResponse（'<literal>A</literal>'）消息有一个额外的字符串字段，可以携带一个<quote>有效负载</quote>字符串，
+   从<command>NOTIFY</command>事件发送者传递过来。
+</para>
+
+  <para>
+   EmptyQueryResponse('<literal>I</literal>')消息曾包含一个空字符串参数；现已移除。
+  </para>
+ </sect1>
+</chapter>

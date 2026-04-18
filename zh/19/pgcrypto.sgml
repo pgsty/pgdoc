@@ -1,0 +1,1283 @@
+<!-- doc/src/sgml/pgcrypto.sgml -->
+
+<sect1 id="pgcrypto" xreflabel="pgcrypto">
+ <title>pgcrypto &mdash; 密码学函数</title>
+
+ <indexterm zone="pgcrypto">
+  <primary>pgcrypto</primary>
+ </indexterm>
+
+ <indexterm zone="pgcrypto">
+  <primary>加密</primary>
+  <secondary>针对特定列</secondary>
+ </indexterm>
+
+ <para>
+  <filename>pgcrypto</filename>模块为<productname>PostgreSQL</productname>提供密码学函数。
+ </para>
+
+ <para>
+  该模块被认为是<quote>受信任的</quote>，也就是说，它可以由在当前数据库上具有<literal>CREATE</literal>权限的非超级用户安装。
+ </para>
+
+ <para>
+  <filename>pgcrypto</filename>需要 OpenSSL，如果构建 PostgreSQL 时没有选择 OpenSSL 支持，则不会安装它。
+ </para>
+
+ <sect2 id="pgcrypto-general-hashing-funcs">
+  <title>通用哈希函数</title>
+
+  <sect3 id="pgcrypto-general-hashing-funcs-digest">
+   <title><function>digest()</function></title>
+
+   <indexterm>
+    <primary>digest</primary>
+   </indexterm>
+
+<synopsis>
+digest(data text, type text) returns bytea
+digest(data bytea, type text) returns bytea
+</synopsis>
+
+   <para>
+    计算给定<parameter>data</parameter>的二进制哈希值。
+    <parameter>type</parameter>指定要使用的算法。
+    标准算法包括<literal>md5</literal>、<literal>sha1</literal>、
+    <literal>sha224</literal>、<literal>sha256</literal>、
+    <literal>sha384</literal>和<literal>sha512</literal>。
+    此外，<productname>OpenSSL</productname>支持的任何摘要算法也都会被自动识别并纳入支持范围。
+   </para>
+
+   <para>
+    如果想把摘要表示为十六进制字符串，可以对结果使用<function>encode()</function>。例如：
+<programlisting>
+CREATE OR REPLACE FUNCTION sha1(bytea) RETURNS text AS $$
+    SELECT encode(digest($1, 'sha1'), 'hex')
+$$ LANGUAGE SQL STRICT IMMUTABLE;
+</programlisting>
+   </para>
+  </sect3>
+
+  <sect3 id="pgcrypto-general-hashing-funcs-hmac">
+   <title><function>hmac()</function></title>
+
+   <indexterm>
+    <primary>hmac</primary>
+   </indexterm>
+
+<synopsis>
+hmac(data text, key text, type text) returns bytea
+hmac(data bytea, key bytea, type text) returns bytea
+</synopsis>
+
+   <para>
+    使用密钥<parameter>key</parameter>为<parameter>data</parameter>计算基于散列的消息认证码（HMAC）。
+    <parameter>type</parameter>与<function>digest()</function>中的相同。
+   </para>
+
+   <para>
+    这与<function>digest()</function>类似，但只有知道密钥时才能重新计算该哈希。
+    这可以防止有人篡改数据后再同时修改哈希使之匹配。
+   </para>
+
+   <para>
+    如果密钥大于哈希块大小，则会先对其进行哈希，并将结果用作密钥。
+   </para>
+  </sect3>
+ </sect2>
+
+ <sect2 id="pgcrypto-password-hashing-funcs">
+  <title>密码哈希函数</title>
+
+  <para>
+   函数<function>crypt()</function>和<function>gen_salt()</function>是专门为密码哈希设计的。
+   <function>crypt()</function>负责执行哈希，而<function>gen_salt()</function>负责为其准备算法参数。
+  </para>
+
+  <para>
+   <function>crypt()</function>中的算法在以下方面不同于通常的 MD5 或 SHA-1 哈希算法：
+  </para>
+
+  <orderedlist>
+   <listitem>
+    <para>
+     它们很慢。由于处理的数据量很小，这是让暴力破解密码变得困难的唯一办法。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     它们使用一个称为<firstterm>salt</firstterm>的随机盐值，这样使用相同密码的用户也会得到不同的哈希结果。
+     这也为逆向求解该算法增加了一层额外防护。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     它们会在结果中包含算法类型，这样用不同算法哈希的密码就能共存。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     其中一些是自适应的 &mdash; 这意味着当计算机变快时，你可以把算法调得更慢，
+     而不引入与现有密码的不兼容性。
+    </para>
+   </listitem>
+  </orderedlist>
+
+  <para>
+   <xref linkend="pgcrypto-crypt-algorithms"/>列出了<function>crypt()</function>函数支持的算法。
+  </para>
+
+  <table id="pgcrypto-crypt-algorithms">
+   <title><function>crypt()</function>支持的算法</title>
+   <tgroup cols="6">
+    <colspec colname="col1" colwidth="1.5*"/>
+    <colspec colname="col2" colwidth="1.25*"/>
+    <colspec colname="col3" colwidth="1*"/>
+    <colspec colname="col4" colwidth="1*"/>
+    <colspec colname="col5" colwidth="1*"/>
+    <colspec colname="col6" colwidth="2.5*"/>
+    <thead>
+     <row>
+      <entry>算法</entry>
+      <entry>最大密码长度</entry>
+      <entry>是否自适应？</entry>
+      <entry>盐值位数</entry>
+      <entry>输出长度</entry>
+      <entry>描述</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry><literal>bf</literal></entry>
+      <entry>72</entry>
+      <entry>是</entry>
+      <entry>128</entry>
+      <entry>60</entry>
+      <entry>基于 Blowfish，2a 变体</entry>
+     </row>
+     <row>
+      <entry><literal>md5</literal></entry>
+      <entry>无限制</entry>
+      <entry>否</entry>
+      <entry>48</entry>
+      <entry>34</entry>
+      <entry>基于 MD5 的 crypt</entry>
+     </row>
+     <row>
+      <entry><literal>xdes</literal></entry>
+      <entry>8</entry>
+      <entry>是</entry>
+      <entry>24</entry>
+      <entry>20</entry>
+      <entry>扩展 DES</entry>
+     </row>
+     <row>
+      <entry><literal>des</literal></entry>
+      <entry>8</entry>
+      <entry>否</entry>
+      <entry>12</entry>
+      <entry>13</entry>
+      <entry>原始 UNIX crypt</entry>
+     </row>
+     <row>
+      <entry><literal>sha256crypt</literal></entry>
+      <entry>无限制</entry>
+      <entry>是</entry>
+      <entry>最多 32</entry>
+      <entry>80</entry>
+      <entry>改编自公开可用的参考实现
+       <ulink url="https://www.akkadia.org/drepper/SHA-crypt.txt">Unix crypt using SHA-256 and SHA-512
+       </ulink>
+      </entry>
+     </row>
+     <row>
+      <entry><literal>sha512crypt</literal></entry>
+      <entry>无限制</entry>
+      <entry>是</entry>
+      <entry>最多 32</entry>
+      <entry>123</entry>
+      <entry>改编自公开可用的参考实现
+       <ulink url="https://www.akkadia.org/drepper/SHA-crypt.txt">Unix crypt using SHA-256 and SHA-512
+       </ulink>
+      </entry>
+     </row>
+
+    </tbody>
+   </tgroup>
+  </table>
+
+  <sect3 id="pgcrypto-password-hashing-funcs-crypt">
+   <title><function>crypt()</function></title>
+
+   <indexterm>
+    <primary>crypt</primary>
+   </indexterm>
+
+<synopsis>
+crypt(password text, salt text) returns text
+</synopsis>
+
+   <para>
+    计算<parameter>password</parameter>的一个 crypt(3) 风格哈希。
+    存储新密码时，需要使用<function>gen_salt()</function>生成新的<parameter>salt</parameter>值。
+    校验密码时，把已存储的哈希值作为<parameter>salt</parameter>传入，并测试结果是否与已存储值匹配。
+   </para>
+   <para>
+    设置一个新密码的示例：
+<programlisting>
+UPDATE ... SET pswhash = crypt('new password', gen_salt('md5'));
+</programlisting>
+   </para>
+   <para>
+    身份验证示例：
+<programlisting>
+SELECT (pswhash = crypt('entered password', pswhash)) AS pswmatch FROM ... ;
+</programlisting>
+    如果输入的密码正确，这会返回<literal>true</literal>。
+   </para>
+  </sect3>
+
+  <sect3 id="pgcrypto-password-hashing-funcs-gen-salt">
+   <title><function>gen_salt()</function></title>
+
+  <indexterm>
+   <primary>gen_salt</primary>
+  </indexterm>
+
+<synopsis>
+gen_salt(type text [, iter_count integer ]) returns text
+</synopsis>
+
+   <para>
+    生成一个供<function>crypt()</function>使用的新随机盐值字符串。
+    该盐值字符串还会告诉<function>crypt()</function>应使用哪种算法。
+   </para>
+
+   <para>
+    <parameter>type</parameter>参数指定哈希算法。
+    接受的类型有：<literal>des</literal>、<literal>xdes</literal>、<literal>md5</literal>、
+    <literal>bf</literal>、<literal>sha256crypt</literal> 和 <literal>sha512crypt</literal>。
+    最后两种即 <literal>sha256crypt</literal> 和 <literal>sha512crypt</literal>，
+    是现代的、基于 <literal>SHA-2</literal> 的密码哈希。
+   </para>
+
+   <para>
+    <parameter>iter_count</parameter>参数允许用户为支持该参数的算法指定迭代次数。
+    次数越高，密码哈希所需时间越长，从而破解它所需时间也越长。
+    不过，如果次数过高，计算一个哈希可能需要数年时间 &mdash; 这显然不切实际。
+    若省略<parameter>iter_count</parameter>参数，则使用默认迭代次数。
+    允许的<parameter>iter_count</parameter>值取决于算法，如<xref linkend="pgcrypto-icfc-table"/>所示。
+   </para>
+
+   <table id="pgcrypto-icfc-table">
+    <title><function>crypt()</function>的迭代计数</title>
+    <tgroup cols="4">
+     <thead>
+      <row>
+       <entry>算法</entry>
+       <entry>默认值</entry>
+       <entry>最小值</entry>
+       <entry>最大值</entry>
+      </row>
+     </thead>
+     <tbody>
+      <row>
+       <entry><literal>xdes</literal></entry>
+       <entry>725</entry>
+       <entry>1</entry>
+       <entry>16777215</entry>
+      </row>
+      <row>
+       <entry><literal>bf</literal></entry>
+       <entry>6</entry>
+       <entry>4</entry>
+       <entry>31</entry>
+      </row>
+      <row>
+       <entry><literal>sha256crypt, sha512crypt</literal></entry>
+       <entry>5000</entry>
+       <entry>1000</entry>
+       <entry>999999999</entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
+
+   <para>
+    对<literal>xdes</literal>算法还有额外的限制：迭代计数必须是一个奇数。
+   </para>
+
+   <para>
+    为了选择合适的迭代次数，可以考虑原始 DES crypt 在当时硬件上的设计速度是每秒 4 次哈希。
+    低于每秒 4 次哈希可能会影响可用性，而高于每秒 100 次哈希则很可能过快。
+   </para>
+
+   <para>
+    <xref linkend="pgcrypto-hash-speed-table"/>概述了不同哈希算法之间的相对速度差异。
+    该表展示了在 8 字符密码上尝试所有字符组合所需的时间，假定密码只包含小写字母，
+    或者包含大小写字母和数字。在<literal>crypt-bf</literal>条目中，
+    斜杠后的数字是<function>gen_salt</function>的<parameter>iter_count</parameter>参数值。
+   </para>
+
+   <para>
+    对<literal>sha256crypt</literal>和<literal>sha512crypt</literal>而言，
+    默认的<parameter>iter_count</parameter>值 <literal>5000</literal> 对现代硬件来说被认为过低，
+    但可以调高以生成更强的密码哈希。除此之外，
+    <literal>sha256crypt</literal>和<literal>sha512crypt</literal>都被认为是安全的。
+   </para>
+
+   <table id="pgcrypto-hash-speed-table">
+    <title>哈希算法速度</title>
+    <tgroup cols="5">
+     <thead>
+      <row>
+       <entry>算法</entry>
+       <entry>每秒哈希次数</entry>
+       <entry>针对<literal>[a-z]</literal></entry>
+       <entry>针对<literal>[A-Za-z0-9]</literal></entry>
+       <entry>相对于<literal>md5 hash</literal>的耗时倍数</entry>
+      </row>
+     </thead>
+     <tbody>
+      <row>
+       <entry><literal>crypt-bf/8</literal></entry>
+       <entry>1792</entry>
+       <entry>4 年</entry>
+       <entry>3927 年</entry>
+       <entry>100k</entry>
+      </row>
+      <row>
+       <entry><literal>crypt-bf/7</literal></entry>
+       <entry>3648</entry>
+       <entry>2 年</entry>
+       <entry>1929 年</entry>
+       <entry>50k</entry>
+      </row>
+      <row>
+       <entry><literal>crypt-bf/6</literal></entry>
+       <entry>7168</entry>
+       <entry>1 年</entry>
+       <entry>982 年</entry>
+       <entry>25k</entry>
+      </row>
+      <row>
+       <entry><literal>crypt-bf/5</literal></entry>
+       <entry>13504</entry>
+       <entry>188 天</entry>
+       <entry>521 年</entry>
+       <entry>12.5k</entry>
+      </row>
+      <row>
+       <entry><literal>crypt-md5</literal></entry>
+       <entry>171584</entry>
+       <entry>15 天</entry>
+       <entry>41 年</entry>
+       <entry>1k</entry>
+      </row>
+      <row>
+       <entry><literal>crypt-des</literal></entry>
+       <entry>23221568</entry>
+       <entry>157.5 分</entry>
+       <entry>108 天</entry>
+       <entry>7</entry>
+      </row>
+      <row>
+       <entry><literal>sha1</literal></entry>
+       <entry>37774272</entry>
+       <entry>90 分</entry>
+       <entry>68 天</entry>
+       <entry>4</entry>
+      </row>
+      <row>
+       <entry><literal>md5</literal>(hash)</entry>
+       <entry>150085504</entry>
+       <entry>22.5 分</entry>
+       <entry>17 天</entry>
+       <entry>1</entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
+
+   <para>
+    注意：
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      所用机器为 Intel Mobile Core i3。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>crypt-des</literal>和<literal>crypt-md5</literal>算法的数字取自
+      John the Ripper v1.6.38 的 <literal>-test</literal> 输出。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>md5 hash</literal>的数字来自 mdcrack 1.2。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>sha1</literal>的数字来自 lcrack-20031130-beta。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>crypt-bf</literal>的数字是使用一个简单程序测得的，该程序循环处理 1000 个
+      8 字符密码。这样可以展示不同迭代次数下的速度。作为参考：
+      <literal>john -test</literal> 对 <literal>crypt-bf/5</literal> 给出的结果是
+      13506 次循环/秒。（结果上的极小差异与这样一个事实一致：
+      <literal>crypt-bf</literal>在<filename>pgcrypto</filename>中的实现与
+      John the Ripper 使用的是同一套实现。）
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    请注意，<quote>尝试所有组合</quote>并不是现实中的做法。
+    通常密码破解是借助词典完成的，其中包含常见单词及其各种变体。
+    因此，即使是稍微有点像单词的密码，被破解的速度也可能远快于上表所示；
+    而一个 6 字符、不像单词的密码则可能逃过破解，也可能不会。
+   </para>
+  </sect3>
+ </sect2>
+
+ <sect2 id="pgcrypto-pgp-enc-funcs">
+  <title>PGP 加密函数</title>
+
+  <para>
+   这里的函数实现了 OpenPGP
+   (<ulink url="https://datatracker.ietf.org/doc/html/rfc4880">RFC 4880</ulink>)
+   标准中的加密部分。同时支持对称密钥加密和公钥加密。
+  </para>
+
+  <para>
+   一个加密的 PGP 消息由两个部分，或称两个<firstterm>包</firstterm>组成：
+  </para>
+  <itemizedlist>
+   <listitem>
+    <para>
+     包含会话密钥的包 &mdash; 该会话密钥要么由对称密钥加密，要么由公钥加密。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     包含用会话密钥加密的数据的包。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   当使用对称密钥（即密码）加密时：
+  </para>
+  <orderedlist>
+   <listitem>
+    <para>
+     给定密码使用 String2Key (S2K) 算法进行哈希。
+     这与<function>crypt()</function>算法颇为类似 &mdash; 故意设计得较慢，并带有随机盐值 &mdash;
+     但它产生的是一个全长度的二进制密钥。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     如果请求单独的会话密钥，则会生成一个新的随机密钥。
+     否则，S2K 密钥将直接用作会话密钥。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     如果直接使用 S2K 密钥，那么会话密钥包中只写入 S2K 设置。
+     否则，会话密钥会先用 S2K 密钥加密，再放入会话密钥包。
+    </para>
+   </listitem>
+  </orderedlist>
+
+  <para>
+   当使用公钥加密时：
+  </para>
+  <orderedlist>
+   <listitem>
+    <para>
+     会生成一个新的随机会话密钥。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     该密钥会用公钥加密，并放入会话密钥包中。
+    </para>
+   </listitem>
+  </orderedlist>
+
+  <para>
+   无论哪种情况，要加密的数据都会按如下步骤处理：
+  </para>
+  <orderedlist>
+   <listitem>
+    <para>
+     可选的数据处理包括：压缩、转换为 UTF-8 和转换行结束符，三者可任意组合。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     数据前面会加上一个随机字节块。这相当于使用随机 IV。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     追加对随机前缀和数据计算得到的 SHA-1 哈希值。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     然后用会话密钥加密所有这些内容，并放入数据包。
+    </para>
+   </listitem>
+  </orderedlist>
+
+  <sect3 id="pgcrypto-pgp-enc-funcs-pgp-sym-encrypt">
+   <title><function>pgp_sym_encrypt()</function></title>
+
+   <indexterm>
+    <primary>pgp_sym_encrypt</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>pgp_sym_encrypt_bytea</primary>
+   </indexterm>
+
+<synopsis>
+pgp_sym_encrypt(data text, psw text [, options text ]) returns bytea
+pgp_sym_encrypt_bytea(data bytea, psw text [, options text ]) returns bytea
+</synopsis>
+   <para>
+    使用对称 PGP 密码<parameter>psw</parameter>加密<parameter>data</parameter>。
+    <parameter>options</parameter>参数可以包含下文所述的选项设置。
+   </para>
+  </sect3>
+
+  <sect3 id="pgcrypto-pgp-enc-funcs-pgp-sym-decrypt">
+   <title><function>pgp_sym_decrypt()</function></title>
+
+   <indexterm>
+    <primary>pgp_sym_decrypt</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>pgp_sym_decrypt_bytea</primary>
+   </indexterm>
+
+<synopsis>
+pgp_sym_decrypt(msg bytea, psw text [, options text ]) returns text
+pgp_sym_decrypt_bytea(msg bytea, psw text [, options text ]) returns bytea
+</synopsis>
+   <para>
+    解密一个经过对称密钥加密的 PGP 消息。
+   </para>
+   <para>
+    <type>bytea</type>数据不能用<function>pgp_sym_decrypt</function>解密。
+    这是为了避免输出无效字符数据。若原始数据本来是文本，
+    则使用<function>pgp_sym_decrypt_bytea</function>解密也没有问题。
+   </para>
+   <para>
+    <parameter>options</parameter>参数可以包含下文所述的选项设置。
+   </para>
+  </sect3>
+
+  <sect3 id="pgcrypto-pgp-enc-funcs-pgp-pub-encrypt">
+   <title><function>pgp_pub_encrypt()</function></title>
+
+   <indexterm>
+    <primary>pgp_pub_encrypt</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>pgp_pub_encrypt_bytea</primary>
+   </indexterm>
+
+<synopsis>
+pgp_pub_encrypt(data text, key bytea [, options text ]) returns bytea
+pgp_pub_encrypt_bytea(data bytea, key bytea [, options text ]) returns bytea
+</synopsis>
+   <para>
+    使用 PGP 公钥<parameter>key</parameter>加密<parameter>data</parameter>。
+    向该函数提供私钥会报错。
+   </para>
+   <para>
+    <parameter>options</parameter>参数可以包含下文所述的选项设置。
+   </para>
+  </sect3>
+
+  <sect3 id="pgcrypto-pgp-enc-funcs-pgp-pub-decrypt">
+   <title><function>pgp_pub_decrypt()</function></title>
+
+   <indexterm>
+    <primary>pgp_pub_decrypt</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>pgp_pub_decrypt_bytea</primary>
+   </indexterm>
+
+<synopsis>
+pgp_pub_decrypt(msg bytea, key bytea [, psw text [, options text ]]) returns text
+pgp_pub_decrypt_bytea(msg bytea, key bytea [, psw text [, options text ]]) returns bytea
+</synopsis>
+   <para>
+    解密经过公钥加密的消息。<parameter>key</parameter>必须是与加密时所用公钥对应的私钥。
+    如果私钥受密码保护，则必须在<parameter>psw</parameter>中给出密码。
+    如果没有密码但想指定选项，则需要传入空密码。
+   </para>
+   <para>
+    <type>bytea</type>数据不能用<function>pgp_pub_decrypt</function>解密。
+    这是为了避免输出无效字符数据。若原始数据本来是文本，
+    则使用<function>pgp_pub_decrypt_bytea</function>解密也没有问题。
+   </para>
+   <para>
+    <parameter>options</parameter>参数可以包含下文所述的选项设置。
+   </para>
+  </sect3>
+
+  <sect3 id="pgcrypto-pgp-enc-funcs-pgp-key-id">
+   <title><function>pgp_key_id()</function></title>
+
+   <indexterm>
+    <primary>pgp_key_id</primary>
+   </indexterm>
+
+<synopsis>
+pgp_key_id(bytea) returns text
+</synopsis>
+   <para>
+    <function>pgp_key_id</function>提取 PGP 公钥或私钥的密钥 ID。
+    如果传入的是加密消息，则返回用于加密该数据的密钥 ID。
+   </para>
+   <para>
+    它可以返回两个特殊的密钥 ID：
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      <literal>SYMKEY</literal>
+     </para>
+     <para>
+      该消息是用对称密钥加密的。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>ANYKEY</literal>
+     </para>
+     <para>
+      该消息是用公钥加密的，但密钥 ID 已被移除。
+      这意味着你需要尝试自己的所有私钥，看看哪一个能解密它。
+      <filename>pgcrypto</filename>本身不会生成这样的消息。
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    注意，不同的密钥可能具有相同的 ID。这种情况虽然罕见，但属于正常情况。
+    客户端应用此时应该尝试使用每一个密钥解密，以判断哪个匹配 &mdash;
+    就像处理<literal>ANYKEY</literal>时一样。
+   </para>
+  </sect3>
+
+  <sect3 id="pgcrypto-pgp-enc-funcs-armor">
+   <title><function>armor()</function>, <function>dearmor()</function></title>
+
+   <indexterm>
+    <primary>armor</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>dearmor</primary>
+   </indexterm>
+
+<synopsis>
+armor(data bytea [ , keys text[], values text[] ]) returns text
+dearmor(data text) returns bytea
+</synopsis>
+   <para>
+    这些函数将二进制数据封装/解封装为 PGP ASCII-armor 格式，
+    它本质上就是带 CRC 和附加格式信息的 Base64。
+   </para>
+
+   <para>
+    如果指定了<parameter>keys</parameter>和<parameter>values</parameter>数组，
+    则会为每个键/值对添加一个<firstterm>装甲头（armor header）</firstterm>。
+    两个数组都必须是一维的，且长度相同。键和值都不能包含任何非 ASCII 字符。
+   </para>
+  </sect3>
+
+  <sect3 id="pgcrypto-pgp-enc-funcs-pgp-armor-headers">
+   <title><function>pgp_armor_headers</function></title>
+
+   <indexterm>
+    <primary>pgp_armor_headers</primary>
+   </indexterm>
+
+<synopsis>
+pgp_armor_headers(data text, key out text, value out text) returns setof record
+</synopsis>
+   <para>
+    <function>pgp_armor_headers()</function>从<parameter>data</parameter>中提取
+    装甲头。返回值是一个包含两列的行集合，列名为 key 和 value。
+    如果键或值包含任何非 ASCII 字符，则按 UTF-8 处理。
+   </para>
+  </sect3>
+
+  <sect3 id="pgcrypto-pgp-enc-funcs-opts">
+   <title>PGP 函数的选项</title>
+
+   <para>
+    这些选项的命名方式与 GnuPG 类似。选项值应写在等号后面；
+    各选项之间用逗号分隔。例如：
+<programlisting>
+pgp_sym_encrypt(data, psw, 'compress-algo=1, cipher-algo=aes256')
+</programlisting>
+   </para>
+
+   <para>
+    除<literal>convert-crlf</literal>外，所有选项都只适用于加密函数。
+    解密函数会从 PGP 数据中获取这些参数。
+   </para>
+
+   <para>
+    最值得关注的选项可能是<literal>compress-algo</literal>和<literal>unicode-mode</literal>。
+    其余选项应该都具有合理的默认值。
+   </para>
+
+  <sect4 id="pgcrypto-pgp-enc-funcs-opts-cipher-algo">
+   <title>cipher-algo</title>
+
+   <para>
+    使用哪种密码算法。
+   </para>
+<literallayout>
+取值：bf, aes128, aes192, aes256, 3des, cast5
+默认值：aes128
+适用于：pgp_sym_encrypt, pgp_pub_encrypt
+</literallayout>
+  </sect4>
+
+  <sect4 id="pgcrypto-pgp-enc-funcs-opts-compress-algo">
+   <title>compress-algo</title>
+
+   <para>
+    使用哪种压缩算法。仅当<productname>PostgreSQL</productname>在编译时包含 zlib 时才可用。
+   </para>
+<literallayout>
+取值：
+  0 - 无压缩
+  1 - ZIP 压缩
+  2 - ZLIB 压缩（= ZIP 加元数据和块 CRC）
+默认值：0
+适用于：pgp_sym_encrypt, pgp_pub_encrypt
+</literallayout>
+  </sect4>
+
+  <sect4 id="pgcrypto-pgp-enc-funcs-opts-compress-level">
+   <title>compress-level</title>
+
+   <para>
+    压缩程度。级别越高，压缩后越小，但速度也越慢。0 表示禁用压缩。
+   </para>
+<literallayout>
+取值：0, 1-9
+默认值：6
+适用于：pgp_sym_encrypt, pgp_pub_encrypt
+</literallayout>
+  </sect4>
+
+  <sect4 id="pgcrypto-pgp-enc-funcs-opts-convert-crlf">
+   <title>convert-crlf</title>
+
+   <para>
+    加密时是否将<literal>\n</literal>转换成<literal>\r\n</literal>，
+    以及解密时是否将<literal>\r\n</literal>转换成<literal>\n</literal>。
+    <acronym>RFC</acronym> 4880 规定文本数据应使用<literal>\r\n</literal>作为换行符。
+    使用这个选项可以获得完全符合 RFC 的行为。
+   </para>
+<literallayout>
+取值：0, 1
+默认值：0
+适用于：pgp_sym_encrypt, pgp_pub_encrypt, pgp_sym_decrypt, pgp_pub_decrypt
+</literallayout>
+  </sect4>
+
+  <sect4 id="pgcrypto-pgp-enc-funcs-opts-disable-mdc">
+   <title>disable-mdc</title>
+
+   <para>
+    不要用 SHA-1 保护数据。使用这个选项的唯一合理理由，是为了与古老的 PGP 产品兼容，
+    这些产品出现于受 SHA-1 保护的数据包被纳入 <acronym>RFC</acronym> 4880 之前。
+    较新的 gnupg.org 和 pgp.com 软件都能很好地支持这一特性。
+   </para>
+<literallayout>
+取值：0, 1
+默认值：0
+适用于：pgp_sym_encrypt, pgp_pub_encrypt
+</literallayout>
+  </sect4>
+
+  <sect4 id="pgcrypto-pgp-enc-funcs-opts-sess-key">
+   <title>sess-key</title>
+
+   <para>
+    使用单独的会话密钥。公钥加密总是使用单独的会话密钥；
+    这个选项用于对称密钥加密，因为后者默认直接使用 S2K 密钥。
+   </para>
+<literallayout>
+取值：0, 1
+默认值：0
+适用于：pgp_sym_encrypt
+</literallayout>
+  </sect4>
+
+  <sect4 id="pgcrypto-pgp-enc-funcs-opts-s2k-mode">
+   <title>s2k-mode</title>
+
+   <para>
+    使用哪一种 S2K 算法。
+   </para>
+<literallayout>
+取值：
+  0 - 不使用盐值。危险！
+  1 - 使用盐值，但迭代次数固定。
+  3 - 迭代次数可变。
+默认值：3
+适用于：pgp_sym_encrypt
+</literallayout>
+  </sect4>
+
+  <sect4 id="pgcrypto-pgp-enc-funcs-opts-s2k-count">
+   <title>s2k-count</title>
+
+   <para>
+    S2K 算法要使用的迭代次数。它必须是一个位于 1024 和 65011712 之间的值，
+    首尾两个值包括在内。
+   </para>
+<literallayout>
+默认值：65536 到 253952 之间的随机值
+适用于：pgp_sym_encrypt，仅在 s2k-mode=3 时
+</literallayout>
+  </sect4>
+
+  <sect4 id="pgcrypto-pgp-enc-funcs-opts-s2k-digest-algo">
+   <title>s2k-digest-algo</title>
+
+   <para>
+    要在 S2K 计算中使用哪种摘要算法。
+   </para>
+<literallayout>
+取值：md5, sha1
+默认值：sha1
+适用于：pgp_sym_encrypt
+</literallayout>
+  </sect4>
+
+  <sect4 id="pgcrypto-pgp-enc-funcs-opts-s2k-cipher-algo">
+   <title>s2k-cipher-algo</title>
+
+   <para>
+    使用哪种密码算法来加密单独的会话密钥。
+   </para>
+<literallayout>
+取值：bf, aes, aes128, aes192, aes256
+默认值：使用 cipher-algo
+适用于：pgp_sym_encrypt
+</literallayout>
+  </sect4>
+
+  <sect4 id="pgcrypto-pgp-enc-funcs-opts-unicode-mode">
+   <title>unicode-mode</title>
+
+   <para>
+    是否将文本数据在数据库内部编码和 UTF-8 之间相互转换。
+    如果数据库已经是 UTF-8，则不会发生转换，但消息会被标记为 UTF-8。
+    如果不启用该选项，则不会进行这种标记。
+   </para>
+<literallayout>
+取值：0, 1
+默认值：0
+适用于：pgp_sym_encrypt, pgp_pub_encrypt
+</literallayout>
+  </sect4>
+  </sect3>
+
+ <sect3 id="pgcrypto-pgp-enc-funcs-gnupg">
+  <title>使用 GnuPG 生成 PGP 密钥</title>
+
+  <para>
+   要生成新密钥：
+<programlisting>
+gpg --gen-key
+</programlisting>
+  </para>
+  <para>
+   首选的密钥类型是<quote>DSA 和 Elgamal</quote>。
+  </para>
+  <para>
+   对于 RSA 加密，你必须先创建一个仅用于签名的 DSA 或 RSA 主密钥，
+   然后使用<literal>gpg --edit-key</literal>添加 RSA 加密子密钥。
+  </para>
+  <para>
+   要列出密钥：
+<programlisting>
+gpg --list-secret-keys
+</programlisting>
+  </para>
+  <para>
+   要以 ASCII-armor 格式导出公钥：
+<programlisting>
+gpg -a --export KEYID > public.key
+</programlisting>
+  </para>
+  <para>
+   要以 ASCII-armor 格式导出私钥：
+<programlisting>
+gpg -a --export-secret-keys KEYID > secret.key
+</programlisting>
+  </para>
+  <para>
+   在把这些密钥交给 PGP 函数之前，需要先用<function>dearmor()</function>处理它们。
+   或者，如果你能处理二进制数据，也可以从命令中去掉<literal>-a</literal>。
+  </para>
+  <para>
+   更多细节见<literal>man gpg</literal>、
+   <ulink url="https://www.gnupg.org/gph/en/manual.html">GNU Privacy Handbook</ulink>以及
+   <ulink url="https://www.gnupg.org/"></ulink>上的其他文档。
+  </para>
+ </sect3>
+
+ <sect3 id="pgcrypto-pgp-enc-funcs-limitations">
+  <title>PGP 代码的限制</title>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+    不支持签名。这也意味着不会检查加密子密钥是否属于主密钥。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+    不支持使用加密密钥作为主密钥。由于通常不鼓励这种做法，这不应成为问题。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+    不支持多个子密钥。这看起来可能是个问题，因为这在实践中相当常见。
+    另一方面，你不应将常规的 GPG/PGP 密钥用于<filename>pgcrypto</filename>，
+    而应新建一套密钥，因为其使用场景相当不同。
+    </para>
+   </listitem>
+  </itemizedlist>
+  </sect3>
+ </sect2>
+
+ <sect2 id="pgcrypto-raw-enc-funcs">
+  <title>原始加密函数</title>
+
+  <para>
+   这些函数只是对数据应用密码算法；它们不具备 PGP 加密的任何高级特性。
+   因此存在一些严重问题：
+  </para>
+  <orderedlist>
+   <listitem>
+    <para>
+    它们直接把用户提供的密钥用作密码算法的密钥。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+    它们不提供任何完整性检查，无法判断加密数据是否被修改。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+    它们希望用户自己管理所有加密参数，甚至是 IV。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+    它们无法处理文本。
+    </para>
+   </listitem>
+  </orderedlist>
+  <para>
+   因此，在引入 PGP 加密之后，不建议使用原始加密函数。
+  </para>
+
+  <indexterm>
+   <primary>encrypt</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>decrypt</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>encrypt_iv</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>decrypt_iv</primary>
+  </indexterm>
+
+<synopsis>
+encrypt(data bytea, key bytea, type text) returns bytea
+decrypt(data bytea, key bytea, type text) returns bytea
+
+encrypt_iv(data bytea, key bytea, iv bytea, type text) returns bytea
+decrypt_iv(data bytea, key bytea, iv bytea, type text) returns bytea
+</synopsis>
+
+  <para>
+   使用<parameter>type</parameter>指定的加密算法对数据进行加密/解密。
+   <parameter>type</parameter>字符串的语法是：
+
+<synopsis>
+<replaceable>algorithm</replaceable> <optional> <literal>-</literal> <replaceable>mode</replaceable> </optional> <optional> <literal>/pad:</literal> <replaceable>padding</replaceable> </optional>
+</synopsis>
+   其中<replaceable>algorithm</replaceable>可以是：
+
+  <itemizedlist>
+   <listitem><para><literal>bf</literal> &mdash; Blowfish</para></listitem>
+   <listitem><para><literal>aes</literal> &mdash; AES（Rijndael-128、-192 或 -256）</para></listitem>
+  </itemizedlist>
+   而<replaceable>mode</replaceable>可以是：
+  <itemizedlist>
+   <listitem>
+    <para>
+    <literal>cbc</literal> &mdash; 下一个块依赖于前一个块（默认）
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+    <literal>cfb</literal> &mdash; 下一个块依赖于前一个已加密块
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+    <literal>ecb</literal> &mdash; 每个块单独加密（仅用于测试）
+    </para>
+   </listitem>
+  </itemizedlist>
+   而<replaceable>padding</replaceable>可以是：
+  <itemizedlist>
+   <listitem>
+    <para>
+    <literal>pkcs</literal> &mdash; 数据长度可以任意（默认）
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+    <literal>none</literal> &mdash; 数据必须是分组大小的倍数
+    </para>
+   </listitem>
+  </itemizedlist>
+  </para>
+  <para>
+   因此，例如下面两种写法是等价的：
+<programlisting>
+encrypt(data, 'fooz', 'bf')
+encrypt(data, 'fooz', 'bf-cbc/pad:pkcs')
+</programlisting>
+  </para>
+  <para>
+   在<function>encrypt_iv</function>和<function>decrypt_iv</function>中，
+   <parameter>iv</parameter>参数是 CBC 和 CFB 模式的初始值；对于 ECB，它会被忽略。
+   如果长度不等于块大小，则会被截断或用零填充。
+   在不带该参数的函数中，它默认为全零。
+  </para>
+ </sect2>
+
+ <sect2 id="pgcrypto-random-data-funcs">
+  <title>随机数据函数</title>
+
+  <indexterm>
+   <primary>gen_random_bytes</primary>
+  </indexterm>
+
+<synopsis>
+gen_random_bytes(count integer) returns bytea
+</synopsis>
+  <para>
+   返回<parameter>count</parameter>个具有密码学安全强度的随机字节。
+   一次最多可提取 1024 个字节，以避免耗尽随机数生成器池。
+  </para>
+
+  <indexterm>
+   <primary>gen_random_uuid</primary>
+  </indexterm>
+
+<synopsis>
+gen_random_uuid() returns uuid
+</synopsis>
+  <para>
+   返回一个第 4 版（随机）UUID。（已过时，该函数在内部调用同名的
+   <link linkend="functions-uuid">核心函数</link>。）
+  </para>
+ </sect2>
+
+ <sect2 id="pgcrypto-openssl-support-funcs">
+  <title>OpenSSL 支持函数</title>
+
+  <indexterm>
+   <primary>fips_mode</primary>
+  </indexterm>
+
+<synopsis>
+fips_mode() returns boolean
+</synopsis>
+  <para>
+   如果<productname>OpenSSL</productname>正在以启用 FIPS 模式运行，则返回<literal>true</literal>；
+   否则返回<literal>false</literal>。
+  </para>
+ </sect2>
+
+ <sect2 id="pgcrypto-configuration-parameters">
+  <title>配置参数</title>
+
+ <para>
+  有一个配置参数可以控制<filename>pgcrypto</filename>的行为。
+ </para>
+
+  <variablelist>
+   <varlistentry id="pgcrypto-configuration-parameters-builtin_crypto_enabled">
+    <term>
+     <varname>pgcrypto.builtin_crypto_enabled</varname> (<type>enum</type>)
+     <indexterm>
+      <primary><varname>pgcrypto.builtin_crypto_enabled</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>pgcrypto.builtin_crypto_enabled</varname>决定内置密码学函数
+      <function>gen_salt()</function>和<function>crypt()</function>是否可用。
+      将其设为<literal>off</literal>会禁用这些函数。
+      <literal>on</literal>（默认值）使这些函数按正常方式工作。
+      <literal>fips</literal>在检测到<productname>OpenSSL</productname>以 FIPS 模式运行时会禁用这些函数。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   在通常用法中，此参数在<filename>postgresql.conf</filename>中设置，
+   不过超级用户也可以在各自会话中动态修改它。
+  </para>
+ </sect2>
+
+ <sect2 id="pgcrypto-notes">
+  <title>注意事项</title>
+
+  <sect3 id="pgcrypto-notes-config">
+   <title>配置</title>
+
+   <para>
+    <filename>pgcrypto</filename>会根据 PostgreSQL 主 <literal>configure</literal>
+    脚本的探测结果自行配置。影响它的选项有<literal>--with-zlib</literal>和
+    <literal>--with-ssl=openssl</literal>。
+   </para>
+
+   <para>
+    如果编译时包含 zlib，PGP 加密函数就能够在加密前压缩数据。
+   </para>
+
+   <para>
+    <filename>pgcrypto</filename>需要<productname>OpenSSL</productname>。
+    否则它不会被构建或安装。
+   </para>
+
+   <para>
+    当针对<productname>OpenSSL</productname> 3.0.0 及更高版本编译时，
+    若要使用 DES 或 Blowfish 等旧式密码算法，必须在<filename>openssl.cnf</filename>
+    配置文件中启用 legacy provider（旧版提供程序）。
+   </para>
+  </sect3>
+
+  <sect3 id="pgcrypto-notes-null-handling">
+   <title>NULL 处理</title>
+
+   <para>
+    按照 SQL 的标准，只要任一参数为 NULL，所有函数都返回 NULL。
+    这在使用不慎时可能带来安全风险。
+   </para>
+  </sect3>
+
+  <sect3 id="pgcrypto-notes-sec-limits">
+   <title>安全性限制</title>
+
+   <para>
+    所有<filename>pgcrypto</filename>函数都在数据库服务器内部运行。
+    这意味着所有数据和密码都会在<filename>pgcrypto</filename>与客户端应用之间以明文传输。
+    因此，你必须：
+   </para>
+
+   <orderedlist>
+    <listitem>
+     <para>使用本地连接或 SSL 连接。</para>
+    </listitem>
+    <listitem>
+     <para>同时信任系统管理员和数据库管理员。</para>
+    </listitem>
+   </orderedlist>
+
+   <para>
+    如果做不到，最好在客户端应用内部执行密码学操作。
+   </para>
+
+   <para>
+    该实现无法抵御
+    <ulink url="https://en.wikipedia.org/wiki/Side-channel_attack">侧信道攻击</ulink>。
+    例如，对于给定大小的密文，<filename>pgcrypto</filename>解密函数完成所需的时间会因具体密文不同而变化。
+   </para>
+  </sect3>
+ </sect2>
+
+ <sect2 id="pgcrypto-author">
+  <title>作者</title>
+
+  <para>
+   Marko Kreen <email>markokr@gmail.com</email>
+  </para>
+
+  <para>
+   <filename>pgcrypto</filename>使用了来自以下来源的代码：
+  </para>
+
+  <informaltable>
+   <tgroup cols="3">
+    <thead>
+     <row>
+      <entry>算法</entry>
+      <entry>作者</entry>
+      <entry>源代码来源</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>DES crypt</entry>
+      <entry>David Burren 及其他人</entry>
+      <entry>FreeBSD libcrypt</entry>
+     </row>
+     <row>
+      <entry>MD5 crypt</entry>
+      <entry>Poul-Henning Kamp</entry>
+      <entry>FreeBSD libcrypt</entry>
+     </row>
+     <row>
+      <entry>Blowfish crypt</entry>
+      <entry>Solar Designer</entry>
+      <entry>www.openwall.com</entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </informaltable>
+ </sect2>
+
+</sect1>

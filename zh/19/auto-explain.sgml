@@ -1,0 +1,300 @@
+<!-- doc/src/sgml/auto-explain.sgml -->
+
+<sect1 id="auto-explain" xreflabel="auto_explain">
+ <title>auto_explain &mdash; 记录慢查询的执行计划</title>
+
+ <indexterm zone="auto-explain">
+  <primary>auto_explain</primary>
+ </indexterm>
+
+ <para>
+  <filename>auto_explain</filename>模块提供了一种自动记录慢语句执行计划的方法，而无须手工运行<xref linkend="sql-explain"/>。这对于在大型应用中追查未优化的查询尤其有帮助。
+ </para>
+
+ <para>
+  该模块不提供可通过 SQL 访问的函数。要使用它，只需将其加载到服务器中。可以将其加载到单个会话中：
+
+<programlisting>
+LOAD 'auto_explain';
+</programlisting>
+
+  （要这样做，必须是超级用户。）更典型的用法是，在<filename>postgresql.conf</filename>中的<xref linkend="guc-session-preload-libraries"/>或<xref linkend="guc-shared-preload-libraries"/>里包含<literal>auto_explain</literal>，从而将其预加载到部分或全部会话中。这样，无论查询何时意外变慢，都可以追踪到它们。当然，这要付出额外开销。
+ </para>
+
+ <sect2 id="auto-explain-configuration-parameters">
+  <title>配置参数</title>
+
+ <para>
+  有若干配置参数可控制<filename>auto_explain</filename>的行为。注意，其默认行为是什么都不做，因此如果希望得到任何结果，至少必须设置<varname>auto_explain.log_min_duration</varname>。
+ </para>
+
+  <variablelist>
+   <varlistentry id="auto-explain-configuration-parameters-log-min-duration">
+    <term>
+     <varname>auto_explain.log_min_duration</varname> (<type>integer</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_min_duration</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_min_duration</varname>是会导致记录该语句计划的最小语句执行时间，单位为毫秒。将其设为<literal>0</literal>会记录所有计划。<literal>-1</literal>（默认值）会禁用计划记录。例如，如果将其设为<literal>250ms</literal>，则所有运行 250ms 或更久的语句都会被记录。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-parameter-max-length">
+    <term>
+     <varname>auto_explain.log_parameter_max_length</varname> (<type>integer</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_parameter_max_length</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_parameter_max_length</varname>控制查询参数值的记录。取值为<literal>-1</literal>（默认值）时，会完整记录参数值。<literal>0</literal>会禁用参数值记录。大于零的值会将每个参数值截断为指定字节数。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-analyze">
+    <term>
+     <varname>auto_explain.log_analyze</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_analyze</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_analyze</varname>使得在记录执行计划时输出<command>EXPLAIN ANALYZE</command>，而不只是输出<command>EXPLAIN</command>。该参数默认关闭。只有超级用户可以更改此设置。
+     </para>
+     <note>
+      <para>
+       当该参数开启时，所有已执行语句都会对每个计划节点计时，无论它们是否实际运行得足够久而最终被记录。这可能对性能造成极其负面的影响。关闭<varname>auto_explain.log_timing</varname>可以缓解性能开销，但代价是获得的信息会更少。
+      </para>
+     </note>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-buffers">
+    <term>
+     <varname>auto_explain.log_buffers</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_buffers</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_buffers</varname>控制在记录执行计划时是否打印缓冲区使用统计信息；它等效于<command>EXPLAIN</command>的<literal>BUFFERS</literal>选项。除非启用<varname>auto_explain.log_analyze</varname>，否则该参数没有效果。该参数默认关闭。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-io">
+    <term>
+     <varname>auto_explain.log_io</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_io</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_io</varname>控制在记录执行计划时是否打印 I/O 使用统计信息；它等效于<command>EXPLAIN</command>的<literal>IO</literal>选项。除非启用<varname>auto_explain.log_analyze</varname>，否则该参数没有效果。该参数默认关闭。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-wal">
+    <term>
+     <varname>auto_explain.log_wal</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_wal</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_wal</varname>控制在记录执行计划时是否打印 WAL 使用统计信息；它等效于<command>EXPLAIN</command>的<literal>WAL</literal>选项。除非启用<varname>auto_explain.log_analyze</varname>，否则该参数没有效果。该参数默认关闭。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-timing">
+    <term>
+     <varname>auto_explain.log_timing</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_timing</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_timing</varname>控制在记录执行计划时是否打印每个计划节点的计时信息；它等效于<command>EXPLAIN</command>的<literal>TIMING</literal>选项。在某些系统上，反复读取系统时钟的开销可能会显著拖慢查询，因此如果只需要实际行计数而不需要精确时间，将该参数设为 off 可能会有用。除非启用<varname>auto_explain.log_analyze</varname>，否则该参数没有效果。该参数默认开启。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-triggers">
+    <term>
+     <varname>auto_explain.log_triggers</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_triggers</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_triggers</varname>使得在记录执行计划时包含触发器执行统计信息。除非启用<varname>auto_explain.log_analyze</varname>，否则该参数没有效果。该参数默认关闭。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-verbose">
+    <term>
+     <varname>auto_explain.log_verbose</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_verbose</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_verbose</varname>控制在记录执行计划时是否打印详细信息；它等效于<command>EXPLAIN</command>的<literal>VERBOSE</literal>选项。该参数默认关闭。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-settings">
+    <term>
+     <varname>auto_explain.log_settings</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_settings</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_settings</varname>控制在记录执行计划时是否打印已修改配置选项的相关信息。输出中只包含影响查询规划且其值不同于内置默认值的选项。该参数默认关闭。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-format">
+    <term>
+     <varname>auto_explain.log_format</varname> (<type>enum</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_format</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_format</varname>选择要使用的<command>EXPLAIN</command>输出格式。允许的值有<literal>text</literal>、<literal>xml</literal>、<literal>json</literal>和<literal>yaml</literal>。默认值为 text。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-extension-options">
+    <term>
+     <varname>auto_explain.log_extension_options</varname> (<type>string</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_extension_options</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      可载入模块可以用额外选项扩展 <command>EXPLAIN</command> 命令，从而影响输出格式。这些选项也可以在这里指定。该参数的值是一个逗号分隔的选项列表，每个选项由选项名构成，并可选择附带一个关联值。提供 <command>EXPLAIN</command> 选项的模块，例如 <link linkend="pgplanadvice"><literal>pg_plan_advice</literal></link> 或 <link linkend="pgoverexplain"><literal>pg_overexplain</literal></link>，应当在设置该参数之前先加载。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-level">
+    <term>
+     <varname>auto_explain.log_level</varname> (<type>enum</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_level</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_level</varname>选择 auto_explain 记录查询计划时使用的日志级别。有效值为<literal>DEBUG5</literal>、<literal>DEBUG4</literal>、<literal>DEBUG3</literal>、<literal>DEBUG2</literal>、<literal>DEBUG1</literal>、<literal>INFO</literal>、<literal>NOTICE</literal>、<literal>WARNING</literal>和<literal>LOG</literal>。默认值为<literal>LOG</literal>。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-log-nested-statements">
+    <term>
+     <varname>auto_explain.log_nested_statements</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>auto_explain.log_nested_statements</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.log_nested_statements</varname>使嵌套语句（在函数内部执行的语句）也会被纳入记录考虑范围。关闭该参数时，只记录顶层查询计划。该参数默认关闭。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="auto-explain-configuration-parameters-sample-rate">
+    <term>
+     <varname>auto_explain.sample_rate</varname> (<type>real</type>)
+     <indexterm>
+      <primary><varname>auto_explain.sample_rate</varname>配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      <varname>auto_explain.sample_rate</varname>使 auto_explain 在每个会话中只解释一部分语句。默认值为 1，表示解释所有查询。对于嵌套语句，要么全部解释，要么全部不解释。只有超级用户可以更改此设置。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   在通常用法中，这些参数都在<filename>postgresql.conf</filename>中设置，尽管超级用户也可以在自己的会话中动态修改它们。典型的用法可能是：
+  </para>
+
+<programlisting>
+# postgresql.conf
+session_preload_libraries = 'auto_explain'
+
+auto_explain.log_min_duration = '3s'
+</programlisting>
+ </sect2>
+
+ <sect2 id="auto-explain-example">
+  <title>示例</title>
+
+<programlisting>
+postgres=# LOAD 'auto_explain';
+postgres=# SET auto_explain.log_min_duration = 0;
+postgres=# SET auto_explain.log_analyze = true;
+postgres=# SELECT count(*)
+           FROM pg_class, pg_index
+           WHERE oid = indrelid AND indisunique;
+</programlisting>
+
+  <para>
+   这可能产生如下日志输出：
+  </para>
+
+<screen><![CDATA[
+LOG:  duration: 3.651 ms  plan:
+  Query Text: SELECT count(*)
+              FROM pg_class, pg_index
+              WHERE oid = indrelid AND indisunique;
+  Aggregate  (cost=16.79..16.80 rows=1 width=0) (actual time=3.626..3.627 rows=1.00 loops=1)
+    ->  Hash Join  (cost=4.17..16.55 rows=92 width=0) (actual time=3.349..3.594 rows=92.00 loops=1)
+          Hash Cond: (pg_class.oid = pg_index.indrelid)
+          ->  Seq Scan on pg_class  (cost=0.00..9.55 rows=255 width=4) (actual time=0.016..0.140 rows=255.00 loops=1)
+          ->  Hash  (cost=3.02..3.02 rows=92 width=4) (actual time=3.238..3.238 rows=92.00 loops=1)
+                Buckets: 1024  Batches: 1  Memory Usage: 4kB
+                ->  Seq Scan on pg_index  (cost=0.00..3.02 rows=92 width=4) (actual time=0.008..3.187 rows=92.00 loops=1)
+                      Filter: indisunique
+]]></screen>
+ </sect2>
+
+ <sect2 id="auto-explain-author">
+  <title>作者</title>
+
+  <para>
+   Takahiro Itagaki <email>itagaki.takahiro@oss.ntt.co.jp</email>
+  </para>
+ </sect2>
+
+</sect1>

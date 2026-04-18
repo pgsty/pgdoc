@@ -1,0 +1,425 @@
+<!-- doc/src/sgml/rangetypes.sgml -->
+
+<sect1 id="rangetypes">
+
+ <title>范围类型</title>
+
+ <indexterm>
+  <primary>range type</primary>
+ </indexterm>
+
+ <indexterm>
+  <primary>multirange type</primary>
+ </indexterm>
+
+ <para>
+  范围类型是表示某种元素类型的值范围的数据类型（该元素类型称为范围的<firstterm>子类型</firstterm>（subtype））。例如，<type>timestamp</type>的范围可用于表示会议室被预订的时间范围。在这种情况下，数据类型为<type>tsrange</type>（<quote>timestamp range</quote>的缩写），而<type>timestamp</type>就是其子类型。子类型必须具有全序，这样才能明确定义元素值是位于某个值范围之内、之前还是之后。
+ </para>
+
+ <para>
+  范围类型很有用，因为它们能用单个范围值表示许多元素值，也能清晰地表达诸如范围重叠之类的概念。将时间和日期范围用于日程安排，是最清晰的例子；但价格区间、仪器的测量范围等场景也同样有用。
+ </para>
+
+ <para>
+  每种范围类型都有一个对应的多范围类型。多范围是由多个彼此不连续、非空且非 NULL 的范围构成的有序列表。大多数范围操作符也可作用于多范围，并且多范围还有一些专用函数。
+ </para>
+
+ <sect2 id="rangetypes-builtin">
+
+  <title>内置范围类型和多范围类型</title>
+
+ <para>
+  PostgreSQL 自带下列内置范围类型：
+  <itemizedlist>
+    <listitem>
+      <para>
+       <type>int4range</type> &mdash; <type>integer</type>的范围，
+       <type>int4multirange</type> &mdash; 对应的多范围类型
+      </para>
+    </listitem>
+    <listitem>
+      <para>
+       <type>int8range</type> &mdash; <type>bigint</type>的范围，
+       <type>int8multirange</type> &mdash; 对应的多范围类型
+      </para>
+    </listitem>
+    <listitem>
+      <para>
+       <type>numrange</type> &mdash; <type>numeric</type>的范围，
+       <type>nummultirange</type> &mdash; 对应的多范围类型
+      </para>
+    </listitem>
+    <listitem>
+      <para>
+       <type>tsrange</type> &mdash; <type>timestamp without time zone</type>的范围，
+       <type>tsmultirange</type> &mdash; 对应的多范围类型
+      </para>
+    </listitem>
+    <listitem>
+      <para>
+       <type>tstzrange</type> &mdash; <type>timestamp with time zone</type>的范围，
+       <type>tstzmultirange</type> &mdash; 对应的多范围类型
+      </para>
+    </listitem>
+    <listitem>
+      <para>
+       <type>daterange</type> &mdash; <type>date</type>的范围，
+       <type>datemultirange</type> &mdash; 对应的多范围类型
+      </para>
+    </listitem>
+  </itemizedlist>
+  此外，你还可以定义自己的范围类型；详见<xref linkend="sql-createtype"/>。
+ </para>
+ </sect2>
+
+ <sect2 id="rangetypes-examples">
+
+  <title>示例</title>
+
+  <para>
+<programlisting>
+CREATE TABLE reservation (room int, during tsrange);
+INSERT INTO reservation VALUES
+    (1108, '[2010-01-01 14:30, 2010-01-01 15:30)');
+
+-- 包含关系
+SELECT int4range(10, 20) @&gt; 3;
+
+-- 重叠
+SELECT numrange(11.1, 22.2) &amp;&amp; numrange(20.0, 30.0);
+
+-- 提取上界
+SELECT upper(int8range(15, 25));
+
+-- 计算交集
+SELECT int4range(10, 20) * int4range(15, 25);
+
+-- 范围是否为空？
+SELECT isempty(numrange(1, 5));
+</programlisting>
+
+   范围类型上的操作符和函数的完整列表见<xref linkend="range-operators-table"/>和<xref linkend="range-functions-table"/>。
+  </para>
+ </sect2>
+
+ <sect2 id="rangetypes-inclusivity">
+
+  <title>包含界限与排除界限</title>
+
+  <para>
+   每个非空范围都有两个界限：下界和上界。位于这两个值之间的所有点都包含在该范围内。包含界限表示边界点本身也包含在范围内，而排除界限则表示边界点不包含在范围内。
+  </para>
+
+  <para>
+   在范围的文本形式中，包含下界用<quote><literal>[</literal></quote>表示，排除下界用<quote><literal>(</literal></quote>表示。同样，包含上界用<quote><literal>]</literal></quote>表示，排除上界用<quote><literal>)</literal></quote>表示。更多细节见<xref linkend="rangetypes-io"/>。
+  </para>
+
+  <para>
+   函数<literal>lower_inc</literal>和<literal>upper_inc</literal>分别测试范围值的下界和上界是否包含在内。
+  </para>
+ </sect2>
+
+ <sect2 id="rangetypes-infinite">
+
+  <title>无限（无界）范围</title>
+
+  <para>
+   范围的下界可以省略，这意味着所有小于上界的值都包含在范围内，例如<literal>(,3]</literal>。同样，如果省略范围的上界，则所有大于下界的值都包含在范围内。如果上下界都被省略，则该元素类型的所有值都被认为处于该范围内。把缺失的界限指定为包含，会自动转换为排除，例如<literal>[,]</literal>会转换为<literal>(,)</literal>。你可以把这些缺失的值看作 +/-infinity，但它们是特殊的范围类型值，并且被认为超出了任何范围元素类型的 +/-infinity 值。
+  </para>
+
+  <para>
+   具有<quote>infinity</quote>概念的元素类型可以将其用作显式界限值。例如，对于时间戳范围，<literal>[today,infinity)</literal>不包括特殊的<type>timestamp</type>值<literal>infinity</literal>，而<literal>[today,infinity]</literal>则包括它，<literal>[today,)</literal>和<literal>[today,]</literal>也一样。
+  </para>
+
+  <para>
+   函数<literal>lower_inf</literal>和<literal>upper_inf</literal>分别测试范围的下界和上界是否为无限。
+  </para>
+ </sect2>
+
+ <sect2 id="rangetypes-io">
+
+  <title>范围输入/输出</title>
+
+  <para>
+   范围值的输入必须遵循下列模式之一：
+<synopsis>
+(<replaceable>lower-bound</replaceable>,<replaceable>upper-bound</replaceable>)
+(<replaceable>lower-bound</replaceable>,<replaceable>upper-bound</replaceable>]
+[<replaceable>lower-bound</replaceable>,<replaceable>upper-bound</replaceable>)
+[<replaceable>lower-bound</replaceable>,<replaceable>upper-bound</replaceable>]
+empty
+</synopsis>
+   如前所述，圆括号或方括号指示上下界是排除还是包含。注意最后一种模式是<literal>empty</literal>，它表示空范围（即不包含任何点的范围）。
+  </para>
+
+  <para>
+   <replaceable>lower-bound</replaceable>可以是子类型的合法输入字符串，也可以留空以表示没有下界。同样，<replaceable>upper-bound</replaceable>也可以是子类型的合法输入字符串，或者留空以表示没有上界。
+  </para>
+
+  <para>
+   每个界限值都可以用<literal>"</literal>（双引号）字符括起来。如果界限值包含圆括号、方括号、逗号、双引号或反斜线，这样做就是必须的，因为否则这些字符会被视为范围语法的一部分。要在带引号的界限值中写入双引号或反斜线，需要在前面加一个反斜线。（另外，在双引号括起来的界限值中，两个连续的双引号表示一个双引号字符，这与 SQL 字符串字面量中单引号的规则类似。）或者，你也可以不使用引号，而是用反斜线转义所有本来会被当作范围语法的字符。另外，如果要把空字符串写成界限值，应写成<literal>""</literal>，因为什么都不写表示无限界限。
+  </para>
+
+  <para>
+   范围值前后允许有空白，但圆括号或方括号之间的任何空白都会被视为下界或上界值的一部分。（取决于元素类型，这些空白可能有意义，也可能没有意义。）
+  </para>
+
+  <note>
+
+   <para>
+    这些规则与在复合类型字面量中书写字段值的规则非常相似。更多说明见<xref linkend="rowtypes-io-syntax"/>。
+   </para>
+  </note>
+
+  <para>
+  示例：
+<programlisting>
+-- 包含 3，不包含 7，并包含中间的所有点
+SELECT '[3,7)'::int4range;
+
+-- 既不包含 3，也不包含 7，但包含中间的所有点
+SELECT '(3,7)'::int4range;
+
+-- 只包含单个点 4
+SELECT '[4,4]'::int4range;
+
+-- 不包含任何点（并将被规范化为 'empty'）
+SELECT '[4,4)'::int4range;
+</programlisting>
+  </para>
+
+  <para>
+   多范围的输入形式是用花括号（<literal>{</literal>和
+   <literal>}</literal>）括起零个或多个有效范围，各范围之间以逗号分隔。括号和逗号周围允许出现空白。这种写法是为了让人联想到数组语法，不过多范围要简单得多：它只有一个维度，也不需要为其内容加引号。（不过其中各个范围的界限仍可按前述方式加引号。）
+  </para>
+
+  <para>
+  示例：
+<programlisting>
+SELECT '{}'::int4multirange;
+SELECT '{[3,7)}'::int4multirange;
+SELECT '{[3,7), [8,9)}'::int4multirange;
+</programlisting>
+  </para>
+
+ </sect2>
+
+ <sect2 id="rangetypes-construct">
+
+  <title>构造范围和多范围</title>
+
+  <para>
+   每种范围类型都有一个与范围类型同名的构造函数。使用构造函数通常比书写范围文字常量更方便，因为这样无需对界限值进行额外引用。构造函数接受两个或三个参数。两个参数的形式构造标准形式的范围（下界包含，上界排除），而三个参数的形式则按第三个参数指定的界限形式构造范围。第三个参数必须是下列字符串之一：
+   <quote><literal>()</literal></quote>、
+   <quote><literal>(]</literal></quote>、
+   <quote><literal>[)</literal></quote>或者
+   <quote><literal>[]</literal></quote>。
+   例如：
+
+<programlisting>
+-- 完整形式为：下界、上界，以及指示界限包含性/排除性的文本参数。
+SELECT numrange(1.0, 14.0, '(]');
+
+-- 如果省略第三个参数，则假定为 '[)'。
+SELECT numrange(1.0, 14.0);
+
+-- 虽然这里指定的是 '(]'，但显示时该值会转换为规范形式，因为 int8range 是离散范围类型（见下文）。
+SELECT int8range(1, 14, '(]');
+
+-- 任一界限使用 NULL 都会使该侧无界。
+SELECT numrange(NULL, 2.2);
+</programlisting>
+  </para>
+
+  <para>
+   每种范围类型也都有一个与多范围类型同名的多范围构造函数。该构造函数接受零个或多个参数，这些参数都必须是相应类型的范围。例如：
+
+<programlisting>
+SELECT nummultirange();
+SELECT nummultirange(numrange(1.0, 14.0));
+SELECT nummultirange(numrange(1.0, 14.0), numrange(20.0, 25.0));
+</programlisting>
+  </para>
+ </sect2>
+
+ <sect2 id="rangetypes-discrete">
+
+  <title>离散范围类型</title>
+
+  <para>
+   离散范围是指其元素类型具有明确定义的<quote>步长</quote>，例如<type>integer</type>或<type>date</type>。在这类类型中，如果两个元素之间不存在合法值，就可以说它们是相邻的。这与连续范围形成对比：在连续范围中，两个给定值之间总是（或几乎总是）可以识别出其他元素值。例如，基于<type>numeric</type>的范围是连续的，基于<type>timestamp</type>的范围也是如此。（尽管<type>timestamp</type>的精度有限，因此理论上可以视为离散的，但通常最好仍将其视为连续的，因为步长通常并不是关注点。）
+  </para>
+
+  <para>
+   理解离散范围类型的另一种方式是：对每个元素值，都有一个明确的<quote>下一个</quote>或<quote>上一个</quote>值。知道这一点后，就可以把原先给定的元素值替换成其下一个或上一个值，从而在范围界限的包含表示和排除表示之间相互转换。例如，在整数范围类型中，<literal>[4,8]</literal>和<literal>(3,9)</literal>表示相同的值集合；但对基于 numeric 的范围则并非如此。
+  </para>
+
+  <para>
+   离散范围类型应当具有一个<firstterm>规范化</firstterm>函数，该函数知道元素类型所期望的步长。规范化函数负责将范围类型中的等价值转换成完全一致的表示形式，特别是对包含或排除界限保持一致。如果未指定规范化函数，那么格式不同的范围即使实际上表示的是同一组值，也总会被视为不相等。
+  </para>
+
+  <para>
+   内置范围类型<type>int4range</type>、<type>int8range</type>和<type>daterange</type>都使用一种规范形式：包含下界而排除上界，也就是<literal>[)</literal>。不过，用户定义的范围类型也可以采用其他约定。
+  </para>
+ </sect2>
+
+ <sect2 id="rangetypes-defining">
+
+  <title>定义新的范围类型</title>
+
+  <para>
+   用户可以定义自己的范围类型。最常见的原因，是希望对内置范围类型中未提供的子类型使用范围。例如，要定义一个子类型为<type>float8</type>的新范围类型：
+
+<programlisting>
+CREATE TYPE floatrange AS RANGE (
+    subtype = float8,
+    subtype_diff = float8mi
+);
+
+SELECT '[1.234, 5.678]'::floatrange;
+</programlisting>
+
+   因为<type>float8</type>没有有意义的<quote>步长</quote>，所以在这个示例中我们没有定义规范化函数。
+  </para>
+
+  <para>
+   当你定义自己的范围时，会自动得到相应的多范围类型。
+  </para>
+
+  <para>
+   定义自己的范围类型还允许你指定不同的子类型 B-树操作符类或排序规则，从而改变用于判定哪些值落入给定范围的排序顺序。
+  </para>
+
+  <para>
+   如果认为子类型的值是离散而非连续的，则<command>CREATE TYPE</command>命令应指定<literal>canonical</literal>函数。规范化函数接受一个输入的范围值，并必须返回一个等价的范围值，该值的界限和格式可能不同。对于表示同一组值的两个范围，例如整数范围<literal>[1, 7]</literal>和<literal>[1, 8)</literal>，规范化输出必须相同。选择哪一种表示作为规范形式并不重要，只要不同格式的两个等价值总是会被映射为同一种格式的相同值即可。除了调整界限的包含/排除格式之外，如果期望的步长大于子类型能够存储的精度，规范化函数还可能对界限值进行舍入。例如，基于<type>timestamp</type>的范围类型可以定义为步长为一小时，在这种情况下，规范化函数需要把不是一小时整数倍的界限值舍入，或者直接抛出错误。
+  </para>
+
+  <para>
+   此外，任何打算与 GiST 或 SP-GiST 索引一起使用的范围类型都应定义子类型差值函数，即<literal>subtype_diff</literal>函数。（没有<literal>subtype_diff</literal>时索引仍可工作，但效率很可能明显低于提供了差值函数的情况。）子类型差值函数接受两个子类型输入值，并返回它们的差值（即<replaceable>X</replaceable>减<replaceable>Y</replaceable>），结果表示为一个<type>float8</type>值。在上面的示例中，可以使用函数<function>float8mi</function>，它是常规<type>float8</type>减法操作符的底层实现；但对于其他子类型，则需要某种类型转换。此外，可能还需要仔细考虑如何把差异表示为数字。尽可能地，<literal>subtype_diff</literal>函数应与所选操作符类和排序规则所隐含的排序顺序一致；也就是说，只要其第一个参数按该排序顺序大于第二个参数，它的结果就应该为正。
+  </para>
+
+  <para>
+   下面给出一个不那么简化的<literal>subtype_diff</literal>函数示例：
+  </para>
+
+<programlisting>
+CREATE FUNCTION time_subtype_diff(x time, y time) RETURNS float8 AS
+'SELECT EXTRACT(EPOCH FROM (x - y))' LANGUAGE sql STRICT IMMUTABLE;
+
+CREATE TYPE timerange AS RANGE (
+    subtype = time,
+    subtype_diff = time_subtype_diff
+);
+
+SELECT '[11:10, 23:00]'::timerange;
+</programlisting>
+
+  <para>
+   关于创建范围类型的更多信息，见<xref linkend="sql-createtype"/>。
+  </para>
+ </sect2>
+
+ <sect2 id="rangetypes-indexing">
+
+  <title>索引</title>
+
+  <indexterm>
+    <primary>range type</primary>
+    <secondary>indexes on</secondary>
+  </indexterm>
+
+  <para>
+   可以为范围类型的表列创建 GiST 和 SP-GiST 索引。也可以为多范围类型的表列创建 GiST 索引。例如，要创建一个 GiST 索引：
+<programlisting>
+CREATE INDEX reservation_idx ON reservation USING GIST (during);
+</programlisting>
+   范围上的 GiST 或 SP-GiST 索引可以加速涉及下列范围操作符的查询：
+   <literal>=</literal>、
+   <literal>&amp;&amp;</literal>、
+   <literal>&lt;@</literal>、
+   <literal>@&gt;</literal>、
+   <literal>&lt;&lt;</literal>、
+   <literal>&gt;&gt;</literal>、
+   <literal>-|-</literal>、
+   <literal>&amp;&lt;</literal>以及
+   <literal>&amp;&gt;</literal>。
+   多范围上的 GiST 索引可以加速涉及同一组多范围操作符的查询。
+   范围上的 GiST 索引以及多范围上的 GiST 索引，还分别可以加速涉及下列跨类型操作符的查询，也就是范围到多范围和多范围到范围的操作符：
+   <literal>&amp;&amp;</literal>、
+   <literal>&lt;@</literal>、
+   <literal>@&gt;</literal>、
+   <literal>&lt;&lt;</literal>、
+   <literal>&gt;&gt;</literal>、
+   <literal>-|-</literal>、
+   <literal>&amp;&lt;</literal>以及
+   <literal>&amp;&gt;</literal>。
+   更多信息见<xref linkend="range-operators-table"/>。
+  </para>
+
+  <para>
+   此外，也可以为范围类型的表列创建 B-树和哈希索引。对于这些索引类型，基本上唯一有用的范围操作就是等值。系统为范围值定义了对应<literal>&lt;</literal>和<literal>&gt;</literal>操作符的 B-树排序顺序，但这种顺序相当任意，在现实中通常并没有什么用处。范围类型的 B-树和哈希支持主要是为了允许在查询内部进行排序和哈希，而不是用于创建实际的索引。
+  </para>
+ </sect2>
+
+ <sect2 id="rangetypes-constraint">
+
+  <title>范围上的约束</title>
+
+  <indexterm>
+    <primary>range type</primary>
+    <secondary>exclude</secondary>
+  </indexterm>
+
+  <para>
+   虽然<literal>UNIQUE</literal>是标量值的一种自然约束，但它通常并不适用于范围类型。相反，排他约束往往更合适（见<link linkend="sql-createtable-exclude">CREATE TABLE ... CONSTRAINT ... EXCLUDE</link>）。排他约束允许在范围类型上指定诸如<quote>不重叠</quote>之类的约束。例如：
+
+<programlisting>
+CREATE TABLE reservation (
+    during tsrange,
+    EXCLUDE USING GIST (during WITH &amp;&amp;)
+);
+</programlisting>
+
+   该约束会阻止表中同时存在任何重叠值：
+
+<programlisting>
+INSERT INTO reservation VALUES
+    ('[2010-01-01 11:30, 2010-01-01 15:00)');
+INSERT 0 1
+
+INSERT INTO reservation VALUES
+    ('[2010-01-01 14:45, 2010-01-01 15:45)');
+ERROR:  conflicting key value violates exclusion constraint "reservation_during_excl"
+DETAIL:  Key (during)=(["2010-01-01 14:45:00","2010-01-01 15:45:00")) conflicts
+with existing key (during)=(["2010-01-01 11:30:00","2010-01-01 15:00:00")).
+</programlisting>
+  </para>
+
+  <para>
+   你可以使用<link linkend="btree-gist"><literal>btree_gist</literal></link>扩展在普通标量数据类型上定义排他约束，然后再将其与范围上的排他约束结合起来，以获得最大的灵活性。例如，在安装了<literal>btree_gist</literal>之后，下面的约束仅在会议室编号相等时才会拒绝重叠的范围：
+
+<programlisting>
+CREATE EXTENSION btree_gist;
+CREATE TABLE room_reservation (
+    room text,
+    during tsrange,
+    EXCLUDE USING GIST (room WITH =, during WITH &amp;&amp;)
+);
+
+INSERT INTO room_reservation VALUES
+    ('123A', '[2010-01-01 14:00, 2010-01-01 15:00)');
+INSERT 0 1
+
+INSERT INTO room_reservation VALUES
+    ('123A', '[2010-01-01 14:30, 2010-01-01 15:30)');
+ERROR:  conflicting key value violates exclusion constraint "room_reservation_room_during_excl"
+DETAIL:  Key (room, during)=(123A, ["2010-01-01 14:30:00","2010-01-01 15:30:00")) conflicts
+with existing key (room, during)=(123A, ["2010-01-01 14:00:00","2010-01-01 15:00:00")).
+
+INSERT INTO room_reservation VALUES
+    ('123B', '[2010-01-01 14:30, 2010-01-01 15:30)');
+INSERT 0 1
+</programlisting>
+  </para>
+ </sect2>
+</sect1>

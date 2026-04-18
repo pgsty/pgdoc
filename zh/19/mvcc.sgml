@@ -1,0 +1,1381 @@
+<!-- doc/src/sgml/mvcc.sgml -->
+
+ <chapter id="mvcc">
+  <title>并发控制</title>
+
+  <indexterm>
+   <primary>concurrency</primary>
+  </indexterm>
+
+   <para>
+   本章描述 <productname>PostgreSQL</productname> 数据库系统在两个或更多会话试图同时访问同一数据时的行为。在这种情况下，目标是在保持严格数据完整性的同时，为所有会话提供高效访问。每一个数据库应用开发者都应该熟悉本章涉及的主题。
+   </para>
+
+  <sect1 id="mvcc-intro">
+   <title>介绍</title>
+
+   <indexterm>
+    <primary>Multiversion Concurrency Control</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>MVCC</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>Serializable Snapshot Isolation</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>SSI</primary>
+   </indexterm>
+
+   <para>
+    <productname>PostgreSQL</productname> 为开发者提供了一组丰富的工具来管理对数据的并发访问。在内部，数据一致性是通过使用多版本模型（多版本并发控制，<acronym>MVCC</acronym>）来维护的。这意味着，每条 SQL 语句看到的都是某个较早时刻的数据快照（即一个<firstterm>数据库版本</firstterm>），而不受底层数据当前状态的影响。这样可以防止语句看到由并发事务在同一数据行上执行更新所产生的不一致数据，从而为每个数据库会话提供<firstterm>事务隔离</firstterm>。<acronym>MVCC</acronym> 摒弃了传统数据库系统的加锁方法，尽量减少锁争用，以便在多用户环境中获得合理的性能。
+   </para>
+
+   <para>
+    使用 <acronym>MVCC</acronym> 并发控制模型而不是加锁的主要优点在于，在
+    <acronym>MVCC</acronym> 中，为查询（读取）数据而获得的锁不会与为写入数据而获得的锁冲突，因此读取不会阻塞写入，写入也不会阻塞读取。
+    <productname>PostgreSQL</productname> 甚至在通过创新性的<firstterm>可串行化快照隔离</firstterm>
+    （<acronym>SSI</acronym>）级别提供最严格的事务隔离时，也保持了这一保证。
+   </para>
+
+   <para>
+    <productname>PostgreSQL</productname> 也提供表级和行级锁设施，供那些通常不需要完整事务隔离、并且倾向于显式管理特定冲突点的应用使用。不过，正确使用 <acronym>MVCC</acronym> 通常会比加锁提供更好的性能。此外，由应用定义的咨询锁还提供了一种获取不依附于单个事务的锁的机制。
+   </para>
+  </sect1>
+
+  <sect1 id="transaction-iso">
+   <title>事务隔离</title>
+
+   <indexterm>
+    <primary>transaction isolation</primary>
+   </indexterm>
+
+   <para>
+    <acronym>SQL</acronym> 标准定义了四个事务隔离级别。最严格的是可串行化，
+    标准将它定义为：一组可串行化事务的任意并发执行，都保证与按照某种顺序一次只运行一个事务的效果相同。
+    其他三个级别则按现象定义，这些现象源自并发事务之间的相互作用，而在各自级别上这些现象不得发生。
+    标准指出，由于可串行化的定义，这些现象在该级别下都不可能出现。
+    （这并不奇怪，如果事务的效果必须与一次只运行一个事务保持一致，又怎么可能看到由相互作用引起的任何现象呢？）
+   </para>
+
+   <para>
+    在各个级别上被禁止的现象有：
+
+    <variablelist>
+     <varlistentry id="zh18-auto-mvcc-varlistentry-1">
+      <term>
+       脏读
+       <indexterm><primary>dirty read</primary></indexterm>
+      </term>
+      <listitem>
+       <para>
+        一个事务读取了由另一个并发未提交事务写入的数据。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-mvcc-varlistentry-2">
+      <term>
+       不可重复读
+       <indexterm><primary>nonrepeatable read</primary></indexterm>
+      </term>
+      <listitem>
+       <para>
+        一个事务重新读取它之前读过的数据，发现这些数据已经被另一个事务修改（且该事务已在初次读取之后提交）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-mvcc-varlistentry-3">
+      <term>
+       幻读
+       <indexterm><primary>phantom read</primary></indexterm>
+      </term>
+      <listitem>
+       <para>
+        一个事务重新执行一个返回满足某个搜索条件的一组行的查询，却发现由于另一个最近提交的事务，满足该条件的行集已经发生了变化。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-mvcc-varlistentry-4">
+      <term>
+       串行化异常
+       <indexterm><primary>serialization anomaly</primary></indexterm>
+      </term>
+      <listitem>
+       <para>
+        一组事务成功提交后的结果，与将这些事务逐个按某种顺序执行的任何可能结果都不一致。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    <indexterm>
+     <primary>transaction isolation level</primary>
+    </indexterm>
+    SQL 标准以及 PostgreSQL 实现的事务隔离级别见 <xref linkend="mvcc-isolevel-table"/>。
+   </para>
+
+    <table tocentry="1" id="mvcc-isolevel-table">
+     <title>事务隔离级别</title>
+     <tgroup cols="5">
+      <thead>
+       <row>
+        <entry>
+         隔离级别
+        </entry>
+        <entry>
+         脏读
+        </entry>
+        <entry>
+         不可重复读
+        </entry>
+        <entry>
+         幻读
+        </entry>
+        <entry>
+         串行化异常
+        </entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+        <entry>
+         读未提交
+        </entry>
+        <entry>
+         允许，但 PostgreSQL 中不会发生
+        </entry>
+        <entry>
+         可能
+        </entry>
+        <entry>
+         可能
+        </entry>
+        <entry>
+         可能
+        </entry>
+       </row>
+
+       <row>
+        <entry>
+         读已提交
+        </entry>
+        <entry>
+         不可能
+        </entry>
+        <entry>
+         可能
+        </entry>
+        <entry>
+         可能
+        </entry>
+        <entry>
+         可能
+        </entry>
+       </row>
+
+       <row>
+        <entry>
+         可重复读
+        </entry>
+        <entry>
+         不可能
+        </entry>
+        <entry>
+         不可能
+        </entry>
+        <entry>
+         允许，但 PostgreSQL 中不会发生
+        </entry>
+        <entry>
+         可能
+        </entry>
+       </row>
+
+       <row>
+        <entry>
+         可串行化
+        </entry>
+        <entry>
+         不可能
+        </entry>
+        <entry>
+         不可能
+        </entry>
+        <entry>
+         不可能
+        </entry>
+        <entry>
+         不可能
+        </entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+
+   <para>
+    在 <productname>PostgreSQL</productname> 中，你可以请求四种标准事务隔离级别中的任意一种，但在内部只实现了三种不同的隔离级别；也就是说，PostgreSQL 的读未提交模式与读已提交模式行为相同。这是因为，要把标准隔离级别映射到 PostgreSQL 的多版本并发控制架构上，这是唯一合理的做法。
+   </para>
+
+   <para>
+    该表还显示，PostgreSQL 的可重复读实现不允许幻读。这在 SQL 标准下是可以接受的，
+    因为标准规定的是某些隔离级别下哪些异常<emphasis>不得</emphasis>发生；提供更高的保证也是允许的。
+    可用隔离级别的行为将在下面各小节中详细说明。
+   </para>
+
+   <para>
+    要设置事务的事务隔离级别，请使用命令 <xref linkend="sql-set-transaction"/>。
+  </para>
+
+   <important>
+     <para>
+      某些 <productname>PostgreSQL</productname> 数据类型和函数在事务行为方面有特殊规则。特别是，对序列的修改（以及使用 <type>serial</type> 声明的列所对应的计数器）会立即对所有其他事务可见，并且即使执行该修改的事务中止，这些修改也不会被回滚。见 <xref linkend="functions-sequence"/> 和 <xref linkend="datatype-serial"/>。
+     </para>
+   </important>
+
+  <sect2 id="xact-read-committed">
+   <title>读已提交隔离级别</title>
+
+   <indexterm>
+    <primary>transaction isolation level</primary>
+    <secondary>read committed</secondary>
+   </indexterm>
+
+   <indexterm>
+    <primary>read committed</primary>
+   </indexterm>
+
+   <para>
+    <firstterm>读已提交</firstterm>是 <productname>PostgreSQL</productname> 中默认的隔离级别。
+    当事务使用这一隔离级别时，<command>SELECT</command> 查询（不带
+    <literal>FOR UPDATE/SHARE</literal> 子句）只能看到查询开始之前已经提交的数据；
+    它既看不到未提交的数据，也看不到查询执行期间并发事务提交的更改。
+    实际上，<command>SELECT</command> 查询看到的是该查询开始运行瞬间的数据库快照。
+    不过，<command>SELECT</command> 能看到其自身事务中先前执行的更新效果，即使这些更新尚未提交。
+    还要注意，即使两个连续的 <command>SELECT</command> 命令位于同一个事务中，
+    如果其他事务在第一个 <command>SELECT</command> 开始之后、第二个
+    <command>SELECT</command> 开始之前提交了更改，这两个命令也可能看到不同的数据。
+   </para>
+
+   <para>
+    <command>UPDATE</command>、<command>DELETE</command>、<command>SELECT FOR UPDATE</command>
+    和 <command>SELECT FOR SHARE</command> 命令在搜索目标行时的行为与 <command>SELECT</command> 相同：
+    它们只会找到在命令开始时已经提交的目标行。不过，当找到这样的目标行时，
+    它可能已经被其他并发事务更新、删除或者锁定。在这种情况下，即将执行更新的事务会等待第一个更新事务提交或回滚
+    （如果它仍在进行中）。如果第一个更新事务回滚，那么它的作用将被撤销，第二个更新事务就可以继续更新最初找到的行。
+    如果第一个更新事务提交了，那么若该行已被第一个更新者删除，第二个更新事务就会忽略该行；
+    否则，第二个更新者将尝试在该行的已更新版本上应用自己的操作。
+    该命令的搜索条件（<literal>WHERE</literal> 子句）会被重新计算，以判断该行的已更新版本是否仍然符合搜索条件。
+    如果符合，则第二个更新者会基于该行的已更新版本继续执行操作。
+    对于 <command>SELECT FOR UPDATE</command> 和 <command>SELECT FOR SHARE</command>，
+    这意味着被锁住并返回给客户端的是该行的已更新版本。
+   </para>
+
+   <para>
+    带有 <literal>ON CONFLICT DO UPDATE</literal> 子句的 <command>INSERT</command> 的行为类似。
+    在读已提交模式下，每个拟插入的行要么插入成功，要么转而更新；除非出现无关错误，否则这两种结果之一是有保证的。
+    如果冲突来自另一个事务，而其效果对 <command>INSERT</command> 尚不可见，
+    则 <command>UPDATE</command> 子句仍将作用于该行，即使从通常意义上说，
+    该命令可能<emphasis>看不到</emphasis>该行的任何版本。
+   </para>
+
+   <para>
+    带有 <literal>ON CONFLICT DO SELECT</literal> 子句的 <command>INSERT</command> 的行为与
+    <literal>ON CONFLICT DO UPDATE</literal> 类似。在读已提交模式下，每个拟插入的行都保证要么插入，要么返回冲突行
+    （除非存在无关错误）。如果冲突来自另一个事务，而其效果对 <command>INSERT</command> 尚不可见，那么该命令会等待该事务提交或回滚，
+    然后在该事务已提交时返回冲突行，即使该命令开始时还看不到那一行。
+   </para>
+
+   <para>
+    带有 <literal>ON CONFLICT DO NOTHING</literal> 子句的 <command>INSERT</command>
+    也可能因为另一个事务的结果而不插入某一行，即使该事务的效果对
+    <command>INSERT</command> 的快照不可见。同样，这种情况只会出现在读已提交模式下。
+   </para>
+
+   <para>
+    <command>MERGE</command> 允许用户指定 <command>INSERT</command>、
+    <command>UPDATE</command> 和 <command>DELETE</command> 子命令的多种组合。
+    同时包含 <command>INSERT</command> 和 <command>UPDATE</command> 子命令的
+    <command>MERGE</command> 命令看起来类似于带有
+    <literal>ON CONFLICT DO UPDATE</literal> 子句的 <command>INSERT</command>，
+    但它并不保证一定会发生 <command>INSERT</command> 或 <command>UPDATE</command>。
+    如果 <command>MERGE</command> 尝试执行 <command>UPDATE</command> 或
+    <command>DELETE</command>，而该行被并发更新，但当前目标行和当前源元组仍然满足连接条件，
+    那么 <command>MERGE</command> 的行为就与 <command>UPDATE</command> 或
+    <command>DELETE</command> 命令相同，会在该行的已更新版本上执行其动作。
+    不过，由于 <command>MERGE</command> 可以指定多个动作并且这些动作可以带条件，
+    因此会从第一个动作开始，在该行的已更新版本上重新评估各动作的条件，
+    即使最初匹配的动作在动作列表中出现得更靠后。
+    另一方面，如果该行被并发更新以致连接条件不再成立，那么 <command>MERGE</command>
+    接下来会评估命令的 <literal>NOT MATCHED BY SOURCE</literal> 和
+    <literal>NOT MATCHED [BY TARGET]</literal> 动作，并分别执行每一类中第一个成功的动作。
+    如果该行被并发删除，那么 <command>MERGE</command> 会评估命令的
+    <literal>NOT MATCHED [BY TARGET]</literal> 动作，并执行第一个成功的动作。
+    如果 <command>MERGE</command> 尝试执行 <command>INSERT</command>，且存在唯一索引并且并发插入了重复行，
+    则会引发唯一性违例错误；<command>MERGE</command> 不会通过重新开始评估
+    <literal>MATCHED</literal> 条件来尝试避免此类错误。
+   </para>
+
+   <para>
+    由于上述规则，更新命令可能看到一个不一致的快照：它能够看到并发更新命令在它试图更新的同一行上的效果，
+    却看不到这些命令对数据库中其他行的影响。这种行为使得读已提交模式不适合涉及复杂搜索条件的命令；
+    不过，对于较简单的场景它恰到好处。例如，考虑将 100 美元从一个账户转到另一个账户：
+
+<screen>
+BEGIN;
+UPDATE accounts SET balance = balance + 100.00 WHERE acctnum = 12345;
+UPDATE accounts SET balance = balance - 100.00 WHERE acctnum = 7534;
+COMMIT;
+</screen>
+
+    如果另一个事务并发地尝试更改账户 7534 的余额，我们显然希望第二条语句从该账户行的已更新版本开始。
+    因为每个命令只影响一个预先确定的行，让它看到该行的已更新版本不会造成任何麻烦的不一致。
+   </para>
+
+   <para>
+    在读已提交模式下，更复杂的用法可能产生不理想的结果。例如，考虑一个
+    <command>DELETE</command> 命令，它所处理的数据会被另一个命令同时加入和移出其筛选条件。
+    假设 <literal>website</literal> 是一个有两行的表，其中
+    <literal>website.hits</literal> 分别等于 <literal>9</literal> 和
+    <literal>10</literal>：
+
+<screen>
+BEGIN;
+UPDATE website SET hits = hits + 1;
+-- run from another session:  DELETE FROM website WHERE hits = 10;
+COMMIT;
+</screen>
+
+    该 <command>DELETE</command> 将不会产生任何效果，即使在
+    <command>UPDATE</command> 之前和之后都存在一行
+    <literal>website.hits = 10</literal>。这是因为更新前值为
+    <literal>9</literal> 的那一行被跳过了，而当 <command>UPDATE</command>
+    完成并且 <command>DELETE</command> 获得锁时，新行值已经不再是
+    <literal>10</literal> 而是 <literal>11</literal>，因此不再匹配条件。
+   </para>
+
+   <para>
+    因为在读已提交模式中，每个命令都从一个新快照开始，而该快照包含截至当时已提交的所有事务，
+    所以同一事务中的后续命令无论如何都会看到并发事务已提交的效果。上面真正的问题在于，
+    <emphasis>单个</emphasis>命令是否能看到数据库的绝对一致视图。
+   </para>
+
+   <para>
+    读已提交模式所提供的部分事务隔离对于许多应用来说已经足够，而且这种模式既快速又容易使用。
+    不过，它并不能满足所有场景。执行复杂查询和更新的应用，可能需要比读已提交模式所提供的更严格一致的数据库视图。
+   </para>
+  </sect2>
+
+  <sect2 id="xact-repeatable-read">
+   <title>可重复读隔离级别</title>
+
+   <indexterm>
+    <primary>transaction isolation level</primary>
+    <secondary>repeatable read</secondary>
+   </indexterm>
+
+   <indexterm>
+    <primary>repeatable read</primary>
+   </indexterm>
+
+   <para>
+    <firstterm>可重复读</firstterm>隔离级别只能看到事务开始前已提交的数据；它看不到未提交的数据，
+    也看不到事务执行期间并发事务提交的更改。（不过，每个查询都能看到其自身事务中先前执行的更新效果，
+    即使这些更新尚未提交。）这比 <acronym>SQL</acronym> 标准对该隔离级别的要求更强，并且除了串行化异常之外，
+    能够防止 <xref linkend="mvcc-isolevel-table"/> 中描述的所有现象。正如前面提到的，
+    这正是标准明确允许的，因为标准只描述每个隔离级别必须提供的<emphasis>最低</emphasis>保护。
+   </para>
+
+   <para>
+    这一点与读已提交不同：在可重复读事务中，查询看到的是该<emphasis>事务</emphasis>中第一条非事务控制语句开始时的快照，
+    而不是事务中当前语句开始时的快照。因此，在<emphasis>单个</emphasis>事务中的连续
+    <command>SELECT</command> 命令会看到相同的数据，也就是说，它们不会看到在自身事务开始后由其他事务提交的更改。
+   </para>
+
+   <para>
+    使用这一隔离级别的应用必须准备好在发生串行化失败时重试事务。
+   </para>
+
+   <para>
+    <command>UPDATE</command>，<command>DELETE</command>，
+    <command>MERGE</command>，<command>SELECT FOR UPDATE</command>，
+    和<command>SELECT FOR SHARE</command>命令
+    在搜索目标行方面与<command>SELECT</command>相同：
+    它们只会找到在事务开始时已提交的目标行。
+    然而，这样的目标行可能在找到时已被另一个并发事务更新（或删除或锁定）。
+    在这种情况下，可重复读事务将等待第一个更新事务提交或回滚（如果仍在进行）。
+    如果第一个更新者回滚，则其效果将被取消，可重复读事务可以继续更新最初找到的行。
+    但如果第一个更新者提交了（并实际更新或删除了行，而不仅仅是锁定了它），
+    那么可重复读事务将被回滚，并显示以下消息：
+
+<screen>
+ERROR:  could not serialize access due to concurrent update
+</screen>
+
+    因为可重复读事务不能修改或锁定在其开始之后已被其他事务更改的行。
+   </para>
+
+   <para>
+    当应用收到这条错误消息时，应当中止当前事务，并从头重试整个事务。
+    第二次执行时，该事务会把先前已提交的更改视为其初始数据库视图的一部分，
+    因此以该行的新版本作为新事务更新的起点时，就不存在逻辑冲突。
+   </para>
+
+   <para>
+    注意，只有更新事务才可能需要重试；只读事务永远不会发生串行化冲突。
+   </para>
+
+   <para>
+    可重复读模式提供了严格的保证，即每个事务都看到数据库的一个完全稳定的视图。
+    不过，这个视图并不一定总能与同一级别并发事务的某种串行（一次一个）执行保持一致。
+    例如，即使该级别上的只读事务可能看到一条控制记录被更新，表明某个批处理已经完成，
+    但它<emphasis>并不</emphasis>一定能看到作为该批处理逻辑组成部分的某条明细记录，
+    因为它读到的是控制记录的较早版本。如果不仔细使用显式锁来阻塞冲突事务，
+    试图依靠运行在这一隔离级别的事务来强制业务规则，往往无法正确工作。
+   </para>
+
+   <para>
+    可重复读隔离级别是通过一种技术实现的，这种技术在学术数据库文献中以及某些其他数据库产品中被称为
+    <firstterm>快照隔离</firstterm>。与使用会降低并发性的传统加锁技术的系统相比，
+    其行为和性能可能会表现出差异。有些其他系统甚至把可重复读和快照隔离作为两个行为不同的独立隔离级别提供。
+    用来区分这两种技术的允许现象，直到 SQL 标准制定之后才被数据库研究人员正式定义，因此超出了本手册的范围。
+    完整讨论请参阅 <xref linkend="berenson95"/>。
+   </para>
+
+   <note>
+    <para>
+     在 <productname>PostgreSQL</productname> 9.1 之前，请求可串行化事务隔离级别会得到与这里描述完全相同的行为。
+     若要保留旧式的可串行化行为，现在应请求可重复读。
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 id="xact-serializable">
+   <title>可串行化隔离级别</title>
+
+   <indexterm>
+    <primary>transaction isolation level</primary>
+    <secondary>serializable</secondary>
+   </indexterm>
+
+   <indexterm>
+    <primary>serializable</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>predicate locking</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>serialization anomaly</primary>
+   </indexterm>
+
+   <para>
+    <firstterm>可串行化</firstterm>隔离级别提供最严格的事务隔离。
+    该级别为所有已提交事务模拟串行执行；也就是说，效果就像这些事务不是并发执行，而是一个接一个地串行执行一样。
+    不过，与可重复读级别一样，使用该级别的应用必须准备好在发生串行化失败时重试事务。
+    实际上，这个隔离级别的工作方式与可重复读完全相同，只是它还会监视那些可能使一组并发可串行化事务的执行结果，
+    与这些事务任何可能的串行（一次一个）执行都不一致的条件。
+    这种监视不会引入超出可重复读已有阻塞之外的任何阻塞，但会带来一定开销；
+    一旦检测到可能导致<firstterm>串行化异常</firstterm>的条件，就会触发<firstterm>串行化失败</firstterm>。
+   </para>
+
+   <para>
+    例如，考虑一张表 <structname>mytab</structname>，其初始内容为：
+<screen>
+ class | value
+-------+-------
+     1 |    10
+     1 |    20
+     2 |   100
+     2 |   200
+</screen>
+    假设可串行化事务 A 计算：
+<screen>
+SELECT SUM(value) FROM mytab WHERE class = 1;
+</screen>
+    然后将结果（30）作为一条新行的 <structfield>value</structfield> 插入，并把
+    <structfield>class</structfield> 设为 <literal>2</literal>。与此同时，可串行化事务 B 计算：
+<screen>
+SELECT SUM(value) FROM mytab WHERE class = 2;
+</screen>
+    并得到结果 300，再把它插入为一条新行，其
+    <structfield>class</structfield> 为 <literal>1</literal>。然后两个事务都尝试提交。
+    如果任一事务是在可重复读隔离级别下运行，则二者都可以提交；
+    但由于不存在与该结果一致的串行执行顺序，使用可串行化事务时将允许其中一个事务提交，
+    并按如下消息回滚另一个事务：
+
+<screen>
+ERROR:  could not serialize access due to read/write dependencies among transactions
+</screen>
+
+    这是因为，如果 A 先于 B 执行，B 算出的和将是 330 而不是 300；
+    反过来，另一种顺序也会使 A 算出不同的和。
+   </para>
+
+   <para>
+    当依赖可串行化事务来防止异常时，重要的是：从永久用户表读取的任何数据，在读取它的事务成功提交之前，
+    都不应视为有效。即使对于只读事务也是如此；唯一的例外是<firstterm>可推迟</firstterm>只读事务中读取的数据，
+    它一经读出就可视为有效，因为这种事务会等到能够获取一个保证不存在此类问题的快照后才开始读取数据。
+    在所有其他情况下，应用不能依赖后来被中止事务中读到的结果；相反，应重试事务直到成功。
+   </para>
+
+   <para>
+    为了保证真正的可串行化，<productname>PostgreSQL</productname> 使用了<firstterm>谓词锁</firstterm>，
+    也就是说，系统会保留一些锁，以便判断某个写操作如果先发生，是否会影响并发事务先前读取的结果。
+    在 <productname>PostgreSQL</productname> 中，这些锁不会造成任何阻塞，因此<emphasis>不</emphasis>会参与形成死锁。
+    它们用于识别并标记并发可串行化事务之间的依赖关系，而这些依赖在某些组合下可能导致串行化异常。
+    相比之下，想要保证数据一致性的读已提交或可重复读事务，可能需要在整张表上加锁，
+    这会阻塞其他试图使用该表的用户；或者它可能需要使用 <literal>SELECT FOR UPDATE</literal> 或
+    <literal>SELECT FOR SHARE</literal>，而这些做法不仅可能阻塞其他事务，还会造成磁盘访问。
+   </para>
+
+   <para>
+    与大多数其他数据库系统一样，<productname>PostgreSQL</productname> 中的谓词锁以事务实际访问的数据为基础。
+    这些锁会出现在<link linkend="view-pg-locks"><structname>pg_locks</structname></link>系统视图中，
+    其 <literal>mode</literal> 为 <literal>SIReadLock</literal>。查询执行期间获取的具体锁取决于查询所使用的计划，
+    并且在事务过程中，多个更细粒度的锁（如元组锁）可能会合并成较少的粗粒度锁（如页锁），
+    以防耗尽用于跟踪锁的内存。如果某个 <literal>READ ONLY</literal> 事务检测到不再可能发生会导致串行化异常的冲突，
+    它可以在完成前释放其 SIRead 锁。事实上，<literal>READ ONLY</literal> 事务通常在启动时就能确定这一点，
+    从而避免获取任何谓词锁。如果你显式请求一个 <literal>SERIALIZABLE READ ONLY DEFERRABLE</literal> 事务，
+    它会阻塞，直到能够确立这一事实为止。（这是<emphasis>唯一</emphasis>一种可串行化事务会阻塞而可重复读事务不会阻塞的情况。）
+    另一方面，SIRead 锁往往需要保留到事务提交之后，直到与之重叠的读写事务完成。
+   </para>
+
+   <para>
+    持续使用可串行化事务可以简化开发。任何一组成功提交的并发可串行化事务，都保证与把它们一次一个运行的效果相同；这意味着，如果你能够证明某个事务在单独运行时会做正确的事，那么即使不了解其他事务会做什么，也可以相信它在任何可串行化事务的混合执行中也会做正确的事，否则它就不会成功提交。重要的是，采用这种技术的环境应当有一套通用机制来处理串行化失败（其 SQLSTATE 值总是 <literal>40001</literal>），因为很难准确预测究竟哪些事务会对读/写依赖关系有贡献，并因此需要被回滚来防止串行化异常。监视读/写依赖关系会带来开销，被串行化失败中止的事务重新启动也会带来开销；但在把这些开销与显式锁以及 <literal>SELECT FOR UPDATE</literal> 或 <literal>SELECT FOR SHARE</literal> 所涉及的成本和阻塞进行权衡之后，可串行化事务在某些环境中仍然是性能最佳的选择。
+   </para>
+
+   <para>
+    虽然 <productname>PostgreSQL</productname> 的可串行化事务隔离级别只允许那些能够证明存在等价串行执行顺序的并发事务提交，
+    但它并不总能阻止某些在真正串行执行中不会出现的错误被报告。特别是，即使在尝试插入某个键之前已经显式检查过该键不存在，
+    仍然可能看到由于重叠执行的可串行化事务引起的唯一约束违例。要避免这种问题，必须确保<emphasis>所有</emphasis>
+    插入潜在冲突键的可串行化事务，都先显式检查自己是否可以这样做。例如，设想一个要求用户输入新键的应用，
+    它会先尝试查询用户给定的键以检查其是否已经存在，或者通过选取当前最大键再加一来生成新键。
+    如果某些可串行化事务不遵循这一协议而直接插入新键，那么即使在这些并发事务的串行执行中本不会发生唯一约束违例，
+    系统仍可能报告唯一约束违例。
+   </para>
+
+   <para>
+    当依赖可串行化事务进行并发控制时，为了获得最佳性能，应考虑以下问题：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       在可能时声明事务为<literal>READ ONLY</literal>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       控制活动连接的数量，并在需要时使用连接池。这始终是重要的性能考量，但在使用可串行化事务的繁忙系统中尤为重要。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       单个事务中只包含为保证完整性所必需的内容。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       不要让连接不必要地<quote>闲置在事务中</quote>。配置参数 <xref linkend="guc-idle-in-transaction-session-timeout"/> 可用于自动断开这类拖延的会话。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       在那些已经由可串行化事务自动提供保护的地方，消除不再需要的显式锁、<literal>SELECT FOR UPDATE</literal> 和 <literal>SELECT FOR SHARE</literal>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       当系统因谓词锁表内存不足而被迫把多个页级谓词锁合并为单个关系级谓词锁时，串行化失败的比例可能会上升。你可以通过增加 <xref linkend="guc-max-pred-locks-per-transaction"/>、<xref linkend="guc-max-pred-locks-per-relation"/> 和 <xref linkend="guc-max-pred-locks-per-page"/> 来避免这种情况。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       顺序扫描总是需要关系级谓词锁。这可能导致串行化失败的比例上升。通过降低 <xref linkend="guc-random-page-cost"/> 和/或提高 <xref linkend="guc-cpu-tuple-cost"/> 来鼓励使用索引扫描，可能对此有所帮助。务必在事务回滚和重启次数减少所带来的收益，与查询执行时间整体变化之间进行权衡。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    可串行化隔离级别是通过一种在学术数据库文献中称为可串行化快照隔离的技术实现的，
+    它在快照隔离的基础上增加了对串行化异常的检查。
+    与使用传统加锁技术的其他系统相比，可能会观察到行为和性能方面的一些差异。
+    详细信息请参阅 <xref linkend="ports12"/>。
+   </para>
+  </sect2>
+ </sect1>
+
+  <sect1 id="explicit-locking">
+   <title>显式锁定</title>
+
+   <indexterm>
+    <primary>lock</primary>
+   </indexterm>
+
+   <para>
+    <productname>PostgreSQL</productname> 提供了多种锁模式，用于控制对表中数据的并发访问。
+    在 <acronym>MVCC</acronym> 无法给出期望行为的场景中，这些模式可用于由应用自行控制的加锁。
+    此外，大多数 <productname>PostgreSQL</productname> 命令也会自动获取适当模式的锁，
+    以确保在命令执行期间，被引用的表不会以不兼容的方式被删除或修改。
+    （例如，<command>TRUNCATE</command> 无法安全地与同一张表上的其他操作并发执行，
+    因此它会在该表上获取 <literal>ACCESS EXCLUSIVE</literal> 锁来强制实现这一点。）
+   </para>
+
+   <para>
+    要查看数据库服务器中当前尚未释放的锁列表，可以使用 <link linkend="view-pg-locks"><structname>pg_locks</structname></link> 系统视图。有关监控锁管理器子系统状态的更多信息，请参见 <xref linkend="monitoring"/>。
+   </para>
+
+  <sect2 id="locking-tables">
+   <title>表级锁</title>
+
+   <indexterm zone="locking-tables">
+    <primary>LOCK</primary>
+   </indexterm>
+
+   <para>
+    下面的列表给出了可用的锁模式，以及它们在 <productname>PostgreSQL</productname> 中被自动使用的场景。
+    你也可以通过命令 <xref linkend="sql-lock"/> 显式获取其中任意一种锁。
+    请记住，这些锁模式全部都是表级锁，即使名称中包含 <quote>row</quote> 一词；这些名称只是历史遗留。
+    在某种程度上，这些名称反映了各锁模式的典型用途 &mdash; 但它们的语义是完全相同的。
+    一个锁模式与另一个锁模式真正的区别，只在于它与哪些锁模式冲突（见 <xref linkend="table-lock-compatibility"/>）。
+    两个事务不能在同一时刻在同一张表上持有相互冲突模式的锁。
+    （不过，事务永远不会与自己冲突。例如，它可能先获取 <literal>ACCESS EXCLUSIVE</literal> 锁，
+    随后又在同一张表上获取 <literal>ACCESS SHARE</literal> 锁。）
+    不冲突的锁模式可以被多个事务同时持有。特别要注意，有些锁模式与自身冲突
+    （例如，一次只能有一个事务持有 <literal>ACCESS EXCLUSIVE</literal> 锁），
+    而另一些锁模式并不与自身冲突（例如，可以有多个事务持有 <literal>ACCESS SHARE</literal> 锁）。
+   </para>
+
+     <variablelist>
+      <title>表级锁模式</title>
+      <varlistentry id="zh18-auto-mvcc-varlistentry-5">
+       <term>
+        <literal>ACCESS SHARE</literal> (<literal>AccessShareLock</literal>)
+       </term>
+       <listitem>
+        <para>
+         只与 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。
+        </para>
+
+        <para>
+         <command>SELECT</command> 命令会在被引用的表上获取这种模式的锁。通常，任何只<emphasis>读取</emphasis>表而不修改它的查询都会获取这种锁模式。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-mvcc-varlistentry-6">
+       <term>
+        <literal>ROW SHARE</literal> (<literal>RowShareLock</literal>)
+       </term>
+       <listitem>
+        <para>
+         与 <literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。
+        </para>
+
+        <para>
+         当 <command>SELECT</command> 命令在某个表上指定了 <option>FOR UPDATE</option>、
+         <option>FOR NO KEY UPDATE</option>、<option>FOR SHARE</option> 或
+         <option>FOR KEY SHARE</option> 选项时，会在该表上获取这种锁模式
+         （此外，对于任何其他被引用但没有显式 <option>FOR ...</option> 加锁选项的表，
+         则会获取 <literal>ACCESS SHARE</literal> 锁）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-mvcc-varlistentry-7">
+       <term>
+        <literal>ROW EXCLUSIVE</literal> (<literal>RowExclusiveLock</literal>)
+       </term>
+       <listitem>
+        <para>
+         与<literal>SHARE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal>和<literal>ACCESS EXCLUSIVE</literal>锁模式冲突。
+        </para>
+
+        <para>
+         <command>UPDATE</command>、<command>DELETE</command>、<command>INSERT</command> 和
+         <command>MERGE</command> 命令会在目标表上获取这种锁模式（此外，对任何其他被引用的表还会获取 <literal>ACCESS SHARE</literal> 锁）。通常，任何<emphasis>修改表中数据</emphasis>的命令都会获取这种锁模式。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-mvcc-varlistentry-8">
+       <term>
+        <literal>SHARE UPDATE EXCLUSIVE</literal> (<literal>ShareUpdateExclusiveLock</literal>)
+       </term>
+       <listitem>
+        <para>
+         与 <literal>SHARE UPDATE EXCLUSIVE</literal>、<literal>SHARE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。这种模式用于保护表不受并发模式更改和 <command>VACUUM</command> 运行的影响。
+        </para>
+
+        <para>
+         由 <command>VACUUM</command>（不带 <option>FULL</option>）、
+         <command>ANALYZE</command>、<command>CREATE INDEX CONCURRENTLY</command>、
+         <command>CREATE STATISTICS</command>、<command>COMMENT ON</command>、
+         <command>REINDEX CONCURRENTLY</command>，
+         以及某些 <link linkend="sql-alterindex"><command>ALTER INDEX</command></link>
+         和 <link linkend="sql-altertable"><command>ALTER TABLE</command></link> 变体会获取这种锁
+         （有关详细信息，请参阅这些命令的文档）。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-mvcc-varlistentry-9">
+       <term>
+        <literal>SHARE</literal> (<literal>ShareLock</literal>)
+       </term>
+       <listitem>
+        <para>
+         与 <literal>ROW EXCLUSIVE</literal>、<literal>SHARE UPDATE EXCLUSIVE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。这种模式用于保护表不受并发数据更改的影响。
+        </para>
+
+        <para>
+         由 <command>CREATE INDEX</command>（不带 <option>CONCURRENTLY</option>）获取。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-mvcc-varlistentry-10">
+       <term>
+        <literal>SHARE ROW EXCLUSIVE</literal> (<literal>ShareRowExclusiveLock</literal>)
+       </term>
+       <listitem>
+        <para>
+         与 <literal>ROW EXCLUSIVE</literal>、<literal>SHARE UPDATE EXCLUSIVE</literal>、<literal>SHARE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。这种模式用于保护表不受并发数据更改的影响，并且是自排他的，因此同一时刻只能有一个会话持有它。
+        </para>
+
+        <para>
+         由 <command>CREATE TRIGGER</command> 和某些形式的
+         <link linkend="sql-altertable"><command>ALTER TABLE</command></link> 获取。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-mvcc-varlistentry-11">
+       <term>
+        <literal>EXCLUSIVE</literal> (<literal>ExclusiveLock</literal>)
+       </term>
+       <listitem>
+        <para>
+         与 <literal>ROW SHARE</literal>、<literal>ROW EXCLUSIVE</literal>、<literal>SHARE UPDATE EXCLUSIVE</literal>、<literal>SHARE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。这种模式只允许并发的 <literal>ACCESS SHARE</literal> 锁，也就是说，只有对该表的读操作可以与持有这种锁模式的事务并行执行。
+        </para>
+
+        <para>
+         由 <command>REFRESH MATERIALIZED VIEW CONCURRENTLY</command> 获取。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-mvcc-varlistentry-12">
+       <term>
+        <literal>ACCESS EXCLUSIVE</literal> (<literal>AccessExclusiveLock</literal>)
+       </term>
+       <listitem>
+        <para>
+         与所有模式的锁冲突（<literal>ACCESS SHARE</literal>、<literal>ROW SHARE</literal>、<literal>ROW EXCLUSIVE</literal>、<literal>SHARE UPDATE EXCLUSIVE</literal>、<literal>SHARE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal>）。这种模式保证持有者是以任何方式访问该表的唯一事务。
+        </para>
+
+        <para>
+         由 <command>DROP TABLE</command>、<command>TRUNCATE</command>、
+         <command>REINDEX</command>、<command>CLUSTER</command>、
+         <command>VACUUM FULL</command> 和不带 <option>CONCURRENTLY</option> 的
+         <command>REFRESH MATERIALIZED VIEW</command> 命令获取。
+         多种形式的 <command>ALTER INDEX</command> 和 <command>ALTER TABLE</command>
+         也会获取这一层级的锁。这也是未显式指定模式的 <command>LOCK TABLE</command>
+         语句的默认锁模式。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+     <tip>
+      <para>
+       只有 <literal>ACCESS EXCLUSIVE</literal> 锁才会阻塞 <command>SELECT</command>（不带 <option>FOR UPDATE/SHARE</option>）语句。
+      </para>
+     </tip>
+
+   <para>
+    锁一旦被获取，通常会一直持有到事务结束。但是，如果锁是在建立保存点之后才获取的，那么在回滚到该保存点时，这个锁会立即释放。这与 <command>ROLLBACK</command> 会取消保存点之后所有命令效果的原则是一致的。相同的原则也适用于在 <application>PL/pgSQL</application> 异常块中获取的锁：从该块中因错误跳出时，会释放在块中获取的锁。
+   </para>
+
+
+
+    <table tocentry="1" id="table-lock-compatibility">
+     <title>冲突的锁模式</title>
+     <tgroup cols="9">
+      <colspec colnum="1" colwidth="1.25*"/>
+      <colspec colnum="2" colwidth="1*" colname="lockst"/>
+      <colspec colnum="3" colwidth="1*"/>
+      <colspec colnum="4" colwidth="1*"/>
+      <colspec colnum="5" colwidth="1*"/>
+      <colspec colnum="6" colwidth="1*"/>
+      <colspec colnum="7" colwidth="1*"/>
+      <colspec colnum="8" colwidth="1*"/>
+      <colspec colnum="9" colwidth="1*" colname="lockend"/>
+      <spanspec spanname="lockreq" namest="lockst" nameend="lockend" align="center"/>
+      <thead>
+       <row>
+        <entry morerows="1">请求的锁模式</entry>
+        <entry spanname="lockreq">已存在的锁模式</entry>
+       </row>
+       <row>
+        <entry><literal>ACCESS SHARE</literal></entry>
+        <entry><literal>ROW SHARE</literal></entry>
+        <entry><literal>ROW EXCL.</literal></entry>
+        <entry><literal>SHARE UPDATE EXCL.</literal></entry>
+        <entry><literal>SHARE</literal></entry>
+        <entry><literal>SHARE ROW EXCL.</literal></entry>
+        <entry><literal>EXCL.</literal></entry>
+        <entry><literal>ACCESS EXCL.</literal></entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+        <entry><literal>ACCESS SHARE</literal></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center">X</entry>
+       </row>
+       <row>
+        <entry><literal>ROW SHARE</literal></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+       </row>
+       <row>
+        <entry><literal>ROW EXCL.</literal></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+       </row>
+       <row>
+        <entry><literal>SHARE UPDATE EXCL.</literal></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+       </row>
+       <row>
+        <entry><literal>SHARE</literal></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center"></entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+       </row>
+       <row>
+        <entry><literal>SHARE ROW EXCL.</literal></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+       </row>
+       <row>
+        <entry><literal>EXCL.</literal></entry>
+        <entry align="center"></entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+       </row>
+       <row>
+        <entry><literal>ACCESS EXCL.</literal></entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+   </sect2>
+
+   <sect2 id="locking-rows">
+    <title>行级锁</title>
+
+    <para>
+     除了表级锁之外，还有行级锁。下面列出了这些锁，以及 <productname>PostgreSQL</productname> 会在哪些场景下自动使用它们。行级锁的完整冲突表见 <xref linkend="row-lock-compatibility"/>。请注意，一个事务可以在同一行上持有彼此冲突的锁，甚至可以出现在不同子事务中；除此之外，两个事务不可能在同一行上持有彼此冲突的锁。行级锁不会影响数据查询；它们只会阻塞对同一行的<emphasis>写入者和加锁者</emphasis>。与表级锁一样，行级锁会在事务结束时或回滚到保存点时释放。
+    </para>
+
+     <variablelist>
+      <title>行级锁模式</title>
+      <varlistentry id="zh18-auto-mvcc-varlistentry-13">
+       <term>
+        <literal>FOR UPDATE</literal>
+       </term>
+       <listitem>
+        <para>
+         <literal>FOR UPDATE</literal> 会导致 <command>SELECT</command> 语句检索到的行像将要被更新一样被锁定。这会阻止它们在当前事务结束之前被其他事务锁定、修改或删除。也就是说，其他尝试对这些行执行 <command>UPDATE</command>、<command>DELETE</command>、<command>SELECT FOR UPDATE</command>、<command>SELECT FOR NO KEY UPDATE</command>、<command>SELECT FOR SHARE</command> 或 <command>SELECT FOR KEY SHARE</command> 的事务，都会被阻塞直到当前事务结束。反过来，<command>SELECT FOR UPDATE</command> 也会等待已经在同一行上执行过上述任一命令的并发事务，并随后锁定并返回更新后的那一行（或者不返回任何行，因为该行可能已被删除）。不过，在 <literal>REPEATABLE READ</literal> 或 <literal>SERIALIZABLE</literal> 事务中，如果要锁定的行自事务开始以来已经发生变化，就会抛出错误。进一步讨论见 <xref linkend="applevel-consistency"/>。
+        </para>
+        <para>
+         <literal>FOR UPDATE</literal> 锁模式也会被对某一行的任何 <command>DELETE</command> 获取，
+         以及会修改某些列值的 <command>UPDATE</command> 获取。目前，就 <command>UPDATE</command> 而言，
+         这里考虑的列是指其上存在可供外键使用的唯一索引的列
+         （因此不考虑部分索引和表达式索引），但这在将来可能会变化。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-mvcc-varlistentry-14">
+       <term>
+        <literal>FOR NO KEY UPDATE</literal>
+       </term>
+       <listitem>
+        <para>
+         其行为类似于 <literal>FOR UPDATE</literal>，但获取的锁较弱：这种锁不会阻塞试图在同一行上获取锁的
+         <literal>SELECT FOR KEY SHARE</literal> 命令。凡是不会获得 <literal>FOR UPDATE</literal>
+         锁的 <command>UPDATE</command>，都会获得这种锁模式。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-mvcc-varlistentry-15">
+       <term>
+        <literal>FOR SHARE</literal>
+       </term>
+       <listitem>
+        <para>
+         行为与 <literal>FOR NO KEY UPDATE</literal> 类似，不过它在每个检索到的行上获取的是共享锁而不是排他锁。共享锁会阻塞其他事务在这些行上执行 <command>UPDATE</command>、<command>DELETE</command>、<command>SELECT FOR UPDATE</command> 或 <command>SELECT FOR NO KEY UPDATE</command>，但不会阻止它们执行 <command>SELECT FOR SHARE</command> 或 <command>SELECT FOR KEY SHARE</command>。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="zh18-auto-mvcc-varlistentry-16">
+       <term>
+        <literal>FOR KEY SHARE</literal>
+       </term>
+       <listitem>
+        <para>
+         行为与 <literal>FOR SHARE</literal> 类似，不过锁更弱：<literal>SELECT FOR UPDATE</literal> 会被阻塞，但 <literal>SELECT FOR NO KEY UPDATE</literal> 不会。键共享锁会阻塞其他事务执行会修改键值的 <command>DELETE</command> 或 <command>UPDATE</command>，但不会阻塞其他 <command>UPDATE</command>，也不会阻止 <command>SELECT FOR NO KEY UPDATE</command>、<command>SELECT FOR SHARE</command> 或 <command>SELECT FOR KEY SHARE</command>。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+
+    <para>
+     <productname>PostgreSQL</productname> 不会在内存中保存任何关于已修改行的信息，因此一次加锁的行数没有限制。不过，锁定一行可能会导致一次磁盘写；例如，<command>SELECT FOR UPDATE</command> 会修改被选中的行以标记它们已被锁定，因此会产生磁盘写入。
+    </para>
+
+    <table tocentry="1" id="row-lock-compatibility">
+     <title>冲突的行级锁</title>
+     <tgroup cols="5">
+      <colspec colname="col1"    colwidth="1.5*"/>
+      <colspec colname="lockst"  colwidth="1*"/>
+      <colspec colname="col3"    colwidth="1*"/>
+      <colspec colname="col4"    colwidth="1*"/>
+      <colspec colname="lockend" colwidth="1*"/>
+      <spanspec namest="lockst" nameend="lockend" spanname="lockreq"/>
+      <thead>
+       <row>
+        <entry morerows="1">请求的锁模式</entry>
+        <entry spanname="lockreq">当前的锁模式</entry>
+       </row>
+       <row>
+        <entry>FOR KEY SHARE</entry>
+        <entry>FOR SHARE</entry>
+        <entry>FOR NO KEY UPDATE</entry>
+        <entry>FOR UPDATE</entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+        <entry>FOR KEY SHARE</entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center">X</entry>
+       </row>
+       <row>
+        <entry>FOR SHARE</entry>
+        <entry align="center"></entry>
+        <entry align="center"></entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+       </row>
+       <row>
+        <entry>FOR NO KEY UPDATE</entry>
+        <entry align="center"></entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+       </row>
+       <row>
+        <entry>FOR UPDATE</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+        <entry align="center">X</entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+   </sect2>
+
+   <sect2 id="locking-pages">
+    <title>页级锁</title>
+
+    <para>
+     除了表级锁和行级锁之外，还使用页级共享/排他锁来控制对共享缓冲池中表页面的读写访问。这些锁会在取出或更新某一行后立即释放。应用开发者通常不需要关心页级锁，这里提到它们只是为了完整性。
+    </para>
+
+   </sect2>
+
+   <sect2 id="locking-deadlocks">
+    <title>死锁</title>
+
+    <indexterm zone="locking-deadlocks">
+     <primary>deadlock</primary>
+    </indexterm>
+
+    <para>
+     使用显式锁可能会增加<firstterm>死锁</firstterm>的发生概率。所谓死锁，是指两个（或更多）事务各自持有对方想要的锁。例如，如果事务 1 在表 A 上获得了排他锁，然后试图再获取表 B 上的排他锁，而事务 2 已经持有表 B 上的排他锁，现在又想获取表 A 上的排他锁，那么两者都无法继续进行。<productname>PostgreSQL</productname> 会自动检测死锁，并通过中止其中一个事务来解决这个问题，使其他事务得以继续完成。（具体会中止哪个事务很难预测，也不应依赖这种预测。）
+    </para>
+
+    <para>
+     还要注意，死锁也可能由于行级锁而发生（因此，即使没有使用显式锁，它们也可能出现）。考虑下面这种情况：两个并发事务都在修改一个表。第一个事务执行：
+
+<screen>
+UPDATE accounts SET balance = balance + 100.00 WHERE acctnum = 11111;
+</screen>
+
+     这会在指定账号的那一行上获取一个行级锁。然后第二个事务执行：
+
+<screen>
+UPDATE accounts SET balance = balance + 100.00 WHERE acctnum = 22222;
+UPDATE accounts SET balance = balance - 100.00 WHERE acctnum = 11111;
+</screen>
+
+     第一条 <command>UPDATE</command> 语句成功地在指定行上获取了一个行级锁，因此它成功更新了那一行。然而，第二条 <command>UPDATE</command> 语句发现它试图更新的行已经被锁住了，于是它等待持有该锁的事务结束。此时，事务二正在等待事务一结束之后才能继续执行。现在，事务一执行：
+
+<screen>
+UPDATE accounts SET balance = balance - 100.00 WHERE acctnum = 22222;
+</screen>
+
+     事务一试图在指定行上获取一个行级锁，但它做不到，因为事务二已经持有了这个锁。于是它必须等待事务二完成。这样一来，事务一被事务二阻塞，而事务二又被事务一阻塞：死锁条件形成了。<productname>PostgreSQL</productname> 会检测到这种情况，并中止其中一个事务。
+    </para>
+
+    <para>
+     防止死锁的最好办法通常是避免它们出现，也就是确保所有使用同一数据库的应用都以一致的顺序在多个对象上获取锁。在上面的例子中，如果两个事务都是按相同顺序更新这些行，就不会发生死锁。还应确保事务在某个对象上获取的第一个锁，就是该对象所需的最严格锁模式。如果事先无法验证这一点，那么就应通过重试因死锁而中止的事务来动态处理死锁。
+    </para>
+
+    <para>
+     只要没有检测到死锁，寻求表级锁或行级锁的事务就会无限期等待冲突锁被释放。这意味着让应用长时间保持事务打开并不是好主意（例如等待用户输入时）。
+    </para>
+   </sect2>
+
+   <sect2 id="advisory-locks">
+    <title>咨询锁</title>
+
+    <indexterm zone="advisory-locks">
+     <primary>advisory lock</primary>
+    </indexterm>
+
+    <indexterm zone="advisory-locks">
+     <primary>lock</primary>
+     <secondary>advisory</secondary>
+    </indexterm>
+
+    <para>
+     <productname>PostgreSQL</productname> 提供了一种创建由应用自行定义含义的锁的方法。这类锁被称为<firstterm>咨询锁</firstterm>，因为系统并不强制要求使用它们 &mdash; 是否正确使用完全取决于应用。咨询锁对于那些与 MVCC 模型不太契合的加锁策略非常有用。例如，咨询锁的一个常见用途是模拟所谓 <quote>平面文件</quote> 数据管理系统中典型的悲观锁策略。虽然也可以通过在表中存储一个标志位来达到相同目的，但咨询锁速度更快，可以避免表膨胀，并且会在会话结束时由服务器自动清理。
+    </para>
+
+    <para>
+     在 <productname>PostgreSQL</productname> 中获取咨询锁有两种方式：会话级和事务级。
+     会话级咨询锁一旦获取，就会一直保持到显式释放或会话结束。不同于标准锁请求，
+     会话级咨询锁请求不遵守事务语义：在随后回滚的事务中获取的锁，回滚后仍会保持；
+     同样，即使发出解锁请求的事务后来失败，解锁依然有效。一个进程可以多次获取同一个锁；
+     每成功一次加锁请求，都必须有对应的解锁请求，锁才会真正释放。
+     另一方面，事务级锁请求更像普通锁请求：它们会在事务结束时自动释放，而且没有显式解锁操作。
+     对于短期使用咨询锁，这种行为通常比会话级行为更方便。针对同一咨询锁标识符的会话级和事务级锁请求，
+     会按预期相互阻塞。如果某个会话已经持有给定的咨询锁，那么它发出的附加请求总会成功，
+     即使其他会话正在等待该锁；无论现有锁和新请求属于会话级还是事务级，都是如此。
+    </para>
+
+    <para>
+     和 <productname>PostgreSQL</productname> 中的所有锁一样，任何会话当前持有的咨询锁完整列表，
+     都可以在<link linkend="view-pg-locks"><structname>pg_locks</structname></link>系统视图中找到。
+    </para>
+
+    <para>
+     咨询锁和普通锁都存储在一个共享内存池中，其大小由配置变量 <xref linkend="guc-max-locks-per-transaction"/> 和 <xref linkend="guc-max-connections"/> 定义。必须小心不要耗尽这部分内存，否则服务器将根本无法再授予任何锁。这也为服务器可授予的咨询锁数量设定了上限，具体通常在数万到数十万个之间，取决于服务器的配置。
+    </para>
+
+    <para>
+     在某些使用咨询锁的方法中，特别是涉及显式排序和 <literal>LIMIT</literal> 子句的查询，
+     必须注意控制由于 SQL 表达式求值顺序而获取的锁。例如：
+<screen>
+SELECT pg_advisory_lock(id) FROM foo WHERE id = 12345; -- ok
+SELECT pg_advisory_lock(id) FROM foo WHERE id &gt; 12345 LIMIT 100; -- danger!
+SELECT pg_advisory_lock(q.id) FROM
+(
+  SELECT id FROM foo WHERE id &gt; 12345 LIMIT 100
+) q; -- ok
+</screen>
+     在上面的查询中，第二种形式是危险的，因为不能保证在执行加锁函数之前先应用 <literal>LIMIT</literal>。
+     这可能导致获取了一些应用并未预期的锁，因此应用也不会去释放它们（直到会话结束）。
+     从应用的角度看，这类锁会变成悬而未清的锁，尽管仍然可以在 <structname>pg_locks</structname> 中看到。
+    </para>
+
+    <para>
+     用于操作咨询锁的函数见 <xref linkend="functions-advisory-locks"/>。
+    </para>
+   </sect2>
+
+  </sect1>
+
+  <sect1 id="applevel-consistency">
+   <title>应用级别的数据一致性检查</title>
+
+   <para>
+    在读已提交事务下，想要通过业务规则强制数据一致性非常困难，因为数据视图会随每条语句而变化，
+    而且一旦发生写冲突，即使是单条语句也未必局限于该语句自己的快照。
+   </para>
+
+   <para>
+    虽然可重复读事务在整个执行期间都具有稳定的数据视图，但在使用 <acronym>MVCC</acronym> 快照进行数据一致性检查时，还存在一个微妙问题，即所谓的<firstterm>读/写冲突</firstterm>。如果一个事务写入数据，而并发事务试图读取相同的数据（无论是在写入之前还是之后），它都看不到另一个事务的工作。于是，读取者看起来就像是先执行的一方，而不管究竟是谁先启动，也不管谁先提交。如果事情只停留在这一步，就没有问题；但如果读取者还写入了数据，而这些数据又被另一个并发事务读取，那么现在就会有一个事务看起来像是在前面提到的任一事务之前执行。如果看起来最后执行的事务实际上最先提交，就很容易在事务执行顺序图中形成一个环。一旦出现这样的环，不借助额外机制，一致性检查就无法正确工作。
+   </para>
+
+   <para>
+    正如 <xref linkend="xact-serializable"/> 中提到的，可串行化事务其实就是在可重复读事务的基础上，增加了对危险读/写冲突模式的非阻塞监控。当检测到某种模式可能在表面执行顺序中形成一个环时，其中一个相关事务就会被回滚，以打破这个环。
+   </para>
+
+   <sect2 id="serializable-consistency">
+    <title>用可串行化事务强制一致性</title>
+
+    <para>
+     如果对所有写操作，以及所有需要一致数据视图的读操作都使用可串行化事务隔离级别，
+     那么不需要额外工作就能确保一致性。从其他环境移植而来、按使用可串行化事务来保证一致性而编写的软件，
+     在这方面应当能够在 <productname>PostgreSQL</productname> 中<quote>正常工作</quote>。
+    </para>
+
+    <para>
+     使用这种技术时，如果应用软件通过某个框架运行，并由该框架自动重试因串行化错误而回滚的事务，就可以避免给应用程序员带来不必要的负担。把 <literal>default_transaction_isolation</literal> 设置为 <literal>serializable</literal> 可能是个好主意。通过在触发器中检查事务隔离级别来采取某些措施，以确保不会因为疏忽或为了绕过完整性检查而使用其他事务隔离级别，也是明智的。
+    </para>
+
+    <para>
+     性能方面的建议见 <xref linkend="xact-serializable"/>。
+    </para>
+
+    <warning>
+     <title>警告：可串行化事务和数据复制</title>
+     <para>
+      利用可串行化事务提供的这一层完整性保护，尚未扩展到热备模式（<xref linkend="hot-standby"/>）或逻辑副本。
+      因此，使用热备或逻辑复制的用户可能希望在主库上使用可重复读和显式锁定。
+     </para>
+    </warning>
+   </sect2>
+
+   <sect2 id="non-serializable-consistency">
+    <title>使用显式锁定强制一致性</title>
+
+    <para>
+     当存在非可串行化写入时，要确保某一行当前仍然有效，并保护它不受并发更新影响，
+     就必须使用 <command>SELECT FOR UPDATE</command>、<command>SELECT FOR SHARE</command>
+     或适当的 <command>LOCK TABLE</command> 语句。
+     （<command>SELECT FOR UPDATE</command> 和 <command>SELECT FOR SHARE</command>
+     只锁定返回的行以防止并发更新，而 <command>LOCK TABLE</command> 会锁住整张表。）
+     从其他环境向 <productname>PostgreSQL</productname> 迁移应用时，应当考虑这一点。
+    </para>
+
+    <para>
+     对于从其他环境迁移而来的用户，还需要注意：<command>SELECT FOR UPDATE</command>
+     并不能保证并发事务不会更新或删除被选中的行。要在 <productname>PostgreSQL</productname>
+     中做到这一点，必须真正去更新该行，即使没有任何值需要改变。
+     <command>SELECT FOR UPDATE</command> 只是<emphasis>临时阻塞</emphasis>其他事务，
+     使它们不能获取同样的锁，也不能执行会影响被锁定行的 <command>UPDATE</command> 或
+     <command>DELETE</command>；但是一旦持有该锁的事务提交或回滚，被阻塞的事务就会继续执行冲突操作，
+     除非在持锁期间已经对该行执行了实际的 <command>UPDATE</command>。
+    </para>
+
+    <para>
+     在非可串行化的 <acronym>MVCC</acronym> 环境下，全局有效性检查需要额外考虑。
+     例如，一个银行应用可能希望检查一个表中的所有收入总和等于另一个表中的所有支出总和，
+     而这两个表都在被活跃更新。在读已提交模式下，比较两个连续的 <literal>SELECT sum(...)</literal>
+     命令的结果并不可靠，因为第二个查询很可能会包含第一个查询没有统计到的事务提交结果。
+     在单个可重复读事务中完成这两次求和，只能准确反映在该可重复读事务开始之前已提交事务的效果
+     &mdash; 但等到结果交付时，人们完全可能合理地怀疑这个答案是否仍然相关。
+     如果可重复读事务本身在尝试进行一致性检查之前已经应用了某些更改，那么这种检查的意义就更加值得商榷，
+     因为此时它包含了事务开始后的一部分而不是全部更改。在这种情况下，谨慎的做法可能是锁定执行检查所需的所有表，
+     以获得当前真实状态的无可争议图景。<literal>SHARE</literal> 模式（或更高）的锁能够保证，
+     在被锁定的表中，除了当前事务自身的更改之外，没有其他未提交更改。
+    </para>
+
+    <para>
+     注意，如果依赖显式锁定来防止并发更改，就应当使用读已提交模式，
+     或者在可重复读模式下小心地在执行查询之前先获取锁。
+     可重复读事务获得的锁能够保证没有其他修改该表的事务仍在运行，
+     但如果该事务看到的快照早于获取锁的时刻，那么它看到的快照也可能早于表中某些现在已经提交的更改。
+     可重复读事务的快照实际上是在其第一条查询或数据修改命令
+     （<literal>SELECT</literal>、<literal>INSERT</literal>、<literal>UPDATE</literal>、
+     <literal>DELETE</literal> 或 <literal>MERGE</literal>）开始时被冻结的，
+     因此可以在快照冻结之前显式获取锁。
+    </para>
+   </sect2>
+  </sect1>
+
+  <sect1 id="mvcc-serialization-failure-handling">
+   <title>串行化失败处理</title>
+
+   <indexterm>
+    <primary>serialization failure</primary>
+   </indexterm>
+   <indexterm>
+    <primary>retryable error</primary>
+   </indexterm>
+
+   <para>
+    可重复读和可串行化隔离级别都可能产生旨在防止串行化异常的错误。
+    如前所述，使用这些级别的应用必须准备好重试因串行化错误而失败的事务。
+    这类错误的消息文本会随具体情况而变化，但其 SQLSTATE 代码始终是
+    <literal>40001</literal>（<literal>serialization_failure</literal>）。
+   </para>
+
+   <para>
+    重试因死锁而失败的事务也可能是明智的。这类错误的 SQLSTATE 代码为
+    <literal>40P01</literal>（<literal>deadlock_detected</literal>）。
+   </para>
+
+   <para>
+    在某些情况下，重试唯一键违例也是合适的，这类错误的 SQLSTATE 代码为
+    <literal>23505</literal>（<literal>unique_violation</literal>）；重试排除约束违例也可能合适，
+    其 SQLSTATE 代码为 <literal>23P01</literal>（<literal>exclusion_violation</literal>）。
+    例如，如果应用在检查当前已存储键值之后，为主键列选择了一个新值，
+    那么另一个应用实例并发选择了同一个新键时，就可能发生唯一键违例。
+    这实际上是一种串行化失败，但服务器不会把它识别为此类错误，
+    因为它无法<quote>看到</quote>插入值与先前读取之间的联系。
+    还有一些边缘情况，在这些情况下，即使原则上服务器拥有足够的信息来判断根本原因是串行化问题，
+    它也仍会报出唯一键或排除约束错误。虽然建议无条件重试
+    <literal>serialization_failure</literal> 错误，但在重试这些其他错误代码时需要更加谨慎，
+    因为它们可能代表持久性错误，而不是瞬态失败。
+   </para>
+
+   <para>
+    重试完整事务非常重要，其中应包括决定发出哪些 SQL 和/或使用哪些值的全部逻辑。
+    因此，<productname>PostgreSQL</productname> 不提供自动重试功能，因为它无法在正确性上作出保证。
+   </para>
+
+   <para>
+    重试事务并不保证重试后的事务一定能够完成；可能需要多次重试。
+    在争用非常激烈的情况下，完成一个事务可能需要尝试很多次。
+    如果涉及相互冲突的已准备事务，那么在已准备事务提交或回滚之前，可能根本无法取得进展。
+   </para>
+  </sect1>
+
+  <sect1 id="mvcc-caveats">
+   <title>注意事项</title>
+
+   <para>
+    一些命令，目前只有 <link linkend="sql-truncate"><command>TRUNCATE</command></link>、<link linkend="sql-altertable"><command>ALTER
+    TABLE</command></link> 的重写表形式，以及带有 <literal>CONCURRENTLY</literal> 选项的 <command>REPACK</command>，不是 MVCC 安全的。
+    这意味着在截断或重写提交之后，如果并发事务使用的是在该命令提交之前取得的快照，那么该表对它们来说会表现为空表。
+    这只会对那些在命令开始前没有访问过相关表的事务造成问题 &mdash; 任何在命令开始前访问过该表的事务，都会持有至少一个
+    <literal>ACCESS SHARE</literal> 表锁，从而阻塞该命令直到该事务完成。
+    因此，这些命令不会在针对目标表的连续查询中造成明显的表内容不一致，但它们可能会导致目标表内容与数据库中其他表内容之间出现可见的不一致。
+   </para>
+
+   <para>
+    对可串行化事务隔离级别的支持尚未添加到热备复制目标（见 <xref linkend="hot-standby"/>）。
+    当前热备模式下支持的最严格隔离级别是可重复读。
+    虽然在主库上把所有永久数据库写操作都放在可串行化事务中执行，能够确保所有备库最终达到一致状态，但在备库上运行的可重复读事务，有时仍可能看到一种瞬态状态，而这种状态与主库上事务的任何串行执行都不一致。
+   </para>
+
+   <para>
+    对系统目录的内部访问并不是按当前事务的隔离级别执行的。
+    这意味着新创建的数据库对象（例如表）对于并发的可重复读和可串行化事务是可见的，
+    即使这些对象中包含的行并不可见。相反，在较高隔离级别下，显式检查系统目录的查询不会看到表示并发创建数据库对象的那些行。
+   </para>
+  </sect1>
+
+  <sect1 id="locking-indexes">
+   <title>锁定和索引</title>
+
+   <indexterm zone="locking-indexes">
+    <primary>index</primary>
+    <secondary>locks</secondary>
+   </indexterm>
+
+   <para>
+    尽管 <productname>PostgreSQL</productname> 为表数据提供了非阻塞的读写访问，但 <productname>PostgreSQL</productname> 当前实现的索引访问方法并不是每一种都能提供非阻塞的读写访问。各种索引类型的处理方式如下：
+
+    <variablelist>
+     <varlistentry id="zh18-auto-mvcc-varlistentry-17">
+      <term>
+       B-树、<acronym>GiST</acronym> 和 <acronym>SP-GiST</acronym> 索引
+      </term>
+      <listitem>
+       <para>
+        读写访问使用短期的页级共享/排他锁。每个索引行在被取出或插入之后，锁都会立即释放。这些索引类型在不存在死锁条件的前提下提供了最高的并发性。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-mvcc-varlistentry-18">
+      <term>
+       Hash 索引
+      </term>
+      <listitem>
+       <para>
+        读写访问使用的是 Hash 桶级共享/排他锁。锁会在整个 Hash 桶处理完成后释放。桶级锁比索引级锁具有更好的并发性，但也可能产生死锁，因为它们的持有时间比一次索引操作更长。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="zh18-auto-mvcc-varlistentry-19">
+      <term>
+       <acronym>GIN</acronym> 索引
+      </term>
+      <listitem>
+       <para>
+        读写访问使用短期的页级共享/排他锁。每个索引行在被取出或插入之后，锁都会立即释放。但要注意，插入一个 GIN 索引值通常会导致每行产生多个索引键插入，因此 GIN 可能为了插入单个值而做大量工作。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    目前，B-树索引为并发应用提供了最佳性能；由于它们还比 Hash 索引拥有更多特性，因此对于需要为标量数据建立索引的并发应用，推荐使用 B-树索引类型。处理非标量数据时，B-树就不再适用，此时应改用 GiST、SP-GiST 或 GIN 索引。
+   </para>
+  </sect1>
+ </chapter>

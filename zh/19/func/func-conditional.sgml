@@ -1,0 +1,224 @@
+ <sect1 id="functions-conditional">
+
+  <title>条件表达式</title>
+
+  <indexterm>
+   <primary>CASE</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>条件表达式</primary>
+  </indexterm>
+
+  <para>
+   本节描述在<productname>PostgreSQL</productname>中可用的<acronym>SQL</acronym>兼容的条件表达式。
+  </para>
+
+  <tip>
+
+   <para>
+    如果你的需求超过这些条件表达式的能力，你可能会希望用一种更富表现力的编程语言写一个服务器端函数。
+   </para>
+  </tip>
+
+   <note>
+
+    <para>
+     尽管<token>COALESCE</token>、<token>GREATEST</token>和<token>LEAST</token>在语法上类似于函数，但它们不是普通的函数，因此不能使用显式<token>VARIADIC</token>数组参数。
+    </para>
+   </note>
+
+  <sect2 id="functions-case">
+   <title><literal>CASE</literal></title>
+
+  <para>
+   <acronym>SQL</acronym> <token>CASE</token>表达式是一种通用的条件表达式，类似于其它编程语言中的 if/else 语句：
+
+<synopsis>
+CASE WHEN <replaceable>condition</replaceable> THEN <replaceable>result</replaceable>
+     <optional>WHEN ...</optional>
+     <optional>ELSE <replaceable>result</replaceable></optional>
+END
+</synopsis>
+
+   <token>CASE</token>子句可以用于任何表达式可以出现的地方。每一个<replaceable>condition</replaceable>是一个返回<type>boolean</type>结果的表达式。如果结果为真，那么<token>CASE</token>表达式的结果就是符合条件的<replaceable>result</replaceable>，并且剩下的<token>CASE</token>表达式不会被处理。如果条件的结果不为真，那么以相同方式搜寻任何随后的<token>WHEN</token>子句。如果没有<token>WHEN</token> <replaceable>condition</replaceable>为真，那么<token>CASE</token>表达式的值就是在<token>ELSE</token>子句里的<replaceable>result</replaceable>。如果省略了<token>ELSE</token>子句而且没有条件为真，结果为空。
+  </para>
+
+   <para>
+    示例：
+<screen>
+SELECT * FROM test;
+
+ a
+---
+ 1
+ 2
+ 3
+
+
+SELECT a,
+       CASE WHEN a=1 THEN 'one'
+            WHEN a=2 THEN 'two'
+            ELSE 'other'
+       END
+    FROM test;
+
+ a | case
+---+-------
+ 1 | one
+ 2 | two
+ 3 | other
+</screen>
+   </para>
+
+  <para>
+   所有<replaceable>result</replaceable>表达式的数据类型都必须可以转换成单一的输出类型。 参阅<xref linkend="typeconv-union-case"/>获取细节。
+  </para>
+
+  <para>
+   下面这个<quote>简单</quote>形式的<token>CASE</token>表达式是上述通用形式的一个变种：
+
+<synopsis>
+CASE <replaceable>expression</replaceable>
+    WHEN <replaceable>value</replaceable> THEN <replaceable>result</replaceable>
+    <optional>WHEN ...</optional>
+    <optional>ELSE <replaceable>result</replaceable></optional>
+END
+</synopsis>
+
+   第一个<replaceable>expression</replaceable>会被计算，然后与所有在<token>WHEN</token>子句中的每一个<replaceable>value</replaceable>对比，直到找到一个相等的。如果没有找到匹配的，则返回在<token>ELSE</token>子句中的<replaceable>result</replaceable>（或者控制）。 这类似于 C 里的<function>switch</function>语句。
+  </para>
+
+   <para>
+    上面的示例可以用简单<token>CASE</token>语法来写：
+<screen>
+SELECT a,
+       CASE a WHEN 1 THEN 'one'
+              WHEN 2 THEN 'two'
+              ELSE 'other'
+       END
+    FROM test;
+
+ a | case
+---+-------
+ 1 | one
+ 2 | two
+ 3 | other
+</screen>
+   </para>
+
+   <para>
+    <token>CASE</token>表达式并不计算任何无助于判断结果的子表达式。例如，下面是一个可以避免被零除错误的方法：
+<programlisting>
+SELECT ... WHERE CASE WHEN x &lt;&gt; 0 THEN y/x &gt; 1.5 ELSE false END;
+</programlisting>
+   </para>
+
+   <note>
+
+    <para>
+     如<xref linkend="syntax-express-eval"/>中所述，在有几种情况中一个表达式的子表达式
+     会被计算多次，因此<quote><token>CASE</token>只计算必要的表达式</quote>这
+     一原则并非不可打破。例如一个常量子表达式<literal>1/0</literal>通常将会在规划时导致一次
+     除零错误，即便它位于一个执行时永远也不会进入的<token>CASE</token>分支时也是
+     如此。
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 id="functions-coalesce-nvl-ifnull">
+   <title><literal>COALESCE</literal></title>
+
+  <indexterm>
+   <primary>COALESCE</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>NVL</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>IFNULL</primary>
+  </indexterm>
+
+<synopsis>
+<function>COALESCE</function>(<replaceable>value</replaceable> <optional>, ...</optional>)
+</synopsis>
+
+  <para>
+   <function>COALESCE</function>函数返回它的第一个非空参数的值。当且仅当所有参数都为空时才会返回空。它常用于在为显示目的检索数据时用缺省值替换空值。例如：
+<programlisting>
+SELECT COALESCE(description, short_description, '(none)') ...
+</programlisting>
+   如果<varname>description</varname>不为空，这将会返回它的值，否则如果<varname>short_description</varname>非空则返回<varname>short_description</varname>的值，如果前两个都为空则返回<literal>(none)</literal>。
+  </para>
+
+   <para>
+    所有参数都必须转换为一个公共数据类型，它将是结果的类型 (详情参见 <xref linkend="typeconv-union-case"/> )。
+   </para>
+
+   <para>
+    和<token>CASE</token>表达式一样，<function>COALESCE</function>将不会 计算无助于判断结果的参数；也就是说，在第一个非空参数右边的参数不会被计算。这个 SQL 标准函数提供了类似于<function>NVL</function>和<function>IFNULL</function>的能力，它们被用在某些其他数据库系统中。
+   </para>
+  </sect2>
+
+  <sect2 id="functions-nullif">
+   <title><literal>NULLIF</literal></title>
+
+  <indexterm>
+   <primary>NULLIF</primary>
+  </indexterm>
+
+<synopsis>
+<function>NULLIF</function>(<replaceable>value1</replaceable>, <replaceable>value2</replaceable>)
+</synopsis>
+
+  <para>
+   当<replaceable>value1</replaceable>和<replaceable>value2</replaceable>相等时，<function>NULLIF</function>返回一个空值。 
+   否则它返回<replaceable>value1</replaceable>。 这些可以用于执行前文给出的<function>COALESCE</function>示例的逆操作：
+<programlisting>
+SELECT NULLIF(value, '(none)') ...
+</programlisting>
+   在这个示例中，如果<literal>value</literal>是<literal>(none)</literal>，将返回空值，否则返回<literal>value</literal>的值。
+  </para>
+
+  <para>
+   这两个参数必须具有可比较的类型。具体来说，它们的比较与你写的 <literal><replaceable>value1</replaceable> = <replaceable>value2</replaceable></literal>完全一样，因此必须有一个合适的<literal>=</literal>操作符可用。
+  </para>
+
+  <para>
+   结果的类型与第一个参数相同，但有一点细微的区别。实际上返回的是隐含 <literal>=</literal>操作符的第一个参数，在某些情况下，它将被提升以匹配第二个参数的类型。
+   例如，<literal>NULLIF(1, 2.2)</literal> 生成 <type>numeric</type>，因为没有<type>integer</type> <literal>=</literal> <type>numeric</type>操作符，只有<type>numeric</type> <literal>=</literal> <type>numeric</type>。
+  </para>
+
+  </sect2>
+
+  <sect2 id="functions-greatest-least">
+
+   <title><literal>GREATEST</literal>和<literal>LEAST</literal></title>
+
+  <indexterm>
+   <primary>GREATEST</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>LEAST</primary>
+  </indexterm>
+
+<synopsis>
+<function>GREATEST</function>(<replaceable>value</replaceable> <optional>, ...</optional>)
+</synopsis>
+
+<synopsis>
+<function>LEAST</function>(<replaceable>value</replaceable> <optional>, ...</optional>)
+</synopsis>
+
+   <para>
+    <function>GREATEST</function>和<function>LEAST</function>函数从一个任意的数字表达式列表里选取最大或者最小的数值。 这些表达式必须都可以转换成一个普通的数据类型，它将会是结果类型 （参阅<xref linkend="typeconv-union-case"/>获取细节）。列表中的 NULL 数值将被忽略。只有所有表达式的结果都是 NULL 的时候，结果才会是 NULL。
+   </para>
+
+   <para>
+    请注意<function>GREATEST</function>和<function>LEAST</function>都不是 SQL 标准，但却是很常见的扩展。某些其他数据库让它们在任何参数为 NULL 时返回 NULL，而不是在所有参数都为 NULL 时才返回 NULL。
+   </para>
+  </sect2>
+ </sect1>

@@ -2,7 +2,7 @@
 #
 # Build PostgreSQL HTML documentation from a standalone doc source directory.
 #
-# Usage: build_standalone_docsrc.sh <doc-src-dir> <en|zh> <major.minor> [output-dir]
+# Usage: build_standalone_docsrc.sh <doc-src-dir> <en|zh> <version> [output-dir]
 #
 # This script downloads the PG source tarball (cached), extracts it,
 # overlays your SGML files, runs configure + make to produce HTML docs.
@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 if [[ $# -lt 3 || $# -gt 4 ]]; then
-  echo "Usage: $0 <doc-src-dir> <en|zh> <major.minor> [output-dir]" >&2
+  echo "Usage: $0 <doc-src-dir> <en|zh> <version> [output-dir]" >&2
   exit 1
 fi
 
@@ -89,7 +89,12 @@ fi
 # --- Cache directories ---
 mkdir -p "${REPO_ROOT}/.cache/upstream" "${REPO_ROOT}/.cache/work"
 
-archive="${REPO_ROOT}/.cache/upstream/postgresql-${version}.tar.bz2"
+official_git_url="https://git.postgresql.org/git/postgresql.git"
+fallback_git_url="https://github.com/postgres/postgres.git"
+
+is_release_version() {
+  [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]]
+}
 
 download_archive() {
   local ver="$1"
@@ -105,26 +110,86 @@ download_archive() {
   fi
 }
 
-# --- Download PG source archive (cached) ---
-if [[ ! -f "${archive}" ]]; then
-  echo "Downloading source archive for PostgreSQL ${version} ..."
-  download_archive "${version}" "${archive}"
-fi
+resolve_git_ref() {
+  local ver="$1"
+  local stable_ref="REL_${ver}_STABLE"
+  local hash
 
-# Validate archive
-if ! tar -tjf "${archive}" >/dev/null 2>&1; then
-  echo "Archive invalid, re-downloading: ${archive}"
-  rm -f "${archive}"
-  download_archive "${version}" "${archive}"
-  tar -tjf "${archive}" >/dev/null
-fi
+  hash="$(git ls-remote --heads "${official_git_url}" "${stable_ref}" 2>/dev/null | awk 'NR==1 {print $1}')"
+  if [[ -n "${hash}" ]]; then
+    printf '%s %s %s\n' "${stable_ref}" "${hash}" "${REPO_ROOT}/.cache/upstream/postgresql-${ver}-stable"
+    return
+  fi
+
+  hash="$(git ls-remote --heads "${official_git_url}" master 2>/dev/null | awk 'NR==1 {print $1}')"
+  if [[ -z "${hash}" ]]; then
+    echo "Unable to resolve PostgreSQL git ref for version ${ver}" >&2
+    exit 1
+  fi
+
+  printf '%s %s %s\n' "master" "${hash}" "${REPO_ROOT}/.cache/upstream/postgresql-${ver}devel"
+}
+
+sync_git_checkout() {
+  local ver="$1"
+  local ref expected_hash cache_dir
+  read -r ref expected_hash cache_dir < <(resolve_git_ref "${ver}")
+
+  if [[ -d "${cache_dir}/.git" ]]; then
+    local current_hash
+    current_hash="$(git -C "${cache_dir}" rev-parse HEAD 2>/dev/null || true)"
+    if [[ "${current_hash}" == "${expected_hash}" ]]; then
+      printf '%s\n' "${cache_dir}"
+      return
+    fi
+  fi
+
+  rm -rf "${cache_dir}"
+
+  echo "Cloning PostgreSQL ${ver} source from ${ref} ..." >&2
+  if ! git clone --depth 1 --branch "${ref}" "${official_git_url}" "${cache_dir}"; then
+    rm -rf "${cache_dir}"
+    echo "Official PostgreSQL git mirror clone failed, falling back to GitHub mirror ..." >&2
+    git clone --depth 1 --branch "${ref}" "${fallback_git_url}" "${cache_dir}"
+  fi
+
+  local current_hash
+  current_hash="$(git -C "${cache_dir}" rev-parse HEAD)"
+  if [[ "${current_hash}" != "${expected_hash}" ]]; then
+    echo "Cloned git checkout does not match official ${ref} head." >&2
+    echo "  expected: ${expected_hash}" >&2
+    echo "  actual:   ${current_hash}" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "${cache_dir}"
+}
 
 # --- Prepare work tree ---
 work_tree="$(mktemp -d "${REPO_ROOT}/.cache/work/standalone-${lang}-${version}.XXXXXX")"
 trap '[[ "${keep_work}" == "1" ]] || rm -rf "${work_tree}"' EXIT
 
 echo "Preparing build workspace: ${work_tree}"
-tar -xjf "${archive}" -C "${work_tree}" --strip-components=1
+if is_release_version "${version}"; then
+  archive="${REPO_ROOT}/.cache/upstream/postgresql-${version}.tar.bz2"
+
+  if [[ ! -f "${archive}" ]]; then
+    echo "Downloading source archive for PostgreSQL ${version} ..."
+    download_archive "${version}" "${archive}"
+  fi
+
+  if ! tar -tjf "${archive}" >/dev/null 2>&1; then
+    echo "Archive invalid, re-downloading: ${archive}"
+    rm -f "${archive}"
+    download_archive "${version}" "${archive}"
+    tar -tjf "${archive}" >/dev/null
+  fi
+
+  tar -xjf "${archive}" -C "${work_tree}" --strip-components=1
+else
+  git_checkout="$(sync_git_checkout "${version}")"
+  rsync -a --exclude='.git' "${git_checkout}/" "${work_tree}/"
+fi
 
 # Overlay our SGML/XSL/CSS sources into the extracted source tree.
 # Exclude our project Makefile and .gitignore — the upstream Makefile.in

@@ -1,0 +1,526 @@
+<!-- doc/src/sgml/pgplanadvice.sgml -->
+
+<sect1 id="pgplanadvice" xreflabel="pg_plan_advice">
+ <title>pg_plan_advice —— 帮助规划器获得正确的计划</title>
+
+ <indexterm zone="pgplanadvice">
+  <primary>pg_plan_advice</primary>
+ </indexterm>
+
+ <para>
+  <filename>pg_plan_advice</filename>模块允许使用一种专门用途的“计划建议”迷你语言来描述、重现并更改关键的规划器决策。它的目标是帮助稳定用户认为合适的计划选择，同时也便于尝试规划器认为并非最优的计划。
+ </para>
+
+ <para>
+  请注意，由于规划器通常会做出不错的决定，强行覆盖它的判断很容易适得其反。例如，如果底层数据的分布发生变化，规划器通常可以调整计划，以尽量保持良好的性能。如果计划建议阻止了这种调整，就可能选出一个非常糟糕的计划。只有在约束规划器选择所带来的风险小于收益时，才应使用计划建议。
+ </para>
+
+ <sect2 id="pgplanadvice-getting-started">
+  <title>入门</title>
+
+  <para>
+   首先，必须设法加载 <literal>pg_plan_advice</literal> 模块。可以通过把
+   <literal>pg_plan_advice</literal> 加入
+   <xref linkend="guc-shared-preload-libraries"/> 并重启服务器来在整个系统范围内加载它；
+   也可以把它加入 <xref linkend="guc-session-preload-libraries"/> 并启动一个新会话；
+   或者使用 <link linkend="sql-load"><literal>LOAD</literal></link> 命令把它加载到单个会话中。
+  </para>
+
+  <para>
+   一旦加载了 <literal>pg_plan_advice</literal> 模块，
+   <link linkend="sql-explain"><literal>EXPLAIN</literal></link> 就会支持
+   <literal>PLAN_ADVICE</literal> 选项。可以用这个选项查看所选计划对应的计划建议字符串。例如：
+  </para>
+
+<programlisting>
+EXPLAIN (COSTS OFF, PLAN_ADVICE)
+        SELECT * FROM join_fact f JOIN join_dim d ON f.dim_id = d.id;
+             QUERY PLAN
+------------------------------------
+ Hash Join
+   Hash Cond: (f.dim_id = d.id)
+   ->  Seq Scan on join_fact f
+   ->  Hash
+         ->  Seq Scan on join_dim d
+ Generated Plan Advice:
+   JOIN_ORDER(f d)
+   HASH_JOIN(d)
+   SEQ_SCAN(f d)
+   NO_GATHER(f d)
+</programlisting>
+
+  <para>
+   在这个例子中，用户并没有指定任何建议；相反，允许规划器自行做出它认为最优的决定，然后把这些决定整理成一条建议字符串。<literal>JOIN_ORDER(f d)</literal> 表示 <literal>f</literal> 应该是驱动表，并且首先与 <literal>d</literal> 连接。<literal>HASH_JOIN(d)</literal> 表示 <literal>d</literal> 应该出现在哈希连接的内侧。<literal>SEQ_SCAN(f d)</literal> 表示 <literal>f</literal> 和 <literal>d</literal> 都应该通过顺序扫描访问。<literal>NO_GATHER(f d)</literal> 表示 <literal>f</literal> 和 <literal>d</literal> 都不应出现在 <literal>Gather</literal> 或 <literal>Gather Merge</literal> 节点下方。有关计划建议迷你语言的更多细节，请参阅下面的 <link linkend="pgplanadvice-targets">建议目标</link> 和 <link linkend="pgplanadvice-tags">建议标签</link>。
+  </para>
+
+  <para>
+   一旦你为某个查询得到了一条建议字符串，就可以用它来控制该查询的规划方式。做法是将
+   <literal>pg_plan_advice.advice</literal> 设置为你选定的建议字符串。这个字符串既可以是系统生成的，也可以是你自己编写的。编写自己的建议字符串的一种好办法，是取系统生成的字符串，然后只保留你希望强制执行的那些元素。在上面的例子中，<literal>pg_plan_advice</literal> 会为连接顺序、连接方法、扫描方法以及并行度的使用输出建议，但你可能只想控制连接顺序：
+  </para>
+
+<programlisting>
+SET pg_plan_advice.advice = 'JOIN_ORDER(f d)';
+EXPLAIN (COSTS OFF)
+        SELECT * FROM join_fact f JOIN join_dim d ON f.dim_id = d.id;
+             QUERY PLAN
+------------------------------------
+ Hash Join
+   Hash Cond: (f.dim_id = d.id)
+   ->  Seq Scan on join_fact f
+   ->  Hash
+         ->  Seq Scan on join_dim d
+ Supplied Plan Advice:
+   JOIN_ORDER(f d) /* matched */
+</programlisting>
+
+  <para>
+   由于 <literal>EXPLAIN</literal> 并未指定 <literal>PLAN_ADVICE</literal> 选项，所以不会为该计划生成建议字符串。不过，提供的计划建议仍会显示出来，这样查看 <literal>EXPLAIN</literal> 输出的人就能知道该计划受到了计划建议的影响。如果不希望显示提供的计划建议，可以把
+   <literal>pg_plan_advice.always_explain_supplied_advice = false</literal>。对于每一条提供的建议，输出都会显示
+   <link linkend="pgplanadvice-feedback">建议反馈</link>，表明该建议是否成功应用到查询中。在这个例子中，反馈显示为 <literal>/* matched */</literal>，表示 <literal>f</literal> 和 <literal>d</literal> 在查询中都找到了，而且生成的查询计划符合所指定的建议。
+  </para>
+
+ </sect2>
+
+ <sect2 id="pgplanadvice-how-it-works">
+  <title>工作原理</title>
+
+  <para>
+   计划建议是以命令式方式编写的，也就是说，它指定应该做什么。不过在实现层面上，<literal>pg_plan_advice</literal> 的工作方式是告诉核心规划器什么<emphasis>不</emphasis>应该做。换句话说，它是通过约束规划器的选择来工作的，而不是替换规划器。因此，无论你提供什么建议，你得到的都只会是核心规划器本来就会为相关查询考虑的计划。如果你试图通过提供一条建议字符串来强行得到你认为正确的计划，而规划器仍然无法生成所需计划，这意味着要么你的建议字符串有 bug，要么核心规划器根本没有把该计划视为可行。这通常有两个原因。第一，规划器可能认为你试图强制的计划在语义上不正确，也就是会产生错误结果，因此没有考虑它。第二，规划器可能因为除代价之外的原因拒绝了你希望生成的计划。例如，给定一个非常简单的查询，比如 <literal>SELECT * FROM some_table</literal>，查询规划器会在进行任何代价计算之前就判断这里使用索引毫无价值。即使你设置了 <literal>enable_seqscan = false</literal>，也无法强迫它在这个查询中使用索引；同样，也不能通过计划建议强迫它这样做。
+  </para>
+
+  <para>
+   指定计划建议不应导致规划器失败。不过，如果你指定了要求某些不可能之事的计划建议，<literal>EXPLAIN</literal> 输出中可能会有一些计划节点被标记为 <literal>Disabled: true</literal>。在某些情况下，这样的计划与完全没有提供建议时得到的计划基本相同，但在另一些情况下，它们可能糟得多。例如：
+  </para>
+
+<programlisting>
+SET pg_plan_advice.advice = 'JOIN_ORDER(x f d)';
+EXPLAIN (COSTS OFF)
+        SELECT * FROM join_fact f JOIN join_dim d ON f.dim_id = d.id;
+                     QUERY PLAN
+----------------------------------------------------
+ Nested Loop
+   Disabled: true
+   ->  Seq Scan on join_fact f
+   ->  Index Scan using join_dim_pkey on join_dim d
+         Index Cond: (id = f.dim_id)
+ Supplied Plan Advice:
+   JOIN_ORDER(x f d) /* partially matched */
+</programlisting>
+
+  <para>
+   由于 <literal>f</literal> 和 <literal>d</literal> 都不是 <literal>JOIN_ORDER()</literal> 规格中的第一个表，规划器会禁用它们之间的所有直接连接，认为应该先与 <literal>x</literal> 连接。由于规划不允许失败，最终还是会选出一个被禁用的两关系计划，但这里得到的是一个 <literal>Nested Loop</literal>，而不是前面那个未指定任何建议时选出的 <literal>Hash Join</literal>。这种情况可以通过多种不同方式发生；一旦发生，得到的计划通常会比完全没有指定建议时更差。因此，最好验证你指定的建议确实适用于它所对应的查询，而且结果符合预期。
+  </para>
+
+ </sect2>
+
+ <sect2 id="pgplanadvice-targets">
+  <title>建议目标</title>
+
+  <para>
+   <firstterm>建议目标</firstterm>用于唯一标识某个特定查询中涉及的某个关系的某个实例。在前面展示的简单例子中，建议目标就是关系别名。不过，当使用子查询、表分区，或者同一个关系别名在同一子查询中出现不止一次时，就需要更复杂的语法（例如 <literal>(foo JOIN bar ON foo.a = bar.a) x JOIN foo ON x.b = foo.b</literal>）。这三种情况还可以同时出现：一个关系可以被引用多次，可以是分区表，也可以位于子查询内部。
+  </para>
+
+  <para>
+   因此，关系标识符的一般语法是：
+  </para>
+
+<programlisting>
+alias_name#occurrence_number/partition_schema.partition_name@plan_name
+</programlisting>
+
+  <para>
+   除了 <literal>alias_name</literal> 之外，其余所有组成部分都是可选的，只在必要时才出现。某个组成部分省略时，前面的标点也必须同时省略。对于给定子查询中的某个关系首次出现，系统生成的建议会省略出现次数编号，但如果愿意，也可以写成 <literal>#1</literal>。分区模式和分区名只用于分区表的子项。在系统生成的建议中，<literal>pg_plan_advice</literal> 总是同时包含两者，但模式可以省略。计划名对顶层计划会省略，而对任何子计划都必须写出。
+  </para>
+
+  <para>
+   仅凭查看查询，并不总是容易确定正确的建议目标。比如，如果规划器把一个子查询拉升到父查询级别，那么其中的所有内容都会变成父查询级别的一部分，并使用父查询的子计划名（如果已拉升到顶层，则不使用子计划名）。此外，正确的子查询名有时也并不明显。例如，当两个查询通过 <literal>UNION</literal> 或 <literal>INTERSECT</literal> 之类的操作组合时，SQL 语法里不会给子查询指定名字；相反，系统会为每个分支分配一个生成的名字。发现正确建议目标的最简单方法是使用 <literal>EXPLAIN (PLAN_ADVICE)</literal> 并检查生成的建议。
+  </para>
+
+ </sect2>
+
+ <sect2 id="pgplanadvice-tags">
+  <title>建议标签</title>
+
+  <para>
+   <firstterm>建议标签</firstterm>用于指定查询某一部分应强制遵循的特定行为，例如某个特定的连接顺序或连接方法。所有建议标签都以
+   <link linkend="pgplanadvice-targets">建议目标</link> 作为参数，而且其中很多都允许使用建议目标列表，而这些列表在某些情况下可以嵌套多层。建议标签有好几类，每一类控制查询规划的一个不同方面。
+  </para>
+
+  <sect3 id="pgplanadvice-scan-method">
+  <title>扫描方法建议</title>
+   <synopsis>
+SEQ_SCAN(<replaceable>target</replaceable> [ ... ])
+TID_SCAN(<replaceable>target</replaceable> [ ... ])
+INDEX_SCAN(<replaceable>target</replaceable> <replaceable>index_name</replaceable> [ ... ])
+INDEX_ONLY_SCAN(<replaceable>target</replaceable> <replaceable>index_name</replaceable> [ ... ])
+FOREIGN_JOIN((<replaceable>target</replaceable> [ ... ]) [ ... ])
+BITMAP_HEAP_SCAN(<replaceable>target</replaceable> [ ... ])
+DO_NOT_SCAN(<replaceable>target</replaceable> [ ... ])</synopsis>
+
+   <para>
+    <literal>SEQ_SCAN</literal> 指定每个目标都应使用 <literal>Seq Scan</literal> 扫描。<literal>TID_SCAN</literal> 指定每个目标都应使用 <literal>TID Scan</literal> 或 <literal>TID Range Scan</literal> 扫描。<literal>BITMAP_HEAP_SCAN</literal> 指定每个目标都应使用 <literal>Bitmap Heap Scan</literal> 扫描。
+   </para>
+
+   <para>
+    <literal>INDEX_SCAN</literal> 指定每个目标都应使用给定索引名上的 <literal>Index Scan</literal> 扫描。<literal>INDEX_ONLY_SCAN</literal> 类似，但指定使用 <literal>Index Only Scan</literal>。在这两种情况下，索引名都可以带模式限定，也可以不带。
+   </para>
+
+   <para>
+    <literal>FOREIGN_JOIN</literal> 指定两个或多个外部表之间的连接应被下推到远端服务器，从而可以作为一个单独的 <literal>Foreign Scan</literal> 实现。对单个外部表指定 <literal>FOREIGN_JOIN</literal> 既没有必要，也不允许：无论如何都必须使用 <literal>Foreign Scan</literal>。如果想阻止某个连接被下推，可以考虑改用 <literal>JOIN_ORDER</literal> 标签。
+   </para>
+
+   <para>
+    <literal>DO_NOT_SCAN</literal> 指定某个特定目标在最终计划中根本不应出现。在大多数情况下，这不可能实现，只会让该目标关系的扫描被标记为禁用。不过，在某些情况下，规划器会考虑把计划树的一部分复制并修改，然后把它作为原始计划的替代方案。在这种情况下，<literal>DO_NOT_SCAN</literal> 可用于排除不优选的替代方案。
+   </para>
+
+   <para>
+    规划器还支持这里未列出的许多其他扫描类型；不过，在大多数这些情况下，并不存在有意义的决策可供选择，因此也就没有必要使用建议。例如，出现在 <literal>FROM</literal> 子句中的返回集合函数输出，只能通过 <literal>Function Scan</literal> 扫描，因此没有机会通过建议改变任何东西。
+   </para>
+
+  </sect3>
+
+  <sect3 id="pgplanadvice-join-order">
+  <title>连接顺序建议</title>
+   <synopsis>
+JOIN_ORDER(<replaceable>join_order_item</replaceable> [ ... ])
+
+<phrase>其中 <replaceable>join_order_item</replaceable> 为：</phrase>
+
+<replaceable>advice_target</replaceable> |
+( <replaceable>join_order_item</replaceable> [ ... ] ) |
+{ <replaceable>join_order_item</replaceable> [ ... ] }</synopsis>
+
+   <para>
+    当 <literal>JOIN_ORDER</literal> 不带任何子列表使用时，它指定一个外深连接，第一条建议目标作为驱动表，然后按指定顺序依次与后续每个建议目标连接。例如，<literal>JOIN_ORDER(a b c)</literal> 表示 <literal>a</literal> 应该是驱动表，并且先与 <literal>b</literal> 连接，再与 <literal>c</literal> 连接。如果查询中的关系比 <literal>a</literal>、<literal>b</literal> 和 <literal>c</literal> 更多，其余部分之后可以以任意方式连接。
+   </para>
+
+   <para>
+    如果 <literal>JOIN_ORDER</literal> 列表包含一个括号包围的子列表，它就表示一种非外深连接。子列表中的关系必须先彼此连接，方式类似于该子列表本身是一个顶层 <literal>JOIN_ORDER</literal> 列表，然后得到的连接结果必须在连接顺序中的适当位置出现在某个连接的内侧。例如，<literal>JOIN_ORDER(a (b c) d)</literal> 要求得到如下形式的计划：
+   </para>
+
+<programlisting>
+Join
+  ->  Join
+        -> Scan on a
+        -> Join
+             -> Scan on b
+             -> Scan on c
+  ->  Scan on d
+</programlisting>
+
+   <para>
+    如果 <literal>JOIN_ORDER</literal> 列表包含一个由大括号包围的子列表，它同样表示一种非外深连接。不过，子列表内部的连接顺序不受约束。例如，指定 <literal>JOIN_ORDER(a {b c} d)</literal> 就会允许上一个例子中 <literal>b</literal> 和 <literal>c</literal> 的扫描顺序互换，而使用圆括号时则不允许这样做。
+   </para>
+
+   <para>
+    括号子列表可以任意嵌套，但大括号子列表内部不能再包含子列表。
+   </para>
+
+   <para>
+    有时需要多个 <literal>JOIN_ORDER()</literal> 实例，才能完全约束连接顺序。这会发生在规划器分别优化多个连接问题时，例如因为存在子查询，或者因为存在分区式连接。在后一种情况下，分区式连接的每个分支都可以拥有自己的连接顺序，且与其他分支彼此独立。
+   </para>
+
+  </sect3>
+
+  <sect3 id="pgplanadvice-join-method">
+  <title>连接方法建议</title>
+   <synopsis>
+join_method_name(<replaceable>join_method_item</replaceable> [ ... ])
+
+<phrase>其中 <replaceable>join_method_name</replaceable> 为：</phrase>
+
+{ MERGE_JOIN_MATERIALIZE | MERGE_JOIN_PLAIN | NESTED_LOOP_MATERIALIZE | NESTED_LOOP_MEMOIZE | NESTED_LOOP_PLAIN | HASH_JOIN }
+
+<phrase>而 <replaceable>join_method_item</replaceable> 为：</phrase>
+
+{ <replaceable>advice_target</replaceable> |
+( <replaceable>advice_target</replaceable> [ ... ] ) }</synopsis>
+
+   <para>
+    连接方法建议指定某个关系或某组关系在使用指定连接方法时应出现在连接的内侧。例如，<literal>HASH_JOIN(a b)</literal> 表示 <literal>a</literal> 和 <literal>b</literal> 都应该出现在哈希连接的内侧；符合要求的计划必须至少包含两个哈希连接，其中一个在内侧只有 <literal>a</literal> 而没有别的东西，另一个在内侧只有 <literal>b</literal> 而没有别的东西。另一方面，<literal>HASH_JOIN((a b))</literal> 表示 <literal>a</literal> 和 <literal>b</literal> 的连接结果应当一起出现在单个哈希连接的内侧。
+   </para>
+
+   <para>
+    注意，连接方法建议会隐含一个负向的连接顺序约束。由于被命名的关系必须出现在使用指定方法的连接内侧，它们都不能成为整个连接问题的驱动表。此外，在这些关系彼此先连接完之前，集合中的任何关系都不能先与集合外的任何关系连接。例如，如果建议指定了 <literal>HASH_JOIN((a b))</literal>，而系统却先把其中任一关系与第三个关系 <literal>c</literal> 连接，那么得到的计划就永远不可能符合“把这两个关系恰好放在哈希连接内侧”的要求。当同一查询同时使用连接顺序建议和连接方法建议时，最好确保它们不会强制出彼此不兼容的连接顺序。
+   </para>
+
+  </sect3>
+
+  <sect3 id="pgplanadvice-partitionwise">
+  <title>分区式建议</title>
+   <synopsis>
+PARTITIONWISE(<replaceable>partitionwise_item</replaceable> [ ... ])
+
+<phrase>其中 <replaceable>partitionwise_item</replaceable> 为：</phrase>
+
+{ <replaceable>advice_target</replaceable> |
+( <replaceable>advice_target</replaceable> [ ... ] ) }</synopsis>
+
+   <para>
+    当应用于单个目标时，<literal>PARTITIONWISE</literal> 指定该表不应成为任何分区式连接的一部分。当应用于目标列表时，<literal>PARTITIONWISE</literal> 指定恰好这一组关系应以分区式方式连接。请注意，无论指定了什么建议，如果 <literal>enable_partitionwise_join = off</literal>，就不可能执行任何分区式连接。
+   </para>
+
+  </sect3>
+
+  <sect3 id="pgplanadvice-semijoin-unique">
+  <title>半连接唯一性建议</title>
+   <synopsis>
+SEMIJOIN_UNIQUE(<replaceable>sj_unique_item</replaceable> [ ... ])
+SEMIJOIN_NON_UNIQUE(<replaceable>sj_unique_item</replaceable> [ ... ])
+
+<phrase>其中 <replaceable>sj_unique_item</replaceable> 为：</phrase>
+
+{ <replaceable>advice_target</replaceable> |
+( <replaceable>advice_target</replaceable> [ ... ] ) }</synopsis>
+
+   <para>
+    规划器有时可以在直接实现半连接，和先把可空侧做成唯一再执行内连接，这两种方式之间选择。<literal>SEMIJOIN_UNIQUE</literal> 指定后一种策略，而 <literal>SEMIJOIN_NON_UNIQUE</literal> 指定前一种策略。在这两种情况下，参数都是位于连接可空侧下方的单个关系或关系列表。
+   </para>
+
+  </sect3>
+
+  <sect3 id="pgplanadvice-parallel-query">
+  <title>并行查询建议</title>
+   <synopsis>
+GATHER(<replaceable>gather_item</replaceable> [ ... ])
+GATHER_MERGE(<replaceable>gather_item</replaceable> [ ... ])
+NO_GATHER(<replaceable>advice_target</replaceable> [ ... ])
+
+<phrase>其中 <replaceable>gather_item</replaceable> 为：</phrase>
+
+{ <replaceable>advice_target</replaceable> |
+( <replaceable>advice_target</replaceable> [ ... ] ) }</synopsis>
+
+   <para>
+    <literal>GATHER</literal> 或 <literal>GATHER_MERGE</literal> 指定应分别在单个目标关系之上，或在目标所指定的一组关系的连接之上放置 <literal>Gather</literal> 或 <literal>Gather Merge</literal>。这意味着 <literal>GATHER(a b c)</literal> 是要求三个不同的 <literal>Gather</literal> 节点，而 <literal>GATHER((a b c))</literal> 则是要求在一个三路连接之上放置一个 <literal>Gather</literal> 节点。
+   </para>
+
+   <para>
+    <literal>NO_GATHER</literal> 指定在任何一个目标上方都不应出现 <literal>Gather</literal> 或 <literal>Gather Merge</literal> 节点，但它只约束单个子查询的规划，而外层子查询级别仍然可以使用并行查询。例如，<literal>NO_GATHER(inner_example@any_1)</literal> 会禁止在 <literal>any_1</literal> 子查询中使用 <literal>Parallel Seq Scan</literal> 访问 <literal>inner_example</literal> 表，但不会阻止规划器把 <literal>SubPlan any_1</literal> 放在 <literal>Gather</literal> 或 <literal>Gather Merge</literal> 节点下方。下面的计划与 <literal>NO_GATHER(inner_example@any_1)</literal> 兼容，但与 <literal>NO_GATHER(outer_example)</literal> 不兼容：
+   </para>
+
+<programlisting>
+ Finalize Aggregate
+   ->  Gather
+         ->  Partial Aggregate
+               ->  Parallel Seq Scan on outer_example
+                     Filter: (something = (hashed SubPlan any_1).col1)
+                     SubPlan any_1
+                       ->  Seq Scan on inner_example
+                             Filter: (something_else > 100)
+</programlisting>
+
+   <para>
+    下面是相反的情况，也就是一个与 <literal>NO_GATHER(outer_example)</literal> 兼容、但与 <literal>NO_GATHER(inner_example@any_1)</literal> 不兼容的计划：
+   </para>
+
+<programlisting>
+ Aggregate
+   ->  Seq Scan on outer_example
+         Filter: (something = (hashed SubPlan any_1).col1)
+         SubPlan any_1
+           ->  Gather
+                 -> Parallel Seq Scan on inner_example
+                      Filter: (something_else > 100)
+</programlisting>
+
+  </sect3>
+ </sect2>
+
+ <sect2 id="pgplanadvice-feedback">
+  <title>建议反馈</title>
+
+  <para>
+   <literal>EXPLAIN</literal> 会通过在每一条提供的建议上附加注释的形式，反馈所提供的建议是否成功应用到了查询中。例如：
+  </para>
+
+<programlisting>
+SET pg_plan_advice.advice = 'hash_join(f g) join_order(f g) index_scan(f no_such_index)';
+EXPLAIN (COSTS OFF)
+    SELECT * FROM jo_fact f
+    LEFT JOIN jo_dim1 d1 ON f.dim1_id = d1.id
+    LEFT JOIN jo_dim2 d2 ON f.dim2_id = d2.id
+    WHERE val1 = 1 AND val2 = 1;
+                            QUERY PLAN
+-------------------------------------------------------------------
+ Hash Join
+   Hash Cond: ((d1.id = f.dim1_id) AND (d2.id = f.dim2_id))
+   ->  Nested Loop
+         ->  Seq Scan on jo_dim2 d2
+               Filter: (val2 = 1)
+         ->  Materialize
+               ->  Seq Scan on jo_dim1 d1
+                     Filter: (val1 = 1)
+   ->  Hash
+         ->  Seq Scan on jo_fact f
+ Supplied Plan Advice:
+   INDEX_SCAN(f no_such_index) /* matched, inapplicable, failed */
+   HASH_JOIN(f) /* matched */
+   HASH_JOIN(g) /* not matched */
+   JOIN_ORDER(f g) /* partially matched */
+</programlisting>
+
+  <para>
+   对于这个查询，<literal>f</literal> 是一个有效的建议目标，但 <literal>g</literal> 不是。因此，把 <literal>f</literal> 放到哈希连接内侧的请求会标记为 <literal>matched</literal>，而把 <literal>g</literal> 放到哈希连接内侧的请求会标记为 <literal>not matched</literal>。<literal>JOIN_ORDER</literal> 建议标签涉及一个有效目标和一个无效目标，因此会标记为 <literal>partially matched</literal>。请注意，<literal>HASH_JOIN(f g)</literal> 实际上是对两个逻辑上彼此独立的行为的请求，所以在反馈中它会被拆分成 <literal>HASH_JOIN(f)</literal> 和 <literal>HASH_JOIN(g)</literal>。相比之下，<literal>JOIN_ORDER(f g)</literal> 是单个请求，因此会原样显示。
+  </para>
+
+  <para>
+   建议反馈可以包含以下任意一种状态：
+  </para>
+
+  <itemizedlist>
+
+   <listitem>
+    <para>
+     <literal>matched</literal> 表示在查询规划期间，所有指定的建议目标都被一起观察到，而且当时建议可以被强制执行。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>partially matched</literal> 表示在查询规划期间，只观察到部分而非全部指定的建议目标，或者虽然观察到了所有建议目标，但它们没有同时出现。例如，如果 <literal>JOIN_ORDER</literal> 建议的所有目标各自都与查询匹配，但所建议的连接顺序不合法，就可能发生这种情况。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>not matched</literal> 表示在查询规划期间，没有观察到任何指定的建议目标。如果建议本身就与查询不匹配，就会发生这种情况；如果查询中相关部分根本没有被规划，也可能出现这种情况，比如它被一个简化为常量 false 的条件挡住了。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>inapplicable</literal> 表示由于某种原因，该建议标签无法应用到这些建议目标上。例如，在请求使用一个不存在的索引时，或者试图对一个并非半连接的对象控制半连接唯一性时，就会发生这种情况。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>conflicting</literal> 表示两条或更多建议请求了彼此不兼容的行为。例如，如果你对同一张表同时建议顺序扫描和索引扫描，这两个请求都会被标记为冲突。如果连接方法建议或半连接唯一性建议隐含的连接顺序与显式指定的连接顺序不兼容，这种情况也很常见；参见 <xref linkend="pgplanadvice-join-method" />。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     <literal>failed</literal> 表示查询计划不符合该建议。这只会出现在同样被显示为 <literal>matched</literal> 的条目上。它经常出现在同时被标记为 <literal>conflicting</literal> 或 <literal>inapplicable</literal> 的条目上。不过，它也可能出现在这样一种情况下：就 <literal>pg_plan_advice</literal> 能判断的范围而言，该建议本身是有效的，但规划器无法构造出一个能满足该建议的合法计划。需要注意的是，<literal>pg_plan_advice</literal> 执行的健全性检查相当表面化，主要只是检查建议字符串中的逻辑矛盾；真正能否工作，只有规划器才知道。
+    </para>
+   </listitem>
+
+  </itemizedlist>
+
+  <para>
+   所有建议都应且只能被标记为 <literal>matched</literal>、<literal>partially matched</literal> 或 <literal>not matched</literal> 中的一种。
+  </para>
+
+ </sect2>
+
+ <sect2 id="pgplanadvice-config-params">
+  <title>配置参数</title>
+
+  <variablelist>
+
+   <varlistentry>
+    <term>
+     <varname>pg_plan_advice.advice</varname> (<type>string</type>)
+     <indexterm>
+      <primary><varname>pg_plan_advice.advice</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <varname>pg_plan_advice.advice</varname> 是查询规划期间要使用的建议字符串。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <varname>pg_plan_advice.always_explain_supplied_advice</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>pg_plan_advice.always_explain_supplied_advice</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <varname>pg_plan_advice.always_explain_supplied_advice</varname> 会让 <literal>EXPLAIN</literal> 始终显示任何提供的建议及其相关的
+      <link linkend="pgplanadvice-feedback">建议反馈</link>。默认值为 <literal>true</literal>。如果设置为 <literal>false</literal>，则只有在使用 <literal>EXPLAIN (PLAN_ADVICE)</literal> 时才会显示这些信息。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <varname>pg_plan_advice.always_store_advice_details</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>pg_plan_advice.always_store_advice_details</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <varname>pg_plan_advice.always_store_advice_details</varname> 允许 <literal>EXPLAIN</literal> 在使用预备查询时也显示与计划建议相关的细节。默认值为 <literal>false</literal>。在规划一个预备查询时，不可能知道之后是否会使用 <literal>EXPLAIN</literal>，因此默认情况下，为了降低开销，<literal>pg_plan_advice</literal> 不会为该查询生成计划建议或提供建议反馈。这意味着如果对预备查询使用 <literal>EXPLAIN EXECUTE</literal>，就无法显示这些信息。把这个设置改成 <literal>true</literal> 可以避免这个问题，但会增加额外开销。通常更好的做法是只在需要的会话中启用这个选项，而不是在整个系统范围内启用。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <varname>pg_plan_advice.feedback_warnings</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>pg_plan_advice.feedback_warnings</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      设为 true 时，<varname>pg_plan_advice.feedback_warnings</varname> 会在提供的计划建议未能成功强制执行时发出警告。默认值为 <literal>false</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <varname>pg_plan_advice.trace_mask</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>pg_plan_advice.trace_mask</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      当 <varname>pg_plan_advice.trace_mask</varname> 为 <literal>true</literal> 时，<literal>pg_plan_advice</literal> 会在查询规划期间，每次根据提供的计划建议修改允许的查询计划类型掩码时输出消息。默认值为 <literal>false</literal>。此设置打印的消息除了用于调试该模块之外，通常并无实际价值。
+     </para>
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+
+ </sect2>
+
+ <sect2 id="pgplanadvice-limitations">
+  <title>限制</title>
+
+  <para>
+   目前还不能通过计划建议来控制规划器在聚合方面的任何行为。这既包括聚合是通过排序还是通过哈希来计算，也包括是否使用诸如 <link linkend="guc-enable-eager-aggregate">急切聚合</link> 或 <link linkend="guc-enable-partitionwise-aggregate">分区式聚合</link> 之类的策略。
+  </para>
+
+  <para>
+   目前也还不能通过计划建议来控制规划器在 <literal>UNION</literal> 或 <literal>INTERSECT</literal> 等集合操作方面的任何行为。
+  </para>
+
+  <para>
+   如上面 <link linkend="pgplanadvice-how-it-works">工作原理</link> 所述，计划建议只能影响规划器从它认为可行的计划中选择哪一个。它永远不能强迫规划器选择一个它一开始就拒绝考虑的计划。
+  </para>
+ </sect2>
+
+ <sect2 id="pgplanadvice-author">
+  <title>作者</title>
+
+  <para>
+   Robert Haas <email>rhaas@postgresql.org</email>
+  </para>
+ </sect2>
+
+</sect1>

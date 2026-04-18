@@ -1,0 +1,606 @@
+<!-- doc/src/sgml/oauth-validators.sgml -->
+
+<chapter id="oauth-validators">
+ <title>OAuth 验证器模块</title>
+ <indexterm zone="oauth-validators">
+  <primary>OAuth 验证器</primary>
+ </indexterm>
+ <para>
+  <productname>PostgreSQL</productname> 提供了用于创建自定义模块的基础设施，
+  以在服务器端执行 OAuth Bearer 令牌校验。
+  由于 OAuth 的实现差异很大，而且 Bearer 令牌校验高度依赖签发方，
+  服务器本身无法直接检查令牌；验证器模块在服务器与所使用的 OAuth
+  提供方之间提供了集成层。
+ </para>
+ <para>
+  OAuth 验证器模块至少必须包含一个初始化函数
+  （见 <xref linkend="oauth-validator-init"/>）以及一个执行校验所需的回调
+  （见 <xref linkend="oauth-validator-callback-validate"/>）。
+ </para>
+ <warning>
+  <para>
+   由于行为异常的验证器可能让未授权用户进入数据库，
+   正确实现对于服务器安全至关重要。
+   设计注意事项见 <xref linkend="oauth-validator-design"/>。
+  </para>
+ </warning>
+
+ <sect1 id="oauth-validator-design">
+  <title>安全地设计验证器模块</title>
+  <warning>
+   <para>
+    在实现验证器模块之前，请先完整阅读并理解本节内容。
+    失效的验证器可能比完全没有认证更糟，
+    既会带来错误的安全感，也可能助长针对 OAuth 生态中其他组件的攻击。
+   </para>
+  </warning>
+
+  <sect2 id="oauth-validator-design-responsibilities">
+   <title>验证器职责</title>
+   <para>
+    虽然不同模块在令牌校验上可能采用截然不同的方法，
+    但实现通常需要执行三个彼此独立的步骤：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>验证令牌</term>
+     <listitem>
+      <para>
+       验证器首先必须确保所提供的令牌确实是可用于客户端认证的有效 Bearer 令牌。
+       正确做法依赖具体提供方，但通常涉及以下两种方式之一：
+       通过密码学操作证明令牌由受信任方创建（离线校验），
+       或将令牌提交给受信任方，由其代为校验（在线校验）。
+      </para>
+      <para>
+       在线校验通常通过
+       <ulink url="https://datatracker.ietf.org/doc/html/rfc7662">OAuth Token
+       Introspection</ulink> 实现，验证器模块所需步骤更少，
+       并且在令牌被盗用或错误签发时可进行集中吊销。
+       但这要求模块在每次认证尝试时至少执行一次网络调用
+       （且都必须在配置的 <xref linkend="guc-authentication-timeout"/> 内完成）。
+       此外，提供方可能并不提供供外部资源服务器使用的内省端点。
+      </para>
+      <para>
+       离线校验要复杂得多，通常要求验证器维护提供方的受信任签名密钥列表，
+       然后同时检查令牌的密码学签名及其内容。
+       实现必须严格遵循提供方说明，
+       包括对签发者（“该令牌来自哪里？”）、受众（“该令牌给谁用？”）
+       和有效期（“该令牌何时可用？”）的全部验证。
+       由于模块与提供方之间没有通信，使用该方法无法集中吊销令牌；
+       离线验证器实现可以考虑限制令牌有效期的最大长度。
+      </para>
+      <para>
+       如果令牌无法通过校验，模块应立即失败。
+       若 Bearer 令牌并非由受信任方签发，后续认证/授权都没有意义。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>授权客户端</term>
+     <listitem>
+      <para>
+       接下来，验证器必须确保终端用户已授权客户端代表其访问服务器。
+       这通常需要检查分配给令牌的作用域（scope），
+       以确认其覆盖当前 HBA 参数所要求的数据库访问权限。
+      </para>
+      <para>
+       该步骤的目的是防止 OAuth 客户端在虚假前提下获取令牌。
+       如果验证器要求所有令牌都必须携带覆盖数据库访问的作用域，
+       提供方在流程中就应明确提示用户授予该访问权限。
+       这样一来，如果客户端本不应使用其凭据连接数据库，
+       用户就有机会拒绝该请求。
+      </para>
+      <para>
+       也可以通过部署架构的带外知识在没有显式作用域的情况下完成客户端授权，
+       但这样会把用户排除在环路之外，
+       用户将无法发现部署错误，而此类错误也可能被静默利用。
+       如果不提示用户授予额外作用域，
+       则对数据库的访问必须被严格限制为仅允许受信任客户端
+       <footnote>
+        <para>
+         即，“受信任”是指 OAuth 客户端与
+         <productname>PostgreSQL</productname> 服务器由同一实体控制。
+         特别地，libpq 支持的 Device Authorization 客户端流程通常不满足此条件，
+         因为它的设计目标是公开/非受信任客户端。
+        </para>
+       </footnote>
+       。
+      </para>
+      <para>
+       即使授权失败，模块也可以选择继续从令牌中提取认证信息，
+       用于审计和调试。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>认证终端用户</term>
+     <listitem>
+      <para>
+       最后，验证器应确定该令牌对应的用户标识符，
+       可通过向提供方请求此信息或直接从令牌中提取，
+       然后将该标识符返回给服务器
+       （服务器随后会基于 HBA 配置作出最终授权决策）。
+       该标识符可在会话中通过
+       <link linkend="functions-info-session-table"><function>system_user</function></link>
+       获取；若启用 <xref linkend="guc-log-connections"/>，也会被记录到服务器日志。
+      </para>
+      <para>
+       不同提供方可能记录多种不同的终端用户认证信息，
+       通常称为 <emphasis>声明</emphasis>（claims）。
+       提供方一般会说明哪些声明足够可信，可用于授权决策，哪些不行。
+       （例如，将终端用户全名作为认证标识符通常并不明智，
+       因为很多提供方允许用户任意修改显示名称。）
+       最终应使用哪个声明（或哪些声明的组合），
+       取决于提供方实现和应用需求。
+      </para>
+      <para>
+       还需注意，通过启用用户名映射委派也可以实现匿名/化名登录；
+       参见 <xref linkend="oauth-validator-design-usermap-delegation"/>。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 id="oauth-validator-design-guidelines">
+   <title>通用编码准则</title>
+   <para>
+    在实现令牌校验时，开发者应注意以下事项：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>令牌机密性</term>
+     <listitem>
+      <para>
+       模块不应将令牌或令牌片段写入服务器日志。
+       即使模块判定令牌无效，也应遵循此原则；
+       否则，诱导客户端与错误提供方通信的攻击者可能从磁盘中取回该令牌
+       （该令牌本身可能对正确提供方仍然有效）。
+      </para>
+      <para>
+       若实现需要通过网络发送令牌（例如与提供方进行在线令牌校验），
+       必须认证对端并确保使用强传输安全。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>日志记录</term>
+     <listitem>
+      <para>
+       为了只记录验证失败的原因，模块可以在
+       <link linkend="oauth-validator-callback-validate">validate 回调</link>
+       中设置自由格式的 <structfield>error_detail</structfield> 字段。
+       （<xref linkend="error-style-guide"/>提供了编写良好
+       <literal>DETAIL</literal> 消息的指导。）<structfield>error_detail</structfield>
+       只会作为最终认证失败消息的一部分打印到服务器日志中，不会与客户端共享。
+      </para>
+      <para>
+       模块还可以使用与标准扩展相同的
+       <link linkend="error-message-reporting">日志功能</link>；
+       但在连接认证阶段，向客户端发出日志条目的规则存在细微差异。
+       一般来说，为避免向未认证客户端泄露信息，
+       模块应以 <symbol>COMMERROR</symbol> 级别记录问题并正常返回，
+       而不是使用 <symbol>ERROR</symbol>/<symbol>FATAL</symbol>
+       来展开调用栈。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>可中断性</term>
+     <listitem>
+      <para>
+       模块必须保持可被信号中断，
+       这样服务器才能正确处理认证超时和来自
+       <application>pg_ctl</application> 的停机信号。
+       例如，套接字上的阻塞调用通常应替换为可无竞争地同时处理
+       套接字事件与中断的代码（见 <function>WaitLatchOrSocket()</function>、
+       <function>WaitEventSetWait()</function> 等），
+       且长时间运行的循环应定期调用
+       <function>CHECK_FOR_INTERRUPTS()</function>。
+       不遵循该建议可能导致后端会话失去响应。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>测试</term>
+     <listitem>
+      <para>
+       OAuth 系统测试的完整范围远超本文档讨论范围，
+       但至少应将负向测试视为强制要求。
+       设计一个允许已授权用户登录的模块很容易；
+       该系统的核心目的在于阻止未授权用户进入。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>文档</term>
+     <listitem>
+      <para>
+       验证器实现应记录针对每个终端用户向服务器报告的认证 ID 的内容和格式，
+       因为 DBA 可能需要据此构造 pg_ident 映射。
+       （例如，它是邮箱地址？组织 ID 号？还是 UUID？）
+       还应记录该模块在
+       <symbol>delegate_ident_mapping=1</symbol> 模式下是否可安全使用，
+       以及为此需要哪些额外配置。
+      </para>
+      <para>
+       如果实现提供了<link linkend="oauth-validator-hba">自定义 HBA 选项</link>，
+       这些选项的名称和语法也应当记录。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 id="oauth-validator-design-usermap-delegation">
+   <title>授权用户（用户名映射委派）</title>
+   <para>
+    验证器模块通常返回用户标识符，
+    服务器随后会将其与已配置的
+    <link linkend="auth-username-maps"><filename>pg_ident.conf</filename>
+    映射</link>进行比较，以确定终端用户是否被授权连接。
+    不过，OAuth 本身就是授权框架，
+    令牌也可能携带用户权限信息。
+    例如，令牌可能包含用户所属组织组的信息，
+    或列出用户可承担的角色，
+    将这些信息复制到每台服务器的本地用户名映射中可能并不理想。
+   </para>
+   <para>
+    若要完全绕过用户名映射，并让验证器模块承担额外的用户连接授权职责，
+    可在 HBA 中配置 <xref linkend="auth-oauth-delegate-ident-mapping"/>。
+    此后模块可使用令牌作用域或等效方法判断用户是否允许以其期望角色连接。
+    用户标识符仍会由服务器记录，但它不再参与是否继续连接的判定。
+   </para>
+   <para>
+    在该方案下，认证本身也是可选的。
+    只要模块报告连接已获授权，即使完全没有记录用户标识符，登录仍可继续。
+    这使得实现对数据库的匿名或化名访问成为可能，
+    在这种情况下，第三方提供方执行所有必要的认证，
+    但不向服务器提供任何可识别用户的信息。
+    （某些提供方可能改为提供可记录的匿名化 ID 编号，以便后续审计。）
+   </para>
+   <para>
+    用户名映射委派提供了最大的架构灵活性，
+    但也会使验证器模块成为连接授权的单点故障。
+    请谨慎使用。
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="oauth-validator-init">
+  <title>初始化函数</title>
+  <indexterm zone="oauth-validator-init">
+   <primary>_PG_oauth_validator_module_init</primary>
+  </indexterm>
+  <para>
+   OAuth 验证器模块从
+   <xref linkend="guc-oauth-validator-libraries"/> 列出的共享库中动态加载。
+   当正在进行的登录请求需要它们时，模块会按需加载。
+   库定位使用常规库搜索路径。
+   为了提供验证器回调并声明该库是 OAuth 验证器模块，
+   必须提供名为
+   <function>_PG_oauth_validator_module_init</function> 的函数。
+   该函数的返回值必须是指向
+   <structname>OAuthValidatorCallbacks</structname> 类型结构体的指针，
+   其中包含魔数以及指向模块令牌校验函数的指针。
+   返回的指针必须具有服务器生命周期，
+   通常通过在全局作用域中将其定义为
+   <literal>static const</literal> 变量实现。
+<programlisting>
+typedef struct OAuthValidatorCallbacks
+{
+    uint32        magic;            /* must be set to PG_OAUTH_VALIDATOR_MAGIC */
+
+    ValidatorStartupCB startup_cb;
+    ValidatorShutdownCB shutdown_cb;
+    ValidatorValidateCB validate_cb;
+} OAuthValidatorCallbacks;
+
+typedef const OAuthValidatorCallbacks *(*OAuthValidatorModuleInit) (void);
+</programlisting>
+
+   只有 <function>validate_cb</function> 回调是必需的，
+   其他回调为可选。
+  </para>
+ </sect1>
+
+ <sect1 id="oauth-validator-callbacks">
+  <title>OAuth 验证器回调</title>
+  <para>
+   OAuth 验证器模块通过定义一组回调来实现其功能。
+   服务器会按需调用这些回调，以处理来自用户的认证请求。
+  </para>
+
+  <sect2 id="oauth-validator-callback-startup">
+   <title>启动回调</title>
+   <para>
+    <function>startup_cb</function> 回调在模块加载后立即执行。
+    该回调用于建立本地状态、定义<link linkend="oauth-validator-hba">自定义 HBA 选项</link>，
+    并在需要时执行额外初始化。若验证器模块需要保存状态，可使用
+    <structfield>state->private_data</structfield> 存储。
+
+<programlisting>
+typedef void (*ValidatorStartupCB) (ValidatorModuleState *state);
+</programlisting>
+   </para>
+  </sect2>
+
+  <sect2 id="oauth-validator-callback-validate">
+   <title>校验回调</title>
+   <para>
+    <function>validate_cb</function> 回调在 OAuth 交换过程中执行，
+    即用户尝试使用 OAuth 进行认证时。
+    之前调用中设置的任何状态都可通过
+    <structfield>state->private_data</structfield> 访问。
+
+<programlisting>
+typedef bool (*ValidatorValidateCB) (const ValidatorModuleState *state,
+                                     const char *token, const char *role,
+                                     ValidatorModuleResult *result);
+</programlisting>
+
+    <replaceable>token</replaceable> 包含待校验的 Bearer 令牌。
+    <application>PostgreSQL</application> 已保证该令牌在语法上格式正确，
+    但尚未执行任何其他校验。
+    <replaceable>role</replaceable> 包含用户请求登录的角色。
+    回调必须在 <literal>result</literal> 结构体中设置输出参数，
+    其定义如下：
+
+<programlisting>
+typedef struct ValidatorModuleResult
+{
+    bool        authorized;
+    char       *authn_id;
+    char       *error_detail;
+} ValidatorModuleResult;
+</programlisting>
+
+    仅当模块将 <structfield>result->authorized</structfield>
+    设为 <literal>true</literal> 时，连接才会继续。
+    为完成用户认证，已认证用户名（由令牌确定）应通过 palloc 分配，
+    并在 <structfield>result->authn_id</structfield> 字段中返回。
+    另一种情况是：若令牌有效但无法确定关联用户身份，
+    可将 <structfield>result->authn_id</structfield> 设为 NULL。
+   </para>
+   <para>
+    验证器可返回 <literal>false</literal> 以表示内部错误，
+    此时所有结果参数都会被忽略，连接失败。
+    否则，验证器应返回 <literal>true</literal>，
+    表示其已处理该令牌并作出授权决策。
+   </para>
+   <para>
+    在验证错误或内部错误这两种失败情况下，模块都可以在
+    <structfield>result->error_detail</structfield> 中保存一段供用户阅读的失败原因。
+    这会作为认证失败的 <literal>DETAIL</literal> 条目打印到服务器日志中（不会发送给客户端）。
+    <structfield>error_detail</structfield> 指向的内存可以是 <function>palloc</function>
+    分配的，也可以是静态存储期内存。成功时会忽略 <structfield>error_detail</structfield>。
+   </para>
+   <para>
+    <function>validate_cb</function> 返回后的行为取决于具体 HBA 配置。
+    在常规情况下，<structfield>result->authn_id</structfield> 中的用户名
+    必须与用户要登录的角色完全匹配（该行为可通过用户名映射修改）。
+    但如果根据启用了 <literal>delegate_ident_mapping</literal>
+    的 HBA 规则进行认证，
+    <productname>PostgreSQL</productname> 不会对
+    <structfield>result->authn_id</structfield> 的值做任何检查；
+    此时由验证器负责确保令牌具备足够权限，
+    以便用户能以指定的 <replaceable>role</replaceable> 登录。
+   </para>
+  </sect2>
+
+  <sect2 id="oauth-validator-callback-shutdown">
+   <title>关闭回调</title>
+   <para>
+    <function>shutdown_cb</function> 回调在与连接关联的后端进程退出时执行。
+    如果验证器模块分配了状态，
+    该回调应释放相关资源以避免泄漏。
+<programlisting>
+typedef void (*ValidatorShutdownCB) (ValidatorModuleState *state);
+</programlisting>
+   </para>
+  </sect2>
+
+ </sect1>
+
+ <sect1 id="oauth-validator-hba">
+  <title>自定义 HBA 选项</title>
+
+  <para>
+   和其他预加载库一样，验证器模块可以为用户在
+   <filename>postgresql.conf</filename>中配置
+   <link linkend="runtime-config-custom">自定义 GUC 参数</link>。
+   不过，有时可能希望在更细粒度的层面配置行为（例如针对某个特定签发者
+   或某一组用户），而不是全局配置。
+  </para>
+
+  <para>
+   从<productname>PostgreSQL</productname> 19 开始，验证器实现可以定义供
+   <filename>pg_hba.conf</filename> 内使用的自定义选项。这些选项会
+   <link linkend="auth-oauth-validator-option">以</link>
+   <literal>validator.<replaceable>option</replaceable></literal> 的形式提供给用户。
+   注册和获取自定义选项的 API 如下所述。
+  </para>
+
+  <sect2 id="oauth-validator-hba-api">
+   <title>选项 API</title>
+    <para>
+     模块在 <function>startup_cb</function> 回调期间使用
+     <function>RegisterOAuthHBAOptions()</function> 注册自定义 HBA 选项名：
+
+<programlisting>
+/*
+ * Register a list of custom option names for use in pg_hba.conf. For each name
+ * "foo" registered here, that option will be provided as "validator.foo" in
+ * the HBA.
+ *
+ * Valid option names consist of alphanumeric ASCII, underscore (_), and hyphen
+ * (-). Invalid option names will be ignored with a WARNING logged at
+ * connection time.
+ *
+ * This function may only be called during the startup_cb callback. Multiple
+ * calls are permitted, which will append to the existing list of registered
+ * options; options cannot be unregistered.
+ *
+ * Parameters:
+ *
+ * - state: the state pointer passed to the startup_cb callback
+ * - num:   the number of options in the opts array
+ * - opts:  an array of null-terminated option names to register
+ *
+ * The list of option names is copied internally, and the opts array is not
+ * required to remain valid after the call.
+ */
+void RegisterOAuthHBAOptions(ValidatorModuleState *state, int num,
+                             const char *opts[]);
+</programlisting>
+    </para>
+
+    <para>
+     如果设置了某个选项，可以随后使用 <function>GetOAuthHBAOption()</function> 获取它的值：
+
+<programlisting>
+/*
+ * Retrieve the string value of an HBA option which was registered via
+ * RegisterOAuthHBAOptions(). Usable only during validate_cb or shutdown_cb.
+ *
+ * If the user has set the corresponding option in pg_hba.conf, this function
+ * returns that value as a null-terminated string, which must not be modified
+ * or freed. NULL is returned instead if the user has not set this option, if
+ * the option name was not registered, or if this function is incorrectly called
+ * during the startup_cb.
+ *
+ * Parameters:
+ *
+ * - state:   the state pointer passed to the validate_cb/shutdown_cb callback
+ * - optname: the name of the option to retrieve
+ */
+const char *GetOAuthHBAOption(const ValidatorModuleState *state,
+                              const char *optname);
+</programlisting>
+    </para>
+
+    <para>
+     示例用法见 <xref linkend="oauth-validator-hba-example-usage"/>。
+    </para>
+  </sect2>
+
+  <sect2 id="oauth-validator-hba-limitations">
+   <title>限制</title>
+   <para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       选项名仅限 ASCII 字母数字字符、下划线（<literal>_</literal>）和连字符（<literal>-</literal>）。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       选项值始终是自由格式字符串（与支持数值、布尔值和枚举的自定义 GUC 不同）。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       服务器在重新载入配置时无法检查选项名和值。<filename>pg_hba.conf</filename> 中任何未注册的选项都会导致连接失败。因此，每个模块都有责任按需记录并验证选项值的语法。
+       <footnote>
+        <para>
+         如果模块在 <function>validate_cb</function> 期间发现无效的选项值，建议通过将
+         <structfield>result->error_detail</structfield> 设为问题描述并返回 <literal>false</literal>，
+         来<link linkend="oauth-validator-callback-validate">报告内部错误</link>。
+        </para>
+       </footnote>
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+  </sect2>
+
+  <sect2 id="oauth-validator-hba-example-usage">
+   <title>示例用法</title>
+
+   <para>
+    对于一个假想模块，选项 <literal>foo</literal> 和 <literal>bar</literal> 可以这样注册：
+
+<programlisting>
+static void
+validator_startup(ValidatorModuleState *state)
+{
+    static const char *opts[] = {
+        "foo",      /* description of access privileges */
+        "bar",      /* magic URL for additional administrator powers */
+    };
+
+    RegisterOAuthHBAOptions(state, lengthof(opts), opts);
+
+    /* ...other setup... */
+}
+</programlisting>
+   </para>
+
+   <para>
+    然后，<filename>pg_hba.conf</filename> 中的下列示例条目就可以使用这些选项：
+
+<programlisting>
+# TYPE   DATABASE   USER   ADDRESS    METHOD
+hostssl  postgres   admin  0.0.0.0/0  oauth issuer=https://admin.example.com \
+                                            scope="pg-admin openid email" \
+                                            map=oauth-email \
+                                            validator.foo="admin access" \
+                                            validator.bar=https://magic.example.com
+
+hostssl  postgres   all    0.0.0.0/0  oauth issuer=https://www.example.com \
+                                            scope="pg-user openid email" \
+                                            map=oauth-email \
+                                            validator.foo="user access"
+</programlisting>
+   </para>
+
+   <para>
+    模块可以在验证期间从 HBA 中获取这些选项设置：
+
+<programlisting>
+static bool
+validate_token(const ValidatorModuleState *state,
+               const char *token, const char *role,
+               ValidatorModuleResult *res)
+{
+    const char *foo = GetOAuthHBAOption(state, "foo"); /* "admin access" or "user access" */
+    const char *bar = GetOAuthHBAOption(state, "bar"); /* "https://magic.example.com" or NULL */
+
+    if (bar &amp;&amp; !is_valid_url(bar))
+    {
+        res->error_detail = psprintf("validator.bar (\"%s\") is not a valid URL.", bar);
+        return false;
+    }
+
+    /* proceed to validate token */
+}
+</programlisting>
+   </para>
+
+   <para>
+    当同时使用多个验证器时，它们各自注册的选项列表彼此独立：
+
+<programlisting>
+<lineannotation>in postgresql.conf:</lineannotation>
+oauth_validator_libraries = 'example_org, my_validator'
+
+<lineannotation>in pg_hba.conf:</lineannotation>
+# TYPE   DATABASE   USER   ADDRESS    METHOD
+hostssl  postgres   admin  0.0.0.0/0  oauth issuer=https://admin.example.com \
+                                            scope="pg-admin openid email" \
+                                            map=oauth-email \
+                                            validator=my_validator \
+                                            validator.foo="admin access" \
+                                            validator.bar=https://magic.example.com
+
+hostssl  postgres   all    0.0.0.0/0  oauth issuer=https://www.example.org \
+                                            scope="pg-user openid profile" \
+                                            validator=example_org \
+                                            delegate_ident_mapping=1 \
+                                            validator.magic=on \
+                                            validator.more_magic=off
+</programlisting>
+   </para>
+  </sect2>
+ </sect1>
+</chapter>

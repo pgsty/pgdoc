@@ -1,0 +1,3388 @@
+<!-- doc/src/sgml/xfunc.sgml -->
+
+ <sect1 id="xfunc">
+  <title>用户定义的函数</title>
+
+  <indexterm zone="xfunc">
+   <primary>function</primary>
+   <secondary>user-defined</secondary>
+  </indexterm>
+
+  <para>
+   <productname>PostgreSQL</productname>提供四种函数：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      查询语言函数（用<acronym>SQL</acronym>编写的函数）（<xref linkend="xfunc-sql"/>）
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      过程语言函数（例如，用<application>PL/pgSQL</application>或<application>PL/Tcl</application>编写的函数）（<xref linkend="xfunc-pl"/>）
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      内部函数（<xref linkend="xfunc-internal"/>）
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      C 语言函数（<xref linkend="xfunc-c"/>）
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+
+  <para>
+   每一类函数可以采用基本类型、复合类型或者它们的组合作为参数。此外，每一类函数可以返回一个基本类型或一个复合类型。函数也能被定义成返回基本类型或复合类型值的集合。
+  </para>
+
+  <para>
+   很多类函数可以接受或者返回特定的伪类型（例如，多态类型），但是可用的功能会变化。详情可以参考每一种函数的描述。
+  </para>
+
+  <para>
+   定义<acronym>SQL</acronym>函数最容易，因此我们将从讨论<acronym>SQL</acronym>函数开始。大部分<acronym>SQL</acronym>函数的概念也能用到其他类型的函数上。
+  </para>
+
+  <para>
+   在这一章中，查看<link linkend="sql-createfunction"><command>CREATE FUNCTION</command></link>命令的参考页有助于更好地理解示例。
+   这章中的一些示例可以在<productname>PostgreSQL</productname>源代码发布的<filename>src/tutorial</filename>目录中的<filename>funcs.sql</filename>和<filename>funcs.c</filename>中找到。
+  </para>
+  </sect1>
+
+  <sect1 id="xproc">
+   <title>用户定义的过程</title>
+
+  <indexterm zone="xproc">
+   <primary>procedure</primary>
+   <secondary>user-defined</secondary>
+  </indexterm>
+
+   <para>
+    过程是一个类似于函数的数据库对象。
+    关键差异是：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       过程是由 <link linkend="sql-createprocedure"><command>CREATE PROCEDURE</command></link> 命令定义，而不是 <command>CREATE FUNCTION</command>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       过程不返回函数值；因此<command>CREATE PROCEDURE</command> 缺少 <literal>RETURNS</literal> 子句。
+       不过，过程可以通过输出参数向调用方返回数据。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       函数可以作为查询或 DML 命令的一部分被调用，而过程则通过<link linkend="sql-call"><command>CALL</command></link>命令单独调用。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       只要调用 <command>CALL</command> 命令不是显式事务块的一部分，过程就可以在执行期间提交或回滚事务（随后会自动开始一个新事务）。函数则不能这样做。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       某些函数属性（例如严格性）不适用于过程。
+       这些属性控制如何在查询中使用函数，与过程不相关。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    后面章节中关于如何定义用户定义的函数的解释同样适用于过程，除了上面指出的那些点。
+   </para>
+
+   <para>
+    函数和过程一起构成了<firstterm>例程</firstterm><indexterm><primary>routine</primary></indexterm>。
+    有<link linkend="sql-alterroutine"><command>ALTER ROUTINE</command></link> 和 <link linkend="sql-droproutine"><command>DROP ROUTINE</command></link>这样的命令可以操作函数和过程而不需要知道它们是哪一种。
+    不过，要注意没有<literal>CREATE ROUTINE</literal>命令。
+   </para>
+  </sect1>
+
+  <sect1 id="xfunc-sql">
+   <title>查询语言（<acronym>SQL</acronym>）函数</title>
+
+   <indexterm zone="xfunc-sql">
+    <primary>函数</primary>
+    <secondary>用户定义的</secondary>
+    <tertiary>in SQL</tertiary>
+   </indexterm>
+
+   <para>
+    SQL 函数执行由任意 SQL 语句组成的一个列表，并返回列表中最后一个查询的结果。在简单（非集合）情况下，将返回最后一个查询结果的第一行。（请记住，除非使用 <literal>ORDER BY</literal>，否则多行结果中的<quote>第一行</quote>并没有明确定义。）如果最后一个查询完全没有返回任何行，则返回空值。
+   </para>
+
+   <para>
+    或者，一个 SQL 函数可以通过指定函数的返回类型为<literal>SETOF <replaceable>sometype</replaceable></literal>被声明为返回一个集合（也就是多个行），或者等效地声明它为<literal>RETURNS TABLE(<replaceable>columns</replaceable>)</literal>。在这种情况下，最后一个查询的结果的所有行会被返回。下文将给出进一步的细节。
+   </para>
+
+   <para>
+    SQL 函数的函数体必须是一个由分号分隔的 SQL 语句列表。最后一条语句后的分号是可选的。除非该函数被声明为返回
+    <type>void</type>，否则最后一条语句必须是 <command>SELECT</command>，
+    或者是带有 <literal>RETURNING</literal> 子句的 <command>INSERT</command>、
+    <command>UPDATE</command>、<command>DELETE</command> 或
+    <command>MERGE</command>。
+   </para>
+
+    <para>
+     任意一组 <acronym>SQL</acronym> 语言命令都可以打包并定义成函数。除
+     <command>SELECT</command> 查询外，这些命令还可以包含数据修改查询
+     （<command>INSERT</command>、<command>UPDATE</command>、
+     <command>DELETE</command> 和 <command>MERGE</command>），以及其他
+     SQL 命令。（在 <acronym>SQL</acronym> 函数中不能使用事务控制命令，例如
+     <command>COMMIT</command>、<command>SAVEPOINT</command>，也不能使用某些
+     实用命令，例如 <literal>VACUUM</literal>。）不过，最后一条命令必须是
+     <command>SELECT</command>，或者带有 <literal>RETURNING</literal>
+     子句，并返回与函数声明返回类型相符的结果。或者，如果你想定义一个执行动作
+     但没有有用返回值的 SQL 函数，也可以把它定义为返回 <type>void</type>。
+     例如，下面这个函数会从 <literal>emp</literal> 表中删除薪资为负的行：
+
+<screen>
+CREATE FUNCTION clean_emp() RETURNS void AS '
+    DELETE FROM emp
+        WHERE salary &lt; 0;
+' LANGUAGE SQL;
+
+SELECT clean_emp();
+
+ clean_emp
+-----------
+
+(1 row)
+</screen>
+    </para>
+
+    <para>
+     你也可以把这个写为一个过程，那样避免返回类型的问题。
+     例如：
+<screen>
+CREATE PROCEDURE clean_emp() AS '
+    DELETE FROM emp
+        WHERE salary &lt; 0;
+' LANGUAGE SQL;
+
+CALL clean_emp();
+</screen>
+     在像这样的简单情况中，函数与过程返回<type>void</type>的差异主要是风格上面的。
+     不过，过程还提供了函数所没有的额外能力，例如事务控制。
+     此外，过程是 SQL 标准的一部分，而返回<type>void</type>则是 PostgreSQL 扩展。
+    </para>
+
+   <para>
+    <command>CREATE FUNCTION</command> 命令的语法要求把函数体写成一个字符串常量。对于字符串常量，通常使用美元引用最方便（见<xref linkend="sql-syntax-dollar-quoting"/>）。如果你选择使用常规的单引号字符串常量语法，那么必须在函数体中将单引号（<literal>'</literal>）和反斜线（<literal>\</literal>）写成双份（假定使用转义字符串语法，见<xref linkend="sql-syntax-strings"/>）。
+   </para>
+
+   <sect2 id="xfunc-sql-function-arguments">
+    <title><acronym>SQL</acronym>函数的参数</title>
+
+   <indexterm>
+    <primary>函数</primary>
+    <secondary>命名参数</secondary>
+   </indexterm>
+
+    <para>
+     一个 SQL 函数的参数可以在函数体中用名称或编号引用。下面会有两种方法的示例。
+    </para>
+
+    <para>
+     要使用一个名称，将函数参数声明为带有一个名称，然后在函数体中只写该名称。如果参数名称与函数内当前 SQL 命令中的任意列名相同，列名将优先。如果不想这样，可以用函数本身的名称来限定参数名，也就是<literal><replaceable>function_name</replaceable>.<replaceable>argument_name</replaceable></literal>（如果这会与一个被限定的列名冲突，照例还是列名赢得优先。你可以通过为 SQL 命令中的表选择一个不同的别名来避免这种混淆）。
+    </para>
+
+    <para>
+     在更旧的数字方法中，参数可以用语法<literal>$<replaceable>n</replaceable></literal>引用：<literal>$1</literal>指的是第一个输入参数，<literal>$2</literal>指的是第二个，以此类推。不管特定的参数是否使用名称声明，这种方法都有效。
+    </para>
+
+    <para>
+     如果一个参数是一种复合类型，那么点号记法（如
+     <literal><replaceable>argname</replaceable>.<replaceable>fieldname</replaceable></literal>
+     或<literal>$1.<replaceable>fieldname</replaceable></literal>）也可以被用来
+     访问该参数的属性。同样，你可能需要用函数的名称来限定参数的名称以避免歧义。
+    </para>
+
+    <para>
+     SQL 函数参数只能被用做数据值而不能作为标识符。例如这是合理的：
+<programlisting>
+INSERT INTO mytable VALUES ($1);
+</programlisting>
+但这样就不行：
+<programlisting>
+INSERT INTO $1 VALUES (42);
+</programlisting>
+    </para>
+
+    <note>
+     <para>
+      使用名称来引用 SQL 函数参数的能力是在<productname>PostgreSQL</productname> 9.2 中加入的。要在老的服务器中使用的函数必须使用<literal>$<replaceable>n</replaceable></literal>记法。
+     </para>
+    </note>
+   </sect2>
+
+   <sect2 id="xfunc-sql-base-functions">
+    <title>基本类型上的<acronym>SQL</acronym>函数</title>
+
+    <para>
+     最简单的 <acronym>SQL</acronym> 函数没有参数，只是返回一个基本类型，例如
+     <type>integer</type>：
+
+<screen>
+CREATE FUNCTION one() RETURNS integer AS $$
+    SELECT 1 AS result;
+$$ LANGUAGE SQL;
+
+-- Alternative syntax for string literal:
+CREATE FUNCTION one() RETURNS integer AS '
+    SELECT 1 AS result;
+' LANGUAGE SQL;
+
+SELECT one();
+
+ one
+-----
+   1
+</screen>
+    </para>
+
+    <para>
+     注意我们为该函数的结果在函数体内定义了一个列别名（名为<literal>result</literal>），但是这个列别名在函数以外是不可见的。因此，结果被标记为<literal>one</literal>而不是<literal>result</literal>。
+    </para>
+
+    <para>
+     定义接受基本类型参数的 <acronym>SQL</acronym> 函数也几乎同样容易：
+
+<screen>
+CREATE FUNCTION add_em(x integer, y integer) RETURNS integer AS $$
+    SELECT x + y;
+$$ LANGUAGE SQL;
+
+SELECT add_em(1, 2) AS answer;
+
+ answer
+--------
+      3
+</screen>
+    </para>
+
+    <para>
+     或者，我们也可以不用参数名，而改用数字：
+
+<screen>
+CREATE FUNCTION add_em(integer, integer) RETURNS integer AS $$
+    SELECT $1 + $2;
+$$ LANGUAGE SQL;
+
+SELECT add_em(1, 2) AS answer;
+
+ answer
+--------
+      3
+</screen>
+    </para>
+
+    <para>
+     下面是一个更有用的函数，它可以用来从银行账户中扣款：
+
+<programlisting>
+CREATE FUNCTION tf1 (accountno integer, debit numeric) RETURNS numeric AS $$
+    UPDATE bank
+        SET balance = balance - debit
+        WHERE accountno = tf1.accountno;
+    SELECT 1;
+$$ LANGUAGE SQL;
+</programlisting>
+
+     用户可以这样执行该函数，从 17 号账户中扣除 $100.00：
+
+<programlisting>
+SELECT tf1(17, 100.0);
+</programlisting>
+    </para>
+
+    <para>
+     在这个示例中，我们为第一个参数选择了名称<literal>accountno</literal>，但是这和表<structname>bank</structname>中的一个列名相同。
+     在<command>UPDATE</command>命令中，
+     <literal>accountno</literal>引用列<structfield>bank.accountno</structfield>，因此
+     <literal>tf1.accountno</literal>必须被用来引用该参数。
+     我们当然可以通过为该参数使用一个不同的名称来避免这样的问题。
+    </para>
+
+    <para>
+     实际上我们可能喜欢从该函数得到一个更有用的结果而不是一个常数 1，因此一个更可能的定义是：
+
+<programlisting>
+CREATE FUNCTION tf1 (accountno integer, debit numeric) RETURNS numeric AS $$
+    UPDATE bank
+        SET balance = balance - debit
+        WHERE accountno = tf1.accountno;
+    SELECT balance FROM bank WHERE accountno = tf1.accountno;
+$$ LANGUAGE SQL;
+</programlisting>
+
+     它会调整余额并且返回新的余额。
+     同样的事情也可以用一个使用<literal>RETURNING</literal>的命令实现：
+
+<programlisting>
+CREATE FUNCTION tf1 (accountno integer, debit numeric) RETURNS numeric AS $$
+    UPDATE bank
+        SET balance = balance - debit
+        WHERE accountno = tf1.accountno
+    RETURNING balance;
+$$ LANGUAGE SQL;
+</programlisting>
+    </para>
+
+    <para>
+     如果在<literal>SELECT</literal>或<literal>RETURNING</literal>子句中，
+     <acronym>SQL</acronym>函数的最终返回值类型与函数声明的结果类型不完全匹配，
+     如果可以使用隐式或赋值转换，
+     <productname>PostgreSQL</productname>将自动将该值转换为所需类型。
+     否则，你必须写出显式类型转换。
+     例如，假设我们希望前面的<function>add_em</function>函数返回<type>float8</type>类型。
+     只需编写
+
+<programlisting>
+CREATE FUNCTION add_em(integer, integer) RETURNS float8 AS $$
+    SELECT $1 + $2;
+$$ LANGUAGE SQL;
+</programlisting>
+
+     因为<type>integer</type>的和可以隐式转换为<type>float8</type>。
+     （有关转换的更多信息，请参见<xref linkend="typeconv"/>或<xref linkend="sql-createcast"/>。）
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-sql-composite-functions">
+    <title>复合类型上的<acronym>SQL</acronym>函数</title>
+
+    <para>
+     编写接受复合类型参数的函数时，我们不仅必须指定要用哪个参数，还必须指定该参数的哪个属性（字段）。例如，假设
+     <type>emp</type> 是一个包含雇员数据的表，因此它也是该表每一行对应的复合类型名称。下面的函数
+     <function>double_salary</function> 用来计算某人的工资翻倍后会是多少：
+
+<screen>
+CREATE TABLE emp (
+    name        text,
+    salary      numeric,
+    age         integer,
+    cubicle     point
+);
+
+INSERT INTO emp VALUES ('Bill', 4200, 45, '(2,1)');
+
+CREATE FUNCTION double_salary(emp) RETURNS numeric AS $$
+    SELECT $1.salary * 2 AS salary;
+$$ LANGUAGE SQL;
+
+SELECT name, double_salary(emp.*) AS dream
+    FROM emp
+    WHERE emp.cubicle ~= point '(2,1)';
+
+ name | dream
+------+-------
+ Bill |  8400
+</screen>
+    </para>
+
+    <para>
+     注意这里用 <literal>$1.salary</literal> 语法来选取参数行值中的一个字段。
+     还要注意，调用时的 <command>SELECT</command> 命令使用
+     <replaceable>table_name</replaceable><literal>.*</literal> 将表的当前整行取作一个组合值。该表行也可以仅用表名来引用：
+<screen>
+SELECT name, double_salary(emp) AS dream
+    FROM emp
+    WHERE emp.cubicle ~= point '(2,1)';
+</screen>
+     但这种用法已被废弃，因为它很容易让人混淆（关于表行组合值这两种记法的更多细节，见<xref linkend="rowtypes-usage"/>）。
+    </para>
+
+    <para>
+     有时候即时构造一个组合参数会很方便。这可以用<literal>ROW</literal>构造器完成。
+     例如，我们可以调整被传递给函数的数据：
+<screen>
+SELECT name, double_salary(ROW(name, salary*1.1, age, cubicle)) AS dream
+    FROM emp;
+</screen>
+    </para>
+
+    <para>
+     也可以构建一个返回复合类型的函数。这是一个返回单一<type>emp</type>行的函数示例：
+
+<programlisting>
+CREATE FUNCTION new_emp() RETURNS emp AS $$
+    SELECT text 'None' AS name,
+        1000.0 AS salary,
+        25 AS age,
+        point '(2,2)' AS cubicle;
+$$ LANGUAGE SQL;
+</programlisting>
+
+     在这个示例中，我们为每一个属性指定了一个常量值，但是可以用任何计算来替换这些常量。
+    </para>
+
+    <para>
+     定义该函数时有两点重要注意事项：
+
+     <itemizedlist>
+      <listitem>
+       <para>
+        查询中的选择列表顺序必须与列在复合类型中出现的顺序完全相同。（正如我们上面所做的那样，命名列与系统无关。）
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        我们必须确保每个表达式的类型都可以转换为复合类型的相应列的类型。 否则我们会得到这样的错误：
+<screen>
+<computeroutput>
+ERROR:  return type mismatch in function declared to return emp
+DETAIL:  Final statement returns text instead of point at column 4.
+</computeroutput>
+</screen>
+        与基本类型的情况一样，系统不会自动插入显式转换，只会插入隐式或赋值转换。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </para>
+
+    <para>
+     定义同样的函数的一种不同的方法是：
+
+<programlisting>
+CREATE FUNCTION new_emp() RETURNS emp AS $$
+    SELECT ROW('None', 1000.0, 25, '(2,2)')::emp;
+$$ LANGUAGE SQL;
+</programlisting>
+
+     这里我们写了一个只返回单列、且该列具有正确复合类型的 <command>SELECT</command>。
+     在这种场景下，这样写并不见得更好，但在某些情况下会很方便
+     &mdash; 例如，需要通过调用另一个返回目标组合值的函数来计算结果时。
+     还有一种情况是，如果我们要编写的函数返回的是基于复合类型的域，而不是普通复合类型，
+     那么就必须写成返回单列的形式，因为没有办法让整行结果发生所需的强制转换。
+    </para>
+
+    <para>
+     我们既可以把这个函数直接当作值表达式调用：
+
+<screen>
+SELECT new_emp();
+
+         new_emp
+--------------------------
+ (None,1000.0,25,"(2,2)")
+</screen>
+
+     也可以把它当作表函数来调用：
+
+<screen>
+SELECT * FROM new_emp();
+
+ name | salary | age | cubicle
+------+--------+-----+---------
+ None | 1000.0 |  25 | (2,2)
+</screen>
+
+     第二种方式会在<xref linkend="xfunc-sql-table-functions"/>中进一步说明。
+    </para>
+
+    <para>
+     当你使用返回复合类型的函数时，可能只需要取其结果中的一个字段（属性）。可以使用下面这样的语法：
+
+<screen>
+SELECT (new_emp()).name;
+
+ name
+------
+ None
+</screen>
+
+     这里需要额外的括号，以免解析器产生歧义。如果不加括号，结果会是这样：
+
+<screen>
+SELECT new_emp().name;
+ERROR:  syntax error at or near "."
+LINE 1: SELECT new_emp().name;
+                        ^
+</screen>
+    </para>
+
+    <para>
+     另一种选择是使用函数记法来提取属性：
+
+<screen>
+SELECT name(new_emp());
+
+ name
+------
+ None
+</screen>
+
+     如<xref linkend="rowtypes-usage"/>所述，字段记法和函数记法是等价的。
+    </para>
+
+    <para>
+     另一种使用函数返回复合类型的方法是将结果传递给另一个接受正确行类型作为输入的函数:
+
+<screen>
+CREATE FUNCTION getname(emp) RETURNS text AS $$
+    SELECT $1.name;
+$$ LANGUAGE SQL;
+
+SELECT getname(new_emp());
+ getname
+---------
+ None
+(1 row)
+</screen>
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-output-parameters">
+    <title>带有输出参数的<acronym>SQL</acronym>函数</title>
+
+   <indexterm>
+    <primary>函数</primary>
+    <secondary>输出参数</secondary>
+   </indexterm>
+
+    <para>
+     描述函数结果的另一种方法是使用<firstterm>输出参数</firstterm>，例如：
+
+<screen>
+CREATE FUNCTION add_em (IN x int, IN y int, OUT sum int)
+AS 'SELECT x + y'
+LANGUAGE SQL;
+
+SELECT add_em(3,7);
+ add_em
+--------
+     10
+(1 row)
+</screen>
+
+     这与<xref linkend="xfunc-sql-base-functions"/>中展示的
+     <literal>add_em</literal> 版本本质上并无不同。输出参数的真正价值在于，
+     它们为定义返回多列的函数提供了一种方便的方法。例如：
+
+<screen>
+CREATE FUNCTION sum_n_product (x int, y int, OUT sum int, OUT product int)
+AS 'SELECT x + y, x * y'
+LANGUAGE SQL;
+
+ SELECT * FROM sum_n_product(11,42);
+ sum | product
+-----+---------
+  53 |     462
+(1 row)
+</screen>
+
+     这里本质上发生的事情是：我们为该函数的结果创建了一个匿名复合类型。上面的示例与下面这种写法的最终效果相同：
+
+<screen>
+CREATE TYPE sum_prod AS (sum int, product int);
+
+CREATE FUNCTION sum_n_product (int, int) RETURNS sum_prod
+AS 'SELECT $1 + $2, $1 * $2'
+LANGUAGE SQL;
+</screen>
+
+     但通常不必额外定义一个独立的复合类型会更方便。注意，附在输出参数上的名称并非只是装饰，它们决定了这个匿名复合类型的列名。（如果省略输出参数名称，系统会自行选择一个名称。）
+    </para>
+
+    <para>
+     在从 SQL 调用这样一个函数时，输出参数不会被包括在调用参数列表中。这是因为<productname>PostgreSQL</productname>只考虑输入参数来定义函数的调用签名。这也意味着在为诸如删除函数等目的引用该函数时只有输入参数有关系。我们可以用下面的命令之一删除上述函数
+
+<screen>
+DROP FUNCTION sum_n_product (x int, y int, OUT sum int, OUT product int);
+DROP FUNCTION sum_n_product (int, int);
+</screen>
+    </para>
+
+    <para>
+     参数可以被标记为<literal>IN</literal>（默认）、<literal>OUT</literal>、<literal>INOUT</literal>或者<literal>VARIADIC</literal>。
+     一个<literal>INOUT</literal>参数既作为一个输入参数（调用参数列表的一部分）又作为一个输出参数（结果记录类型的一部分）。
+     <literal>VARIADIC</literal>参数是输入参数，但被按照下文所述特殊对待。
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-output-parameters-proc">
+   <title><acronym>SQL</acronym>有输出参数的过程</title>
+
+    <indexterm>
+     <primary>procedures</primary>
+     <secondary>输出参数</secondary>
+    </indexterm>
+
+    <para>
+     过程也支持输出参数，但是它们工作方式与函数略有不同。
+     在<command>CALL</command>命令中，输出参数必须包括在参数列表中。
+     例如，前面的银行账户借记例程可以像这样写：
+<programlisting>
+CREATE PROCEDURE tp1 (accountno integer, debit numeric, OUT new_balance numeric) AS $$
+    UPDATE bank
+        SET balance = balance - debit
+        WHERE accountno = tp1.accountno
+    RETURNING balance;
+$$ LANGUAGE SQL;
+</programlisting>
+     要调用这个例程，必须包括匹配<literal>OUT</literal>参数的参数。
+     通常写成<literal>NULL</literal>：
+<programlisting>
+CALL tp1(17, 100.0, NULL);
+</programlisting>
+     如果你写的是其他内容，它必须是一个能够像输入参数那样被隐式强制转换成该参数声明类型的表达式。
+     注意，无论如何这样的表达式不会被评估。
+    </para>
+
+    <para>
+     当从<application>PL/pgSQL</application>调用过程时，你不能写<literal>NULL</literal>，而必须写一个用于接收过程输出的变量。详见<xref linkend="plpgsql-statements-calling-procedure"/>。
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-sql-variadic-functions">
+    <title>带有可变数量参数的<acronym>SQL</acronym>函数</title>
+
+    <indexterm>
+     <primary>function</primary>
+     <secondary>variadic</secondary>
+    </indexterm>
+
+    <indexterm>
+     <primary>variadic function</primary>
+    </indexterm>
+
+    <para>
+     <acronym>SQL</acronym> 函数可以被声明为接受可变数量的参数，只要所有
+     <quote>可选</quote>参数都属于同一种数据类型。可选参数会以数组形式传递给函数。定义这类函数时，需要把最后一个参数标记为 <literal>VARIADIC</literal>；该参数必须被声明为数组类型。例如：
+
+<screen>
+CREATE FUNCTION mleast(VARIADIC arr numeric[]) RETURNS numeric AS $$
+    SELECT min($1[i]) FROM generate_subscripts($1, 1) g(i);
+$$ LANGUAGE SQL;
+
+SELECT mleast(10, -1, 5, 4.4);
+ mleast
+--------
+     -1
+(1 row)
+</screen>
+
+     实际上，位于 <literal>VARIADIC</literal> 位置及之后的所有实参都会被收集成一个一维数组，就像你写成了：
+
+<screen>
+SELECT mleast(ARRAY[10, -1, 5, 4.4]);    -- doesn't work
+</screen>
+
+     不过你实际上不能这样写，至少它不会匹配这个函数定义。被标记为
+     <literal>VARIADIC</literal> 的参数匹配的是其元素类型出现一次或多次，
+     而不是它自身的数组类型。
+    </para>
+
+    <para>
+     有时候，能够把一个已经构造好的数组传给 variadic 函数会很有用，尤其是当一个 variadic 函数想把它的数组参数再传给另一个函数时。此外，在允许不受信任用户创建对象的模式中调用 variadic 函数时，这是唯一安全的方式，见<xref linkend="typeconv-func"/>。你可以在调用中指定<literal>VARIADIC</literal>来做到这一点：
+
+<screen>
+SELECT mleast(VARIADIC ARRAY[10, -1, 5, 4.4]);
+</screen>
+
+     这样会阻止函数的 variadic 参数按其元素类型展开，从而让数组实参能够按常规方式匹配。<literal>VARIADIC</literal> 只能附加在函数调用的最后一个实参上。
+    </para>
+
+    <para>
+     在调用中指定<literal>VARIADIC</literal>也是向 variadic 函数传递空数组的唯一方式，例如：
+
+<screen>
+SELECT mleast(VARIADIC ARRAY[]::numeric[]);
+</screen>
+
+     仅仅写成<literal>SELECT mleast()</literal>是行不通的，因为 variadic 参数必须匹配至少一个实参。（如果你希望允许这种调用，可以再定义一个同名且不带参数的函数<literal>mleast</literal>。）
+    </para>
+
+    <para>
+     从 variadic 参数派生出的数组元素参数会被视为没有自己的名字。这意味着除非你指定了 <literal>VARIADIC</literal>，否则不能使用命名参数来调用 variadic 函数（<xref linkend="sql-syntax-calling-funcs"/>）。例如，下面的调用是可行的：
+
+<screen>
+SELECT mleast(VARIADIC arr =&gt; ARRAY[10, -1, 5, 4.4]);
+</screen>
+
+     但这些就不行：
+
+<screen>
+SELECT mleast(arr =&gt; 10);
+SELECT mleast(arr =&gt; ARRAY[10, -1, 5, 4.4]);
+</screen>
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-sql-parameter-defaults">
+    <title>带有参数默认值的<acronym>SQL</acronym>函数</title>
+
+    <indexterm>
+     <primary>function</primary>
+     <secondary>参数的默认值</secondary>
+    </indexterm>
+
+    <para>
+     函数可以被声明为对一些或者所有输入参数具有默认值。只要调用函数时
+     没有给出足够多的实参，就会插入默认值来弥补缺失的实参。由于参数只
+     能从实参列表的尾部开始被省略，在一个有默认值的参数之后的所有参数
+     都不得不也具有默认值（尽管使用命名参数记法可以允许放松这种限制，
+     这种限制仍然会被强制以便位置参数记法能工作）。不管你是否使用它，这种能力都要求在某些用户不信任其他用户的数据中调用函数时做一些预防措施，见<xref linkend="typeconv-func"/>。
+    </para>
+
+    <para>
+     例如：
+<screen>
+CREATE FUNCTION foo(a int, b int DEFAULT 2, c int DEFAULT 3)
+RETURNS int
+LANGUAGE SQL
+AS $$
+    SELECT $1 + $2 + $3;
+$$;
+
+SELECT foo(10, 20, 30);
+ foo
+-----
+  60
+(1 row)
+
+SELECT foo(10, 20);
+ foo
+-----
+  33
+(1 row)
+
+SELECT foo(10);
+ foo
+-----
+  15
+(1 row)
+
+SELECT foo();  -- fails since there is no default for the first argument
+ERROR:  function foo() does not exist
+</screen>
+     也可以用 <literal>=</literal> 符号代替关键字 <literal>DEFAULT</literal>。
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-sql-table-functions">
+    <title><acronym>SQL</acronym> 函数作为表来源</title>
+
+    <para>
+     所有的 SQL 函数都可以被用在查询的<literal>FROM</literal>子句中，但是
+     对于返回复合类型的函数特别有用。如果函数被定义为返回一种基本类型，
+     该表函数会产生一个单列表。如果该函数被定义为返回一种复合类型，该
+     表函数会为该复合类型的每一个属性产生一列。
+    </para>
+
+    <para>
+     以下是一个示例:
+
+<screen>
+CREATE TABLE foo (fooid int, foosubid int, fooname text);
+INSERT INTO foo VALUES (1, 1, 'Joe');
+INSERT INTO foo VALUES (1, 2, 'Ed');
+INSERT INTO foo VALUES (2, 1, 'Mary');
+
+CREATE FUNCTION getfoo(int) RETURNS foo AS $$
+    SELECT * FROM foo WHERE fooid = $1;
+$$ LANGUAGE SQL;
+
+SELECT *, upper(fooname) FROM getfoo(1) AS t1;
+
+ fooid | foosubid | fooname | upper
+-------+----------+---------+-------
+     1 |        1 | Joe     | JOE
+(1 row)
+</screen>
+
+     如示例所示，我们可以像操作普通表的列一样操作函数结果中的列。
+    </para>
+
+    <para>
+     注意我们只从函数得到了一行。这是因为我们没有使用<literal>SETOF</literal>。
+     这会在下一节中介绍。
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-sql-functions-returning-set">
+    <title>返回集合的<acronym>SQL</acronym>函数</title>
+
+    <indexterm>
+     <primary>function</primary>
+     <secondary>with SETOF</secondary>
+    </indexterm>
+
+    <para>
+     当一个 SQL 函数被声明为返回<literal>SETOF
+     <replaceable>sometype</replaceable></literal>时，该函数的
+     最后一个查询会被执行完，并且它输出的每一行都会被
+     作为结果集的一个元素返回。
+    </para>
+
+    <para>
+     这一特性通常是在查询的 <literal>FROM</literal> 子句中调用函数时使用的。在这种情况下，函数返回的每一行都会成为查询所见表中的一行。例如，假设表 <structname>foo</structname> 与上文相同，我们写：
+
+<programlisting>
+CREATE FUNCTION getfoo(int) RETURNS SETOF foo AS $$
+    SELECT * FROM foo WHERE fooid = $1;
+$$ LANGUAGE SQL;
+
+SELECT * FROM getfoo(1) AS t1;
+</programlisting>
+
+     那么会得到：
+<screen>
+ fooid | foosubid | fooname
+-------+----------+---------
+     1 |        1 | Joe
+     1 |        2 | Ed
+(2 rows)
+</screen>
+    </para>
+
+    <para>
+     也可以通过输出参数定义的列来返回多行，例如：
+
+<programlisting>
+CREATE TABLE tab (y int, z int);
+INSERT INTO tab VALUES (1, 2), (3, 4), (5, 6), (7, 8);
+
+CREATE FUNCTION sum_n_product_with_tab (x int, OUT sum int, OUT product int)
+RETURNS SETOF record
+AS $$
+    SELECT $1 + tab.y, $1 * tab.y FROM tab;
+$$ LANGUAGE SQL;
+
+SELECT * FROM sum_n_product_with_tab(10);
+ sum | product
+-----+---------
+  11 |      10
+  13 |      30
+  15 |      50
+  17 |      70
+(4 rows)
+</programlisting>
+
+     这里的关键点是：你必须写成 <literal>RETURNS SETOF record</literal>，以表明该函数返回的是多行而不是单行。如果只有一个输出参数，则写该参数的类型，而不是 <type>record</type>。
+    </para>
+
+    <para>
+     通过多次调用集合返回函数来构造查询结果通常很有用，其中每次调用的参数都来自表或子查询的连续行。首选方式是使用 <literal>LATERAL</literal> 关键字，详见<xref linkend="queries-lateral"/>。下面是一个使用集合返回函数枚举树结构元素的示例：
+
+<screen>
+SELECT * FROM nodes;
+   name    | parent
+-----------+--------
+ Top       |
+ Child1    | Top
+ Child2    | Top
+ Child3    | Top
+ SubChild1 | Child1
+ SubChild2 | Child1
+(6 rows)
+
+CREATE FUNCTION listchildren(text) RETURNS SETOF text AS $$
+    SELECT name FROM nodes WHERE parent = $1
+$$ LANGUAGE SQL STABLE;
+
+SELECT * FROM listchildren('Top');
+ listchildren
+--------------
+ Child1
+ Child2
+ Child3
+(3 rows)
+
+SELECT name, child FROM nodes, LATERAL listchildren(name) AS child;
+  name  |   child
+--------+-----------
+ Top    | Child1
+ Top    | Child2
+ Top    | Child3
+ Child1 | SubChild1
+ Child1 | SubChild2
+(5 rows)
+</screen>
+
+     这个例子并没有做出任何无法用简单连接实现的事，但在更复杂的计算中，把一部分工作放进函数里通常会非常方便。
+    </para>
+
+    <para>
+     集合返回函数也可以出现在查询的选择列表中。对于查询本身生成的每一行，集合返回函数都会被调用，并为其结果集中的每一个元素生成一行输出。前面的例子也可以写成这样：
+
+<screen>
+SELECT listchildren('Top');
+ listchildren
+--------------
+ Child1
+ Child2
+ Child3
+(3 rows)
+
+SELECT name, listchildren(name) FROM nodes;
+  name  | listchildren
+--------+--------------
+ Top    | Child1
+ Top    | Child2
+ Top    | Child3
+ Child1 | SubChild1
+ Child1 | SubChild2
+(5 rows)
+</screen>
+
+     在最后一个 <command>SELECT</command> 中，注意没有为 <literal>Child2</literal>、<literal>Child3</literal> 等显示任何输出行。这是因为 <function>listchildren</function> 对这些参数返回的是空集，因此不会生成结果行。这与使用 <literal>LATERAL</literal> 语法把函数结果做内连接时得到的行为相同。
+    </para>
+
+    <para>
+     <productname>PostgreSQL</productname>中，写在查询的选择列表中的集合返回函数的行为几乎和写在<literal>LATERAL FROM</literal>子句项中的集合返回函数完全一样。例如：
+<programlisting>
+SELECT x, generate_series(1,5) AS g FROM tab;
+</programlisting>
+     几乎等效于
+<programlisting>
+SELECT x, g FROM tab, LATERAL generate_series(1,5) AS g;
+</programlisting>
+     这会是完全一样的，除了在这个特别的示例中，规划器会选择把<structname>g</structname>放在嵌套循环连接的外侧，因为<structname>g</structname>对<structname>tab</structname>没有实际的横向依赖。那会导致一种不同的输出行顺序。选择列表中的集合返回函数总是会被计算，就好像它们在<literal>FROM</literal>子句剩余部分的嵌套循环连接的内侧一样，因此在考虑来自<literal>FROM</literal>子句的下一行之前，这些函数会运行到完成。
+    </para>
+
+    <para>
+     如果在查询的选择列表中有不止一个集合返回函数，则行为类似于把那些函数放到一个单一的<literal>LATERAL ROWS FROM( ... )</literal> <literal>FROM</literal>子句项中的行为。对于来自底层查询的每一行，都有一个用到每个函数首个结果的输出行，然后是一个使用每个函数第二个结果的输出行，以此类推。如果某些集合返回函数产生的输出比其他函数少，会用空值代替缺失的数据，因此为一个底层行形成的总行数等于产生最多输出的集合返回函数的输出行数。因此集合返回函数会<quote>步调一致</quote>地运行直到它们的输出被耗尽，然后用下一个底层行继续执行。
+    </para>
+
+    <para>
+     集合返回函数可以被嵌套在一个选择列表中，不过在<literal>FROM</literal>子句项中不允许这样做。在这种情况下，嵌套的每一层会被单独对待，就像它是一个单独的<literal>LATERAL ROWS FROM( ... )</literal>项一样。例如，在
+<programlisting>
+SELECT srf1(srf2(x), srf3(y)), srf4(srf5(z)) FROM tab;
+</programlisting>
+     中，集合返回函数<function>srf2</function>、<function>srf3</function>和<function>srf5</function>将为<structname>tab</structname>的每一行步调一致地运行，然后会对较低层的函数产生的每一行以步调一致的形式应用<function>srf1</function>和<function>srf4</function>。
+    </para>
+
+    <para>
+     在<literal>CASE</literal>或<literal>COALESCE</literal>这样的条件计算结构中，不能使用集合返回函数。例如，考虑
+<programlisting>
+SELECT x, CASE WHEN x &gt; 0 THEN generate_series(1, 5) ELSE 0 END FROM tab;
+</programlisting>
+     看起来这个语句应该产生满足<literal>x &gt; 0</literal>的输入行的五次重复，以及不满足的行的一次重复。但实际上，由于在<literal>CASE</literal>表达时被计算前，<function>generate_series(1, 5)</function>会被运行在一个隐式的<literal>LATERAL FROM</literal>项中，它会为每个输入行产生五次重复。为了减少混乱，这类情况会产生一个解析时错误。
+    </para>
+
+    <note>
+     <para>
+      如果一个函数的最后一条命令是带有 <literal>RETURNING</literal> 子句的
+      <command>INSERT</command>、<command>UPDATE</command>、
+      <command>DELETE</command> 或 <command>MERGE</command>，那么即使该函数没有声明为 <literal>SETOF</literal>，或者调用它的查询并未取走全部结果行，该命令也总会执行到完成。<literal>RETURNING</literal> 子句产生的额外结果行会被静默丢弃，但相应的表修改仍然会发生，并且会在函数返回前全部完成。
+     </para>
+    </note>
+
+    <note>
+     <para>
+      在 <productname>PostgreSQL</productname> 10 之前，除非多个集合返回函数始终产生相同数量的行，否则把它们放在同一个选择列表中的行为并不合理。
+      否则，得到的输出行数会是这些集合返回函数各自产生行数的最小公倍数。
+      此外，嵌套的集合返回函数也不像上文所描述的那样工作；相反，一个集合返回函数至多只能有一个集合返回参数，
+      并且每一层嵌套都会独立运行。再加上过去还允许条件执行（即在 <literal>CASE</literal> 等结构内部使用集合返回函数），
+      事情就更加复杂了。
+      如果你要编写需要在旧版 <productname>PostgreSQL</productname> 上运行的查询，建议使用 <literal>LATERAL</literal> 语法，
+      因为这样在不同版本之间能够得到一致的结果。
+      如果你的查询依赖于集合返回函数的条件执行，可以把条件判断移动到自定义集合返回函数内部来修复。例如，
+<programlisting>
+SELECT x, CASE WHEN y &gt; 0 THEN generate_series(1, z) ELSE 5 END FROM tab;
+</programlisting>
+      可以变成
+<programlisting>
+CREATE FUNCTION case_generate_series(cond bool, start int, fin int, els int)
+  RETURNS SETOF int AS $$
+BEGIN
+  IF cond THEN
+    RETURN QUERY SELECT generate_series(start, fin);
+  ELSE
+    RETURN QUERY SELECT els;
+  END IF;
+END$$ LANGUAGE plpgsql;
+
+SELECT x, case_generate_series(y &gt; 0, 1, z, 5) FROM tab;
+</programlisting>
+      这种写法在所有版本的 <productname>PostgreSQL</productname> 中都能正常工作。
+     </para>
+    </note>
+   </sect2>
+
+   <sect2 id="xfunc-sql-functions-returning-table">
+    <title>返回<literal>TABLE</literal>的<acronym>SQL</acronym>函数</title>
+
+    <indexterm>
+     <primary>function</primary>
+     <secondary>RETURNS TABLE</secondary>
+    </indexterm>
+
+    <para>
+     还有另一种方法可以把函数声明为返回一个集合，即使用
+     <literal>RETURNS TABLE(<replaceable>columns</replaceable>)</literal>语法。
+     这等效于使用一个或者多个<literal>OUT</literal>参数外加把函数标记为返回
+     <literal>SETOF record</literal>（或者是<literal>SETOF</literal>单个输出参数的
+     类型）。这种写法是在最近的 SQL 标准中指定的，因此可能比使用
+     <literal>SETOF</literal>的移植性更好。
+    </para>
+
+    <para>
+     例如，前面的求和并且相乘的示例也可以这样来做：
+
+<programlisting>
+CREATE FUNCTION sum_n_product_with_tab (x int)
+RETURNS TABLE(sum int, product int) AS $$
+    SELECT $1 + tab.y, $1 * tab.y FROM tab;
+$$ LANGUAGE SQL;
+</programlisting>
+
+     不允许把显式的<literal>OUT</literal>或者<literal>INOUT</literal>参数用于
+     <literal>RETURNS TABLE</literal>记法 &mdash; 必须把所有输出列放在
+     <literal>TABLE</literal>列表中。
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-sql-polymorphic-functions">
+    <title>多态<acronym>SQL</acronym>函数</title>
+
+    <para>
+     <acronym>SQL</acronym> 函数可以被声明为接受并返回<xref linkend="extend-types-polymorphic"/>中描述的多态类型。下面这个多态函数 <function>make_array</function> 会根据两个任意数据类型的元素构造一个数组：
+<screen>
+CREATE FUNCTION make_array(anyelement, anyelement) RETURNS anyarray AS $$
+    SELECT ARRAY[$1, $2];
+$$ LANGUAGE SQL;
+
+SELECT make_array(1, 2) AS intarray, make_array('a'::text, 'b') AS textarray;
+ intarray | textarray
+----------+-----------
+ {1,2}    | {a,b}
+(1 row)
+</screen>
+    </para>
+
+    <para>
+     注意类型转换<literal>'a'::text</literal>的使用是为了指定该参数的类型
+     是<type>text</type>。如果该参数只是一个字符串这就是必须的，因为
+     否则它会被当作<type>unknown</type>类型，并且
+     <type>unknown</type>的数组也不是一种合法的类型。如果没有改类型
+     类型转换，将得到这样的错误：
+<screen>
+ERROR:  could not determine polymorphic type because input has type unknown
+</screen>
+    </para>
+
+    <para>
+     按照上面的方式声明 <function>make_array</function> 时，你必须提供两个数据类型完全相同的参数；系统不会尝试解决它们之间的类型差异。例如，下面这样是不行的：
+<screen>
+SELECT make_array(1, 2.5) AS numericarray;
+ERROR:  function make_array(integer, numeric) does not exist
+</screen>
+     另一种方法是使用<quote>common</quote>这一族多态类型，它允许系统尝试识别一个合适的公共类型：
+<screen>
+CREATE FUNCTION make_array2(anycompatible, anycompatible)
+RETURNS anycompatiblearray AS $$
+    SELECT ARRAY[$1, $2];
+$$ LANGUAGE SQL;
+
+SELECT make_array2(1, 2.5) AS numericarray;
+ numericarray
+--------------
+ {1,2.5}
+(1 row)
+</screen>
+     由于公共类型解析规则在所有输入都是未知类型时默认选择 <type>text</type>，所以下面的写法也能工作：
+<screen>
+SELECT make_array2('a', 'b') AS textarray;
+ textarray
+-----------
+ {a,b}
+(1 row)
+</screen>
+    </para>
+
+    <para>
+     允许存在具有固定返回类型的多态参数，但反过来则不允许。例如：
+<screen>
+CREATE FUNCTION is_greater(anyelement, anyelement) RETURNS boolean AS $$
+    SELECT $1 &gt; $2;
+$$ LANGUAGE SQL;
+
+SELECT is_greater(1, 2);
+ is_greater
+------------
+ f
+(1 row)
+
+CREATE FUNCTION invalid_func() RETURNS anyelement AS $$
+    SELECT 1;
+$$ LANGUAGE SQL;
+ERROR:  cannot determine result data type
+DETAIL:  A result of type anyelement requires at least one input of type anyelement, anyarray, anynonarray, anyenum, or anyrange.
+</screen>
+    </para>
+
+    <para>
+     多态也可以和带输出参数的函数一起使用。例如：
+<screen>
+CREATE FUNCTION dup (f1 anyelement, OUT f2 anyelement, OUT f3 anyarray)
+AS 'SELECT $1, ARRAY[$1, $1]' LANGUAGE SQL;
+
+SELECT * FROM dup(22);
+ f2 |   f3
+----+---------
+ 22 | {22,22}
+(1 row)
+</screen>
+    </para>
+
+    <para>
+     多态也可以用于 variadic 函数。例如：
+<screen>
+CREATE FUNCTION anyleast (VARIADIC anyarray) RETURNS anyelement AS $$
+    SELECT min($1[i]) FROM generate_subscripts($1, 1) g(i);
+$$ LANGUAGE SQL;
+
+SELECT anyleast(10, -1, 5, 4);
+ anyleast
+----------
+       -1
+(1 row)
+
+SELECT anyleast('abc'::text, 'def');
+ anyleast
+----------
+ abc
+(1 row)
+
+CREATE FUNCTION concat_values(text, VARIADIC anyarray) RETURNS text AS $$
+    SELECT array_to_string($2, $1);
+$$ LANGUAGE SQL;
+
+SELECT concat_values('|', 1, 4, 2);
+ concat_values
+---------------
+ 1|4|2
+(1 row)
+</screen>
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-sql-collations">
+    <title>带有排序规则的<acronym>SQL</acronym>函数</title>
+
+    <indexterm>
+     <primary>collation</primary>
+     <secondary>in SQL functions</secondary>
+    </indexterm>
+
+    <para>
+     当一个 SQL 函数有一个或多个可设定排序规则的数据类型参数时，会按
+     <xref linkend="collation"/>中的说明，为每次函数调用确定一个排序规则。
+     如果能够成功确定（也就是说，参数之间不存在隐式排序规则冲突），那么所有可设定排序规则的参数都会被视为隐式带有该排序规则。
+     这会影响函数中对排序规则敏感的操作的行为。例如，使用上文的 <function>anyleast</function> 函数时，
+<programlisting>
+SELECT anyleast('abc'::text, 'ABC');
+</programlisting>
+     其结果将取决于数据库的默认排序规则。在 <literal>C</literal> 区域设置下，
+     结果会是 <literal>ABC</literal>，但在许多其他区域设置下则会是
+     <literal>abc</literal>。可以在任意参数上添加 <literal>COLLATE</literal>
+     子句来强制指定要使用的排序规则，例如：
+<programlisting>
+SELECT anyleast('abc'::text, 'ABC' COLLATE "C");
+</programlisting>
+     另外，如果你希望某个函数无论以什么排序规则调用，都始终按特定排序规则工作，
+     可以在函数定义中按需插入 <literal>COLLATE</literal> 子句。
+     下面这个版本的 <function>anyleast</function> 将始终使用 <literal>en_US</literal> 区域设置来比较字符串：
+<programlisting>
+CREATE FUNCTION anyleast (VARIADIC anyarray) RETURNS anyelement AS $$
+    SELECT min($1[i] COLLATE "en_US") FROM generate_subscripts($1, 1) g(i);
+$$ LANGUAGE SQL;
+</programlisting>
+     但请注意，如果把它用于不可设定排序规则的数据类型，就会抛出错误。
+    </para>
+
+    <para>
+     如果无法在实参之间确定共同的排序规则，那么 SQL 函数会把参数视为带有其数据类型的默认排序规则
+     （通常是数据库的默认排序规则，但对域类型参数来说也可能不同）。
+    </para>
+
+    <para>
+     这种可设定排序规则参数的行为，可以看作是仅适用于文本数据类型的一种受限多态形式。
+    </para>
+   </sect2>
+  </sect1>
+
+  <sect1 id="xfunc-overload">
+   <title>函数重载</title>
+
+   <indexterm zone="xfunc-overload">
+    <primary>overloading</primary>
+    <secondary>functions</secondary>
+   </indexterm>
+
+   <para>
+    可以用同样的 SQL 名称定义多于一个函数，只要它们的参数不同即可。
+    换句话说，函数名可以被<firstterm>重载</firstterm>。不管你是否使用它，这种能力都要求在某些用户不信任其他用户的数据中调用函数时做一些预防措施，见<xref linkend="typeconv-func"/>。当一个查询
+    被执行时，服务器将从数据类型和所提供的参数个数来决定要调用哪个
+    函数。重载也可用来模拟具有可变参数个数（最大个数有限）的函数。
+   </para>
+
+   <para>
+    在创建一个重载函数家族时，应该小心不要创建歧义。例如，给定函数：
+<programlisting>
+CREATE FUNCTION test(int, real) RETURNS ...
+CREATE FUNCTION test(smallint, double precision) RETURNS ...
+</programlisting>
+    对于<literal>test(1, 1.5)</literal>这样的输入就无法立刻清楚地知道
+    应该调用哪个函数。当前实现的解决规则在<xref linkend="typeconv"/>
+    中有描述，但是设计一个依赖于这种行为的系统是不明智的。
+   </para>
+
+   <para>
+    具有单个复合类型参数的函数，通常不应与该类型的任何属性（字段）同名。
+    回想一下，<literal><replaceable>attribute</replaceable>(<replaceable>table</replaceable>)</literal>被视为等价于
+    <literal><replaceable>table</replaceable>.<replaceable>attribute</replaceable></literal>。
+    如果在<quote>作用于复合类型的函数</quote>与<quote>复合类型的属性</quote>之间出现歧义，系统总会优先选择属性。
+    可以通过给函数名加上模式限定（即
+    <literal><replaceable>schema</replaceable>.<replaceable>func</replaceable>(<replaceable>table</replaceable>)</literal>）
+    来覆盖这一选择，但更好的做法仍然是避免使用会冲突的名字。
+   </para>
+
+   <para>
+    另一类可能的冲突发生在 variadic 函数和非 variadic 函数之间。例如，可以同时创建
+    <literal>foo(numeric)</literal> 和 <literal>foo(VARIADIC numeric[])</literal>。
+    这时，对于只提供一个 numeric 参数的调用（例如 <literal>foo(10.1)</literal>），就不清楚该匹配哪个函数。
+    规则是：优先使用在搜索路径中出现较早的那个函数；如果两者位于同一模式中，则优先使用非 variadic 函数。
+   </para>
+
+   <para>
+    在重载 C 语言函数时有一个额外的约束：重载函数家族中的每一个
+    函数的 C 名称必须与其他所有函数的 C 名称不同，不管是内部的
+    还是动态载入的。如果这条规则被违背，该行为将不可移植。你可能
+    会得到一个运行时链接器错误，或者这些函数之一将被调用（通常
+    是内部的那一个）。SQL <command>CREATE
+    FUNCTION</command>命令的<literal>AS</literal>子句的另一种形式
+    可以把 SQL 函数名和 C 源代码中的函数名分离。例如：
+<programlisting>
+CREATE FUNCTION test(int) RETURNS int
+    AS '<replaceable>filename</replaceable>', 'test_1arg'
+    LANGUAGE C;
+CREATE FUNCTION test(int, int) RETURNS int
+    AS '<replaceable>filename</replaceable>', 'test_2arg'
+    LANGUAGE C;
+</programlisting>
+    这里的 C 函数名称反映了很多种可能的习惯之一。
+   </para>
+  </sect1>
+
+  <sect1 id="xfunc-volatility">
+   <title>函数易变性分类</title>
+
+   <indexterm zone="xfunc-volatility">
+    <primary>volatility</primary>
+    <secondary>functions</secondary>
+   </indexterm>
+   <indexterm zone="xfunc-volatility">
+    <primary>VOLATILE</primary>
+   </indexterm>
+   <indexterm zone="xfunc-volatility">
+    <primary>STABLE</primary>
+   </indexterm>
+   <indexterm zone="xfunc-volatility">
+    <primary>IMMUTABLE</primary>
+   </indexterm>
+
+   <para>
+    每一个函数都有一个<firstterm>易变性</firstterm>分类，可能是<literal>VOLATILE</literal>、<literal>STABLE</literal>或者<literal>IMMUTABLE</literal>。
+    如果    <link linkend="sql-createfunction"><command>CREATE FUNCTION</command></link>命令没有指定一个分类，则默认是<literal>VOLATILE</literal>。
+    易变性分类是给优化器的关于该函数行为的一种承诺：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      一个<literal>VOLATILE</literal>函数可以做任何事情，包括修改数据库。在
+      使用相同的参数连续调用时，它能返回不同的结果。优化器不会对这类函
+      数的行为做任何假定。对于在每一行都需要 volatile 函数值的查询，函数都会被重新求值。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      一个<literal>STABLE</literal>函数不能修改数据库并且被确保对一个语句中
+      的所有行用给定的相同参数返回相同的结果。这种分类允许优化器把该函
+      数的多个调用优化成一个调用。特别是，在一个索引扫描条件中使用包含
+      这样一个函数的表达式是安全的（因为一次索引扫描只会计算一次比较值，
+      而不是为每一行都计算一次，在一个索引扫描条件中不能使用
+      <literal>VOLATILE</literal>函数）。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      一个<literal>IMMUTABLE</literal>函数不能修改数据库并且被确保用相同的参数
+      永远返回相同的结果。这种分类允许优化器在一个查询用常量参数调用该函数
+      时提前计算该函数。例如，一个
+      <literal>SELECT ... WHERE x = 2 + 2</literal>这样的查询可以被简化为
+      <literal>SELECT ... WHERE x = 4</literal>，因为整数加法操作符底层的函数被
+      标记为<literal>IMMUTABLE</literal>。
+     </para>
+    </listitem>
+   </itemizedlist>
+   </para>
+
+   <para>
+    为了最好的优化结果，你应该把函数标记为对它们合法的易变性分类中最严格
+    的那种。
+   </para>
+
+   <para>
+    任何带有副作用的函数<emphasis>必须</emphasis>被标记为<literal>VOLATILE</literal>，
+    这样对它的调用就不能被优化掉。甚至如果一个函数的值在一个查询中会
+    变化，即使它没有副作用也需要被标记为<literal>VOLATILE</literal>。这样的
+    示例有<literal>random()</literal>、<literal>currval()</literal>、
+    <literal>timeofday()</literal>等。
+   </para>
+
+   <para>
+    另一种重要的示例是<function>current_timestamp</function>家族的函数有资格
+    被标记为<literal>STABLE</literal>，因为它们的值在一个事务中不会改变。
+   </para>
+
+   <para>
+    在考虑先规划然后立即执行的简单交互式查询时，在<literal>STABLE</literal>和
+    <literal>IMMUTABLE</literal>分类间的区别相对较小：一个函数是在规划时只
+    执行一次还是在查询执行开始期间只执行一次没有太大关系。但是如果计划
+    被保存下来然后在后面被重用，区别就大了。如果在不允许过早把一个函数
+    变成规划期间的一个常数时把它标记为<literal>IMMUTABLE</literal>，会导致
+    在后续重用该计划时继续使用陈旧的值。在使用预备语句，或使用会缓存执行计划的函数语言（如 <application>PL/pgSQL</application>）时，这会带来严重问题。
+   </para>
+
+   <para>
+    对于用 SQL 或者其他任何标准过程语言编写的函数，还有第二种由易变性分类
+    决定的特性，即由调用该函数的 SQL 命令所作的数据修改的可见性。
+    <literal>VOLATILE</literal>函数将看到这些更改，<literal>STABLE</literal>
+    或者<literal>IMMUTABLE</literal>函数则看不到。这种行为使用 MVCC 的快照
+    行为（见<xref linkend="mvcc"/>）实现：<literal>STABLE</literal>和
+    <literal>IMMUTABLE</literal>函数使用一个在调用查询开始时建立的快照，而
+    <literal>VOLATILE</literal>函数在它们执行的每一个查询的开始都获得一个新鲜
+    的快照。
+   </para>
+
+   <note>
+    <para>
+     用 C 编写的函数按照它们自己需要的方式管理快照，但是通常最好
+     让 C 函数也按照上面的方式来。
+    </para>
+   </note>
+
+   <para>
+    由于这种快照行为，只包含 <command>SELECT</command> 命令的函数可以安全地标记为 <literal>STABLE</literal>，
+    即使它查询的表可能正被并发查询修改。<productname>PostgreSQL</productname> 会使用为调用查询建立的快照来执行 <literal>STABLE</literal> 函数中的所有命令，
+    因而该函数在整个查询期间看到的都是数据库的固定视图。
+   </para>
+
+   <para>
+    对 <literal>IMMUTABLE</literal> 函数中的 <command>SELECT</command> 也采用同样的快照行为。
+    一般来说，在 <literal>IMMUTABLE</literal> 函数里查询数据库表并不明智，因为一旦表内容发生变化，就会破坏其不变性。
+    不过，<productname>PostgreSQL</productname> 并不会强制禁止这样做。
+   </para>
+
+   <para>
+    一种常见的错误是当一个函数的结果依赖于一个配置参数时把它标记为
+    <literal>IMMUTABLE</literal>。例如，一个操纵时间戳的函数有可能结果
+    依赖于<xref linkend="guc-timezone"/>设置。为了安全起见，这类
+    函数应该被标记为<literal>STABLE</literal>。
+   </para>
+
+   <note>
+    <para>
+     <productname>PostgreSQL</productname>要求<literal>STABLE</literal>
+     和<literal>IMMUTABLE</literal>函数中不包含非<command>SELECT</command>
+     的 SQL 命令以阻止数据修改（这也不是完全万无一失，因为这类函数还可以
+     调用修改数据库的<literal>VOLATILE</literal>函数。如果那样做，你将发现
+     该<literal>STABLE</literal>或<literal>IMMUTABLE</literal>函数不会发现由被调
+     用函数所作的数据库改变，因为它们对它的快照不可见）。
+    </para>
+   </note>
+  </sect1>
+
+  <sect1 id="xfunc-pl">
+   <title>过程语言函数</title>
+
+   <para>
+    <productname>PostgreSQL</productname>允许用除 SQL 和 C 之外
+    的语言编写用户定义的函数。这些语言通常被称为<firstterm>过程语言</firstterm>（<acronym>PL</acronym>）。
+    过程语言并不内置在<productname>PostgreSQL</productname>服务器中，
+    它们通过可装载模块提供。更多信息请见<xref linkend="xplang"/>以及接下来的
+    章节。
+   </para>
+  </sect1>
+
+  <sect1 id="xfunc-internal">
+   <title>内部函数</title>
+
+   <indexterm zone="xfunc-internal"><primary>function</primary><secondary>internal</secondary></indexterm>
+
+   <para>
+    内部函数由 C 编写并且已经被静态链接到<productname>PostgreSQL</productname>
+    服务器中。该函数定义的<quote>主体</quote>指定该函数的 C 语言名称，
+    它不必与为 SQL 使用而声明的名称相同。（出于向后兼容的原因，也接受空
+    主体，此时会认为 C 语言函数名与 SQL 函数名相同。）
+   </para>
+
+   <para>
+    通常，所有存在于服务器中的内部函数都在数据库集簇的初始化（见
+    <xref linkend="creating-cluster"/>）期间被声明，但是用户可以使用
+    <command>CREATE FUNCTION</command>为一个内部函数创建
+    额外的别名。在<command>CREATE FUNCTION</command>中用
+    语言名<literal>internal</literal>来声明内部函数。例如，要为
+    <function>sqrt</function>函数创建一个别名：
+<programlisting>
+CREATE FUNCTION square_root(double precision) RETURNS double precision
+    AS 'dsqrt'
+    LANGUAGE internal
+    STRICT;
+</programlisting>
+    （大部分内部函数应该被声明为<quote>严格</quote>）。
+   </para>
+
+   <note>
+    <para>
+     上述场景中并非所有<quote>预定义</quote>的函数都是
+     <quote>内部</quote>函数。有些预定义的函数由 SQL
+     编写。
+    </para>
+   </note>
+  </sect1>
+
+  <sect1 id="xfunc-c">
+   <title>C 语言函数</title>
+
+   <indexterm zone="xfunc-c">
+    <primary>function</primary>
+    <secondary>user-defined</secondary>
+    <tertiary>in C</tertiary>
+   </indexterm>
+
+   <para>
+    用户定义的函数可以用 C 编写（或者可以与 C 兼容的语言，例如 C++）。
+    这类函数被编译成动态载入对象（也被称为共享库）并且由服务器在
+    需要时载入。动态载入是把<quote>C语言</quote>函数和
+    <quote>内部</quote>函数区分开的特性 &mdash; 两者真正的编码习惯
+    实际上是一样的（因此，标准的内部函数库是用户定义的 C 函数很好
+    的源代码实例）。
+   </para>
+
+   <para>
+    当前仅有一种调用约定被用于C函数（<quote>版本1</quote>）。如下文所示，为函数编写一个<literal>PG_FUNCTION_INFO_V1()</literal>宏就能指示对该调用约定的支持。
+   </para>
+
+  <sect2 id="xfunc-c-dynload">
+   <title>动态载入</title>
+
+   <indexterm zone="xfunc-c-dynload">
+    <primary>动态载入</primary>
+   </indexterm>
+
+   <para>
+    在一个会话中第一次调用一个特定可载入对象文件中的用户定义函数时，
+    动态载入器会把那个对象文件载入到内存以便该函数被调用。因此用户
+    定义的 C 函数的<command>CREATE FUNCTION</command>必须
+    为该函数指定两块信息：可载入对象文件的名称，以及要在该对象文件中
+    调用的特定函数的 C 名称（链接符号）。如果没有显式指定 C 名称，则
+    它被假定为和 SQL 函数名相同。
+   </para>
+
+   <para>
+    下面的算法被用来基于<command>CREATE FUNCTION</command>
+    命令中给定的名称来定位共享对象文件：
+
+    <orderedlist>
+     <listitem>
+      <para>
+       如果名称是一个绝对路径，则载入给定的文件。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       如果该名称以字符串<literal>$libdir</literal>开始，那么这一部分会被
+       <productname>PostgreSQL</productname>包的库目录名（在编译时确定）替换。
+       <indexterm><primary>$libdir</primary></indexterm>
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       如果该名称不包含目录部分，会在配置变量
+       <xref linkend="guc-dynamic-library-path"/>指定的路径中搜索该
+       文件。<indexterm><primary>dynamic_library_path</primary></indexterm>
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       否则（在该路径中没找到该文件，或者它包含一个非绝对目录），
+       动态载入器将尝试接受给定的名称，这大部分会导致失败（依赖
+       当前工作目录是不可靠的）。
+      </para>
+     </listitem>
+    </orderedlist>
+
+    如果这个序列不起作用，会把平台相关的共享库文件名扩展（通常是
+    <filename>.so</filename>）追加到给定的名称并且再次尝试上述
+    的过程。如果还是失败，则载入失败。
+   </para>
+
+   <para>
+    建议通过相对于 <literal>$libdir</literal> 的路径，或者通过动态库路径来定位共享库。这样一来，如果新安装位于不同的位置，版本升级会更简单。<literal>$libdir</literal> 实际代表的目录可以通过命令 <literal>pg_config --pkglibdir</literal> 查出。
+   </para>
+
+   <para>
+    用于运行<productname>PostgreSQL</productname>服务器的
+    用户 ID 必须能够通过要载入文件的路径。常见的错误是把文件或
+    更高层的目录变得对<systemitem>postgres</systemitem>用户
+    不可读或者不可执行。
+   </para>
+
+   <para>
+    在任何情况下，<command>CREATE FUNCTION</command>命令
+    中给定的文件名会被原封不动地记录在系统目录中，这样如果需要再次
+    载入该文件则会应用同样的过程。
+   </para>
+
+   <note>
+    <para>
+     <productname>PostgreSQL</productname>不会自动编译 C 函数。在
+     从<command>CREATE FUNCTION</command>命令中引用对象文件
+     之前，它必须先被编译好。更多信息请见<xref linkend="dfunc"/>。
+    </para>
+   </note>
+
+   <indexterm zone="xfunc-c-dynload">
+    <primary>magic block</primary>
+   </indexterm>
+   <indexterm zone="xfunc-c-dynload">
+    <primary><literal>PG_MODULE_MAGIC</literal></primary>
+   </indexterm>
+
+   <para>
+    为确保动态装载的对象文件不会被加载到不兼容的服务器中，<productname>PostgreSQL</productname> 会检查该文件是否包含内容正确的<quote>magic block</quote>。这样服务器就能检测出明显的不兼容情况，例如代码是针对另一个 <productname>PostgreSQL</productname> 主版本编译的。要加入 magic block，请在模块某一个（且只能一个）源文件中，在包含头文件 <filename>fmgr.h</filename> 之后写入：
+
+<programlisting>
+PG_MODULE_MAGIC;
+</programlisting>
+或者
+<programlisting>
+PG_MODULE_MAGIC_EXT(<replaceable>parameters</replaceable>);
+</programlisting>
+   </para>
+
+   <para>
+    <literal>PG_MODULE_MAGIC_EXT</literal> 这种形式允许为模块指定附加信息；目前可以添加名称和/或版本字符串。（将来可能允许更多字段。）可以写成这样：
+
+<programlisting>
+PG_MODULE_MAGIC_EXT(
+    .name = "my_module_name",
+    .version = "1.2.3"
+);
+</programlisting>
+
+    之后，名称和版本可以通过 <function>pg_get_loaded_modules()</function> 函数查看。版本字符串的具体含义不受 <productname>PostgreSQL</productname> 限制，但建议采用语义化版本规则。
+   </para>
+
+   <para>
+    在第一次使用之后，动态载入对象文件会保留在内存中。在同一个会话中，
+    后续对该文件中函数的调用只需付出一次很小的符号表查找开销。如果需要
+    强制重新载入一个对象文件（例如在重新编译之后），就需要开启一个新的会话。
+   </para>
+
+   <indexterm zone="xfunc-c-dynload">
+    <primary>_PG_init</primary>
+   </indexterm>
+   <indexterm zone="xfunc-c-dynload">
+    <primary>库初始化函数</primary>
+   </indexterm>
+
+   <para>
+    可选地，一个动态加载的文件可以包含一个初始化函数。如果文件包含一个名为
+    <function>_PG_init</function>的函数，那个函数将在加载文件后立即被调用。
+    该函数不接收任何参数，应该返回void。目前没有办法卸载一个动态加载的文件。
+   </para>
+
+  </sect2>
+
+   <sect2 id="xfunc-c-basetype">
+    <title>C 语言函数中的基本类型</title>
+
+    <indexterm zone="xfunc-c-basetype">
+     <primary>数据类型</primary>
+     <secondary>内部组织</secondary>
+    </indexterm>
+
+    <para>
+     要了解如何编写 C 语言函数，你需要了解
+     <productname>PostgreSQL</productname>如何在内部表达基本数据类型
+     以及如何与函数传递它们。在内部，
+     <productname>PostgreSQL</productname>把基本类型视为一块<quote>内存数据块</quote>。
+     你为该类型定义的用户自定义函数，决定了 <productname>PostgreSQL</productname> 如何操作它。
+     也就是说，<productname>PostgreSQL</productname> 只负责把数据存到磁盘、再从磁盘取回，
+     而数据的输入、处理和输出则依赖你定义的这些函数。
+    </para>
+
+    <para>
+     基本类型可以有三种内部格式之一：
+
+     <itemizedlist>
+      <listitem>
+       <para>
+        传值，定长
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        传引用，定长
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        传引用，变长
+       </para>
+      </listitem>
+     </itemizedlist>
+    </para>
+
+    <para>
+     传值类型在长度上只能是 1、2、4 或 8 字节。你应当小心地
+     定义你的类型以便它们在所有的架构上都是相同的尺寸（字节）。例如，
+     <literal>long</literal>类型很危险，因为它在某些机器上是 4 字节但在
+     另外一些机器上是 8 字节，而<type>int</type>类型在大部分 Unix 机器
+     上都是 4 字节。在 Unix 机器上<type>int4</type>类型一种合理的实现
+     可能是：
+
+<programlisting>
+/* 4 字节整数，传值 */
+typedef int int4;
+</programlisting>
+
+     （实际的 PostgreSQL C 代码会把这种类型称为<type>int32</type>，因为
+     C 中的习惯是<type>int<replaceable>XX</replaceable></type>
+     表示<replaceable>XX</replaceable> <emphasis>位</emphasis>。注意
+     因此还有尺寸为 1 字节的 C 类型<type>int8</type>。SQL 类型
+     <type>int8</type>在 C 中被称为<type>int64</type>。另见
+     <xref linkend="xfunc-c-type-table"/>）。
+    </para>
+
+    <para>
+     另一方面，任意尺寸的定长类型都可以通过引用传递。例如，这里有一种
+     <productname>PostgreSQL</productname>类型的实现示例：
+
+<programlisting>
+/* 16 字节结构，传引用 */
+typedef struct
+{
+    double  x, y;
+} Point;
+</programlisting>
+
+     在<productname>PostgreSQL</productname>函数中传进或传出这种
+     类型时，只能使用指向这种类型的指针。要返回这样一种类型的值，用
+     <literal>palloc</literal>分配正确的内存量，然后填充分配好的内存，
+     并且返回一个指向该内存的指针（还有，如果只想返回与具有相同数据类型的
+     一个输入参数相同的值，可以跳过额外的<literal>palloc</literal>并且返回
+     指向该输入值的指针）。
+    </para>
+
+    <para>
+     最后，所有变长类型必须也以引用的方式传递。所有变长类型必须用一个
+     正好 4 字节的不透明长度域开始，该域会由<function>SET_VARSIZE</function>
+     设置，绝不要直接设置该域！所有要被存储在该类型中的数据必须在内存
+     中接着该长度域的后面存储。长度域包含该结构的总长度，也就是包括长
+     度域本身的尺寸。
+    </para>
+
+    <para>
+     另一个重点是要避免在数据类型值中留下未被初始化的位。例如，要注意
+     把可能存在于结构中的任何对齐填充字节置零。如果不这样做，你的数据
+     类型的逻辑等价常量可能会被规划器认为是不等的，进而导致低效的（不过
+     还是正确的）计划。
+    </para>
+
+    <warning>
+     <para>
+      <emphasis>绝不要</emphasis>修改通过引用传递的输入值的内容。如果这样做
+      很可能会破坏磁盘上的数据，因为给出的指针可能直接指向一个磁盘缓冲
+      区。这条规则唯一的例外在<xref linkend="xaggr"/>中有解释。
+     </para>
+    </warning>
+
+    <para>
+     例如，我们可以这样定义类型<type>text</type>：
+
+<programlisting>
+typedef struct {
+    int32 length;
+    char data[FLEXIBLE_ARRAY_MEMBER];
+} text;
+</programlisting>
+
+     <literal>[FLEXIBLE_ARRAY_MEMBER]</literal>记号表示数据部分的实际
+     长度不由该声明指定。
+    </para>
+
+    <para>
+     在操作变长类型时，我们必须小心分配正确数量的内存，并正确设置长度字段。
+     例如，如果我们想在一个<structname>text</structname>结构
+     中存储 40 字节，我们可以使用这样的代码片段：
+
+<programlisting><![CDATA[
+#include "postgres.h"
+...
+char buffer[40]; /* our source data */
+...
+text *destination = (text *) palloc(VARHDRSZ + 40);
+SET_VARSIZE(destination, VARHDRSZ + 40);
+memcpy(destination->data, buffer, 40);
+...
+]]>
+</programlisting>
+
+     <literal>VARHDRSZ</literal>和<literal>sizeof(int32)</literal>一样，
+     但是用宏<literal>VARHDRSZ</literal>来引用变长类型的载荷的
+     尺寸被认为是比较好的风格。还有，<emphasis>必须</emphasis>
+     使用<literal>SET_VARSIZE</literal>函数来设置长度域，而不是用
+     简单的赋值来设置。
+    </para>
+
+    <para>
+     <xref linkend="xfunc-c-type-table"/>展示了
+     <productname>PostgreSQL</productname> 中许多内置 SQL 数据类型所对应的 C 类型。
+     <quote>Defined In</quote>列给出了需要包含的头文件，以获取类型定义。
+     （实际的定义可能位于所列文件包含的其他文件中。建议用户坚持使用已定义的接口。）
+     请注意，在服务器代码的任何源文件中，都应该始终首先包含<filename>postgres.h</filename>，
+     因为它声明了很多你反正都会用到的内容，而且先包含其他头文件可能会带来可移植性问题。
+    </para>
+
+     <table tocentry="1" id="xfunc-c-type-table">
+      <title>内置 SQL 类型等效的 C 类型</title>
+      <tgroup cols="3">
+       <colspec colname="col1" colwidth="1*"/>
+       <colspec colname="col2" colwidth="1*"/>
+       <colspec colname="col3" colwidth="2*"/>
+       <thead>
+        <row>
+         <entry>
+          SQL 类型
+         </entry>
+         <entry>
+          C 类型
+         </entry>
+         <entry>
+          定义文件
+         </entry>
+        </row>
+       </thead>
+       <tbody>
+        <row>
+         <entry><type>boolean</type></entry>
+         <entry><type>bool</type></entry>
+         <entry><filename>postgres.h</filename>（可能是编译器内置）</entry>
+        </row>
+        <row>
+         <entry><type>box</type></entry>
+         <entry><type>BOX*</type></entry>
+         <entry><filename>utils/geo_decls.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>bytea</type></entry>
+         <entry><type>bytea*</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>"char"</type></entry>
+         <entry><type>char</type></entry>
+         <entry>（编译器内置）</entry>
+        </row>
+        <row>
+         <entry><type>character</type></entry>
+         <entry><type>BpChar*</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>cid</type></entry>
+         <entry><type>CommandId</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>date</type></entry>
+         <entry><type>DateADT</type></entry>
+         <entry><filename>utils/date.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>float4</type> (<type>real</type>)</entry>
+         <entry><type>float4</type></entry>
+        <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>float8</type> (<type>double precision</type>)</entry>
+         <entry><type>float8</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>int2</type> (<type>smallint</type>)</entry>
+         <entry><type>int16</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>int4</type> (<type>integer</type>)</entry>
+         <entry><type>int32</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>int8</type> (<type>bigint</type>)</entry>
+         <entry><type>int64</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>interval</type></entry>
+         <entry><type>Interval*</type></entry>
+         <entry><filename>datatype/timestamp.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>lseg</type></entry>
+         <entry><type>LSEG*</type></entry>
+         <entry><filename>utils/geo_decls.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>name</type></entry>
+         <entry><type>Name</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>numeric</type></entry>
+         <entry><type>Numeric</type></entry>
+         <entry><filename>utils/numeric.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>oid</type></entry>
+         <entry><type>Oid</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>oidvector</type></entry>
+         <entry><type>oidvector*</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>path</type></entry>
+         <entry><type>PATH*</type></entry>
+         <entry><filename>utils/geo_decls.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>point</type></entry>
+         <entry><type>POINT*</type></entry>
+         <entry><filename>utils/geo_decls.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>regproc</type></entry>
+         <entry><type>RegProcedure</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>text</type></entry>
+         <entry><type>text*</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>tid</type></entry>
+         <entry><type>ItemPointer</type></entry>
+         <entry><filename>storage/itemptr.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>time</type></entry>
+         <entry><type>TimeADT</type></entry>
+         <entry><filename>utils/date.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>time with time zone</type></entry>
+         <entry><type>TimeTzADT</type></entry>
+         <entry><filename>utils/date.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>timestamp</type></entry>
+         <entry><type>Timestamp</type></entry>
+         <entry><filename>datatype/timestamp.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>timestamp with time zone</type></entry>
+         <entry><type>TimestampTz</type></entry>
+         <entry><filename>datatype/timestamp.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>varchar</type></entry>
+         <entry><type>VarChar*</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+        <row>
+         <entry><type>xid</type></entry>
+         <entry><type>TransactionId</type></entry>
+         <entry><filename>postgres.h</filename></entry>
+        </row>
+       </tbody>
+      </tgroup>
+     </table>
+
+    <para>
+     现在我们已经复习了基本类型所有可能的结构，现在可以展示一些
+     真实函数的示例了。
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-c-v1-call-conv">
+    <title>版本 1 的调用约定</title>
+
+    <para>
+     版本-1 的调用规范依赖于宏来降低传参数和结果的复杂度。版本-1 函数的
+     C 声明总是：
+<programlisting>
+Datum funcname(PG_FUNCTION_ARGS)
+</programlisting>
+     此外，宏调用：
+<programlisting>
+PG_FUNCTION_INFO_V1(funcname);
+</programlisting>
+     必须出现在同一个源文件中（按惯例会正好写在该函数本身之前）。
+     这种宏调用不是<literal>internal</literal>语言函数所需要的，因为
+     <productname>PostgreSQL</productname>会假定所有内部函数都使用
+     版本-1 规范。不过，对于动态载入函数是必需的。
+    </para>
+
+    <para>
+     在版本-1 函数中，每一个实参都使用对应于该参数数据类型的<function>PG_GETARG_<replaceable>xxx</replaceable>()</function>宏取得。（在非严格的函数中，需要使用<function>PG_ARGISNULL()</function>对参数是否为空提前做检查；见下文。）结果要用对应于返回类型的<function>PG_RETURN_<replaceable>xxx</replaceable>()</function>宏返回。<function>PG_GETARG_<replaceable>xxx</replaceable>()</function>的参数是要取得的函数参数的编号，从零开始计。<function>PG_RETURN_<replaceable>xxx</replaceable>()</function>的参数是实际要返回的值。
+    </para>
+
+    <para>
+     要调用另一个版本-1 函数，你可以使用
+     <function>DirectFunctionCall<replaceable>n</replaceable>(func,
+     arg1, ..., argn)</function>。这在你想调用标准内部库中定义的函数时尤其有用，因为它提供了与其 SQL 签名相似的接口。
+    </para>
+
+    <para>
+     这些便利函数以及类似函数都可以在 <filename>fmgr.h</filename> 中找到。
+     <function>DirectFunctionCall<replaceable>n</replaceable></function> 系列把 C 函数名作为其第一个参数。另有
+     <function>OidFunctionCall<replaceable>n</replaceable></function> 等一些变体，它们接收目标函数的 OID。所有这些函数都要求以 <type>Datum</type> 形式提供函数参数，返回值也同样是 <type>Datum</type>。注意，使用这些便利函数时，参数和结果都不能为 NULL。
+    </para>
+
+    <para>
+     例如，要在 C 中调用 <function>starts_with(text, text)</function>，你可以在系统目录中查到它的 C 实现是
+     <function>Datum text_starts_with(PG_FUNCTION_ARGS)</function>
+     函数。通常你会用 <literal>DirectFunctionCall2(text_starts_with, ...)</literal> 来调用它。不过，<function>starts_with(text,
+     text)</function> 需要排序规则信息，因此如果这样调用，会因<quote>无法确定字符串比较该使用哪一种排序规则</quote>而失败。你必须改用 <literal>DirectFunctionCall2Coll(text_starts_with, ...)</literal>，
+     并提供所需的排序规则，通常就是从 <function>PG_GET_COLLATION()</function> 传递进来，如下面的示例所示。
+    </para>
+
+    <para>
+     <filename>fmgr.h</filename> 还提供了便于在 C 类型和 <type>Datum</type> 之间转换的宏。例如，要把 <type>Datum</type> 转成 <type>text*</type>，可以使用 <function>DatumGetTextPP(X)</function>。虽然某些类型为反向转换提供了名为 <function>TypeGetDatum(X)</function> 之类的宏，但 <type>text*</type> 没有；对它而言，直接使用通用宏 <function>PointerGetDatum(X)</function> 即可。如果你的扩展定义了额外的类型，通常也很方便为这些类型定义类似的宏。
+    </para>
+
+    <para>
+     这里是一些使用版本-1调用约定的示例：
+    </para>
+
+<programlisting><![CDATA[
+#include "postgres.h"
+#include <string.h>
+#include "fmgr.h"
+#include "utils/geo_decls.h"
+#include "varatt.h"
+
+PG_MODULE_MAGIC;
+
+/* by value */
+
+PG_FUNCTION_INFO_V1(add_one);
+
+Datum
+add_one(PG_FUNCTION_ARGS)
+{
+    int32   arg = PG_GETARG_INT32(0);
+
+    PG_RETURN_INT32(arg + 1);
+}
+
+/* by reference, fixed length */
+
+PG_FUNCTION_INFO_V1(add_one_float8);
+
+Datum
+add_one_float8(PG_FUNCTION_ARGS)
+{
+    /* The macros for FLOAT8 hide its pass-by-reference nature. */
+    float8   arg = PG_GETARG_FLOAT8(0);
+
+    PG_RETURN_FLOAT8(arg + 1.0);
+}
+
+PG_FUNCTION_INFO_V1(makepoint);
+
+Datum
+makepoint(PG_FUNCTION_ARGS)
+{
+    /* Here, the pass-by-reference nature of Point is not hidden. */
+    Point     *pointx = PG_GETARG_POINT_P(0);
+    Point     *pointy = PG_GETARG_POINT_P(1);
+    Point     *new_point = palloc_object(Point);
+
+    new_point->x = pointx->x;
+    new_point->y = pointy->y;
+
+    PG_RETURN_POINT_P(new_point);
+}
+
+/* by reference, variable length */
+
+PG_FUNCTION_INFO_V1(copytext);
+
+Datum
+copytext(PG_FUNCTION_ARGS)
+{
+    text     *t = PG_GETARG_TEXT_PP(0);
+
+    /*
+     * VARSIZE_ANY_EXHDR is the size of the struct in bytes, minus the
+     * VARHDRSZ or VARHDRSZ_SHORT of its header.  Construct the copy with a
+     * full-length header.
+     */
+    text     *new_t = (text *) palloc(VARSIZE_ANY_EXHDR(t) + VARHDRSZ);
+    SET_VARSIZE(new_t, VARSIZE_ANY_EXHDR(t) + VARHDRSZ);
+
+    /*
+     * VARDATA is a pointer to the data region of the new struct.  The source
+     * could be a short datum, so retrieve its data through VARDATA_ANY.
+     */
+    memcpy(VARDATA(new_t),          /* destination */
+           VARDATA_ANY(t),          /* source */
+           VARSIZE_ANY_EXHDR(t));   /* how many bytes */
+    PG_RETURN_TEXT_P(new_t);
+}
+
+PG_FUNCTION_INFO_V1(concat_text);
+
+Datum
+concat_text(PG_FUNCTION_ARGS)
+{
+    text  *arg1 = PG_GETARG_TEXT_PP(0);
+    text  *arg2 = PG_GETARG_TEXT_PP(1);
+    int32 arg1_size = VARSIZE_ANY_EXHDR(arg1);
+    int32 arg2_size = VARSIZE_ANY_EXHDR(arg2);
+    int32 new_text_size = arg1_size + arg2_size + VARHDRSZ;
+    text *new_text = (text *) palloc(new_text_size);
+
+    SET_VARSIZE(new_text, new_text_size);
+    memcpy(VARDATA(new_text), VARDATA_ANY(arg1), arg1_size);
+    memcpy(VARDATA(new_text) + arg1_size, VARDATA_ANY(arg2), arg2_size);
+    PG_RETURN_TEXT_P(new_text);
+}
+
+/* A wrapper around starts_with(text, text) */
+
+PG_FUNCTION_INFO_V1(t_starts_with);
+
+Datum
+t_starts_with(PG_FUNCTION_ARGS)
+{
+    text       *t1 = PG_GETARG_TEXT_PP(0);
+    text       *t2 = PG_GETARG_TEXT_PP(1);
+    Oid         collid = PG_GET_COLLATION();
+    bool        result;
+
+    result = DatumGetBool(DirectFunctionCall2Coll(text_starts_with,
+                                                  collid,
+                                                  PointerGetDatum(t1),
+                                                  PointerGetDatum(t2)));
+    PG_RETURN_BOOL(result);
+}
+]]>
+</programlisting>
+
+    <para>
+     假定上述代码已经准备在文件<filename>funcs.c</filename>中并且被编译成一个共享对象，我们可以用这样的命令在<productname>PostgreSQL</productname>中定义函数：
+    </para>
+
+<programlisting>
+CREATE FUNCTION add_one(integer) RETURNS integer
+     AS '<replaceable>DIRECTORY</replaceable>/funcs', 'add_one'
+     LANGUAGE C STRICT;
+
+-- note overloading of SQL function name "add_one"
+CREATE FUNCTION add_one(double precision) RETURNS double precision
+     AS '<replaceable>DIRECTORY</replaceable>/funcs', 'add_one_float8'
+     LANGUAGE C STRICT;
+
+CREATE FUNCTION makepoint(point, point) RETURNS point
+     AS '<replaceable>DIRECTORY</replaceable>/funcs', 'makepoint'
+     LANGUAGE C STRICT;
+
+CREATE FUNCTION copytext(text) RETURNS text
+     AS '<replaceable>DIRECTORY</replaceable>/funcs', 'copytext'
+     LANGUAGE C STRICT;
+
+CREATE FUNCTION concat_text(text, text) RETURNS text
+     AS '<replaceable>DIRECTORY</replaceable>/funcs', 'concat_text'
+     LANGUAGE C STRICT;
+
+CREATE FUNCTION t_starts_with(text, text) RETURNS boolean
+     AS '<replaceable>DIRECTORY</replaceable>/funcs', 't_starts_with'
+     LANGUAGE C STRICT;
+</programlisting>
+
+    <para>
+     这里，<replaceable>DIRECTORY</replaceable>表示共享库文件的目录（例如<productname>PostgreSQL</productname>的教程目录，它包含这一节中用到的示例的代码）。（更好的风格是先把<replaceable>DIRECTORY</replaceable>放入搜索路径，在<literal>AS</literal>子句中只使用<literal>'funcs'</literal>。在任何情况下，我们可以为一个共享库省略系统相关的扩展名，通常是<literal>.so</literal>）。
+    </para>
+
+    <para>
+     注意我们已经把函数指定为<quote>strict</quote>，这意味着如果有任何输入值为空，系统应该自动假定得到空结果。通过这种做法，我们避免在函数代码中检查空值输入。如果不这样做，我们必须使用<function>PG_ARGISNULL()</function>明确地检查空值输入。
+    </para>
+
+    <para>
+     宏<function>PG_ARGISNULL(<replaceable>n</replaceable>)</function>允许一个函数测试是否每一个输入为空（当然，只需要在没有声明为<quote>strict</quote>的函数中这样做）。和<function>PG_GETARG_<replaceable>xxx</replaceable>()</function>宏一样，输入参数也是从零开始计数。注意应该在验证了一个参数不是空之后才执行<function>PG_GETARG_<replaceable>xxx</replaceable>()</function>。要返回一个空结果，应执行<function>PG_RETURN_NULL()</function>，它对严格的以及非严格的函数都有用。
+    </para>
+
+    <para>
+     乍看之下，与普通的 <literal>C</literal> 调用约定相比，版本 1 的编码约定似乎只是增加了复杂度。不过，它们确实让我们能够处理可为 <literal>NULL</literal> 的参数和返回值，以及<quote>toasted</quote>（压缩或外置）值。
+    </para>
+
+    <para>
+     在版本-1接口中提供的其他选项是<function>PG_GETARG_<replaceable>xxx</replaceable>()</function>宏的两个变种。其中的第一种是<function>PG_GETARG_<replaceable>xxx</replaceable>_COPY()</function>，它确保返回的指定参数的拷贝可以被安全地写入（通常的宏有时会返回一个指向表中物理存储的值，它不能被写入。使用<function>PG_GETARG_<replaceable>xxx</replaceable>_COPY()</function>宏可以保证得到一个可写的结果）。第二种变种<function>PG_GETARG_<replaceable>xxx</replaceable>_SLICE()</function>宏有三个参数。第一个是函数参数的编号（如上文）。第二个和第三个是要被返回的段的偏移量和长度。偏移量从零开始计算，而负值的长度则表示要求返回该值的剩余部分。当大型值的存储类型为<quote>external</quote>时，这些宏提供了访问这些大型值的更有效的方法（列的存储类型可以使用<literal>ALTER TABLE <replaceable>tablename</replaceable> ALTER COLUMN <replaceable>colname</replaceable> SET STORAGE <replaceable>storagetype</replaceable></literal>来指定。<replaceable>storagetype</replaceable>取<literal>plain</literal>、<literal>external</literal>、<literal>extended</literal>或者<literal>main</literal>）。
+    </para>
+
+    <para>
+     最后，版本-1 的函数调用规范可以返回集合结果（<xref linkend="xfunc-c-return-set"/>）、实现触发器函数（<xref linkend="triggers"/>）和过程语言调用处理器（<xref linkend="plhandler"/>）。更多细节
+     可见源代码发布中的<filename>src/backend/utils/fmgr/README</filename>。
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-c-code">
+    <title>编写代码</title>
+
+    <para>
+     在开始更高级的话题之前，我们应该讨论一下用于
+     <productname>PostgreSQL</productname> C 语言函数的编码规则。
+     虽然可以把不是 C 编写的函数载入到
+     <productname>PostgreSQL</productname>中，这通常是很困难的，
+     因为其他语言（例如 C++、FORTRAN 或者 Pascal）通常不会遵循和 C
+     相同的调用规范。也就是说，其他语言不会以同样的方式在函数之间传递
+     参数以及返回值。由于这个原因，我们会假定你的 C 语言函数确实是用 C
+     编写的。
+    </para>
+
+    <para>
+     编写和构建 C 语言函数的基本规则如下：
+
+     <itemizedlist>
+      <listitem>
+       <para>
+        使用 <literal>pg_config
+        --includedir-server</literal><indexterm><primary>pg_config</primary><secondary>with user-defined C functions</secondary></indexterm>
+        查出 <productname>PostgreSQL</productname> 服务器头文件在你的系统上（或你的用户将要运行的系统上）安装于何处。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        为了让你的代码能够被 <productname>PostgreSQL</productname> 动态装入，编译和链接时总是需要特殊的选项。关于如何在特定操作系统上完成这件事，详见<xref linkend="dfunc"/>。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        记得按照<xref linkend="xfunc-c-dynload"/>中的说明，为你的共享库定义一个<quote>magic block</quote>。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        分配内存时，使用 <productname>PostgreSQL</productname> 提供的
+        <function>palloc</function><indexterm><primary>palloc</primary></indexterm> 和 <function>pfree</function><indexterm><primary>pfree</primary></indexterm>，
+        而不是相应的 C 库函数 <function>malloc</function> 和 <function>free</function>。用 <function>palloc</function> 分配的内存会在每个事务结束时自动释放，从而避免内存泄漏。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        总是使用 <function>memset</function> 将结构体的所有字节清零（或者一开始就用 <function>palloc0</function> 来分配它们）。即使你给结构体的每个字段都赋了值，结构中仍可能存在包含垃圾值的对齐填充字节（也就是结构中的空洞）。如果不这么做，就很难支持哈希索引或哈希连接，因为那时你必须只挑出数据结构中真正有意义的位来计算哈希值。规划器有时也依赖按位相等来比较常量，因此如果逻辑上等价的值在按位上不相等，就可能得到不理想的规划结果。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        <productname>PostgreSQL</productname> 的大多数内部类型都在 <filename>postgres.h</filename> 中声明，而函数管理器接口（<symbol>PG_FUNCTION_ARGS</symbol> 等）位于 <filename>fmgr.h</filename> 中，因此至少需要包含这两个文件。出于可移植性考虑，最好把 <filename>postgres.h</filename> 放在 <emphasis>最前面</emphasis>，先于任何其他系统或用户头文件。包含 <filename>postgres.h</filename> 时，也会顺带为你包含 <filename>elog.h</filename> 和 <filename>palloc.h</filename>。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        对象文件中定义的符号名不能彼此冲突，也不能与
+        <productname>PostgreSQL</productname> 服务器可执行文件中定义的符号冲突。如果你收到这类错误消息，就必须重命名相关函数或变量。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </para>
+   </sect2>
+
+&dfunc;
+
+   <sect2 id="xfunc-api-abi-stability-guidance">
+    <title>服务器 API 和 ABI 稳定性指南</title>
+
+    <para>
+     本节向扩展和其他服务器插件的作者提供有关
+     <productname>PostgreSQL</productname> 服务器 API 与 ABI 稳定性的指导。
+    </para>
+
+    <sect3 id="xfunc-guidance-general">
+     <title>概述</title>
+
+     <para>
+      <productname>PostgreSQL</productname> 服务器为服务器插件提供了若干边界清晰的 API，例如函数管理器（<acronym>fmgr</acronym>，本章已介绍）、<acronym>SPI</acronym>（<xref linkend="spi"/>）以及专门为扩展设计的各种钩子。这些接口都会被谨慎管理，以保持长期稳定性和兼容性。不过，服务器中的整套全局函数和变量实际上也构成了可公开使用的 API，而其中大部分在设计时并未把可扩展性和长期稳定性作为目标。
+     </para>
+
+     <para>
+      因此，虽然使用这些接口是完全允许的，但越是偏离那些久经实践考验的路径，将来遇到 API 或 ABI 兼容性问题的可能性就越大。鼓励扩展作者反馈自己的需求，以便随着时间推移和新用法的出现，某些接口能够被视为更稳定，或者可以加入新的、设计更完善的接口。
+     </para>
+    </sect3>
+
+    <sect3 id="xfunc-guidance-api-compatibility">
+     <title>API 兼容性</title>
+     <para>
+      <acronym>API</acronym>，即应用程序编程接口，是编译时使用的接口。
+     </para>
+
+     <sect4 id="xfunc-guidance-api-major-versions">
+      <title>主版本</title>
+      <para>
+       在 <productname>PostgreSQL</productname> 不同主版本之间，<emphasis>不承诺</emphasis> API 兼容性。因此，扩展代码可能需要修改源代码才能同时支持多个主版本。这类差异通常可以通过预处理器条件（例如 <literal>#if PG_VERSION_NUM &gt;= 160000</literal>）来管理。那些使用了边界清晰接口之外能力的复杂扩展，通常每个服务器主版本都需要做少量这类修改。
+      </para>
+     </sect4>
+
+     <sect4 id="xfunc-guidance-api-mninor-versions">
+      <title>小版本</title>
+      <para>
+       <productname>PostgreSQL</productname> 会尽力避免在小版本发布中破坏服务器 API。一般来说，能针对某个小版本编译并正常工作的扩展代码，也应当能够针对同一主版本的其他任意小版本（无论过去还是将来）编译并正常工作。
+      </para>
+
+      <para>
+       如果<emphasis>确实</emphasis>需要做出变更，也会在考虑扩展需求的前提下谨慎管理。这类变更会在发布说明（<xref linkend="release"/>）中进行说明。
+      </para>
+     </sect4>
+    </sect3>
+
+    <sect3 id="xfunc-guidance-abi-compatibility">
+     <title>ABI 兼容性</title>
+      <para>
+       <acronym>ABI</acronym>，即应用程序二进制接口，是运行时使用的接口。
+      </para>
+
+     <sect4 id="xfunc-guidance-abi-major-versions">
+      <title>主版本</title>
+      <para>
+       不同主版本的服务器在 ABI 上是有意不兼容的。因此，使用服务器 API 的扩展必须针对每一个主版本重新编译。包含 <literal>PG_MODULE_MAGIC</literal>（见<xref linkend="xfunc-c-dynload"/>）可以确保针对某个主版本编译的代码会被其他主版本拒绝。
+      </para>
+     </sect4>
+
+     <sect4 id="xfunc-guidance-abi-mninor-versions">
+      <title>小版本</title>
+      <para>
+       <productname>PostgreSQL</productname> 会尽力避免在小版本发布中破坏服务器 ABI。一般来说，针对任意一个小版本编译的扩展，应当能与同一主版本过去或将来的其他任意小版本一起工作。
+      </para>
+
+      <para>
+       如果<emphasis>确实</emphasis>需要变更，<productname>PostgreSQL</productname> 会尽量选择侵入性最小的方式，例如把新字段塞进填充空间，或者附加到结构体末尾。这类修改通常不应影响扩展，除非扩展使用了非常不寻常的代码模式。
+      </para>
+
+      <para>
+       然而，在极少数情况下，即使是这种非侵入式变更也可能不现实甚至不可能做到。发生这种情况时，也会在考虑扩展需求的前提下谨慎管理该变更。这类变更同样会记录在发布说明（<xref linkend="release"/>）中。
+      </para>
+
+      <para>
+       但请注意，服务器中有很多部分并不是作为公开可消费的 API 来设计和维护的（而且在大多数情况下，其真实边界也并不清晰）。如果这些部分出现紧急需求，对它们的修改自然会比对那些边界清楚且广泛使用的接口做修改时，更少考虑扩展代码的兼容性。
+      </para>
+
+      <para>
+       此外，在缺乏自动化检测这类变化的机制时，这并不能构成严格保证；不过从历史上看，这种破坏性变化极为罕见。
+      </para>
+
+     </sect4>
+    </sect3>
+  </sect2>
+
+   <sect2 id="xfunc-c-composite-type-args">
+    <title>复合类型参数</title>
+
+    <para>
+     复合类型没有像 C 结构那样的固定布局。复合类型的实例可能包含
+     空值域。此外，继承层次中的复合类型可能具有和同一继承层次中
+     其他成员不同的域。因此，
+     <productname>PostgreSQL</productname>提供了函数接口
+     来访问 C 的复合类型的域。
+    </para>
+
+    <para>
+     假设我们想要写一个函数来回答查询：
+
+<programlisting>
+SELECT name, c_overpaid(emp, 1500) AS overpaid
+    FROM emp
+    WHERE name = 'Bill' OR name = 'Sam';
+</programlisting>
+
+     如果使用版本-1的调用规范，我们可以定义
+     <function>c_overpaid</function>为：
+
+<programlisting><![CDATA[
+#include "postgres.h"
+#include "executor/executor.h"  /* 用于 GetAttributeByName() */
+
+PG_MODULE_MAGIC;
+
+PG_FUNCTION_INFO_V1(c_overpaid);
+
+Datum
+c_overpaid(PG_FUNCTION_ARGS)
+{
+    HeapTupleHeader  t = PG_GETARG_HEAPTUPLEHEADER(0);
+    int32            limit = PG_GETARG_INT32(1);
+    bool isnull;
+    Datum salary;
+
+    salary = GetAttributeByName(t, "salary", &isnull);
+    if (isnull)
+        PG_RETURN_BOOL(false);
+    /* 另外，我们可能更想对空 salary 用 PG_RETURN_NULL() 。*/
+
+    PG_RETURN_BOOL(DatumGetInt32(salary) > limit);
+}
+]]>
+</programlisting>
+    </para>
+
+    <para>
+     <function>GetAttributeByName</function> 是
+     <productname>PostgreSQL</productname> 的一个系统函数，用于从指定行中取出属性。它有三个参数：传入函数的 <type>HeapTupleHeader</type> 类型参数、所需属性的名称，以及一个用于指示该属性是否为 null 的返回参数。<function>GetAttributeByName</function> 返回一个 <type>Datum</type> 值，你可以用适当的 <function>DatumGet<replaceable>XXX</replaceable>()</function> 函数把它转换为正确的数据类型。注意，如果 null 标志被设置，那么返回值本身没有意义；在尝试对结果做任何处理之前，务必先检查这个 null 标志。
+    </para>
+
+    <para>
+     也有<function>GetAttributeByNum</function>函数，它可以用目标属性
+     的属性号而不是属性名来选择目标属性。
+    </para>
+
+    <para>
+     下面的命令声明 SQL 中的<function>c_overpaid</function>：
+
+<programlisting>
+CREATE FUNCTION c_overpaid(emp, integer) RETURNS boolean
+    AS '<replaceable>DIRECTORY</replaceable>/funcs', 'c_overpaid'
+    LANGUAGE C STRICT;
+</programlisting>
+
+     注意我们用了<literal>STRICT</literal>，这样我们不需要检查输入参数是否
+     为 NULL。
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-c-returning-rows">
+    <title>返回行（复合类型）</title>
+
+    <para>
+     要从 C 语言函数中返回一行或一个复合类型值，可以使用一套特殊的 API，
+     它通过一组宏和函数隐藏了构造组合数据类型时的大部分复杂性。要使用这套 API，源文件中必须包含：
+<programlisting>
+#include "funcapi.h"
+</programlisting>
+    </para>
+
+    <para>
+     构造组合数据值（下文简称<quote>元组</quote>）有两种方式：
+     一种是从 Datum 值数组构造，另一种是从 C 字符串数组构造，这些字符串会传给该元组各列数据类型的输入转换函数。
+     无论采用哪种方式，首先都需要获取或构造描述该元组结构的 <structname>TupleDesc</structname>。
+     处理 Datum 时，需要把 <structname>TupleDesc</structname> 传给 <function>BlessTupleDesc</function>，然后为每一行调用 <function>heap_form_tuple</function>。
+     处理 C 字符串时，则要把 <structname>TupleDesc</structname> 传给 <function>TupleDescGetAttInMetadata</function>，然后为每一行调用 <function>BuildTupleFromCStrings</function>。
+     对于返回元组集合的函数，这些准备步骤可以在第一次调用函数时一次性完成。
+    </para>
+
+    <para>
+     有一些辅助函数可以用来设置所需的 <structname>TupleDesc</structname>。在大多数返回组合值的函数中，推荐的做法是调用：
+<programlisting>
+TypeFuncClass get_call_result_type(FunctionCallInfo fcinfo,
+                                   Oid *resultTypeId,
+                                   TupleDesc *resultTupleDesc)
+</programlisting>
+     传入与调用函数本身相同的 <literal>fcinfo</literal> 结构（这当然要求使用版本 1 调用约定）。
+     <varname>resultTypeId</varname> 可以指定为 <literal>NULL</literal>，也可以指定为一个本地变量的地址，用于接收函数结果类型的 OID。
+     <varname>resultTupleDesc</varname> 应当是一个本地 <structname>TupleDesc</structname> 变量的地址。
+     检查返回结果是否为 <literal>TYPEFUNC_COMPOSITE</literal>；如果是，<varname>resultTupleDesc</varname> 就会被填入所需的 <structname>TupleDesc</structname>。
+     （如果不是，可以报告一个类似<quote>function returning record called in context that cannot accept type record</quote>的错误。）
+    </para>
+
+    <tip>
+     <para>
+      <function>get_call_result_type</function>能够解析一个多态函数结果的实际类型，
+      因此不仅在返回复合类型的函数中，在返回标量多态结果的函数中它也是非常
+      有用的。<varname>resultTypeId</varname>输出主要用于返回多态标量的函数。
+     </para>
+    </tip>
+
+    <note>
+     <para>
+      <function>get_call_result_type</function>有一个兄弟
+      <function>get_expr_result_type</function>，它被用来解析被表示为一棵表达式
+      树的函数调用的输出类型。在尝试确定来自函数外部的结果类型时可以用它。
+      也有一个<function>get_func_result_type</function>，当只有函数的 OID 可用时
+      可以用它。不过这些函数无法处理被声明为返回<structname>record</structname>的
+      函数，并且<function>get_func_result_type</function>无法解析多态类型，因此你
+      应该优先使用<function>get_call_result_type</function>。
+     </para>
+    </note>
+
+    <para>
+     更早、现在已被废弃的获取<structname>TupleDesc</structname>的函数有：
+<programlisting>
+TupleDesc RelationNameGetTupleDesc(const char *relname)
+</programlisting>
+     它可以为一个提到的关系的行类型得到<structname>TupleDesc</structname>，
+     还有：
+<programlisting>
+TupleDesc TypeGetTupleDesc(Oid typeoid, List *colaliases)
+</programlisting>
+     可以基于一个类型 OID 得到<structname>TupleDesc</structname>。这可以被用来
+     为一种基础或者复合类型获得<structname>TupleDesc</structname>。不过，对于
+     返回<structname>record</structname>的函数它不起作用，并且它无法解析多态类型。
+    </para>
+
+    <para>
+     一旦有了一个<structname>TupleDesc</structname>，如果计划处理 Datum可以调用：
+<programlisting>
+TupleDesc BlessTupleDesc(TupleDesc tupdesc)
+</programlisting>
+     如果计划处理 C 字符串，可调用：
+<programlisting>
+AttInMetadata *TupleDescGetAttInMetadata(TupleDesc tupdesc)
+</programlisting>
+     如果正在编写一个返回集合的函数，你可以把这些函数的结果保存在
+     <structname>FuncCallContext</structname>结构中 &mdash; 分别使用
+     <structfield>tuple_desc</structfield>或者<structfield>attinmeta</structfield>域。
+    </para>
+
+    <para>
+     在处理 Datum 时，使用
+<programlisting>
+HeapTuple heap_form_tuple(TupleDesc tupdesc, Datum *values, bool *isnull)
+</programlisting>
+     来用 Datum 形式的用户数据构建一个<structname>HeapTuple</structname>。
+    </para>
+
+    <para>
+     在处理 C 字符串时，使用
+<programlisting>
+HeapTuple BuildTupleFromCStrings(AttInMetadata *attinmeta, char **values)
+</programlisting>
+     来用 C 字符串形式的用户数据构建一个<structname>HeapTuple</structname>。
+     <parameter>values</parameter>是一个 C 字符串数组，每一个元素是返回行
+     的一个属性。每一个 C 字符串应该是该属性数据类型的输入函数所期望
+     的格式。为了对一个属性返回空值，<parameter>values</parameter>数组中对
+     应的指针应该被设置为<symbol>NULL</symbol>。对于你返回的每一行都将
+     再次调用这个函数。
+    </para>
+
+    <para>
+     一旦已经构建了一个要从函数中返回的元组，它必须被转换成一个
+     <type>Datum</type>。使用
+<programlisting>
+HeapTupleGetDatum(HeapTuple tuple)
+</programlisting>
+     可把一个<structname>HeapTuple</structname>转换成合法的 Datum。如果你
+     只想返回一行，那么这个<type>Datum</type>可以被直接返回，在一个
+     集合返回函数中它也可以被当做当前的返回值。
+    </para>
+
+    <para>
+     下一节中会有一个示例。
+    </para>
+
+   </sect2>
+
+   <sect2 id="xfunc-c-return-set">
+    <title>返回集合</title>
+
+    <para>
+     C 语言函数有两个返回集合（多行）的选项。在一种称为<firstterm>ValuePerCall</firstterm>
+     模式的方法中，一个集合返回函数被重复调用（每次传递相同的参数），并在每次调用时返回一个新行，
+     直到没有更多行要返回并且 通过返回 NULL 来表示这一点。因此，集合返回函数 (<acronym>SRF</acronym>) 
+     必须在调用之间保存足够的状态以记住它在做什么并在每次调用时返回正确的下一项。
+     在另一种称为<firstterm>Materialize</firstterm>模式的方法中，SRF 填充并返回一个包含其整个结果的 tuplestore 对象； 
+     那么整个结果只发生一次调用，不需要调用间状态。
+    </para>
+
+    <para>
+     使用 ValuePerCall 模式时，重要的是要记住查询不能保证运行完成； 
+     也就是说，由于诸如<literal>LIMIT</literal>之类的选项，
+     执行程序可能会在获取所有行之前停止调用 set-returning 函数。
+     这意味着在最后一次调用中执行清理活动是不安全的，因为这可能永远不会发生。
+     对于需要访问外部资源（例如文件描述符）的函数，建议使用 Materialize 模式。
+    </para>
+
+    <para>
+     本节的其余部分记录了一组使用 ValuePerCall 模式的 SRF 常用（尽管不是必须使用）的帮助程序宏。
+     有关 Materialize 模式的其他详细信息可以在<filename>src/backend/utils/fmgr/README</filename>中找到。
+     此外，<productname>PostgreSQL</productname>源代码分发中的<filename>contrib</filename> 
+     模块包含许多使用 ValuePerCall 和 Materialize 模式的 SRF 示例。
+    </para>
+
+    <para>
+     要使用此处描述的 ValuePerCall 支持宏，请包含<filename>funcapi.h</filename>。
+     这些宏与结构<structname>FuncCallContext</structname>一起使用，该结构包含需要跨调用保存的状态。
+     在调用 SRF 中，<literal>fcinfo-&gt;flinfo-&gt;fn_extra</literal>用于在调用之间保存
+     指向<structname>FuncCallContext</structname>的指针。
+     宏在第一次使用时自动填充该字段，并期望在后续使用中找到相同的指针。
+<programlisting>
+typedef struct FuncCallContext
+{
+    /*
+     * 本次调用以前已经被调用过多少次
+     *
+     * SRF_FIRSTCALL_INIT() 会为你把 call_cntr 初始化为 0，
+     * 并且在每次调用 SRF_RETURN_NEXT() 时增加。
+     */
+    uint64 call_cntr;
+
+    /*
+     * 可选：最大调用次数
+     *
+     * 这里的 max_calls 只是为了方便，设置它是可选的。
+     * 如果没有设置，你必须提供替代的方法来了解函数什么时候做完。
+     */
+    uint64 max_calls;
+
+    /*
+     * 可选：指向用户提供的上下文信息的指针
+     *
+     * user_fctx 是一个指向你自己的数据的指针，它可用来在函数的多次
+     * 调用之间保存任意的上下文信息。
+     */
+    void *user_fctx;
+
+    /*
+     * 可选：指向包含属性类型输入元数据的结构的指针
+     *
+     * attinmeta 被用在返回元组（即组合数据类型）时，在返回基本数据类型
+     * 时不会使用。只有想用BuildTupleFromCStrings()创建返回元组时才需要它。
+     */
+    AttInMetadata *attinmeta;
+
+    /*
+     * 用于保存必须在多次调用间都存在的结构的内存上下文
+     *
+     * SRF_FIRSTCALL_INIT() 会为你设置 multi_call_memory_ctx，并且由
+     * SRF_RETURN_DONE() 来清理。对于任何需要在 SRF 的多次调用间都
+     * 存在的内存来说，它是最合适的内存上下文。
+     */
+    MemoryContext multi_call_memory_ctx;
+
+    /*
+     * 可选：指向包含元组描述的结构的指针
+     *
+     * tuple_desc 被用在返回元组（即组合数据类型）时，并且只有在用
+     * heap_form_tuple() 而不是 BuildTupleFromCStrings() 构建元组时才需要它。
+     * 注意这里存储的 TupleDesc 指针通常已经被先运行过 BlessTupleDesc()。
+     */
+    TupleDesc tuple_desc;
+
+} FuncCallContext;
+</programlisting>
+    </para>
+
+    <para>
+     使用此基础结构的<acronym>SRF</acronym>将使用的宏是：
+<programlisting>
+SRF_IS_FIRSTCALL()
+</programlisting>
+     来判断你的函数是否是第一次被调用。在第一次调用时（只能在第一次调用时）使用：
+<programlisting>
+SRF_FIRSTCALL_INIT()
+</programlisting>
+     初始化<structname>FuncCallContext</structname>。在每次函数调用时，包含第一次，调用：
+<programlisting>
+SRF_PERCALL_SETUP()
+</programlisting>
+     设置使用<structname>FuncCallContext</structname>。
+    </para>
+
+    <para>
+     如果你的函数在当前调用中有数据要返回，请使用：
+<programlisting>
+SRF_RETURN_NEXT(funcctx, result)
+</programlisting>
+     把它返回给调用者（<literal>result</literal>必须是类型<type>Datum</type>，
+     可以是一个单一值或者按上文所述准备好的元组）。最后，当函数完成了
+     数据返回后，可使用：
+<programlisting>
+SRF_RETURN_DONE(funcctx)
+</programlisting>
+     来清理并且结束<acronym>SRF</acronym>。
+    </para>
+
+    <para>
+     调用 <acronym>SRF</acronym> 时当前所处的内存上下文是一个瞬时上下文，
+     它会在两次调用之间被清空。这意味着，你不必对用 <function>palloc</function> 分配的所有东西都调用 <function>pfree</function>，因为它们反正会自动释放。
+     不过，如果你需要分配在多次调用之间持续存在的数据结构，就必须把它们放到别处。
+     对于任何需要一直存活到 <acronym>SRF</acronym> 运行结束的数据，<structfield>multi_call_memory_ctx</structfield> 所指向的内存上下文就是合适的位置。
+     在大多数情况下，这意味着你应当在做首次调用初始化时切换到 <structfield>multi_call_memory_ctx</structfield>。
+     可以使用 <literal>funcctx-&gt;user_fctx</literal> 保存指向这类跨调用数据结构的指针。
+     （在 <structfield>multi_call_memory_ctx</structfield> 中分配的数据会在查询结束时自动消失，因此同样无需手工释放。）
+    </para>
+
+    <warning>
+     <para>
+      虽然函数的实参在多次调用之间保持不变，但如果在瞬时上下文中
+      反 TOAST 了参数（通常由
+      <function>PG_GETARG_<replaceable>xxx</replaceable></function>
+      宏完成），那么被反 TOAST 的拷贝将在每次循环中被释放。相应地，
+      如果你把这些值的引用保存在<structfield>user_fctx</structfield>中，你也必
+      须在反 TOAST 之后把它们拷贝到
+      <structfield>multi_call_memory_ctx</structfield>中，或者确保你只在那个
+      上下文中反 TOAST 这些值。
+     </para>
+    </warning>
+
+    <para>
+     一个完整的伪代码示例：
+<programlisting>
+Datum
+my_set_returning_function(PG_FUNCTION_ARGS)
+{
+    FuncCallContext  *funcctx;
+    Datum             result;
+    <replaceable>further declarations as needed</replaceable>
+
+    if (SRF_IS_FIRSTCALL())
+    {
+        MemoryContext oldcontext;
+
+        funcctx = SRF_FIRSTCALL_INIT();
+        oldcontext = MemoryContextSwitchTo(funcctx-&gt;multi_call_memory_ctx);
+        /* 这里是一次性设置代码： */
+        <replaceable>user code</replaceable>
+        <replaceable>if returning composite</replaceable>
+            <replaceable>build TupleDesc, and perhaps AttInMetadata</replaceable>
+        <replaceable>endif returning composite</replaceable>
+        <replaceable>user code</replaceable>
+        MemoryContextSwitchTo(oldcontext);
+    }
+
+    /* 这里是每一次都要做的设置代码： */
+    <replaceable>user code</replaceable>
+    funcctx = SRF_PERCALL_SETUP();
+    <replaceable>user code</replaceable>
+
+    /* 这里只是一种测试是否执行完的方法： */
+    if (funcctx-&gt;call_cntr &lt; funcctx-&gt;max_calls)
+    {
+        /* 这里返回另一个项： */
+        <replaceable>user code</replaceable>
+        <replaceable>obtain result Datum</replaceable>
+        SRF_RETURN_NEXT(funcctx, result);
+    }
+    else
+    {
+        /* 这里已经完成了项的返回，所以只报告事实。 */
+        /* （不要将清理代码放在这里的。） */
+        SRF_RETURN_DONE(funcctx);
+    }
+}
+</programlisting>
+    </para>
+
+    <para>
+     一个返回复合类型的简单<acronym>SRF</acronym>的完整示例如下：
+<programlisting><![CDATA[
+PG_FUNCTION_INFO_V1(retcomposite);
+
+Datum
+retcomposite(PG_FUNCTION_ARGS)
+{
+    FuncCallContext     *funcctx;
+    int                  call_cntr;
+    int                  max_calls;
+    TupleDesc            tupdesc;
+    AttInMetadata       *attinmeta;
+
+    /* 仅在函数的第一次调用时执行的操作 */
+    if (SRF_IS_FIRSTCALL())
+    {
+        MemoryContext   oldcontext;
+
+        /* 为跨调用持久性创建函数上下文 */
+        funcctx = SRF_FIRSTCALL_INIT();
+
+        /* 切换到适合多次函数调用的内存上下文 */
+        oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+        /* 要返回的元组总数 */
+        funcctx->max_calls = PG_GETARG_INT32(0);
+
+        /* 为我们的结果类型构建一个元组描述符 */
+        if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+            ereport(ERROR,
+                    (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                     errmsg("function returning record called in context "
+                            "that cannot accept type record")));
+
+        /*
+         * 生成后续从原始C字符串生成元组所需的属性元数据
+         */
+        attinmeta = TupleDescGetAttInMetadata(tupdesc);
+        funcctx->attinmeta = attinmeta;
+
+        MemoryContextSwitchTo(oldcontext);
+    }
+
+    /* 每次函数调用时执行的操作 */
+    funcctx = SRF_PERCALL_SETUP();
+
+    call_cntr = funcctx->call_cntr;
+    max_calls = funcctx->max_calls;
+    attinmeta = funcctx->attinmeta;
+
+    if (call_cntr < max_calls)    /* 当还有更多要发送时执行 */
+    {
+        char       **values;
+        HeapTuple    tuple;
+        Datum        result;
+
+        /*
+         * 为构建返回的元组准备一个值数组。
+         * 这应该是一个由后续类型输入函数处理的C字符串数组。
+         */
+        values = (char **) palloc(3 * sizeof(char *));
+        values[0] = (char *) palloc(16 * sizeof(char));
+        values[1] = (char *) palloc(16 * sizeof(char));
+        values[2] = (char *) palloc(16 * sizeof(char));
+
+        snprintf(values[0], 16, "%d", 1 * PG_GETARG_INT32(1));
+        snprintf(values[1], 16, "%d", 2 * PG_GETARG_INT32(1));
+        snprintf(values[2], 16, "%d", 3 * PG_GETARG_INT32(1));
+
+        /* 构建一个元组 */
+        tuple = BuildTupleFromCStrings(attinmeta, values);
+
+        /* 将元组转换为数据 */
+        result = HeapTupleGetDatum(tuple);
+
+        /* 清理（这实际上并不是必要的） */
+        pfree(values[0]);
+        pfree(values[1]);
+        pfree(values[2]);
+        pfree(values);
+
+        SRF_RETURN_NEXT(funcctx, result);
+    }
+    else    /* 当没有更多要发送时执行 */
+    {
+        SRF_RETURN_DONE(funcctx);
+    }
+}
+]]>
+</programlisting>
+
+     在SQL中声明此函数的一种方法是：
+<programlisting>
+CREATE TYPE __retcomposite AS (f1 integer, f2 integer, f3 integer);
+
+CREATE OR REPLACE FUNCTION retcomposite(integer, integer)
+    RETURNS SETOF __retcomposite
+    AS '<replaceable>filename</replaceable>', 'retcomposite'
+    LANGUAGE C IMMUTABLE STRICT;
+</programlisting>
+     另一种方法是使用OUT参数：
+<programlisting>
+CREATE OR REPLACE FUNCTION retcomposite(IN integer, IN integer,
+    OUT f1 integer, OUT f2 integer, OUT f3 integer)
+    RETURNS SETOF record
+    AS '<replaceable>filename</replaceable>', 'retcomposite'
+    LANGUAGE C IMMUTABLE STRICT;
+</programlisting>
+     请注意，采用这种方法时，函数的输出类型在形式上是一个匿名的 <structname>record</structname> 类型。
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-c-polymorphic">
+    <title>多态参数和返回类型</title>
+
+    <para>
+     可以声明 C 语言函数来接受和返回<xref linkend="extend-types-polymorphic"/>中描述的多态类型。当函数参数或者返回
+     类型被定义为多态类型时，函数的编写者无法提前知道会用什么数据类型
+     调用该函数或者该函数需要返回什么数据类型。在<filename>fmgr.h</filename>
+     中提供了两种例程来允许版本-1 的 C 函数发现其参数的实际数据类型以及
+     它要返回的类型。这些例程被称为
+     <literal>get_fn_expr_rettype(FmgrInfo *flinfo)</literal>和
+     <literal>get_fn_expr_argtype(FmgrInfo *flinfo, int argnum)</literal>。它们
+     返回结果或者参数的类型的 OID，或者当该信息不可用时返回
+     <symbol>InvalidOid</symbol>。结构<literal>flinfo</literal>通常被当做
+     <literal>fcinfo-&gt;flinfo</literal>访问。参数<literal>argnum</literal>则是从零
+     开始计。<function>get_call_result_type</function>也可被用作
+     <function>get_fn_expr_rettype</function>的一种替代品。还有
+     <function>get_fn_expr_variadic</function>，它可以被用来找出 variadic 参数
+     是否已经被合并到了一个数组中。这主要用于
+     <literal>VARIADIC "any"</literal>函数，因为对于接收普通数组类型的
+     variadic 函数来说总是会发生这类合并。
+    </para>
+
+    <para>
+     例如，假设我们想要写一个接收一个任意类型元素并且返回一个该类型的一维
+     数组的函数：
+
+<programlisting>
+PG_FUNCTION_INFO_V1(make_array);
+Datum
+make_array(PG_FUNCTION_ARGS)
+{
+    ArrayType  *result;
+    Oid         element_type = get_fn_expr_argtype(fcinfo-&gt;flinfo, 0);
+    Datum       element;
+    bool        isnull;
+    int16       typlen;
+    bool        typbyval;
+    char        typalign;
+    int         ndims;
+    int         dims[MAXDIM];
+    int         lbs[MAXDIM];
+
+    if (!OidIsValid(element_type))
+        elog(ERROR, "could not determine data type of input");
+
+    /* 得到提供的元素，小心它为 NULL 的情况 */
+    isnull = PG_ARGISNULL(0);
+    if (isnull)
+        element = (Datum) 0;
+    else
+        element = PG_GETARG_DATUM(0);
+
+    /* 只有一个维度 */
+    ndims = 1;
+    /* 和一个元素 */
+    dims[0] = 1;
+    /* 且下界是 1 */
+    lbs[0] = 1;
+
+    /* 得到该元素类型所需的信息 */
+    get_typlenbyvalalign(element_type, &amp;typlen, &amp;typbyval, &amp;typalign);
+
+    /* 现在构建数组 */
+    result = construct_md_array(&amp;element, &amp;isnull, ndims, dims, lbs,
+                                element_type, typlen, typbyval, typalign);
+
+    PG_RETURN_ARRAYTYPE_P(result);
+}
+</programlisting>
+    </para>
+
+    <para>
+     下面的命令在 SQL 中声明了 <function>make_array</function> 函数：
+
+<programlisting>
+CREATE FUNCTION make_array(anyelement) RETURNS anyarray
+    AS '<replaceable>DIRECTORY</replaceable>/funcs', 'make_array'
+    LANGUAGE C IMMUTABLE;
+</programlisting>
+    </para>
+
+    <para>
+     还有一种只对 C 语言函数可用的多态变体：它们可以被声明为接受
+     <literal>"any"</literal> 类型的参数。（注意，这个类型名必须用双引号括起来，因为它同时也是 SQL 保留字。）
+     它与 <type>anyelement</type> 类似，但不会要求不同的 <literal>"any"</literal> 参数必须是同一种类型，也不会帮助确定函数的结果类型。
+     C 语言函数还可以把最后一个参数声明为 <literal>VARIADIC "any"</literal>。
+     这可以匹配一个或多个任意类型的实参（不必是同一种类型）。
+     这些参数<emphasis>不会</emphasis>像普通 variadic 函数那样被收集成一个数组，而是会单独传给函数。
+     使用这种特性时，必须结合 <function>PG_NARGS()</function> 宏以及前面介绍的方法来确定实参的个数和类型。
+     此外，这种函数的用户也可能希望在函数调用中使用 <literal>VARIADIC</literal> 关键字，以便让函数把数组元素当作独立参数处理。
+     如果希望支持这种行为，函数本身就必须在使用 <function>get_fn_expr_variadic</function> 检测到实参被标记为 <literal>VARIADIC</literal> 后自行实现它。
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-shared-addin">
+    <title>共享内存</title>
+
+    <sect3 id="xfunc-shared-addin-at-startup">
+     <title>启动时请求共享内存</title>
+
+     <para>
+      插件可以在服务器启动时预留共享内存。要做到这一点，插件的共享库必须通过
+      <xref linkend="guc-shared-preload-libraries"/><indexterm><primary>shared_preload_libraries</primary></indexterm>
+      预加载。该共享库还应在其 <function>_PG_init</function> 函数中注册回调，以便在系统启动的合适阶段初始化共享内存。示例如下：
+<programlisting>
+typedef struct MyShmemData {
+    LWLock      lock;    /* protects the fields below */
+
+    ... shared memory contents ...
+} MyShmemData;
+
+static MyShmemData *MyShmem;    /* pointer to the struct in shared memory */
+
+static void my_shmem_request(void *arg);
+static void my_shmem_init(void *arg);
+
+const ShmemCallbacks my_shmem_callbacks = {
+    .request_fn = my_shmem_request,
+    .init_fn = my_shmem_init,
+};
+
+/*
+ * Module load callback
+ */
+void
+_PG_init(void)
+{
+    /*
+     * In order to create our shared memory area, we have to be loaded via
+     * shared_preload_libraries.
+     */
+    if (!process_shared_preload_libraries_in_progress)
+        return;
+
+    /* Register our shared memory needs */
+    RegisterShmemCallbacks(&amp;my_shmem_callbacks);
+}
+
+/* callback to request shmem space */
+static void
+my_shmem_request(void *arg)
+{
+    ShmemRequestStruct(.name = "My shmem area",
+                       .size = sizeof(MyShmemData),
+                       .ptr = (void **) &amp;MyShmem,
+        );
+}
+
+/* callback to initialize the contents of the MyShmem area at startup */
+static void
+my_shmem_init(void *arg)
+{
+    int         tranche_id;
+
+    /* Initialize the lock */
+    tranche_id = LWLockNewTrancheId("my tranche name");
+    LWLockInitialize(&amp;MyShmem->lock, tranche_id);
+
+    ... initialize the rest of MyShmem fields ...
+}
+</programlisting>
+      <function>request_fn</function> 回调会在系统启动期间、共享内存尚未分配之前被调用。它应当调用 <function>ShmemRequestStruct()</function> 来登记插件的共享内存需求。注意，<function>ShmemRequestStruct()</function> 并不会立刻分配或初始化内存，它只是登记稍后在启动序列中要分配的空间。内存分配完成后会被初始化为零。对于更复杂的初始化，可设置 <function>init_fn()</function> 回调；该回调会在内存分配并清零之后、但在任何其他进程开始运行之前被调用，因此不需要加锁。
+     </para>
+
+     <para>
+      在 Windows 上，<function>attach_fn</function> 回调如果存在，还会在每次后端启动时额外被调用。它可用于初始化与共享内存区域相关的其他每后端状态，而这些状态在其他系统上会通过 <function>fork()</function> 被继承。
+     </para>
+
+     <para>
+      在 <productname>PostgreSQL</productname> 源代码树中的
+      <filename>contrib/pg_stat_statements/pg_stat_statements.c</filename> 里可以找到一个分配共享内存的示例。
+     </para>
+    </sect3>
+
+    <sect3 id="xfunc-shared-addin-after-startup">
+     <title>使用 <function>ShmemRequestStruct</function> 在启动后请求共享内存</title>
+
+     <para>
+      <function>ShmemRequestStruct()</function> 也可以在系统启动之后调用，这对允许在未指定于
+      <xref linkend="guc-shared-preload-libraries"/><indexterm><primary>shared_preload_libraries</primary></indexterm>
+      中的插件库里做少量分配很有用。不过，在启动之后，如果可用共享内存不足，分配可能会失败。系统会为启动后的分配保留一部分内存，但这个保留量很小。
+     </para>
+
+     <para>
+      默认情况下，如果在系统启动之后调用，<function>RegisterShmemCallbacks()</function> 会报错。若要在启动后使用它，必须在
+      <structname>ShmemCallbacks</structname> 结构体参数中设置
+      <literal>SHMEM_CALLBACKS_ALLOW_AFTER_STARTUP</literal> 标志，以表明你接受这一风险。
+     </para>
+
+     <para>
+      当在启动后调用 <function>RegisterShmemCallbacks()</function> 时，它会根据请求的内存区域是否已经由其他后端初始化过，立即调用相应的回调函数。回调函数会在持有内部锁的情况下执行，这样可以防止两个后端并发初始化同一内存区域。
+     </para>
+    </sect3>
+
+    <sect3 id="xfunc-shared-addin-dynamic">
+     <title>启动后分配动态共享内存</title>
+
+     <para>
+      还有另一种更灵活的预留共享内存的方法，可以在服务器启动后完成。为此，每个将使用该共享内存的后端都应通过调用以下函数来获取指针：
+<programlisting>
+void *GetNamedDSMSegment(const char *name, size_t size,
+                         void (*init_callback) (void *ptr, void *arg),
+                         bool *found, void *arg)
+</programlisting>
+      如果给定名称的动态共享内存段尚不存在，该函数会分配该段，并使用提供的 <function>init_callback</function> 回调函数对其进行初始化。如果该段已经由另一个后端分配并初始化过，该函数就只会把现有的动态共享内存段附加到当前后端。在前一种情况下，<function>GetNamedDSMSegment</function> 会把 <literal>void *arg</literal> 参数传给 <function>init_callback</function>。这对在多个 DSM 段之间复用初始化回调函数特别有用。
+     </para>
+
+     <para>
+      <function>GetNamedDSMSegment</function> 可确保只有一个后端分配并初始化该段，而其他所有后端都会获得指向完全分配并初始化好的该段的指针。
+     </para>
+
+     <para>
+      <function>GetNamedDSMSegment</function> 的完整使用示例可见于
+      <filename>src/test/modules/test_dsm_registry/test_dsm_registry.c</filename>
+      ，位于 <productname>PostgreSQL</productname> 源代码树中。
+     </para>
+    </sect3>
+   </sect2>
+
+   <sect2 id="xfunc-addin-lwlocks">
+    <title>LWLocks</title>
+
+    <sect3 id="xfunc-addin-lwlocks-at-startup">
+     <title>启动时请求 LWLocks</title>
+
+     <para>
+      插件可以在服务器启动时预留 LWLocks。与在服务器启动时预留共享内存一样，插件的共享库必须通过
+      <xref linkend="guc-shared-preload-libraries"/><indexterm><primary>shared_preload_libraries</primary></indexterm>
+      预加载，并且共享库应在其 <function>_PG_init</function> 函数中注册
+      <literal>shmem_request_hook</literal>。这个
+      <literal>shmem_request_hook</literal> 可以通过调用以下函数来预留 LWLocks：
+<programlisting>
+void RequestNamedLWLockTranche(const char *tranche_name, int num_lwlocks)
+</programlisting>
+      这样可以确保在名为 <literal>tranche_name</literal> 的 tranche 下提供一组数量为 <literal>num_lwlocks</literal> 的 LWLocks。可以通过调用以下函数获得指向这组 LWLocks 的指针：
+<programlisting>
+LWLockPadded *GetNamedLWLockTranche(const char *tranche_name)
+</programlisting>
+     </para>
+    </sect3>
+
+    <sect3 id="xfunc-addin-lwlocks-after-startup">
+     <title>启动后请求 LWLocks</title>
+
+     <para>
+      还有另一种更灵活的获取 LWLocks 的方法，可以在服务器启动后进行，也无需借助
+      <literal>shmem_request_hook</literal>。为此，首先通过调用下面的函数分配一个
+      <literal>tranche_id</literal>：
+<programlisting>
+int LWLockNewTrancheId(const char *name)
+</programlisting>
+      接下来，初始化每个 LWLock，并把新的
+      <literal>tranche_id</literal> 作为参数传入：
+<programlisting>
+void LWLockInitialize(LWLock *lock, int tranche_id)
+</programlisting>
+      与共享内存类似，每个后端都应确保只有一个进程会分配新的
+      <literal>tranche_id</literal> 并初始化每一个新的 LWLock。一种做法是仅在持有
+      <function>AddinShmemInitLock</function> 独占锁的共享内存初始化代码中调用这些函数。如果使用
+      <function>GetNamedDSMSegment</function>，那么在
+      <function>init_callback</function> 回调函数中调用这些函数就足以避免竞争条件。
+     </para>
+
+     <para>
+      <function>LWLockNewTrancheId</function> 和
+      <function>LWLockInitialize</function> 的完整使用示例可见于
+      <productname>PostgreSQL</productname> 源代码树中的
+      <filename>contrib/pg_prewarm/autoprewarm.c</filename>。
+     </para>
+    </sect3>
+   </sect2>
+
+   <sect2 id="xfunc-addin-wait-events">
+    <title>自定义等待事件</title>
+
+    <para>
+     插件可以通过调用以下函数，在等待事件类型
+     <literal>Extension</literal> 下定义自定义等待事件：
+<programlisting>
+uint32 WaitEventExtensionNew(const char *wait_event_name)
+</programlisting>
+     该等待事件会关联到一个面向用户的自定义字符串。示例可见于
+     <filename>src/test/modules/worker_spi</filename>，位于 PostgreSQL 源代码树中。
+    </para>
+    <para>
+     自定义等待事件可以在
+     <link linkend="monitoring-pg-stat-activity-view"><structname>pg_stat_activity</structname></link> 中查看：
+<screen>
+=# SELECT wait_event_type, wait_event FROM pg_stat_activity
+     WHERE backend_type ~ 'worker_spi';
+ wait_event_type |  wait_event
+-----------------+---------------
+ Extension       | WorkerSpiMain
+(1 row)
+</screen>
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-addin-injection-points">
+    <title>注入点</title>
+
+    <para>
+     给定名称 <literal>name</literal> 的注入点可通过以下宏声明：
+<programlisting>
+INJECTION_POINT(name, arg);
+</programlisting>
+
+     服务器代码中已经在若干关键位置声明了注入点。新增注入点后，需要重新编译代码，才能让该注入点出现在二进制文件中。用 C 语言编写的插件也可以使用同一个宏在自己的代码中声明注入点。注入点名称应使用小写字母，并用连字符分隔各个术语。<literal>arg</literal> 是运行时传给回调的可选参数值。
+    </para>
+
+    <para>
+     执行注入点可能需要分配少量内存，而这可能失败。如果你需要在一个不允许动态分配的临界区中使用注入点，可以采用以下两步法：
+<programlisting>
+INJECTION_POINT_LOAD(name);
+INJECTION_POINT_CACHED(name, arg);
+</programlisting>
+
+     在进入临界区之前，调用 <function>INJECTION_POINT_LOAD</function>。它会检查共享内存状态，并在该注入点处于激活状态时把回调加载到后端私有内存中。在临界区内部，再用
+     <function>INJECTION_POINT_CACHED</function> 来执行回调。
+    </para>
+
+    <para>
+     插件可以通过调用以下函数，为一个已经声明好的注入点附加回调：
+<programlisting>
+extern void InjectionPointAttach(const char *name,
+                                 const char *library,
+                                 const char *function,
+                                 const void *private_data,
+                                 int private_data_size);
+</programlisting>
+
+     <literal>name</literal> 是注入点名称；执行过程中到达该注入点时，就会执行从 <literal>library</literal> 载入的 <literal>function</literal>。<literal>private_data</literal> 是一块大小为 <literal>private_data_size</literal> 的私有数据区域，会在执行时作为参数传给回调。
+    </para>
+
+    <para>
+     下面是一个
+     <literal>InjectionPointCallback</literal> 的示例：
+<programlisting>
+static void
+custom_injection_callback(const char *name,
+                          const void *private_data,
+                          void *arg)
+{
+    uint32 wait_event_info = WaitEventInjectionPointNew(name);
+
+    pgstat_report_wait_start(wait_event_info);
+    elog(NOTICE, "%s: executed custom callback", name);
+    pgstat_report_wait_end();
+}
+</programlisting>
+     这个回调会以 <literal>NOTICE</literal> 级别向服务器错误日志写入一条消息，但回调完全可以实现更复杂的逻辑。
+    </para>
+
+    <para>
+     另一种定义“到达注入点时应执行什么动作”的方式，是把测试代码直接写在常规源代码旁边。如果该动作依赖于加载模块无法访问的局部变量，这会很有用。此时可以使用
+     <function>IS_INJECTION_POINT_ATTACHED</function> 宏来检查某个注入点是否已附加，例如：
+<programlisting>
+#ifdef USE_INJECTION_POINTS
+if (IS_INJECTION_POINT_ATTACHED("before-foobar"))
+{
+    /* change a local variable if injection point is attached */
+    local_var = 123;
+
+    /* also execute the callback */
+    INJECTION_POINT_CACHED("before-foobar", NULL);
+}
+#endif
+</programlisting>
+     注意，附加到注入点上的回调不会由 <function>IS_INJECTION_POINT_ATTACHED</function> 宏执行。如果你想执行该回调，就必须像上面的示例那样另外调用
+     <function>INJECTION_POINT_CACHED</function>。
+    </para>
+
+    <para>
+     可选地，也可以通过调用以下函数来解除一个注入点：
+<programlisting>
+extern bool InjectionPointDetach(const char *name);
+</programlisting>
+     成功时返回 <literal>true</literal>，否则返回 <literal>false</literal>。
+    </para>
+
+    <para>
+     一个附加到注入点的回调会在所有后端中生效，包括在调用
+     <literal>InjectionPointAttach</literal> 之后才启动的后端。它会一直保持附加状态，直到服务器停止，或者通过
+     <literal>InjectionPointDetach</literal> 将其解除。
+    </para>
+
+    <para>
+     相关示例可见于 PostgreSQL 源代码树中的
+     <filename>src/test/modules/injection_points</filename>。
+    </para>
+
+    <para>
+     启用注入点需要在 <command>configure</command> 中指定
+     <option>--enable-injection-points</option>，或者在
+     <application>Meson</application> 中指定
+     <option>-Dinjection_points=true</option>。
+    </para>
+   </sect2>
+
+   <sect2 id="xfunc-addin-custom-cumulative-statistics">
+    <title>自定义累计统计</title>
+
+    <para>
+     用 C 语言编写的插件可以使用在
+     <link linkend="monitoring-stats-setup">累计统计系统</link> 中注册的自定义累计统计类型。
+    </para>
+
+    <para>
+     首先，定义一个 <literal>PgStat_KindInfo</literal>，其中包含与所注册自定义类型相关的全部信息。例如：
+<programlisting>
+static const PgStat_KindInfo custom_stats = {
+    .name = "custom_stats",
+    .fixed_amount = false,
+    .shared_size = sizeof(PgStatShared_Custom),
+    .shared_data_off = offsetof(PgStatShared_Custom, stats),
+    .shared_data_len = sizeof(((PgStatShared_Custom *) 0)->stats),
+    .pending_size = sizeof(PgStat_StatCustomEntry),
+}
+</programlisting>
+
+     然后，每个需要使用这种自定义类型的后端，都需要使用
+     <literal>pgstat_register_kind</literal> 注册它，并指定一个用于存储该类统计条目的唯一 ID：
+<programlisting>
+extern PgStat_Kind pgstat_register_kind(PgStat_Kind kind,
+                                        const PgStat_KindInfo *kind_info);
+</programlisting>
+     在开发新扩展时，应将
+     <literal>PGSTAT_KIND_EXPERIMENTAL</literal> 用作
+     <parameter>kind</parameter>。当你准备把扩展发布给用户时，请在
+     <ulink url="https://wiki.postgresql.org/wiki/CustomCumulativeStats">
+     Custom Cumulative Statistics</ulink> 页面上预留一个 kind ID。
+    </para>
+
+    <para>
+     关于 <literal>PgStat_KindInfo</literal> API 的细节，可见
+     <filename>src/include/utils/pgstat_internal.h</filename>。
+    </para>
+
+    <para>
+     已注册的统计类型会关联到一个名称以及一个在共享内存中供整个服务器共享的唯一 ID。每个使用自定义统计类型的后端都会维护一个本地缓存，用来保存各个自定义 <literal>PgStat_KindInfo</literal> 的信息。
+    </para>
+
+    <para>
+     应将实现自定义累计统计类型的扩展模块加入
+     <xref linkend="guc-shared-preload-libraries"/>，以便在
+     <productname>PostgreSQL</productname> 启动期间尽早载入。
+    </para>
+
+    <para>
+     展示如何注册并使用自定义统计信息的示例可见于
+     <filename>src/test/modules/test_custom_stats</filename>。
+    </para>
+   </sect2>
+
+   <sect2 id="extend-cpp">
+    <title>把 C++ 用于可扩展性</title>
+
+    <indexterm zone="extend-cpp">
+     <primary>C++</primary>
+    </indexterm>
+
+    <para>
+     尽管<productname>PostgreSQL</productname>后端是用 C 编写的，
+     只要遵循下面的指导方针也可以用 C++ 编写扩展：
+
+     <itemizedlist>
+      <listitem>
+       <para>
+         所有被后端访问的函数必须对后端呈现一种 C 接口，然后这些 C 函数
+         调用 C++ 函数。例如，对后端访问的函数要求<literal>extern "C"</literal>
+         链接。对需要在后端和 C++ 代码之间作为指针传递的任何函数也要
+         这样做。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        使用合适的释放方法释放内存。例如，大部分后端内存是通过
+        <function>palloc()</function>分配的，所以应使用<function>pfree()</function>
+        来释放。在这种情况中使用 C++ 的<function>delete</function>会失败。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        防止异常传播到 C 代码中（在所有<literal>extern "C"</literal>函数的顶层
+        使用一个捕捉全部异常的块）。即使 C++ 代码不会显式地抛出任何
+        异常也需要这样做，因为类似内存不足等事件仍会抛出异常。任何异常
+        都必须被捕捉并且用适当的错误传回给 C 接口。如果可能，用
+        <option>-fno-exceptions</option> 来编译 C++ 以完全消灭异常。在这种
+        情况下，你必须在 C++ 代码中检查失败，例如检查<function>new()</function>
+        返回的 NULL。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        如果从 C++ 代码调用后端函数，确定 C++ 调用栈值包含传统 C 风格
+        的数据结构（<acronym>POD</acronym>）。这是必要的，因为后端错误会
+        产生远距离的<function>longjmp()</function>，它无法正确的退回具有非
+        POD 对象的 C++ 调用栈。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </para>
+
+    <para>
+     总之，最好把 C++ 代码放在与后端交互的<literal>extern "C"</literal>函数之后，
+     并且避免异常、内存和调用栈泄露。
+    </para>
+   </sect2>
+
+  </sect1>
+
+  <sect1 id="xfunc-optimization">
+   <title>函数优化信息</title>
+
+  <indexterm zone="xfunc-optimization">
+   <primary>optimization information</primary>
+   <secondary>for functions</secondary>
+  </indexterm>
+
+   <para>
+    默认情况下，函数只是一个<quote>黑盒</quote>，数据库系统对其行为知之甚少。
+    这意味着，使用该函数的查询可能无法达到本可实现的执行效率。我们可以提供额外的信息，帮助规划器优化函数调用。
+   </para>
+
+   <para>
+    一些基本事实可以通过<link linkend="sql-createfunction"><command>CREATE FUNCTION</command></link>命令中的声明式注解来提供。其中最重要的是函数的<link linkend="xfunc-volatility">易变性分类</link>（<literal>IMMUTABLE</literal>、<literal>STABLE</literal> 或 <literal>VOLATILE</literal>）；定义函数时应始终谨慎并正确地指定这一点。如果你希望该函数能用于并行查询，还必须指定其并行安全属性（<literal>PARALLEL UNSAFE</literal>、<literal>PARALLEL RESTRICTED</literal> 或 <literal>PARALLEL SAFE</literal>）。此外，指定函数估计的执行开销，以及集合返回函数估计会返回多少行，也可能很有帮助。不过，用声明式方式指定这两项信息时只能给出常量值，而这通常并不充分。
+   </para>
+
+   <para>
+    也可以把一个<firstterm>规划器支持函数</firstterm>附加到某个 SQL 可调用函数（称为其<firstterm>目标函数</firstterm>）上，从而提供那些过于复杂、无法用声明式方式表示的目标函数知识。规划器支持函数必须用 C 编写（尽管目标函数本身不一定如此），因此这是一个较少人会用到的高级特性。
+   </para>
+
+   <para>
+    规划器支持函数必须具有如下 SQL 签名：
+<programlisting>
+supportfn(internal) returns internal
+</programlisting>
+    创建目标函数时，通过指定 <literal>SUPPORT</literal> 子句把它附加到目标函数上。
+   </para>
+
+   <para>
+    规划器支持函数 API 的细节可见 <productname>PostgreSQL</productname> 源代码中的
+    <filename>src/include/nodes/supportnodes.h</filename> 文件。这里仅对规划器支持函数能做什么给出概览。支持函数可能接收的请求集合是可扩展的，因此未来版本中还可能支持更多能力。
+   </para>
+
+   <para>
+    在规划阶段，可以根据函数自身的性质简化某些函数调用。例如，
+    <literal>int4mul(n, 1)</literal> 可以被简化成 <literal>n</literal>。
+    这种变换可以由实现了 <literal>SupportRequestSimplify</literal> 请求类型的规划器支持函数来完成。对查询解析树中找到的目标函数每一个实例，都会调用一次支持函数。如果它发现某次调用能够被简化成其他形式，就可以构造并返回表示该表达式的解析树。这对基于该函数的操作符同样自动生效，因此在刚才的例子里，<literal>n * 1</literal> 也会被简化成 <literal>n</literal>。（但请注意，这只是一个例子；标准的 <productname>PostgreSQL</productname> 实际并不会执行这个特定优化。）我们并不保证在支持函数能够简化目标函数的场景下，<productname>PostgreSQL</productname> 永远不会去调用目标函数。因此，必须确保简化后的表达式与实际执行目标函数严格等价。
+   </para>
+
+   <para>
+    <literal>SupportRequestSimplify</literal> 不用于<link linkend="queries-tablefunctions"><firstterm>返回集合函数</firstterm></link>。相反，支持函数可以实现 <literal>SupportRequestInlineInFrom</literal> 请求，以展开查询 <literal>FROM</literal> 子句中出现的函数调用。（对于非返回集合函数也可以支持这一请求，不过通常用 <literal>SupportRequestSimplify</literal> 就足够了。）对于这种请求类型，成功结果必须是一个 <literal>SELECT</literal> 查询树，它会取代 <literal>FROM</literal> 项，就像写了一个子查询一样。该查询树必须呈现出解析分析和重写处理之后的样子。确保这一点的一种方法是先构造 SQL 字符串，再将其送入 <function>pg_parse_query</function> 和 <function>pg_analyze_and_rewrite</function>，或者相关函数。<literal>PARAM_EXTERN</literal> <structname>Param</structname> 节点可以出现在查询树中，用来表示函数的参数；它们会被实际参数表达式替换。与 <literal>SupportRequestSimplify</literal> 一样，支持函数有责任确保替换后的查询与目标函数的正常执行严格等价。
+   </para>
+
+   <para>
+    对于返回 <type>boolean</type> 的目标函数，估计使用该函数的 <literal>WHERE</literal> 子句会筛选出多少行通常很有用。这可以通过实现 <literal>SupportRequestSelectivity</literal> 请求类型的支持函数来完成。
+   </para>
+
+   <para>
+    如果目标函数的运行时间高度依赖其输入，那么为它提供一个非常量的开销估计可能很有用。这可以通过实现 <literal>SupportRequestCost</literal> 请求类型的支持函数来完成。
+   </para>
+
+   <para>
+    对于返回集合的目标函数，提供一个非常量的返回行数估计通常很有用。这可以通过实现 <literal>SupportRequestRows</literal> 请求类型的支持函数来完成。
+   </para>
+
+   <para>
+    对于返回 <type>boolean</type> 的目标函数，有时可以把出现在 <literal>WHERE</literal> 中的函数调用转换成一个或多个可索引的操作符子句。转换后的子句可能与函数条件完全等价，也可能稍弱一些，也就是说，它们可能会接受一些原本不满足函数条件的值。在后一种情况下，这个索引条件就称为<firstterm>有损的</firstterm>（lossy）；它仍然可以用于扫描索引，但对索引返回的每一行，仍必须再执行一次函数调用，以确认该行是否真的满足 <literal>WHERE</literal> 条件。要构造这种条件，支持函数必须实现 <literal>SupportRequestIndexCondition</literal> 请求类型。
+   </para>
+  </sect1>
