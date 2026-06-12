@@ -110,6 +110,45 @@ download_archive() {
   fi
 }
 
+download_dev_snapshot() {
+  local ver="$1"
+  local expected_hash="$2"
+  local cache_dir="$3"
+  local url="https://ftp.postgresql.org/pub/snapshot/dev/postgresql-snapshot.tar.bz2"
+  local archive="${REPO_ROOT}/.cache/upstream/postgresql-${ver}-snapshot.tar.bz2"
+
+  echo "Downloading PostgreSQL development snapshot: ${url}" >&2
+  if [[ ! -f "${archive}" ]]; then
+    if command -v wget >/dev/null 2>&1; then
+      wget -c --tries=0 --timeout=30 --read-timeout=30 --waitretry=2 \
+        --progress=dot:giga -O "${archive}" "${url}"
+    else
+      curl -fL --connect-timeout 20 --retry 10 --retry-delay 2 --retry-all-errors \
+        --continue-at - "${url}" -o "${archive}"
+    fi
+  fi
+
+  if ! tar -tjf "${archive}" >/dev/null 2>&1; then
+    echo "Snapshot archive invalid, re-downloading: ${archive}" >&2
+    rm -f "${archive}"
+    if command -v wget >/dev/null 2>&1; then
+      wget -c --tries=0 --timeout=30 --read-timeout=30 --waitretry=2 \
+        --progress=dot:giga -O "${archive}" "${url}"
+    else
+      curl -fL --connect-timeout 20 --retry 10 --retry-delay 2 --retry-all-errors \
+        --continue-at - "${url}" -o "${archive}"
+    fi
+    tar -tjf "${archive}" >/dev/null
+  fi
+
+  rm -rf "${cache_dir}"
+  mkdir -p "${cache_dir}"
+  tar -xjf "${archive}" -C "${cache_dir}" --strip-components=1
+  printf '%s\n' "snapshot" > "${cache_dir}/.pgdoc-upstream-kind"
+  printf '%s\n' "${expected_hash}" > "${cache_dir}/.pgdoc-upstream-ref"
+  printf '%s\n' "${url}" > "${cache_dir}/.pgdoc-upstream-source"
+}
+
 resolve_git_ref() {
   local ver="$1"
   local stable_ref="REL_${ver}_STABLE"
@@ -144,21 +183,47 @@ sync_git_checkout() {
     fi
   fi
 
+  if [[ -f "${cache_dir}/.pgdoc-upstream-kind" &&
+        -f "${cache_dir}/.pgdoc-upstream-ref" &&
+        -x "${cache_dir}/configure" ]]; then
+    local cache_kind cache_ref
+    cache_kind="$(cat "${cache_dir}/.pgdoc-upstream-kind")"
+    cache_ref="$(cat "${cache_dir}/.pgdoc-upstream-ref")"
+    if [[ "${cache_kind}" == "snapshot" ]]; then
+      if [[ "${cache_ref}" != "${expected_hash}" ]]; then
+        echo "Using cached PostgreSQL development snapshot; current ${ref} head differs." >&2
+        echo "  snapshot ref marker: ${cache_ref}" >&2
+        echo "  current ${ref} head: ${expected_hash}" >&2
+      fi
+      printf '%s\n' "${cache_dir}"
+      return
+    fi
+  fi
+
   rm -rf "${cache_dir}"
 
   echo "Cloning PostgreSQL ${ver} source from ${ref} ..." >&2
   if ! git clone --depth 1 --branch "${ref}" "${official_git_url}" "${cache_dir}"; then
     rm -rf "${cache_dir}"
     echo "Official PostgreSQL git mirror clone failed, falling back to GitHub mirror ..." >&2
-    git clone --depth 1 --branch "${ref}" "${fallback_git_url}" "${cache_dir}"
+    if ! git clone --depth 1 --branch "${ref}" "${fallback_git_url}" "${cache_dir}"; then
+      rm -rf "${cache_dir}"
+      echo "GitHub mirror clone failed, using PostgreSQL development snapshot ..." >&2
+      download_dev_snapshot "${ver}" "${expected_hash}" "${cache_dir}"
+    fi
   fi
 
-  local current_hash
-  current_hash="$(git -C "${cache_dir}" rev-parse HEAD)"
-  if [[ "${current_hash}" != "${expected_hash}" ]]; then
-    echo "Cloned git checkout does not match official ${ref} head." >&2
-    echo "  expected: ${expected_hash}" >&2
-    echo "  actual:   ${current_hash}" >&2
+  if [[ -d "${cache_dir}/.git" ]]; then
+    local current_hash
+    current_hash="$(git -C "${cache_dir}" rev-parse HEAD)"
+    if [[ "${current_hash}" != "${expected_hash}" ]]; then
+      echo "Cloned git checkout does not match official ${ref} head." >&2
+      echo "  expected: ${expected_hash}" >&2
+      echo "  actual:   ${current_hash}" >&2
+      exit 1
+    fi
+  elif [[ ! -f "${cache_dir}/.pgdoc-upstream-kind" || ! -x "${cache_dir}/configure" ]]; then
+    echo "Unable to prepare PostgreSQL ${ver} source checkout." >&2
     exit 1
   fi
 
@@ -211,6 +276,12 @@ extra_configure_flags="${CONFIGURE_FLAGS:-}"
 if [[ "${lang}" != "en" ]]; then
   sed -i.bak \
     -e 's/--valid/--catalogs --loaddtd/g' \
+    "${work_tree}/doc/src/sgml/Makefile"
+fi
+
+if [[ "${ALLOW_NET:-0}" == "1" ]]; then
+  sed -i.bak \
+    -e 's/[[:space:]]--nonet//g' \
     "${work_tree}/doc/src/sgml/Makefile"
 fi
 

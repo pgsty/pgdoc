@@ -1,16 +1,19 @@
 # pgdoc top-level Makefile
 # Batch build PostgreSQL documentation artifacts across tracked versions.
 
-VERSION ?= 18.3
-VERSIONS ?= 14.22 15.17 16.13 17.9 18.3
+VERSION ?= 18.4
+ZH_VERSION ?= $(basename $(VERSION))
+EN_VERSION ?= $(VERSION)
+ZH_VERSIONS ?= 14 15 16 17 18
+EN_VERSIONS ?= 14.23 15.18 16.14 17.10 18.4
 PAPER ?= A4
 PAPERS ?= A4 US
 PDF_OUT_ROOT ?= $(CURDIR)/tmp/pdf
 PYTHON ?= python3
 HOST ?= 0.0.0.0
 
-EN_DIR := en/$(VERSION)
-ZH_DIR := zh/$(VERSION)
+EN_DIR := en/$(EN_VERSION)
+ZH_DIR := zh/$(ZH_VERSION)
 
 .NOTPARALLEL: all pdf pdf-all zh-pdf-all en-pdf-all
 
@@ -37,11 +40,11 @@ pdf-all: zh-pdf-all
 
 zh-pdf:
 	$(MAKE) -C $(ZH_DIR) pdf PAPER="$(PAPER)" \
-		PDF_OUT="$(PDF_OUT_ROOT)/zh/postgresql-$(VERSION)-zh-$(PAPER).pdf"
+		PDF_OUT="$(PDF_OUT_ROOT)/zh/postgresql-$(ZH_VERSION)-zh-$(PAPER).pdf"
 
 zh-pdf-all:
 	@set -e; \
-	for version in $(VERSIONS); do \
+	for version in $(ZH_VERSIONS); do \
 		for paper in $(PAPERS); do \
 			$(MAKE) -C "zh/$$version" pdf PAPER="$$paper" \
 				PDF_OUT="$(PDF_OUT_ROOT)/zh/postgresql-$$version-zh-$$paper.pdf"; \
@@ -50,11 +53,11 @@ zh-pdf-all:
 
 en-pdf:
 	$(MAKE) -C $(EN_DIR) pdf PAPER="$(PAPER)" \
-		PDF_OUT="$(PDF_OUT_ROOT)/en/postgresql-$(VERSION)-en-$(PAPER).pdf"
+		PDF_OUT="$(PDF_OUT_ROOT)/en/postgresql-$(EN_VERSION)-en-$(PAPER).pdf"
 
 en-pdf-all:
 	@set -e; \
-	for version in $(VERSIONS); do \
+	for version in $(EN_VERSIONS); do \
 		for paper in $(PAPERS); do \
 			$(MAKE) -C "en/$$version" pdf PAPER="$$paper" \
 				PDF_OUT="$(PDF_OUT_ROOT)/en/postgresql-$$version-en-$$paper.pdf"; \
