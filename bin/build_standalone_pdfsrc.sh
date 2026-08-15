@@ -400,9 +400,16 @@ else
   rsync -a --exclude='.git' "${git_checkout}/" "${work_tree}/"
 fi
 
+# Do not carry prebuilt English HTML from release tarballs into the isolated
+# workspace, even though the PDF target itself does not consume those chunks.
+rm -rf "${work_tree}/doc/src/sgml/html"
+rm -f "${work_tree}/doc/src/sgml/html-stamp"
+
 rsync -a \
   --exclude='Makefile' \
   --exclude='.gitignore' \
+  --exclude='html/' \
+  --exclude='html-stamp' \
   "${doc_src_root}/" "${work_tree}/doc/src/sgml/"
 
 echo "Configuring source tree ..."

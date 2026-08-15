@@ -1,11 +1,11 @@
 # pgdoc top-level Makefile
 # Batch build PostgreSQL documentation artifacts across tracked versions.
 
-VERSION ?= 18.4
+VERSION ?= 18.6
 ZH_VERSION ?= $(basename $(VERSION))
 EN_VERSION ?= $(VERSION)
 ZH_VERSIONS ?= 14 15 16 17 18
-EN_VERSIONS ?= 14.23 15.18 16.14 17.10 18.4
+EN_VERSIONS ?= 14.24 15.19 16.15 17.11 18.6
 PAPER ?= A4
 PAPERS ?= A4 US
 PDF_OUT_ROOT ?= $(CURDIR)/tmp/pdf

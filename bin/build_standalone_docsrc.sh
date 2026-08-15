@@ -256,12 +256,19 @@ else
   rsync -a --exclude='.git' "${git_checkout}/" "${work_tree}/"
 fi
 
+# Release tarballs can contain prebuilt English HTML.  Remove it before the
+# overlay/build so the output contains only chunks generated from this source.
+rm -rf "${work_tree}/doc/src/sgml/html"
+rm -f "${work_tree}/doc/src/sgml/html-stamp"
+
 # Overlay our SGML/XSL/CSS sources into the extracted source tree.
 # Exclude our project Makefile and .gitignore — the upstream Makefile.in
 # (which ./configure will turn into a proper Makefile) must be preserved.
 rsync -a \
   --exclude='Makefile' \
   --exclude='.gitignore' \
+  --exclude='html/' \
+  --exclude='html-stamp' \
   "${doc_src_root}/" "${work_tree}/doc/src/sgml/"
 
 # --- Configure (minimal, just enough for docs) ---

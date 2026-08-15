@@ -1030,6 +1030,15 @@ include_dir 'conf.d'
         但也会使认证变慢。更改此值不会影响现有的 SCRAM-SHA-256 加密密码，
         因为迭代次数在加密时就已经固定。要利用更改后的值，必须设置新密码。
        </para>
+       <note>
+        <para>
+         如果某个角色密码创建时使用的迭代次数，与 <filename>postgresql.conf</filename>
+         文件或服务器命令行上指定的 <literal>scram_iterations</literal> 值不同，
+         未认证用户便可通过观察服务器对连接尝试的响应差异，辨别该角色是否存在。
+         如果你担心这一点，请确保创建所有角色密码时，<literal>scram_iterations</literal>
+         都被设为 <filename>postgresql.conf</filename> 文件或服务器命令行中指定的值。
+        </para>
+       </note>
       </listitem>
      </varlistentry>
 
@@ -1362,14 +1371,14 @@ include_dir 'conf.d'
       <listitem>
 
        <para>
-        指定在 <acronym>ECDH</acronym> 密钥交换中使用的曲线名称。它需要被所有连接的客户端支持。
-        可以使用冒号分隔的列表指定多个曲线。不必与服务器椭圆曲线密钥所使用的曲线相同。
+        指定用于 <acronym>TLS</acronym> 密钥交换的命名组。所有连接的客户端都需要支持该组。
+        可以使用冒号分隔的列表指定多个组。它不需要与服务器证书所用的密钥类型匹配。
         该参数只能在<filename>postgresql.conf</filename>文件中或服务器命令行上设置。
         默认值为<literal>X25519:prime256v1</literal>。
        </para>
 
        <para>
-        <productname>OpenSSL</productname>最常见的曲线名称是：
+        <productname>OpenSSL</productname>最常见的组名是：
         <literal>prime256v1</literal> (NIST P-256)、
         <literal>secp384r1</literal> (NIST P-384)、
         <literal>secp521r1</literal> (NIST P-521)。
@@ -2869,6 +2878,7 @@ include_dir 'conf.d'
         使用<option>--with-lz4</option>编译）和
         <literal>zstd</literal>（如果<productname>PostgreSQL</productname>
         使用<option>--with-zstd</option>编译）。
+        值 <literal>on</literal> 是 <literal>pglz</literal> 的历史拼写。
         默认值为<literal>off</literal>。
         只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
        </para>
@@ -3758,6 +3768,52 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
          更高。
         </para>
 
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-output-plugin-libraries" xreflabel="output_plugin_libraries">
+       <term><varname>output_plugin_libraries</varname> (<type>string</type>)
+       <indexterm>
+        <primary><varname>output_plugin_libraries</varname>配置参数</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         列出安装在 <xref linkend="guc-dynamic-library-path"/> 所指定位置中、同时也被信任可供复制客户端用作逻辑输出插件的库。
+         任何针对其他库的<link linkend="logicaldecoding-example">逻辑解码</link>或
+         <link linkend="protocol-replication">复制</link>请求都将被拒绝。所有用户都受此限制。
+         默认值为 <literal>'pgoutput, test_decoding'</literal>，它们是标准
+         <productname>PostgreSQL</productname> 发行版中包含的两个逻辑输出插件。
+        </para>
+        <para>
+         其格式为以逗号分隔的库名称列表，每个名称的解释方式与
+         <link linkend="sql-load"><command>LOAD</command></link>命令相同
+         （但逻辑解码客户端指定的插件名称必须与列表中的一个条目<emphasis>完全</emphasis>匹配，
+         大小写或路径结构不得有变化）。条目之间的空白会被忽略；如果库名称中需要包含空白或逗号，
+         请用双引号将其括起。
+        </para>
+        <para>
+         服务器管理员有责任确保，加载添加到此列表中的库时，不会无意中向非超级用户授予额外权限。
+        </para>
+        <note>
+         <para>
+          从没有 <literal>output_plugin_libraries</literal> 参数的版本更新服务器时，
+          以下查询可帮助构造所有持久逻辑复制槽所需的插件列表：
+<programlisting>
+SELECT DISTINCT plugin FROM pg_replication_slots WHERE plugin IS NOT NULL;
+</programlisting>
+          调整 <literal>output_plugin_libraries</literal> 之前，请仔细审查该列表以确保安全。
+         </para>
+         <para>
+          上述查询只能显示过去某个时刻已成功添加到复制槽的插件。
+          新近被拒绝的请求将以类似以下消息出现在日志中：
+<programlisting>
+ERROR:  library "..." may not be used as an output plugin
+DETAIL:  The configuration parameter "output_plugin_libraries" (currently 'pgoutput, test_decoding') does not name this library as a trusted output plugin.
+HINT:  If it is safe for all REPLICATION users to use this library as an output plugin, add it to "output_plugin_libraries" and reload the server configuration.
+</programlisting>
+         </para>
+        </note>
        </listitem>
       </varlistentry>
 
@@ -6577,7 +6633,7 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
        </para>
 
        <para>
-        此设置仅影响作为结果打印的日志消息<xref linkend="guc-log-statement"/>,<xref linkend="guc-log-duration"/>, 和相关的设置。
+        此设置仅影响作为结果打印的日志消息<xref linkend="guc-log-statement"/>,<xref linkend="guc-log-min-duration-statement"/>, 和相关的设置。
         该设置的非零值会增加一些开销，特别是当参数以二进制形式发送时，因为需要转换为文本。
        </para>
       </listitem>
@@ -10146,7 +10202,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       <listitem>
 
        <para>
-        只有当<xref linkend="app-initdb-data-checksums"/>被启用时才有效。
+        只有当<link linkend="checksums">数据校验和</link>被启用时才有效。
        </para>
 
        <para>
