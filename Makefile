@@ -2,7 +2,8 @@
 # Batch build PostgreSQL documentation artifacts across tracked versions.
 
 VERSION ?= 18.6
-ZH_VERSION ?= $(basename $(VERSION))
+# Stable archives use X.Y while prereleases use XbetaN/XrcN; both map to zh/X.
+ZH_VERSION ?= $(firstword $(subst beta, ,$(subst rc, ,$(basename $(VERSION)))))
 EN_VERSION ?= $(VERSION)
 ZH_VERSIONS ?= 14 15 16 17 18
 EN_VERSIONS ?= 14.24 15.19 16.15 17.11 18.6

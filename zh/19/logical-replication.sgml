@@ -22,13 +22,13 @@
   <itemizedlist>
    <listitem>
     <para>
-     当单个数据库或数据库的某个子集发生变更时，将增量变更发送给订阅者
+     当单个数据库或数据库的某个子集发生变更时，将增量变更发送给订阅者。
     </para>
    </listitem>
 
    <listitem>
     <para>
-     将数据库的一个子集发送给多个数据库（即广播）
+     将数据库的一个子集发送给多个数据库（即广播）。
     </para>
    </listitem>
 
@@ -40,13 +40,13 @@
 
    <listitem>
     <para>
-     在 PostgreSQL 的不同主版本之间进行复制
+     在 PostgreSQL 的不同主版本之间进行复制。
     </para>
    </listitem>
 
    <listitem>
     <para>
-     在不同平台上（例如 Linux 到 Windows）的 PostgreSQL 实例之间进行复制
+     在不同平台上（例如 Linux 到 Windows）的 PostgreSQL 实例之间进行复制。
     </para>
    </listitem>
 
@@ -954,7 +954,7 @@ Tables:
  c      | text    |           | not null |
 Indexes:
     "t1_pkey" PRIMARY KEY, btree (a, c)
-Publications:
+Included in publications:
     "p1" WHERE ((a > 5) AND (c = 'NSW'::text))
     "p2"
 
@@ -967,7 +967,7 @@ Publications:
  f      | integer |           |          |
 Indexes:
     "t2_pkey" PRIMARY KEY, btree (d)
-Publications:
+Included in publications:
     "p2" WHERE (e = 99)
     "p3" WHERE (d = 10)
 
@@ -980,7 +980,7 @@ Publications:
  i      | integer |           |          |
 Indexes:
     "t3_pkey" PRIMARY KEY, btree (g)
-Publications:
+Included in publications:
     "p3" WHERE (g = 10)
 ]]></programlisting></para>
 
@@ -1335,7 +1335,7 @@ Tables:
  e      | text    |           |          |
 Indexes:
     "t1_pkey" PRIMARY KEY, btree (id)
-Publications:
+Included in publications:
     "p1" (id, a, b, d)
 </programlisting></para>
 
@@ -1557,8 +1557,9 @@ Publications:
    <itemizedlist>
     <listitem>
      <para>
-      使用 <link linkend="sql-createsubscription"><command>CREATE SUBSCRIPTION</command></link>
-      初始同步已发布的序列。
+      使用 <link linkend="sql-createsubscription"><command>CREATE SUBSCRIPTION</command></link>，
+      并设置<link linkend="sql-createsubscription-params-with-copy-data">
+      <literal>copy_data = true</literal></link>（默认值），从发布端复制初始序列值。
      </para>
     </listitem>
     <listitem>
@@ -1588,6 +1589,12 @@ Publications:
    <varname>max_sync_workers_per_subscription</varname></link>
    配置项限制。
   </para>
+
+  <note>
+   <para>
+    序列同步要求发布端运行 <productname>PostgreSQL</productname> 19 或更高版本。
+   </para>
+  </note>
 
   <sect2 id="sequence-definition-mismatches">
    <title>序列定义不匹配</title>
@@ -2078,7 +2085,13 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
      <link linkend="sql-altersubscription-params-refresh-sequences">
      <command>ALTER SUBSCRIPTION ... REFRESH SEQUENCES</command></link>，
      也可以从发布端复制当前数据（例如使用 <command>pg_dump</command>），
-     或者直接根据表本身推导出一个足够高的值。
+     或者直接根据表本身推导出一个足够高的值。请注意，
+     <link linkend="sql-altersubscription-params-refresh-sequences">
+     <command>ALTER SUBSCRIPTION ... REFRESH SEQUENCES</command></link>
+     只会重新同步订阅已经知道的序列（见 <xref linkend="logical-replication-sequences"/>）；
+     尤其是，它要求发布端运行 <productname>PostgreSQL</productname> 19 或更高版本。
+     在依赖它为计划内切换或故障切换做准备之前，请确认发布端版本支持序列复制，
+     并且相关序列已为订阅所知。
     </para>
    </listitem>
 
@@ -2231,7 +2244,14 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
   </para>
 
   <para>
-   为了能够复制初始表或序列数据，用于复制连接的角色必须对已发布的表或序列具有
+   复制连接所用输出插件的名称必须包含在服务器的
+   <xref linkend="guc-output-plugin-libraries"/> 中。（对于订阅，所用插件名为
+   <literal>pgoutput</literal>。）超级用户可以在连接字符串中包含
+   <literal>options=-coutput_plugin_libraries=...</literal>，按连接修改受信任列表。
+  </para>
+
+  <para>
+   为了能够复制初始表数据或同步序列，用于复制连接的角色必须对已发布的表或序列具有
    <literal>SELECT</literal> 权限（或者是超级用户）。
   </para>
 
@@ -2278,6 +2298,12 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
    例如，他们只需在自己拥有的某张表上附加一个触发器即可。由于通常并不希望允许一个
    角色自由取得另一个角色的权限，因此除非数据库内部的用户安全完全不重要，否则应避免
    使用该选项。
+  </para>
+
+  <para>
+   当使用 <literal>run_as_owner = true</literal> 同步序列时，订阅所有者同样需要
+   目标序列上的 <literal>UPDATE</literal> 权限，但不需要拥有对序列所有者执行
+   <literal>SET ROLE</literal> 的权限。
   </para>
 
   <para>
@@ -2427,7 +2453,9 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
     </listitem>
     <listitem>
      <para>
-      旧集簇槽引用的输出插件必须安装在新 PostgreSQL 可执行文件目录中。
+      旧集簇中复制槽引用的输出插件必须安装在新 PostgreSQL 可执行文件目录中。
+      还必须将它们包含在新集簇的 <xref linkend="guc-output-plugin-libraries"/> 中；
+      有关安全信息，请参阅该参数的文档。
      </para>
     </listitem>
     <listitem>
@@ -2437,16 +2465,16 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
     </listitem>
     <listitem>
      <para>
-      旧集簇中的所有槽都必须可用，即不存在
+      旧集簇中的所有槽都必须可用，即它们的
       <link linkend="view-pg-replication-slots">pg_replication_slots</link>.<structfield>conflicting</structfield>
-      不为 <literal>true</literal> 的槽。
+      都为 <literal>false</literal>。
      </para>
     </listitem>
     <listitem>
      <para>
-      新集簇中不能存在永久逻辑槽，即不能有
+      新集簇中不能存在任何永久逻辑槽，即所有已有逻辑槽的
       <link linkend="view-pg-replication-slots">pg_replication_slots</link>.<structfield>temporary</structfield>
-      为 <literal>false</literal> 的槽。
+      都必须设为 <literal>true</literal>。
      </para>
     </listitem>
    </itemizedlist>

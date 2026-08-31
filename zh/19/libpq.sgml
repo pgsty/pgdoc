@@ -180,7 +180,7 @@ PGconn *PQsetdb(char *pghost,
     <varlistentry id="libpq-PQconnectStartParams">
      <term><function>PQconnectStartParams</function><indexterm><primary>PQconnectStartParams</primary></indexterm></term>
      <term><function>PQconnectStart</function><indexterm><primary>PQconnectStart</primary></indexterm></term>
-     <term><function>PQconnectPoll</function><indexterm><primary>PQconnectPoll</primary></indexterm></term>
+     <term id="libpq-PQconnectPoll"><function>PQconnectPoll</function><indexterm><primary>PQconnectPoll</primary></indexterm></term>
      <listitem>
       <para>
        <indexterm><primary>nonblocking connection</primary></indexterm>
@@ -289,6 +289,15 @@ PostgresPollingStatusType PQconnectPoll(PGconn *conn);
          </listitem>
         </varlistentry>
 
+        <varlistentry id="libpq-connection-gss-startup">
+         <term><symbol>CONNECTION_GSS_STARTUP</symbol></term>
+         <listitem>
+          <para>
+           协商 GSS 加密。
+          </para>
+         </listitem>
+        </varlistentry>
+
         <varlistentry id="libpq-connection-setenv">
          <term><symbol>CONNECTION_SETENV</symbol></term>
          <listitem>
@@ -303,6 +312,15 @@ PostgresPollingStatusType PQconnectPoll(PGconn *conn);
          <listitem>
           <para>
            检查连接是否能够处理写事务。
+          </para>
+         </listitem>
+        </varlistentry>
+
+        <varlistentry id="libpq-connection-check-standby">
+         <term><symbol>CONNECTION_CHECK_STANDBY</symbol></term>
+         <listitem>
+          <para>
+           检查连接的是否为备库模式下的服务器。
           </para>
          </listitem>
         </varlistentry>
@@ -343,6 +361,44 @@ switch(PQstatus(conn))
 
       <para>
        注意当<function>PQconnectStart</function>或<xref linkend="libpq-PQconnectStartParams"/>返回一个非空的指针时，你必须在用完它之后调用<xref linkend="libpq-PQfinish"/>来处理那些结构和任何相关的内存块。即使连接尝试失败或被放弃时也必须完成这些工作。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="libpq-PQsocketPoll">
+     <term><function>PQsocketPoll</function><indexterm><primary>PQsocketPoll</primary></indexterm></term>
+     <listitem>
+      <para>
+       <indexterm><primary>nonblocking connection</primary></indexterm>
+       轮询通过<xref linkend="libpq-PQsocket"/>取得的连接底层套接字描述符。
+       该函数的主要用途是迭代<xref linkend="libpq-PQconnectStartParams"/>文档中所述的连接序列。
+<synopsis>
+typedef int64_t pg_usec_time_t;
+
+int PQsocketPoll(int sock, int forRead, int forWrite,
+                 pg_usec_time_t end_time);
+</synopsis>
+      </para>
+
+      <para>
+       此函数对文件描述符执行轮询，并可选地设置超时。
+       如果<parameter>forRead</parameter>非零，则当套接字准备好读取时函数终止。如果<parameter>forWrite</parameter>非零，则当套接字准备好写入时函数终止。
+      </para>
+
+      <para>
+       超时由<parameter>end_time</parameter>指定，它是以 Unix 纪元以来的微秒数（即<type>time_t</type>乘以 100 万）表示的停止等待时间。
+       如果<parameter>end_time</parameter>为<literal>-1</literal>，则超时时间为无限。如果<parameter>end_time</parameter>为<literal>0</literal>（或任何早于当前的时间），则立即超时（不阻塞）。
+       可以把所需微秒数加到<xref linkend="libpq-PQgetCurrentTimeUSec"/>的结果上，以方便地计算超时值。请注意，底层系统调用的精度可能低于微秒，因此实际延迟可能不精确。
+      </para>
+
+      <para>
+       如果满足指定条件，函数返回大于<literal>0</literal>的值；如果发生超时，则返回<literal>0</literal>；如果发生错误，则返回<literal>-1</literal>。
+       可以通过检查<literal>errno(3)</literal>的值来获取错误。如果<parameter>forRead</parameter>和<parameter>forWrite</parameter>均为零，函数会立即返回超时指示。
+      </para>
+
+      <para>
+       <function>PQsocketPoll</function>会根据平台使用<function>poll(2)</function>或<function>select(2)</function>实现。
+       更多信息请参见<function>poll(2)</function>中的<literal>POLLIN</literal>和<literal>POLLOUT</literal>，或<function>select(2)</function>中的<parameter>readfds</parameter>和<parameter>writefds</parameter>。
       </para>
      </listitem>
     </varlistentry>
@@ -2190,18 +2246,38 @@ const char *PQparameterStatus(const PGconn *conn, const char *paramName);
      </listitem>
     </varlistentry>
 
+    <varlistentry id="libpq-PQfullProtocolVersion">
+     <term><function>PQfullProtocolVersion</function><indexterm><primary>PQfullProtocolVersion</primary></indexterm></term>
+
+     <listitem>
+      <para>
+       查询正在使用的前端/后端协议。
+<synopsis>
+int PQfullProtocolVersion(const PGconn *conn);
+</synopsis>
+       应用可能希望使用此函数确定是否支持某些特性。结果由服务器的主版本号乘以 10000，再加上次版本号而得。
+       例如，版本 3.2 返回 30002，版本 4.0 返回 40000。如果连接已损坏，则返回零。
+       <productname>PostgreSQL</productname> 7.4 及以上服务器版本支持 3.0 协议。
+      </para>
+      <para>
+       连接启动完成后，协议版本不会改变，但理论上它可能在连接重置期间改变。
+      </para>
+     </listitem>
+    </varlistentry>
+
     <varlistentry id="libpq-PQprotocolVersion">
      <term><function>PQprotocolVersion</function><indexterm><primary>PQprotocolVersion</primary></indexterm></term>
 
      <listitem>
       <para>
-       询问所使用的 前端/后端协议。
+       查询正在使用的前端/后端协议主版本。
 <synopsis>
 int PQprotocolVersion(const PGconn *conn);
 </synopsis>
-       应用可能希望用这个函数来确定某些特性是否被支持。当前，可能值是3（3.0 协议）或零（连接损坏）。
-       协议版本在连接启动完成后将不会改变，但是理论上在连接重置期间是可以改变的。
-       3.0 协议被<productname>PostgreSQL</productname> 7.4 或以后的服务器版本所支持。
+       与 <xref linkend="libpq-PQfullProtocolVersion"/> 不同，此函数只返回正在使用的
+       协议主版本，但它得到更广泛的 libpq 版本支持，最早可追溯到 7.4 版。
+       当前可能的值为 3（3.0 协议）或零（连接损坏）。在 14.0 版之前，
+       libpq 还可能返回 2（2.0 协议）。
       </para>
      </listitem>
     </varlistentry>
@@ -2320,6 +2396,23 @@ int PQconnectionUsedPassword(const PGconn *conn);
       </para>
      </listitem>
     </varlistentry>
+
+    <varlistentry id="libpq-PQconnectionUsedGSSAPI">
+     <term><function>PQconnectionUsedGSSAPI</function><indexterm><primary>PQconnectionUsedGSSAPI</primary></indexterm></term>
+     <listitem>
+      <para>
+       如果连接认证方法使用了 GSSAPI，则返回真（1）。否则返回假（0）。
+
+<synopsis>
+int PQconnectionUsedGSSAPI(const PGconn *conn);
+</synopsis>
+      </para>
+
+      <para>
+       可使用此函数检测连接是否通过 GSSAPI 进行了认证。
+      </para>
+     </listitem>
+    </varlistentry>
    </variablelist>
   </para>
 
@@ -2422,7 +2515,7 @@ const char *PQsslAttribute(const PGconn *conn, const char *attribute_name);
      <listitem>
 
       <para>
-       返回可用的SSL属性名称数组。
+       返回可供<function>PQsslAttribute()</function>使用的 SSL 属性名称数组。
        数组以NULL指针结尾。
 <synopsis>
 const char * const * PQsslAttributeNames(const PGconn *conn);
@@ -2960,6 +3053,17 @@ ExecStatusType PQresultStatus(const PGresult *res);
           <listitem>
            <para>
             <structname>PGresult</structname>包含来自于当前命令的一个单一结果元组。这个状态只在查询选择了单一行模式时发生（见<xref linkend="libpq-single-row-mode"/>）。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry id="libpq-pgres-tuples-chunk">
+          <term><literal>PGRES_TUPLES_CHUNK</literal></term>
+          <listitem>
+           <para>
+            <structname>PGresult</structname>包含当前命令返回的多个结果元组。
+            这个状态只在查询选择了分块模式时发生（见<xref linkend="libpq-single-row-mode"/>）。
+            元组数不会超过传递给<xref linkend="libpq-PQsetChunkedRowsMode"/>的限制。
            </para>
           </listitem>
          </varlistentry>
@@ -5291,12 +5395,12 @@ int PQrequestCancel(PGconn *conn);
    <productname>PostgreSQL</productname>提供一种快速路径接口来向服务器发送简单的函数调用。
   </para>
 
-  <tip>
+  <warning>
 
    <para>
-    这个接口在某种程度上已经过时，因为可以通过建立定义该函数调用的预备语句来获得类似性能和更强功能。然后，使用参数和结果的二进制传输来执行该语句，即可取代快速路径函数调用。
+    这个接口不安全，不应使用。当<parameter>result_is_int</parameter>被设置为<literal>0</literal>时，<function>PQfn</function>可能会在<parameter>result_buf</parameter>末尾之外写入数据，而不管缓冲区是否有足够空间容纳所请求的字节数。此外，它已经废弃，因为可以通过创建一个定义该函数调用的预备语句来达到类似的性能并获得更强大的功能。然后，用参数和结果的二进制传输执行该语句，从而取代快速路径函数调用。
    </para>
-  </tip>
+  </warning>
 
   <para>
    函数<function id="libpq-PQfn">PQfn</function><indexterm><primary>PQfn</primary></indexterm>请求通过快速路径接口执行服务器函数。
@@ -6265,6 +6369,23 @@ int PQlibVersion(void);
        这个函数出现于<productname>PostgreSQL</productname>版本 9.1，因此它不能被用来在早期的版本中检测所需的功能，因为调用它将会创建一个对版本9.1及其后版本的链接依赖。
       </para>
      </note>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="libpq-PQgetCurrentTimeUSec">
+    <term><function>PQgetCurrentTimeUSec</function><indexterm><primary>PQgetCurrentTimeUSec</primary></indexterm></term>
+
+    <listitem>
+     <para>
+      获取当前时间，表示为 Unix 纪元以来的微秒数（即<type>time_t</type>乘以 100 万）。
+<synopsis>
+pg_usec_time_t PQgetCurrentTimeUSec(void);
+</synopsis>
+     </para>
+
+     <para>
+      该函数主要用于计算传递给<xref linkend="libpq-PQsocketPoll"/>的超时值。
+     </para>
     </listitem>
    </varlistentry>
 
@@ -8037,11 +8158,11 @@ typedef struct
     可以通过设置<envar>PGOAUTHDEBUG</envar>环境变量启用调试功能。
     该功能旨在方便本地开发和测试。该变量接受一个以逗号分隔的调试选项列表：
 
-    <programlisting>
+<programlisting>
 PGOAUTHDEBUG=option1,option2,...         <lineannotation>仅安全选项</lineannotation>
 PGOAUTHDEBUG=UNSAFE:option1,option2,...  <lineannotation>使用危险选项时</lineannotation>
 PGOAUTHDEBUG=UNSAFE                      <lineannotation>旧格式；启用所有选项</lineannotation>
-    </programlisting>
+</programlisting>
    </para>
 
    <para>
@@ -8105,11 +8226,11 @@ PGOAUTHDEBUG=UNSAFE                      <lineannotation>旧格式；启用所�
 
    <para>
     示例：
-    <programlisting>
+<programlisting>
 PGOAUTHDEBUG=call-count              <lineannotation>仅安全选项</lineannotation>
 PGOAUTHDEBUG=UNSAFE:http,trace       <lineannotation>启用 HTTP 和流量日志</lineannotation>
 PGOAUTHDEBUG=UNSAFE:http,call-count  <lineannotation>危险选项与安全选项混用</lineannotation>
-    </programlisting>
+</programlisting>
    </para>
 
    <warning>
@@ -8165,7 +8286,7 @@ int PQisthreadsafe();
   </para>
 
   <para>
-   如果你在应用程序中使用 Kerberos（除了<application>libpq</application>内部之外），则需要在 Kerberos 调用周围加锁，因为 Kerberos 函数不是线程安全的。可参考<application>libpq</application>源代码中的<function>PQregisterThreadLock</function>函数，它提供了一种在<application>libpq</application>与应用程序之间协作加锁的方法。
+   如果你在应用程序中使用 Kerberos（除了<application>libpq</application>内部之外），则需要在 Kerberos 调用周围加锁，因为 Kerberos 函数不是线程安全的。可参考<application>libpq</application>源代码中的<function>PQregisterThreadLock</function>函数，它提供了一种在<application>libpq</application>与应用程序之间协作加锁的方法。（注意，只有在不存在打开的连接时，调用<function>PQregisterThreadLock</function>才是安全的。）客户端可以使用<function>PQgetThreadLock</function>获取当前的锁回调；如果未注册自定义回调，则使用默认回调。
   </para>
 
   <para>

@@ -7,7 +7,7 @@
 - [PostgreSQL 16](https://pg.center/docs/16/index.html)
 - [PostgreSQL 15](https://pg.center/docs/15/index.html)
 - [PostgreSQL 14](https://pg.center/docs/14/index.html)
-- [PostgreSQL 19 devel](https://pg.center/docs/devel/index.html)
+- [PostgreSQL 19 Beta 3](https://pg.center/docs/19/index.html)
 
 
 ## Translator

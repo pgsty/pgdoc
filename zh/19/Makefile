@@ -2,6 +2,7 @@
 
 REPO_ROOT := $(abspath $(CURDIR)/../..)
 DOC_VERSION := $(notdir $(CURDIR))
+PG_VERSION ?= 19beta3
 DOC_LANG := $(notdir $(abspath $(CURDIR)/..))
 
 BUILD_SCRIPT := $(REPO_ROOT)/bin/build_standalone_docsrc.sh
@@ -22,10 +23,10 @@ GENERATED_FILES := version.sgml pgdoccn-notes.sgml postgres-full.xml
 all: html
 
 html:
-	@"$(BUILD_SCRIPT)" "$(CURDIR)" "$(DOC_LANG)" "$(DOC_VERSION)" "$(BUILD_OUT)"
+	@"$(BUILD_SCRIPT)" "$(CURDIR)" "$(DOC_LANG)" "$(PG_VERSION)" "$(BUILD_OUT)"
 
 pdf:
-	@"$(PDF_SCRIPT)" "$(CURDIR)" "$(DOC_LANG)" "$(DOC_VERSION)" "$(PDF_OUT)" "$(PAPER)"
+	@"$(PDF_SCRIPT)" "$(CURDIR)" "$(DOC_LANG)" "$(PG_VERSION)" "$(PDF_OUT)" "$(PAPER)"
 
 distclean: clean clean-pdf
 
@@ -54,6 +55,7 @@ show-config:
 	@echo "doc_dir=$(CURDIR)"
 	@echo "lang=$(DOC_LANG)"
 	@echo "version=$(DOC_VERSION)"
+	@echo "pg_version=$(PG_VERSION)"
 	@echo "build_out=$(BUILD_OUT)"
 	@echo "pdf_out=$(PDF_OUT)"
 	@echo "paper=$(PAPER)"

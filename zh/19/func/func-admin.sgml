@@ -456,6 +456,21 @@ LOG:  Grand total: 1651920 bytes in 201 blocks; 622360 free (88 chunks); 1029560
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
+         <primary>pg_split_walfile_name</primary>
+        </indexterm>
+        <function>pg_split_walfile_name</function> ( <parameter>file_name</parameter> <type>text</type> )
+        <returnvalue>record</returnvalue>
+        ( <parameter>segment_number</parameter> <type>numeric</type>,
+        <parameter>timeline_id</parameter> <type>bigint</type> )
+       </para>
+       <para>
+        从 WAL 文件名中提取序列号和时间线 ID。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
          <primary>pg_wal_lsn_diff</primary>
         </indexterm>
         <function>pg_wal_lsn_diff</function> ( <parameter>lsn1</parameter> <type>pg_lsn</type>, <parameter>lsn2</parameter> <type>pg_lsn</type> )
@@ -490,6 +505,23 @@ postgres=# SELECT * FROM pg_walfile_name_offset((pg_backup_stop()).lsn);
     类似地，<function>pg_walfile_name</function>仅提取预写式日志文件名。
     当给定的预写式日志位置恰好位于预写式日志文件边界时，这两个函数都会返回前一个预写式日志文件的名称。
     这通常是管理预写式日志归档行为的期望行为，因为前一个文件是当前需要归档的最后一个文件。
+   </para>
+
+   <para>
+    <function>pg_split_walfile_name</function>可用于根据文件偏移量和 WAL 文件名计算
+    <acronym>LSN</acronym>，例如：
+<programlisting>
+postgres=# \set file_name '000000010000000100C000AB'
+postgres=# \set offset 256
+postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset AS lsn
+  FROM pg_split_walfile_name(:'file_name') pd,
+       pg_show_all_settings() ps
+  WHERE ps.name = 'wal_segment_size';
+      lsn
+---------------
+ C001/AB000100
+(1 row)
+</programlisting>
    </para>
 
   </sect2>
@@ -1260,6 +1292,22 @@ postgres=# SELECT * FROM pg_walfile_name_offset((pg_backup_stop()).lsn);
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
+         <primary>pg_column_toast_chunk_id</primary>
+        </indexterm>
+        <function>pg_column_toast_chunk_id</function> ( <type>"any"</type> )
+        <returnvalue>oid</returnvalue>
+       </para>
+       <para>
+        显示磁盘上已 <acronym>TOAST</acronym> 化值的<structfield>chunk_id</structfield>。
+        如果该值已被去 <acronym>TOAST</acronym> 化或未存储在磁盘上，则返回
+        <literal>NULL</literal>。有关 <acronym>TOAST</acronym> 的更多信息，请参阅
+        <xref linkend="storage-toast"/>。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
          <primary>pg_database_size</primary>
         </indexterm>
         <function>pg_database_size</function> ( <type>name</type> )
@@ -1730,7 +1778,7 @@ SELECT pg_restore_attribute_stats(
         <para>
          被跟踪的统计信息可能会随版本变化，因此参数以<replaceable>argname</replaceable>和<replaceable>argvalue</replaceable>成对传入，格式如下：
 <programlisting>
- SELECT pg_restore_extended_stats(
+SELECT pg_restore_extended_stats(
     '<replaceable>arg1name</replaceable>', '<replaceable>arg1value</replaceable>'::<replaceable>arg1type</replaceable>,
     '<replaceable>arg2name</replaceable>', '<replaceable>arg2value</replaceable>'::<replaceable>arg2type</replaceable>,
     '<replaceable>arg3name</replaceable>', '<replaceable>arg3value</replaceable>'::<replaceable>arg3type</replaceable>);
@@ -1739,13 +1787,13 @@ SELECT pg_restore_attribute_stats(
         <para>
          例如，要为统计对象<structname>myschema.mystatsobj</structname>设置一些值：
 <programlisting>
- SELECT pg_restore_extended_stats(
+SELECT pg_restore_extended_stats(
     'schemaname',            'tab_schema',
     'relname',               'tab_name',
     'statistics_schemaname', 'stats_schema',
     'statistics_name',       'stats_name',
     'inherited',             false,
-    'n_distinct',            '[{"attributes" : [2,3], "ndistinct" : 4}]'::pg_ndistinct);
+    'n_distinct',            '[{"attributes" : [2,3], "ndistinct" : 4}]'::pg_ndistinct,
     'dependencies',          '{"2 => 1": 1.000000, "2 => -1": 1.000000, "2 => -2": 1.000000}'::pg_dependencies,
     'exprs',                 '[
                                {
@@ -2154,6 +2202,26 @@ SELECT pg_size_pretty(sum(pg_relation_size(relid))) AS total_size
        <para>
         返回服务器的<filename>pg_replslot/slot_name</filename>目录中每个普通文件的名称、大小和最后修改时间（mtime），
         其中<parameter>slot_name</parameter>是作为函数输入提供的复制槽的名称。以点开头的文件名、目录和其他特殊文件将被排除。
+       </para>
+       <para>
+        默认情况下，此函数仅限于超级用户和<literal>pg_monitor</literal>角色的成员，但其他用户可以被授予EXECUTE权限来运行该函数。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>pg_ls_summariesdir</primary>
+        </indexterm>
+        <function>pg_ls_summariesdir</function> ()
+        <returnvalue>setof record</returnvalue>
+        ( <parameter>name</parameter> <type>text</type>,
+        <parameter>size</parameter> <type>bigint</type>,
+        <parameter>modification</parameter> <type>timestamp with time zone</type> )
+       </para>
+       <para>
+        返回服务器的 WAL 摘要目录（<filename>pg_wal/summaries</filename>）中每个普通文件的名称、大小和最后修改时间（mtime）。
+        以点开头的文件名、目录和其他特殊文件将被排除。
        </para>
        <para>
         默认情况下，此函数仅限于超级用户和<literal>pg_monitor</literal>角色的成员，但其他用户可以被授予EXECUTE权限来运行该函数。

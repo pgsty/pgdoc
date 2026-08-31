@@ -248,6 +248,8 @@ CREATE TABLE people (
 
   <para>
    生成列不能直接写入。在<command>INSERT</command>或<command>UPDATE</command>命令中，不能为生成列指定值，但可以指定关键字<literal>DEFAULT</literal>。
+   此外，生成列不能用于<command>UPDATE</command>或<command>DELETE</command>命令的
+   <literal>FOR PORTION OF</literal>子句。
   </para>
 
   <para>
@@ -1545,7 +1547,7 @@ CREATE PROPERTY GRAPH myshop
     VERTEX TABLES (
         products LABEL product,
         customers LABEL customer LABEL person PROPERTIES (name),
-        orders LABEL order,
+        orders LABEL "order",
         employees LABEL employee LABEL person PROPERTIES (employee_name AS name)
     )
     EDGE TABLES (
@@ -1985,7 +1987,9 @@ REVOKE ALL ON accounts FROM PUBLIC;
      <listitem>
 
       <para>
-       允许创建引用表或表的特定列的外键约束。
+       允许创建引用表或表的特定列的外键约束。授予此权限时必须格外谨慎，
+       因为创建外键的用户可以安排让外键的执行调用任意函数（例如类型转换函数），
+       而这些函数将以表所有者的权限调用。
       </para>
      </listitem>
     </varlistentry>
@@ -1995,7 +1999,8 @@ REVOKE ALL ON accounts FROM PUBLIC;
      <listitem>
 
       <para>
-       允许在表、视图等上创建触发器。
+       允许在表、视图等上创建触发器。授予此权限时必须格外谨慎，
+       因为添加到表或视图的任何触发器都将以修改它的用户的权限执行。
       </para>
      </listitem>
     </varlistentry>
@@ -2116,7 +2121,8 @@ REVOKE ALL ON accounts FROM PUBLIC;
      <listitem>
       <para>
        允许在关系上执行<command>VACUUM</command>、<command>ANALYZE</command>、
-       <command>CLUSTER</command>、<command>REFRESH MATERIALIZED VIEW</command>、
+       <command>CLUSTER</command>、<command>REPACK</command>、
+       <command>REFRESH MATERIALIZED VIEW</command>、
        <command>REINDEX</command>、<command>LOCK TABLE</command>，以及数据库对象统计信息操作函数（见<xref linkend="functions-admin-statsmod"/>）。
       </para>
      </listitem>
@@ -2170,6 +2176,7 @@ REVOKE ALL ON accounts FROM PUBLIC;
       <entry><literal>r</literal> (<quote>读</quote>)</entry>
      <entry>
        <literal>LARGE OBJECT</literal>,
+       <literal>PROPERTY GRAPH</literal>,
        <literal>SEQUENCE</literal>,
        <literal>TABLE</literal>（和类似表的对象）,
        表列
@@ -2348,6 +2355,13 @@ REVOKE ALL ON accounts FROM PUBLIC;
       <entry>无</entry>
       <entry><literal>\dconfig+</literal></entry>
 </row>
+
+     <row>
+      <entry><literal>PROPERTY GRAPH</literal></entry>
+      <entry><literal>r</literal></entry>
+      <entry>无</entry>
+      <entry><literal>\dp</literal></entry>
+     </row>
 
      <row>
       <entry><literal>SCHEMA</literal></entry>
@@ -3350,11 +3364,11 @@ VALUES ('Albany', NULL, NULL, 'NY');
   </para>
 
   <para>
-   一个表可以从超过一个的父表继承，在这种情况下它拥有父表们所定义的列的并集。任何定义在子表上的列也会被加入到其中。如果在这个集合中出现重名列，那么这些列将被<quote>合并</quote>，这样在子表中只会有一个这样的列。重名列能被合并的前提是这些列必须具有相同的数据类型，否则会导致错误。可继承的检查约束和非空约束会以类似的方式被合并。例如，如果合并成一个合并列的任一列定义被标记为非空，则该合并列会被标记为非空。如果检查约束的名称相同，则他们会被合并，但如果它们的条件不同则合并会失败。
+   一个表可以从超过一个的父表继承，在这种情况下它拥有父表们所定义的列的并集。任何定义在子表上的列也会被加入到其中。如果在这个集合中出现重名列，那么这些列将被<quote>合并</quote>，这样在子表中只会有一个这样的列。重名列能被合并的前提是这些列必须具有相同的数据类型，否则会导致错误。可继承的检查约束和非空约束会以类似的方式被合并。例如，如果合并成一个合并列的任一列定义被标记为非空，则该合并列会被标记为非空。如果检查约束的名称相同，则他们会被合并，但如果它们的条件不同则合并会失败。对于合并后的检查约束，会保留更严格的强制执行属性：只要有任一继承副本被强制执行，合并后的约束就会被强制执行。
   </para>
 
   <para>
-   表继承通常在创建子表时建立，即通过<link linkend="sql-createtable"><command>CREATE TABLE</command></link>语句中的<literal>INHERITS</literal>子句。已经创建好的表也可以通过<link linkend="sql-altertable"><command>ALTER TABLE</command></link>的<literal>INHERIT</literal>变体再增加一个新的父表关系。要这么做，新子表必须已经包含与父表同名且数据类型相同的列。子表还必须包含与父表相同的检查约束和检查表达式。类似地，也可以使用<command>ALTER TABLE</command>的<literal>NO INHERIT</literal>变体，从子表中移除一条继承链接。动态添加和移除继承链接可用于实现表分区（见<xref linkend="ddl-partitioning"/>）。
+   表继承通常在创建子表时建立，即通过<link linkend="sql-createtable"><command>CREATE TABLE</command></link>语句中的<literal>INHERITS</literal>子句。已经创建好的表也可以通过<link linkend="sql-altertable"><command>ALTER TABLE</command></link>的<literal>INHERIT</literal>变体再增加一个新的父表关系。要这么做，新子表必须已经包含与父表同名且数据类型相同的列。子表还必须包含与父表相同的检查约束和检查表达式，以及匹配的非空约束。类似地，也可以使用<command>ALTER TABLE</command>的<literal>NO INHERIT</literal>变体，从子表中移除一条继承链接。动态添加和移除继承链接可用于实现表分区（见<xref linkend="ddl-partitioning"/>）。
   </para>
 
   <para>
@@ -3363,11 +3377,17 @@ VALUES ('Albany', NULL, NULL, 'NY');
   </para>
 
   <para>
-   当有任何一个子表存在时，父表不能被删除。当子表的列或者检查约束继承于父表时，它们也不能被删除或修改。如果希望移除一个表和它的所有后代，一种简单的方法是使用<literal>CASCADE</literal>选项删除父表（见<xref linkend="ddl-depend"/>）。
+   只要还有任何子表存在，父表就不能被删除。子表中继承的列，以及继承的检查约束和非空约束，
+   都不能直接删除。继承约束的某些属性可以更改，但更改后的每个约束必须仍与其继承来源的
+   所有父约束兼容。如果希望移除一个表和它的所有后代，一种简单的方法是使用
+   <literal>CASCADE</literal>选项删除父表（见<xref linkend="ddl-depend"/>）。
   </para>
 
   <para>
-   <command>ALTER TABLE</command>会把列的数据定义或检查约束上的任何变化沿着继承层次向下传播。同样，删除被其他表依赖的列只能使用<literal>CASCADE</literal>选项。对于同名列的合并与拒绝，<command>ALTER TABLE</command>遵循与<command>CREATE TABLE</command>相同的规则。
+   <command>ALTER TABLE</command>会把列定义以及可继承约束（检查约束和非空约束）上的变化
+   沿着继承层次向下传播。同样，删除被其他表依赖的列只能使用<literal>CASCADE</literal>选项。
+   对于重复的继承列和约束定义的合并与拒绝，<command>ALTER TABLE</command>遵循与
+   <command>CREATE TABLE</command>相同的规则。
   </para>
 
   <para>

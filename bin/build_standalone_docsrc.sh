@@ -93,7 +93,7 @@ official_git_url="https://git.postgresql.org/git/postgresql.git"
 fallback_git_url="https://github.com/postgres/postgres.git"
 
 is_release_version() {
-  [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]]
+  [[ "$1" =~ ^[0-9]+(\.[0-9]+|beta[0-9]+|rc[0-9]+)$ ]]
 }
 
 download_archive() {
