@@ -1,0 +1,257 @@
+<!-- doc/src/sgml/bloom.sgml -->
+
+<sect1 id="bloom" xreflabel="bloom">
+ <title>bloom &mdash; 布隆过滤器索引访问方法</title>
+
+ <indexterm zone="bloom">
+  <primary>bloom</primary>
+ </indexterm>
+
+ <para>
+  <literal>bloom</literal>提供了一种基于<ulink url="https://en.wikipedia.org/wiki/Bloom_filter">布隆过滤器</ulink>的索引访问方法。
+ </para>
+
+ <para>
+  布隆过滤器是一种空间效率很高的数据结构，用于测试某个元素是否属于某个集合。对于索引访问方法，它允许通过签名快速排除不匹配的元组，而签名的大小则在创建索引时确定。
+ </para>
+
+ <para>
+  签名是被索引属性的一种有损表示，因此容易产生误报；也就是说，某个元素实际上并不在集合中，却可能被报告为在集合中。因此，索引搜索结果始终都必须使用堆条目中的实际属性值再次检查。更长的签名可以降低误报概率，从而减少无用的堆访问次数，但当然也会使索引变得更大，因此扫描速度更慢。
+ </para>
+
+ <para>
+  当一张表具有很多属性，而查询又会测试这些属性的任意组合时，这类索引最有用。传统 B-树索引比布隆索引更快，但为了支持所有可能的查询，可能需要许多 B-树索引，而布隆索引只需一个。不过要注意，布隆索引只支持等值查询，而 B-树索引还可以执行不等和范围搜索。
+ </para>
+
+ <sect2 id="bloom-parameters">
+  <title>参数</title>
+
+  <para>
+   <literal>bloom</literal>索引在其<literal>WITH</literal>子句中接受下列参数：
+  </para>
+
+   <variablelist>
+   <varlistentry>
+    <term><literal>length</literal></term>
+    <listitem>
+     <para>
+      按位计的每个签名（索引项）长度。该值会向上圆整为<literal>16</literal>的倍数。默认值为<literal>80</literal>位，最大值为<literal>4096</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+   </variablelist>
+   <variablelist>
+   <varlistentry>
+    <term><literal>col1 &mdash; col32</literal></term>
+    <listitem>
+     <para>
+      为每个索引列生成的位数。每个参数的名字都对应它所控制的索引列编号。默认值为<literal>2</literal>位，最大值为<literal>4095</literal>。对于实际未使用的索引列，其参数会被忽略。
+     </para>
+    </listitem>
+   </varlistentry>
+   </variablelist>
+ </sect2>
+
+ <sect2 id="bloom-examples">
+  <title>示例</title>
+
+  <para>
+   下面是一个创建布隆索引的示例：
+  </para>
+
+<programlisting>
+CREATE INDEX bloomidx ON tbloom USING bloom (i1,i2,i3)
+       WITH (length=80, col1=2, col2=2, col3=4);
+</programlisting>
+
+  <para>
+   该索引使用长度为 80 位的签名创建，其中属性 i1 和 i2 各映射为 2 位，属性 i3 映射为 4 位。由于<literal>length</literal>、<literal>col1</literal>和<literal>col2</literal>都采用默认值，因此这些参数指定也可以省略。
+  </para>
+
+  <para>
+   下面给出一个更完整的布隆索引定义和使用示例，同时与等效的 B-树索引进行比较。布隆索引明显比 B-树索引更小，而且性能可能更好。
+  </para>
+
+<programlisting>
+=# CREATE TABLE tbloom AS
+   SELECT
+     (random() * 1000000)::int AS i1,
+     (random() * 1000000)::int AS i2,
+     (random() * 1000000)::int AS i3,
+     (random() * 1000000)::int AS i4,
+     (random() * 1000000)::int AS i5,
+     (random() * 1000000)::int AS i6
+   FROM
+  generate_series(1,10000000);
+SELECT 10000000
+</programlisting>
+
+  <para>
+   对这张大表执行顺序扫描需要很长时间：
+<programlisting>
+=# EXPLAIN ANALYZE SELECT * FROM tbloom WHERE i2 = 898732 AND i5 = 123451;
+                                              QUERY PLAN
+-------------------------------------------------------------------&zwsp;-----------------------------------
+ Seq Scan on tbloom  (cost=0.00..213744.00 rows=250 width=24) (actual time=357.059..357.059 rows=0.00 loops=1)
+   Filter: ((i2 = 898732) AND (i5 = 123451))
+   Rows Removed by Filter: 10000000
+   Buffers: shared hit=63744
+ Planning Time: 0.346 ms
+ Execution Time: 357.076 ms
+(6 rows)
+</programlisting>
+  </para>
+
+  <para>
+   即使定义了 B-树索引，结果仍然会是顺序扫描：
+<programlisting>
+=# CREATE INDEX btreeidx ON tbloom (i1, i2, i3, i4, i5, i6);
+CREATE INDEX
+=# SELECT pg_size_pretty(pg_relation_size('btreeidx'));
+ pg_size_pretty
+----------------
+ 386 MB
+(1 row)
+=# EXPLAIN ANALYZE SELECT * FROM tbloom WHERE i2 = 898732 AND i5 = 123451;
+                                              QUERY PLAN
+-------------------------------------------------------------------&zwsp;-----------------------------------
+ Seq Scan on tbloom  (cost=0.00..213744.00 rows=2 width=24) (actual time=351.016..351.017 rows=0.00 loops=1)
+   Filter: ((i2 = 898732) AND (i5 = 123451))
+   Rows Removed by Filter: 10000000
+   Buffers: shared hit=63744
+ Planning Time: 0.138 ms
+ Execution Time: 351.035 ms
+(6 rows)
+</programlisting>
+  </para>
+
+  <para>
+   在该表上定义布隆索引后，处理这类搜索会比单个 B-树索引更好：
+<programlisting>
+=# CREATE INDEX bloomidx ON tbloom USING bloom (i1, i2, i3, i4, i5, i6);
+CREATE INDEX
+=# SELECT pg_size_pretty(pg_relation_size('bloomidx'));
+ pg_size_pretty
+----------------
+ 153 MB
+(1 row)
+=# EXPLAIN ANALYZE SELECT * FROM tbloom WHERE i2 = 898732 AND i5 = 123451;
+                                                     QUERY PLAN
+-------------------------------------------------------------------&zwsp;--------------------------------------------------
+ Bitmap Heap Scan on tbloom  (cost=1792.00..1799.69 rows=2 width=24) (actual time=22.605..22.606 rows=0.00 loops=1)
+   Recheck Cond: ((i2 = 898732) AND (i5 = 123451))
+   Rows Removed by Index Recheck: 2300
+   Heap Blocks: exact=2256
+   Buffers: shared hit=21864
+   -&gt;  Bitmap Index Scan on bloomidx  (cost=0.00..178436.00 rows=1 width=0) (actual time=20.005..20.005 rows=2300.00 loops=1)
+         Index Cond: ((i2 = 898732) AND (i5 = 123451))
+         Index Searches: 1
+         Buffers: shared hit=19608
+ Planning Time: 0.099 ms
+ Execution Time: 22.632 ms
+(11 rows)
+</programlisting>
+  </para>
+
+  <para>
+   现在，B-树搜索的主要问题在于：当搜索条件没有约束前导索引列时，B-树的效率很低。对 B-树来说，更好的策略是在每一列上分别创建一个独立索引。这样，规划器就会选择类似下面这样的计划：
+<programlisting>
+=# CREATE INDEX btreeidx1 ON tbloom (i1);
+CREATE INDEX
+=# CREATE INDEX btreeidx2 ON tbloom (i2);
+CREATE INDEX
+=# CREATE INDEX btreeidx3 ON tbloom (i3);
+CREATE INDEX
+=# CREATE INDEX btreeidx4 ON tbloom (i4);
+CREATE INDEX
+=# CREATE INDEX btreeidx5 ON tbloom (i5);
+CREATE INDEX
+=# CREATE INDEX btreeidx6 ON tbloom (i6);
+CREATE INDEX
+=# EXPLAIN ANALYZE SELECT * FROM tbloom WHERE i2 = 898732 AND i5 = 123451;
+                                                        QUERY PLAN
+-------------------------------------------------------------------&zwsp;--------------------------------------------------------
+ Bitmap Heap Scan on tbloom  (cost=9.29..13.30 rows=1 width=24) (actual time=0.032..0.033 rows=0.00 loops=1)
+   Recheck Cond: ((i5 = 123451) AND (i2 = 898732))
+   Buffers: shared read=6
+   -&gt;  BitmapAnd  (cost=9.29..9.29 rows=1 width=0) (actual time=0.047..0.047 rows=0.00 loops=1)
+         Buffers: shared hit=6
+         -&gt;  Bitmap Index Scan on btreeidx5  (cost=0.00..4.52 rows=11 width=0) (actual time=0.026..0.026 rows=7.00 loops=1)
+               Index Cond: (i5 = 123451)
+               Index Searches: 1
+               Buffers: shared hit=3
+         -&gt;  Bitmap Index Scan on btreeidx2  (cost=0.00..4.52 rows=11 width=0) (actual time=0.007..0.007 rows=8.00 loops=1)
+               Index Cond: (i2 = 898732)
+               Index Searches: 1
+               Buffers: shared hit=3
+ Planning Time: 0.264 ms
+ Execution Time: 0.047 ms
+(15 rows)
+</programlisting>
+   虽然该查询的运行速度远快于使用任一单个索引时的情况，但代价是索引体积。每个单列 B-树索引占用 88.5 MB，因此总共需要 531 MB 空间，是布隆索引所用空间的三倍多。
+  </para>
+ </sect2>
+
+ <sect2 id="bloom-operator-class-interface">
+  <title>操作符类接口</title>
+
+  <para>
+   用于布隆索引的操作符类只需要一个针对被索引数据类型的哈希函数，以及一个用于搜索的等值操作符。下面这个示例展示了 <type>text</type> 数据类型的操作符类定义：
+  </para>
+
+<programlisting>
+CREATE OPERATOR CLASS text_ops
+DEFAULT FOR TYPE text USING bloom AS
+    OPERATOR    1   =(text, text),
+    FUNCTION    1   hashtext(text);
+</programlisting>
+ </sect2>
+
+ <sect2 id="bloom-limitations">
+  <title>限制</title>
+  <para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      模块中只包含了 <type>int4</type> 和 <type>text</type> 的操作符类。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      搜索只支持<literal>=</literal>操作符。不过将来有可能增加对带有并集和交集操作的数组的支持。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+       <literal>bloom</literal>访问方法不支持<literal>UNIQUE</literal>索引。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+       <literal>bloom</literal>访问方法不支持搜索<literal>NULL</literal>值。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+ </sect2>
+
+ <sect2 id="bloom-authors">
+  <title>作者</title>
+
+  <para>
+   Teodor Sigaev <email>teodor@postgrespro.ru</email>，Postgres Professional，俄罗斯莫斯科
+  </para>
+
+  <para>
+   Alexander Korotkov <email>a.korotkov@postgrespro.ru</email>，Postgres Professional，俄罗斯莫斯科
+  </para>
+
+  <para>
+   Oleg Bartunov <email>obartunov@postgrespro.ru</email>，Postgres Professional，俄罗斯莫斯科
+  </para>
+ </sect2>
+
+</sect1>

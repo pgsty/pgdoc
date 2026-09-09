@@ -1,0 +1,1730 @@
+<!-- doc/src/sgml/extend.sgml -->
+
+ <chapter id="extend">
+  <title>扩展 <acronym>SQL</acronym></title>
+
+  <indexterm zone="extend">
+   <primary>扩展 SQL</primary>
+  </indexterm>
+
+  <para>
+   在接下来的各节中，我们将讨论如何通过增加以下内容来扩展
+   <productname>PostgreSQL</productname> <acronym>SQL</acronym> 查询语言：
+
+   <itemizedlist spacing="compact" mark="bullet">
+    <listitem>
+     <para>
+      函数（从 <xref linkend="xfunc"/> 开始）
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      聚合（从 <xref linkend="xaggr"/> 开始）
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      数据类型（从 <xref linkend="xtypes"/> 开始）
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      操作符（从 <xref linkend="xoper"/> 开始）
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      索引的操作符类（从 <xref linkend="xindex"/> 开始）
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      相关对象的包（从 <xref linkend="extend-extensions"/> 开始）
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+
+  <sect1 id="extend-how">
+   <title>可扩展性如何运作</title>
+
+   <para>
+    <productname>PostgreSQL</productname> 之所以具有可扩展性，是因为其
+    运作由系统目录驱动。如果你熟悉标准的关系数据库系统，就会知道它们把
+    有关数据库、表、列等的信息存储在通常所说的系统目录中（有些系统把这
+    称为数据字典）。这些目录对用户而言看起来就像普通表一样，但
+    <acronym>DBMS</acronym> 会在其中保存自己的内部管理信息。
+    <productname>PostgreSQL</productname> 与标准关系数据库系统的一个关键差别是，
+    <productname>PostgreSQL</productname> 在目录中存储的信息要多得多：不仅有关于表和列的信息，还有关于数据
+    类型、函数、访问方法等的信息。这些表可以由用户修改，而
+    <productname>PostgreSQL</productname> 又是基于这些表来运行的，这意味着
+    <productname>PostgreSQL</productname> 可以由用户扩展。相比之下，传统数据库
+    系统通常只能通过修改源代码中的硬编码过程，或加载由
+    <acronym>DBMS</acronym> 供应商专门编写的模块来扩展。
+   </para>
+
+   <para>
+    此外，<productname>PostgreSQL</productname> 服务器还能通过动态加载把用户
+    编写的代码纳入自身。也就是说，用户可以指定一个实现了新类型或新函数
+    的目标代码文件（例如共享库），而 <productname>PostgreSQL</productname>
+    会在需要时加载它。把用 <acronym>SQL</acronym> 编写的代码加入服务器就更
+    为简单了。这种能够<quote>即时</quote>修改自身行为的能力，使
+    <productname>PostgreSQL</productname> 特别适合用于新应用和新存储结构的快速
+    原型设计。
+   </para>
+  </sect1>
+
+  <sect1 id="extend-type-system">
+   <title><productname>PostgreSQL</productname> 类型系统</title>
+
+   <indexterm zone="extend-type-system">
+    <primary>基础类型</primary>
+   </indexterm>
+
+   <indexterm zone="extend-type-system">
+    <primary>数据类型</primary>
+    <secondary>基础</secondary>
+   </indexterm>
+
+   <indexterm zone="extend-type-system">
+    <primary>复合类型</primary>
+   </indexterm>
+
+   <indexterm zone="extend-type-system">
+    <primary>数据类型</primary>
+    <secondary>组合</secondary>
+   </indexterm>
+
+   <indexterm zone="extend-type-system">
+    <primary>容器类型</primary>
+   </indexterm>
+
+   <indexterm zone="extend-type-system">
+    <primary>数据类型</primary>
+    <secondary>容器</secondary>
+   </indexterm>
+
+   <para>
+    <productname>PostgreSQL</productname> 数据类型可以分为基础类型、
+    容器类型、域和伪类型。
+   </para>
+
+   <sect2 id="extend-type-system-base">
+    <title>基础类型</title>
+
+    <para>
+     基础类型是像 <type>integer</type> 这样的类型，它们在
+     <acronym>SQL</acronym> 语言层之下实现（通常使用像 C 这样的底层语言）。
+     它们通常对应于通常所说的抽象数据类型。
+     <productname>PostgreSQL</productname> 只能通过用户提供的函数来操作这类
+     类型，并且只能在用户所描述的范围内理解这类类型的行为。
+     内置基础类型见 <xref linkend="datatype"/>。
+    </para>
+
+    <para>
+     枚举（enum）类型可以看作是基础类型的一个子类。其主要区别在于，它们
+     只需使用 <acronym>SQL</acronym> 命令即可创建，而不需要任何底层编程。
+     更多信息参见 <xref linkend="datatype-enum"/>。
+    </para>
+   </sect2>
+
+   <sect2 id="extend-type-system-container">
+    <title>容器类型</title>
+
+    <para>
+     <productname>PostgreSQL</productname> 有三种<quote>容器</quote>类型，
+     即包含其他类型多个值的类型。它们是数组、复合类型和范围类型。
+    </para>
+
+    <para>
+     数组可以保存多个同一类型的值。每一种基础类型、复合类型、范围类型和
+     域类型都会自动创建一个对应的数组类型。但不存在数组的数组。就类型系
+     统而言，多维数组与一维数组并无区别。更多信息参见
+     <xref linkend="arrays"/>。
+    </para>
+
+    <para>
+     复合类型，也称行类型，会在用户创建表时自动产生。也可以使用
+     <xref linkend="sql-createtype"/> 定义一个没有关联表的
+     <quote>独立</quote>复合类型。复合类型只是带有关联字段名的一组类型。
+     复合类型的值是一行或一条记录，其中包含各字段的值。更多信息参见
+     <xref linkend="rowtypes"/>。
+    </para>
+
+    <para>
+     范围类型可以保存同一类型的两个值，它们分别是该范围的下界和上界。
+     范围类型由用户创建，不过也存在少数内置的范围类型。更多信息参见
+     <xref linkend="rangetypes"/>。
+    </para>
+   </sect2>
+
+   <sect2 id="extend-type-system-domains">
+    <title>域</title>
+
+    <para>
+     域基于某一种特定的底层类型，并且在很多场合下都可以与其底层类型互换。
+     不过，域可以带有约束，把其合法值限制在底层类型所允许值的一个子集内。
+     域使用 <acronym>SQL</acronym> 命令 <xref linkend="sql-createdomain"/>
+     创建。更多信息参见 <xref linkend="domains"/>。
+    </para>
+   </sect2>
+
+   <sect2 id="extend-type-system-pseudo">
+    <title>伪类型</title>
+
+    <para>
+     有少数几种 <quote>伪类型</quote> 用于特殊目的。伪类型不能作为表的列
+     或容器类型的组成部分出现，但它们可以用来声明函数的参数类型和结果类
+     型。这为在类型系统内部识别特殊类别的函数提供了一种机制。
+     <xref linkend="datatype-pseudotypes-table"/> 列出了现有的伪类型。
+    </para>
+   </sect2>
+
+   <sect2 id="extend-types-polymorphic">
+    <title>多态类型</title>
+
+   <indexterm zone="extend-types-polymorphic">
+    <primary>多态类型</primary>
+   </indexterm>
+
+   <indexterm zone="extend-types-polymorphic">
+    <primary>多态函数</primary>
+   </indexterm>
+
+   <indexterm zone="extend-types-polymorphic">
+    <primary>数据类型</primary>
+    <secondary>多态</secondary>
+   </indexterm>
+
+   <indexterm zone="extend-types-polymorphic">
+    <primary>函数</primary>
+    <secondary>多态</secondary>
+   </indexterm>
+
+    <para>
+     特别值得关注的一些伪类型是 <firstterm>多态类型</firstterm>，它们用于
+     声明 <firstterm>多态函数</firstterm>。这一强大特性允许单个函数定义
+     作用于许多不同的数据类型，而具体的数据类型则由某次调用中实际传给它
+     的数据类型决定。多态类型见
+     <xref linkend="extend-types-polymorphic-table"/>。它们的一些用法示例
+     见 <xref linkend="xfunc-sql-polymorphic-functions"/>。
+    </para>
+
+    <table id="extend-types-polymorphic-table">
+     <title>多态类型</title>
+     <tgroup cols="3">
+      <colspec colname="col1" colwidth="2*"/>
+      <colspec colname="col2" colwidth="1*"/>
+      <colspec colname="col3" colwidth="2*"/>
+      <thead>
+       <row>
+        <entry>名称</entry>
+        <entry>家族</entry>
+        <entry>说明</entry>
+       </row>
+      </thead>
+
+      <tbody>
+       <row>
+        <entry><type>anyelement</type></entry>
+        <entry>简单</entry>
+        <entry>表示函数接受任意数据类型</entry>
+       </row>
+
+       <row>
+        <entry><type>anyarray</type></entry>
+        <entry>简单</entry>
+        <entry>表示函数接受任意数组数据类型</entry>
+       </row>
+
+       <row>
+        <entry><type>anynonarray</type></entry>
+        <entry>简单</entry>
+        <entry>表示函数接受任意非数组数据类型</entry>
+       </row>
+
+       <row>
+        <entry><type>anyenum</type></entry>
+        <entry>简单</entry>
+        <entry>表示函数接受任意枚举数据类型（见 <xref linkend="datatype-enum"/>）</entry>
+       </row>
+
+       <row>
+        <entry><type>anyrange</type></entry>
+        <entry>简单</entry>
+        <entry>表示函数接受任意范围数据类型（见 <xref linkend="rangetypes"/>）</entry>
+       </row>
+
+       <row>
+        <entry><type>anymultirange</type></entry>
+        <entry>简单</entry>
+        <entry>表示函数接受任意多范围数据类型（见 <xref linkend="rangetypes"/>）</entry>
+       </row>
+
+       <row>
+        <entry><type>anycompatible</type></entry>
+        <entry>通用</entry>
+        <entry>表示函数接受任意数据类型，并自动把多个参数提升到一个公共数据类型</entry>
+       </row>
+
+       <row>
+        <entry><type>anycompatiblearray</type></entry>
+        <entry>通用</entry>
+        <entry>表示函数接受任意数组数据类型，并自动把多个参数提升到一个公共数据类型</entry>
+       </row>
+
+       <row>
+        <entry><type>anycompatiblenonarray</type></entry>
+        <entry>通用</entry>
+        <entry>表示函数接受任意非数组数据类型，并自动把多个参数提升到一个公共数据类型</entry>
+       </row>
+
+       <row>
+        <entry><type>anycompatiblerange</type></entry>
+        <entry>通用</entry>
+        <entry>表示函数接受任意范围数据类型，并自动把多个参数提升到一个公共数据类型</entry>
+       </row>
+
+       <row>
+        <entry><type>anycompatiblemultirange</type></entry>
+        <entry>通用</entry>
+        <entry>表示函数接受任意多范围数据类型，并自动把多个参数提升到一个公共数据类型</entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+
+    <para>
+     多态参数和结果彼此关联，并且会在解析调用多态函数的查询时解析为具体的
+     数据类型。当存在多个多态参数时，输入值的实际数据类型必须按下文所述彼
+     此匹配。如果函数的结果类型是多态的，或者它带有多态类型的输出参数，则
+     这些结果的类型将根据下文所述的多态输入的实际类型推导出来。
+    </para>
+
+    <para>
+     对于<quote>简单</quote>家族的多态类型，匹配和推导规则如下：
+    </para>
+
+    <para>
+     每个声明为 <type>anyelement</type> 的位置（参数或返回值）都允许具有任
+     意具体的实际数据类型，但在同一次调用中它们必须全部是<emphasis>相同</emphasis>
+     的实际类型。每个声明为 <type>anyarray</type> 的位置都可以是任意数组数
+     据类型，但同样它们必须全部是同一类型。类似地，声明为
+     <type>anyrange</type> 的位置必须全部是同一范围类型。
+     <type>anymultirange</type> 也一样。
+    </para>
+
+    <para>
+     此外，如果某些位置声明为 <type>anyarray</type>，另一些位置声明为
+     <type>anyelement</type>，那么 <type>anyarray</type> 位置上的实际数组
+     类型必须是一个数组，其元素类型与 <type>anyelement</type> 位置上出现
+     的类型相同。<type>anynonarray</type> 的处理方式与
+     <type>anyelement</type> 完全相同，只是额外增加了实际类型不能是数组类
+     型的约束。<type>anyenum</type> 的处理方式也与
+     <type>anyelement</type> 完全相同，只是额外增加了实际类型必须是枚举类
+     型的约束。
+    </para>
+
+    <para>
+     类似地，如果某些位置声明为 <type>anyrange</type>，另一些位置声明为
+     <type>anyelement</type> 或 <type>anyarray</type>，那么
+     <type>anyrange</type> 位置上的实际范围类型必须是一个范围，其子类型与
+     <type>anyelement</type> 位置上的类型相同，也与
+     <type>anyarray</type> 位置的元素类型相同。如果有位置声明为
+     <type>anymultirange</type>，其实际多范围类型必须包含与声明为
+     <type>anyrange</type> 的参数相匹配的范围，并且其基础元素与声明为
+     <type>anyelement</type> 和 <type>anyarray</type> 的参数相匹配。
+    </para>
+
+    <para>
+     因此，当多个参数位置被声明为多态类型时，其总体效果就是只允许某些实际
+     参数类型组合。例如，声明为
+     <literal>equal(anyelement, anyelement)</literal> 的函数可以接受任意两
+     个输入值，只要它们属于同一数据类型。
+    </para>
+
+    <para>
+     当函数的返回值声明为多态类型时，必须至少有一个参数位置也属于多态，而
+     为这些多态参数提供的实际数据类型将决定该次调用的实际结果类型。例
+     如，假设还没有数组下标机制，就可以把实现下标的函数定义为
+     <literal>subscript(anyarray, integer) returns anyelement</literal>。
+     这一声明约束实际的第一个参数必须是数组类型，并允许解析器从该参数的实
+     际类型推断出正确的结果类型。另一个例子是，声明为
+     <literal>f(anyarray) returns anyenum</literal> 的函数将只接受枚举类型
+     的数组。
+    </para>
+
+    <para>
+     在大多数情况下，解析器可以从同一家族中其他多态类型的参数推导出多态结
+     果类型的实际数据类型；例如，<type>anyarray</type> 可以从
+     <type>anyelement</type> 推导出来，反之亦然。一个例外是，
+     <type>anyrange</type> 类型的多态结果需要存在一个
+     <type>anyrange</type> 类型的参数；它不能从 <type>anyarray</type> 或
+     <type>anyelement</type> 参数推导出来。这是因为可能存在多个具有相同子
+     类型的范围类型。
+    </para>
+
+    <para>
+     注意，<type>anynonarray</type> 和 <type>anyenum</type> 并不表示独立
+     的类型变量；它们与 <type>anyelement</type> 是同一个类型，只是附加了额
+     外约束。例如，把函数声明为
+     <literal>f(anyelement, anyenum)</literal>，等价于把它声明为
+     <literal>f(anyenum, anyenum)</literal>：两个实际参数都必须是同一种枚
+     举类型。
+    </para>
+
+    <para>
+     对于<quote>通用</quote>家族的多态类型，匹配和推导规则与
+     <quote>简单</quote>家族大致相同，但有一个主要区别：参数的实际类型不
+     必完全一致，只要它们都能隐式转换为某个公共类型即可。这个公共
+     类型的选择遵循与 <literal>UNION</literal> 及相关构造相同的规则（见
+     <xref linkend="typeconv-union-case"/>）。选择公共类型时，会考虑
+     <type>anycompatible</type> 和 <type>anycompatiblenonarray</type> 输
+     入的实际类型、<type>anycompatiblearray</type> 输入的数组元素类型、
+     <type>anycompatiblerange</type> 输入的范围子类型，以及
+     <type>anycompatiblemultirange</type> 输入的多范围子类型。如果出现了
+     <type>anycompatiblenonarray</type>，那么公共类型必须是非数组类型。一
+     旦确定了公共类型，位于 <type>anycompatible</type> 和
+     <type>anycompatiblenonarray</type> 位置的参数会自动转换为该类型，而位
+     于 <type>anycompatiblearray</type> 位置的参数会自动转换为该公共类型对
+     应的数组类型。
+    </para>
+
+    <para>
+     由于只知道子类型时无法选择出对应的范围类型，所以使用
+     <type>anycompatiblerange</type> 和/或
+     <type>anycompatiblemultirange</type> 时，要求所有声明为该类型的参数都
+     具有相同的实际范围和/或多范围类型，并且该类型的子类型必须与所选公共
+     类型一致，这样就不需要对范围值进行类型转换。和
+     <type>anyrange</type> 及 <type>anymultirange</type> 一样，把
+     <type>anycompatiblerange</type> 和 <type>anymultirange</type> 用作函
+     数结果类型时，也要求存在一个 <type>anycompatiblerange</type> 或
+     <type>anycompatiblemultirange</type> 参数。
+    </para>
+
+    <para>
+     注意，不存在 <type>anycompatibleenum</type> 类型。这样的类型不会很有
+     用，因为通常不存在到枚举类型的隐式类型转换，这意味着无法为不同的枚举
+     输入解析出公共类型。
+    </para>
+
+    <para>
+     <quote>简单</quote>和<quote>通用</quote>这两个多态家族代表两组彼此独
+     立的类型变量。请看下面的例子：
+<programlisting>
+CREATE FUNCTION myfunc(a anyelement, b anyelement,
+                       c anycompatible, d anycompatible)
+RETURNS anycompatible AS ...
+</programlisting>
+     在实际调用该函数时，前两个输入必须完全是同一类型。后两个输入必须能够
+     提升为某个公共类型，但这个类型不需要与前两个输入的类型有任何关系。结
+     果将采用后两个输入的公共类型。
+    </para>
+
+    <para>
+     可变参数函数（即接受可变数量参数的函数，如
+     <xref linkend="xfunc-sql-variadic-functions"/> 所述）也可以是多态的：
+     其方式是把最后一个参数声明为
+     <literal>VARIADIC</literal> <type>anyarray</type> 或
+     <literal>VARIADIC</literal> <type>anycompatiblearray</type>。就参数匹
+     配和确定实际结果类型而言，这样的函数与写出适当数量的
+     <type>anynonarray</type> 或 <type>anycompatiblenonarray</type> 参数
+     的效果相同。
+    </para>
+   </sect2>
+  </sect1>
+
+  &xfunc;
+  &xaggr;
+  &xtypes;
+  &xoper;
+  &xindex;
+
+
+  <sect1 id="extend-extensions">
+   <title>将相关对象打包成扩展</title>
+
+   <indexterm zone="extend-extensions">
+    <primary>扩展</primary>
+   </indexterm>
+
+   <para>
+    一个有用的 <productname>PostgreSQL</productname> 扩展通常包含多个
+    SQL 对象；例如，一种新的数据类型将需要新的函数、新的操作符，并且很可
+    能还需要新的索引操作符类。把所有这些对象收集到一个单独的包中，有助于
+    简化数据库管理。<productname>PostgreSQL</productname> 将这样的包称为
+    <firstterm>扩展</firstterm>。要定义一个扩展，至少需要一个
+    <firstterm>脚本文件</firstterm>，其中包含用于创建扩展对象的
+    <acronym>SQL</acronym> 命令，以及一个 <firstterm>控制文件</firstterm>，
+    用来指定扩展本身的一些基本属性。如果扩展包含 C 代码，通常还会有一个
+    共享库文件，C 代码已被构建到其中。一旦准备好这些文件，只需执行一个简
+    单的 <link linkend="sql-createextension"><command>CREATE EXTENSION</command></link>
+    命令，就能把这些对象装入数据库。
+   </para>
+
+   <para>
+    使用扩展而不是仅仅运行 <acronym>SQL</acronym> 脚本把一堆<quote>松散</quote>
+    对象装入数据库，最主要的优点在于 <productname>PostgreSQL</productname>
+    能够理解这些对象是属于同一个扩展的。你可以用一条
+    <link linkend="sql-dropextension"><command>DROP EXTENSION</command></link>
+    命令删除全部对象（无需维护单独的<quote>卸载</quote>脚本）。更有用的是，
+    <application>pg_dump</application> 知道自己不应转储扩展的各个成员对象
+    &mdash; 它只会在转储中包含一条 <command>CREATE EXTENSION</command>
+    命令。这极大地简化了迁移到扩展新版本的过程，即使新版本包含比旧版本更
+    多或不同的对象也是如此。不过要注意，在把这样的转储装载到新数据库时，
+    必须能够访问该扩展的控制文件、脚本文件以及其他相关文件。
+   </para>
+
+   <para>
+    <productname>PostgreSQL</productname> 不允许你删除扩展中包含的单个对象，
+    除非删除整个扩展。另外，虽然你可以修改扩展成员对象的定义（例如对函数
+    使用 <command>CREATE OR REPLACE FUNCTION</command>），但要记住，被修
+    改后的定义不会被 <application>pg_dump</application> 转储。这样的修改通
+    常只有在你同时在扩展脚本文件中做出同样修改时才有意义。（不过，对于包
+    含配置数据的表有特殊规定；见
+    <xref linkend="extend-extensions-config-tables"/>。）在生产环境中，通
+    常更好的做法是创建一个扩展更新脚本，用它来完成对扩展成员对象的修改。
+   </para>
+
+   <para>
+    扩展脚本可以使用 <command>GRANT</command> 和 <command>REVOKE</command>
+    语句，为属于扩展的对象设置权限。每个对象的最终权限集合（如果设置了权
+    限）会存储在
+    <link linkend="catalog-pg-init-privs"><structname>pg_init_privs</structname></link>
+    系统目录中。使用 <application>pg_dump</application> 时，转储中会包含
+    <command>CREATE EXTENSION</command> 命令，后面再跟上一组必要的
+    <command>GRANT</command> 和 <command>REVOKE</command> 语句，以把对象
+    权限恢复到生成该转储时的状态。
+   </para>
+
+   <para>
+    <productname>PostgreSQL</productname> 目前不支持扩展脚本发出
+    <command>CREATE POLICY</command> 或 <command>SECURITY LABEL</command>
+    语句。它们应当在扩展创建完成之后再设置。扩展对象上的所有 RLS 策略和
+    安全标签都会包含在 <application>pg_dump</application> 创建的转储中。
+   </para>
+
+   <para>
+    扩展机制还提供了用于打包修改脚本的支持，以便调整扩展中所含 SQL 对象
+    的定义。例如，如果扩展 1.1 版相比 1.0 版增加了一个函数，并修改了另一
+    个函数的函数体，那么扩展作者可以提供一个 <firstterm>更新脚本</firstterm>
+    来只完成这两项修改。随后就可以使用
+    <command>ALTER EXTENSION UPDATE</command> 命令应用这些修改，并跟踪在
+    某个数据库中实际安装的是该扩展的哪个版本。
+   </para>
+
+   <para>
+    哪些 SQL 对象种类可以成为扩展成员，见
+    <link linkend="sql-alterextension"><command>ALTER EXTENSION</command></link>
+    的说明。特别是，数据库集簇范围内的对象，如数据库、角色和表空间，不能
+    成为扩展成员，因为扩展只在单个数据库内可见。（尽管扩展脚本并不禁止创
+    建这类对象，但如果这样做，它们不会作为扩展的一部分受到跟踪。）还要注意，
+    虽然表可以成为扩展成员，但其附属对象（如索引）并不直接被视为扩展成员。
+    另一个重要点是，模式可以属于扩展，但反过来不成立：扩展本身只有一个非
+    限定名，并不<quote>位于</quote>任何模式中。不过，扩展的成员对象会在其
+    对象类型适用的情况下属于某个模式。扩展是否应当拥有其成员对象所在的模
+    式，则要视具体情况而定。
+   </para>
+
+   <para>
+    如果扩展脚本创建了任何临时对象（如临时表），这些对象在当前会话的剩余
+    时间里会被视为扩展成员，但会像其他临时对象一样在会话结束时自动删除。
+    这是“扩展成员对象不能在不删除整个扩展的情况下被删除”这一规则的一个
+    例外。
+   </para>
+
+   <sect2 id="extend-extensions-files">
+    <title>扩展文件</title>
+
+   <indexterm>
+    <primary>控制文件</primary>
+   </indexterm>
+
+    <para>
+     <command>CREATE EXTENSION</command> 命令依赖于每个扩展都有一个控制文
+     件，该文件的名称必须与扩展同名并带有 <literal>.control</literal> 后缀，
+     且必须放在安装目录的 <literal>SHAREDIR/extension</literal> 目录中。此
+     外还必须至少有一个 <acronym>SQL</acronym> 脚本文件，其命名模式为
+     <literal><replaceable>extension</replaceable>--<replaceable>version</replaceable>.sql</literal>
+     （例如，扩展 <literal>foo</literal> 的 <literal>1.0</literal> 版脚本文
+     件为 <literal>foo--1.0.sql</literal>）。默认情况下，脚本文件也放在
+     <literal>SHAREDIR/extension</literal> 目录中；但控制文件可以为脚本文
+     件指定不同的目录。
+    </para>
+
+    <para>
+     扩展控制文件的其他查找位置可通过参数
+     <xref linkend="guc-extension-control-path"/> 配置。
+    </para>
+
+    <para>
+     扩展控制文件的格式与 <filename>postgresql.conf</filename> 文件相同，
+     即由一组 <replaceable>parameter_name</replaceable>
+     <literal>=</literal> <replaceable>value</replaceable> 赋值组成，每行一
+     条。允许空行和以 <literal>#</literal> 引入的注释。任何不是单个单词或
+     数字的值都要记得加引号。
+    </para>
+
+    <para>
+     控制文件可以设置下列参数：
+    </para>
+
+    <variablelist>
+     <varlistentry id="extend-extensions-files-directory">
+      <term><varname>directory</varname> (<type>string</type>)</term>
+      <listitem>
+       <para>
+        包含扩展 <acronym>SQL</acronym> 脚本文件的目录。除非给出的是绝对路
+        径，否则该名称相对于找到控制文件的目录。默认情况下，会在找到控制
+        文件的同一目录中查找脚本文件。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-extensions-files-default-version">
+      <term><varname>default_version</varname> (<type>string</type>)</term>
+      <listitem>
+       <para>
+        扩展的默认版本（即在 <command>CREATE EXTENSION</command> 中未指定版
+        本时将安装的版本）。虽然这个参数可以省略，但那样一来，如果没有给出
+        <literal>VERSION</literal> 选项，<command>CREATE EXTENSION</command>
+        就会失败，因此一般不希望这样做。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-extensions-files-comment">
+      <term><varname>comment</varname> (<type>string</type>)</term>
+      <listitem>
+       <para>
+        关于扩展的注释（任意字符串）。该注释会在初次创建扩展时应用，但不会
+        在扩展更新时应用（因为那样可能会覆盖用户后来添加的注释）。另外，也
+        可以在脚本文件中写一个 <xref linkend="sql-comment"/> 命令来设置扩
+        展注释。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-extensions-files-encoding">
+      <term><varname>encoding</varname> (<type>string</type>)</term>
+      <listitem>
+       <para>
+        脚本文件所使用的字符集编码。如果脚本文件包含任何非 ASCII 字符，就
+        应指定这个参数。否则将假定这些文件使用数据库编码。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-extensions-files-module-pathname">
+      <term><varname>module_pathname</varname> (<type>string</type>)</term>
+      <listitem>
+       <para>
+        该参数的值会替换脚本文件中每次出现的
+        <literal>MODULE_PATHNAME</literal>。如果未设置该参数，则不会进行替
+        换。通常会把它设置为简单的
+        <literal><replaceable>shared_library_name</replaceable></literal>，
+        然后在 C 语言函数的 <command>CREATE FUNCTION</command> 命令中使用
+        <literal>MODULE_PATHNAME</literal>，这样脚本文件就无需把共享库的名
+        字硬编码进去。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-extensions-files-requires">
+      <term><varname>requires</varname> (<type>string</type>)</term>
+      <listitem>
+       <para>
+        本扩展所依赖的其他扩展名称列表，例如
+        <literal>requires = 'foo, bar'</literal>。这些被依赖的扩展必须先安
+        装好，本扩展才能安装。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-extensions-files-no-relocate">
+      <term><varname>no_relocate</varname> (<type>string</type>)</term>
+      <listitem>
+       <para>
+        本扩展所依赖且应禁止通过
+        <command>ALTER EXTENSION ... SET SCHEMA</command> 更改其模式的扩展
+        名称列表。如果本扩展的脚本以无法跟踪重命名的方式引用了某个依赖扩展
+        的模式名（使用
+        <literal>@extschema:<replaceable>name</replaceable>@</literal> 语法），
+        就需要设置它。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-extensions-files-superuser">
+      <term><varname>superuser</varname> (<type>boolean</type>)</term>
+      <listitem>
+       <para>
+        如果该参数为 <literal>true</literal>（默认值），则只有超级用户能够创
+        建该扩展或把它更新到新版本（但另见下面的 <varname>trusted</varname>）。
+        如果设置为 <literal>false</literal>，则只要求具备执行安装脚本或更新
+        脚本中命令所需的权限。如果脚本中的任何命令需要超级用户权限，通常都
+        应将此项设为 <literal>true</literal>。（这些命令反正也会失败，但提
+        前报错对用户更友好。）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-extensions-files-trusted">
+      <term><varname>trusted</varname> (<type>boolean</type>)</term>
+      <listitem>
+       <para>
+        如果该参数被设为 <literal>true</literal>（默认并非如此），则允许某些
+        非超级用户安装 <varname>superuser</varname> 设为
+        <literal>true</literal> 的扩展。具体来说，任何在当前数据库上具有
+        <literal>CREATE</literal> 权限的用户都被允许安装。当执行
+        <command>CREATE EXTENSION</command> 的用户不是超级用户，但因该参数
+        而被允许安装时，安装或更新脚本会以引导超级用户的身份运行，而不是以
+        调用用户的身份运行。如果 <varname>superuser</varname> 为
+        <literal>false</literal>，这个参数就没有意义。一般来说，对于可能让
+        用户访问原本只有超级用户才能使用的能力（如文件系统访问）的扩展，不
+        应把它设为 <literal>true</literal>。此外，把一个扩展标记为
+        <varname>trusted</varname>，还需要付出大量额外努力来确保安装和更
+        新脚本写得足够安全；见
+        <xref linkend="extend-extensions-security"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-extensions-files-relocatable">
+      <term><varname>relocatable</varname> (<type>boolean</type>)</term>
+      <listitem>
+       <para>
+        如果一个扩展在初次创建之后仍然可以把其包含的对象移动到不同的模式
+        中，那么它就是<firstterm>可重定位</firstterm>的。默认值为
+        <literal>false</literal>，也就是该扩展不可重定位。详见
+        <xref linkend="extend-extensions-relocation"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-extensions-files-schema">
+      <term><varname>schema</varname> (<type>string</type>)</term>
+      <listitem>
+       <para>
+        该参数只能为不可重定位扩展设置。它强制扩展装载到指定名称的模式中，
+        而不能装载到其他模式。<varname>schema</varname> 参数只在初次创建扩展
+        时起作用，扩展更新时不会使用。详见
+        <xref linkend="extend-extensions-relocation"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+
+    <para>
+     除主控制文件
+     <literal><replaceable>extension</replaceable>.control</literal> 外，扩展还
+     可以有按如下样式命名的次级控制文件：
+     <literal><replaceable>extension</replaceable>--<replaceable>version</replaceable>.control</literal>。
+     如果提供了这些文件，它们必须位于脚本文件目录中。次级控制文件遵循与主
+     控制文件相同的格式。在安装或更新到该扩展的相应版本时，次级控制文件中
+     设置的任何参数都会覆盖主控制文件中的设置。不过，
+     <varname>directory</varname> 和 <varname>default_version</varname>
+     这两个参数不能在次级控制文件中设置。
+    </para>
+
+    <para>
+     扩展的 <acronym>SQL</acronym> 脚本文件可以包含任何 SQL 命令，但事务控
+     制命令（<command>BEGIN</command>、<command>COMMIT</command> 等）和无
+     法在事务块内执行的命令（例如 <command>VACUUM</command>）除外。这是因
+     为脚本文件会被隐式地放在事务块中执行。
+    </para>
+
+    <para>
+     扩展的 <acronym>SQL</acronym> 脚本文件也可以包含以
+     <literal>\echo</literal> 开头的行，扩展机制会忽略这些行（将其视为注
+     释）。这一约定通常用于在脚本文件被直接交给 <application>psql</application>
+     而不是通过 <command>CREATE EXTENSION</command> 装载时抛出错误（见
+     <xref linkend="extend-extensions-example"/> 中的示例脚本）。如果没有
+     这种机制，用户可能会意外地把扩展内容作为<quote>松散</quote>对象装载，
+     而不是作为一个扩展来装载，这种状态恢复起来会有些麻烦。
+    </para>
+
+    <para>
+     如果扩展脚本中包含字符串 <literal>@extowner@</literal>，该字符串会被
+     替换为调用 <command>CREATE EXTENSION</command> 或
+     <command>ALTER EXTENSION</command> 的用户名称（会作适当引用）。通常，
+     这个特性被标记为 <varname>trusted</varname> 的扩展用来把选定对象的
+     所有权赋给调用用户，
+     而不是赋给引导超级用户。（不过这样做时应当谨慎。例如，把一个 C 语言
+     函数的所有权赋给非超级用户，会为该用户创建一条权限提升路径。）
+    </para>
+
+    <para>
+     虽然脚本文件可以包含指定编码允许的任意字符，但控制文件应只包含纯
+     ASCII 字符，因为 <productname>PostgreSQL</productname> 无法知道控制文
+     件采用的是什么编码。在实践中，只有当你想在扩展注释中使用非 ASCII 字
+     符时这才会成为问题。对此推荐的做法是不要使用控制文件中的
+     <varname>comment</varname> 参数，而是在脚本文件中使用
+     <command>COMMENT ON EXTENSION</command> 来设置注释。
+    </para>
+
+   </sect2>
+
+   <sect2 id="extend-extensions-relocation">
+    <title>扩展的可重定位性</title>
+
+    <para>
+     用户经常希望把扩展中的对象装载到与扩展作者原先设想不同的模式中。对
+     于这种可重定位性，支持三个级别：
+    </para>
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       完全可重定位的扩展可以在任何时候移动到另一个模式中，即使它已经被装
+       载到数据库之后也是如此。这通过
+       <command>ALTER EXTENSION SET SCHEMA</command> 命令完成，该命令会自
+       动把所有成员对象重命名到新模式中。通常，只有当扩展对其任何对象所在
+       模式都没有内部假设时，才有可能做到这一点。此外，扩展的对象一开始必
+       须全部位于同一个模式中（不属于任何模式的对象，如过程语言，不算在
+       内）。要把一个扩展标记为完全可重定位，只需在其控制文件中设置
+       <literal>relocatable = true</literal>。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       扩展可能在安装期间可重定位，但安装之后不可重定位。如果扩展脚本文件
+       需要显式引用目标模式，例如为 SQL 函数设置
+       <literal>search_path</literal> 属性时，通常就是这种情况。对于这样的
+       扩展，应在控制文件中设置
+       <literal>relocatable = false</literal>，并在脚本文件中使用
+       <literal>@extschema@</literal> 来引用目标模式。在脚本执行前，该字符
+       串的每次出现都会被替换为实际目标模式的名称（必要时加双引号）。用户
+       可以通过 <command>CREATE EXTENSION</command> 的
+       <literal>SCHEMA</literal> 选项设置目标模式。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       如果扩展完全不支持重定位，应在控制文件中设置
+       <literal>relocatable = false</literal>，并把
+       <literal>schema</literal> 设置为预定目标模式的名称。这样将阻止使用
+       <command>CREATE EXTENSION</command> 的 <literal>SCHEMA</literal>
+       选项，除非它指定的正是控制文件中命名的那个模式。如果扩展对其模式名
+       称有无法通过 <literal>@extschema@</literal> 替换解决的内部假设，通
+       常就需要采用这种方式。在这种情况下，
+       <literal>@extschema@</literal> 替换机制仍然可用，只是由于模式名由控
+       制文件决定，其用途比较有限。
+      </para>
+     </listitem>
+    </itemizedlist>
+
+    <para>
+     在所有情况下，脚本文件执行时，其初始
+     <xref linkend="guc-search-path"/> 都会指向目标模式；也就是说，
+     <command>CREATE EXTENSION</command> 做的事情等价于：
+<programlisting>
+SET LOCAL search_path TO @extschema@, pg_temp;
+</programlisting>
+     这使得脚本文件创建的对象能够进入目标模式。脚本文件当然也可以修改
+     <varname>search_path</varname>，但通常不建议这样做。
+     <command>CREATE EXTENSION</command> 完成后，
+     <varname>search_path</varname> 会恢复为先前的设置。
+    </para>
+
+    <para>
+     目标模式由控制文件中的 <varname>schema</varname> 参数决定（如果给出了
+     该参数）；否则由 <command>CREATE EXTENSION</command> 的
+     <literal>SCHEMA</literal> 选项决定（如果给出了该选项）；否则由当前默
+     认的对象创建模式决定（也就是调用者的 <varname>search_path</varname>
+     中第一个模式）。当使用控制文件中的 <varname>schema</varname> 参数时，
+     如果目标模式尚不存在，则会自动创建；而在另外两种情况下，目标模式必须
+     已经存在。
+    </para>
+
+    <para>
+     如果控制文件的 <varname>requires</varname> 中列出了任何前置扩展，它们
+     的目标模式会追加到 <varname>search_path</varname> 的初始设置中，排在
+     新扩展的目标模式之后。这样新扩展的脚本文件就可以看到这些扩展的对象。
+    </para>
+
+    <para>
+     出于安全考虑，<literal>pg_temp</literal> 在所有情况下都会自动追加到
+     <varname>search_path</varname> 的末尾。
+    </para>
+
+    <para>
+     虽然不可重定位扩展可以包含分布在多个模式中的对象，但通常仍然希望把所
+     有供外部使用的对象放在单个模式中，这个模式会被视为该扩展的目标模式。
+     这种安排与创建依赖扩展时 <varname>search_path</varname> 的默认设置配
+     合起来会比较方便。
+    </para>
+
+    <para>
+     如果一个扩展引用了属于另一个扩展的对象，建议对这些引用加上模式限定。
+     做法是在扩展脚本文件中写
+     <literal>@extschema:<replaceable>name</replaceable>@</literal>，其中
+     <replaceable>name</replaceable> 是另一个扩展的名称（它必须列在本扩展的
+     <literal>requires</literal> 列表中）。该字符串会被替换为那个扩展目标
+     模式的名称（必要时加双引号）。虽然这种记法避免了在扩展脚本文件中对模
+     式名作硬编码假设，但它的使用也可能把另一个扩展的模式名嵌入到本扩展安
+     装后生成的对象中。（典型情况是
+     <literal>@extschema:<replaceable>name</replaceable>@</literal> 出现
+     在字符串字面量中，例如函数体或 <varname>search_path</varname> 设置中。
+     在其他情况下，对象引用会在解析时简化为 OID，不需要后续查找。）如果另
+     一个扩展的模式名以这种方式被嵌入，那么在本扩展安装完成后，你应当通过
+     把那个扩展的名称加入本扩展的 <literal>no_relocate</literal> 列表，阻
+     止它再被重定位。
+    </para>
+   </sect2>
+
+   <sect2 id="extend-extensions-config-tables">
+    <title>扩展配置表</title>
+
+    <para>
+     有些扩展包含配置表，其中存放的数据可能会在扩展安装后被用户新增或修改。
+     通常，如果表属于某个扩展，那么 <application>pg_dump</application> 既
+     不会转储该表的定义，也不会转储其内容。但这种行为对于配置表来说并不理
+     想；用户所做的数据更改必须包含在转储中，否则在转储并恢复之后，扩展的
+     行为就会发生变化。
+    </para>
+
+   <indexterm>
+    <primary>pg_extension_config_dump</primary>
+   </indexterm>
+
+    <para>
+     为了解决这个问题，扩展脚本文件可以把它创建的某个表或序列标记为配置关
+     系，这样 <application>pg_dump</application> 就会把该表或序列的内容
+     （而不是定义）包含到转储中。做法是在创建表或序列之后调用函数
+     <function>pg_extension_config_dump(regclass, text)</function>，例如：
+<programlisting>
+CREATE TABLE my_config (key text, value text);
+CREATE SEQUENCE my_config_seq;
+
+SELECT pg_catalog.pg_extension_config_dump('my_config', '');
+SELECT pg_catalog.pg_extension_config_dump('my_config_seq', '');
+</programlisting>
+     可以用这种方式标记任意数量的表或序列。与 <type>serial</type> 或
+     <type>bigserial</type> 列关联的序列也可以这样标记。
+    </para>
+
+    <para>
+     当 <function>pg_extension_config_dump</function> 的第二个参数是空字
+     符串时，<application>pg_dump</application> 会转储该表的全部内容。通
+     常只有当该表在扩展脚本创建时最初为空时，这样做才是正确的。如果表中混
+     有初始数据和用户提供的数据，那么
+     <function>pg_extension_config_dump</function> 的第二个参数就提供了
+     一个用于选择要转储数据的 <literal>WHERE</literal> 条件。例如，你可以
+     这样做：
+<programlisting>
+CREATE TABLE my_config (key text, value text, standard_entry boolean);
+
+SELECT pg_catalog.pg_extension_config_dump('my_config', 'WHERE NOT standard_entry');
+</programlisting>
+     然后确保只有扩展脚本创建的那些行，其
+     <structfield>standard_entry</structfield> 才为真。
+    </para>
+
+    <para>
+     对于序列，<function>pg_extension_config_dump</function> 的第二个参数没
+     有作用。
+    </para>
+
+    <para>
+     更复杂的情况，例如用户可能会修改最初提供的数据行，可以通过在配置表上
+     创建触发器来处理，以确保被修改的行被正确标记。
+    </para>
+
+    <para>
+     你可以再次调用 <function>pg_extension_config_dump</function> 来修改与
+     配置表关联的过滤条件。（这通常在扩展更新脚本中很有用。）要把某个表标
+     记为不再是配置表，唯一的方法是通过
+     <command>ALTER EXTENSION ... DROP TABLE</command> 将它与扩展解除关
+     联。
+    </para>
+
+    <para>
+     注意，这些表之间的外键关系会决定 pg_dump 转储它们的顺序。具体来说，
+     pg_dump 会尝试先转储被引用表，再转储引用表。由于外键关系是在
+     CREATE EXTENSION 时建立的（那时数据尚未装入这些表中），因此不支持环
+     状依赖。若存在环状依赖，数据仍会被转储出来，但该转储将无法直接恢复，
+     需要用户介入处理。
+    </para>
+
+    <para>
+     与 <type>serial</type> 或 <type>bigserial</type> 列关联的序列需要被
+     直接标记，才能转储它们的状态。仅仅标记它们的父关系还不足以达到这一目
+     的。
+    </para>
+   </sect2>
+
+   <sect2 id="extend-extensions-updates">
+    <title>扩展更新</title>
+
+    <para>
+     扩展机制的一个优点是，它为管理定义扩展对象的 SQL 命令的更新提供了便
+     利方式。这是通过为每个已发布版本的扩展安装脚本关联一个版本名或版本号
+     来实现的。此外，如果你希望用户能够把数据库从一个版本动态更新到下一个
+     版本，就应提供 <firstterm>更新脚本</firstterm>，以完成从一个版本切换
+     到下一版本所需的修改。更新脚本的名称遵循如下模式：
+     <literal><replaceable>extension</replaceable>--<replaceable>old_version</replaceable>--<replaceable>target_version</replaceable>.sql</literal>
+     （例如，<literal>foo--1.0--1.1.sql</literal> 包含把扩展
+     <literal>foo</literal> 的 <literal>1.0</literal> 版修改为
+     <literal>1.1</literal> 版所需的命令）。
+    </para>
+
+    <para>
+     在有合适更新脚本可用的前提下，
+     <command>ALTER EXTENSION UPDATE</command> 命令可以把已安装的扩展更新
+     到指定的新版本。更新脚本运行在
+     <command>CREATE EXTENSION</command> 为安装脚本提供的同一环境中：尤其
+     是，<varname>search_path</varname> 的设置方式完全相同，而且脚本创建的
+     任何新对象都会自动加入扩展中。此外，如果脚本选择删除扩展成员对象，它
+     们也会自动与扩展解除关联。
+    </para>
+
+    <para>
+     如果扩展有次级控制文件，那么用于更新脚本的控制参数就是与该脚本目标
+     （新）版本相关联的那些参数。
+    </para>
+
+    <para>
+     <command>ALTER EXTENSION</command> 能够执行一系列更新脚本文件来完成
+     请求的更新。例如，如果只有 <literal>foo--1.0--1.1.sql</literal> 和
+     <literal>foo--1.1--2.0.sql</literal> 可用，那么当当前安装的是
+     <literal>1.0</literal>，而请求更新到 <literal>2.0</literal> 时，
+     <command>ALTER EXTENSION</command> 就会按顺序应用这两个脚本。
+    </para>
+
+    <para>
+     <productname>PostgreSQL</productname> 并不对版本名称的属性作任何假设：
+     例如，它并不知道 <literal>1.1</literal> 是否跟在
+     <literal>1.0</literal> 之后。它只是匹配可用的版本名，并选择需要应用
+     更新脚本最少的那条路径。（实际上，版本名可以是任何不包含
+     <literal>--</literal>，且不以前导或尾随 <literal>-</literal> 结尾的字
+     符串。）
+    </para>
+
+    <para>
+     有时提供<quote>降级</quote>脚本也是有用的，例如
+     <literal>foo--1.1--1.0.sql</literal> 可用于回退与
+     <literal>1.1</literal> 版相关的修改。如果你这样做，要注意某个降级脚
+     本可能会因为产生更短的路径而意外被采用。危险情况是，存在一个跨越多个
+     版本的<quote>快速路径</quote>更新脚本，同时又有一个可降级到该快速路
+     径起点的脚本。这时，先降级再走快速路径，可能比按版本逐步前进所需的步
+     数更少。如果降级脚本删除了任何不可替代的对象，就会产生不希望看到的结
+     果。
+    </para>
+
+    <para>
+     要检查是否存在意外的更新路径，可使用以下命令：
+<programlisting>
+SELECT * FROM pg_extension_update_paths('<replaceable>extension_name</replaceable>');
+</programlisting>
+     它会显示指定扩展的每一对不同已知版本名，以及从源版本到目标版本将采
+     用的更新路径序列；如果没有可用的更新路径，则显示 <literal>NULL</literal>。
+     路径会以文本形式显示，并使用 <literal>--</literal> 作为分隔符。如果你
+     更喜欢数组形式，可以使用
+     <literal>regexp_split_to_array(path,'--')</literal>。
+    </para>
+   </sect2>
+
+   <sect2 id="extend-extensions-update-scripts">
+    <title>使用更新脚本安装扩展</title>
+
+    <para>
+     一个存在已久的扩展很可能会有多个版本，因此作者需要为其编写更新脚本。
+     例如，如果你发布过 <literal>foo</literal> 扩展的
+     <literal>1.0</literal>、<literal>1.1</literal> 和
+     <literal>1.2</literal> 版本，那么就应当有更新脚本
+     <filename>foo--1.0--1.1.sql</filename> 和
+     <filename>foo--1.1--1.2.sql</filename>。在
+     <productname>PostgreSQL</productname> 10 之前，还必须额外创建新的脚本
+     文件 <filename>foo--1.1.sql</filename> 和
+     <filename>foo--1.2.sql</filename>，用来直接构建更新后的扩展版本；否
+     则新版本无法被直接安装，只能先安装 <literal>1.0</literal> 再升级。那
+     样既繁琐又重复，但现在已经没有必要了，因为
+     <command>CREATE EXTENSION</command> 可以自动沿着更新链前进。例如，如
+     果只有 <filename>foo--1.0.sql</filename>、
+     <filename>foo--1.0--1.1.sql</filename> 和
+     <filename>foo--1.1--1.2.sql</filename> 这几个脚本文件可用，那么请求安
+     装 <literal>1.2</literal> 版时，就会按顺序运行这三个脚本。处理方式与
+     先安装 <literal>1.0</literal> 再更新到 <literal>1.2</literal> 完全相
+     同。（和 <command>ALTER EXTENSION UPDATE</command> 一样，如果有多条
+     路径可用，则优先选择最短的一条。）按这种风格组织扩展的脚本文件，可以
+     减少制作小型更新所需的维护工作量。
+    </para>
+
+    <para>
+     如果你对以这种风格维护的扩展使用次级（特定于版本的）控制文件，请记
+     住：即使某个版本没有独立的安装脚本，它也仍然需要一个控制文件，因为该
+     控制文件将决定如何执行到该版本的隐式更新。例如，如果
+     <filename>foo--1.0.control</filename> 指定了
+     <literal>requires = 'bar'</literal>，而 <literal>foo</literal> 的其
+     他控制文件没有指定，那么当从 <literal>1.0</literal> 更新到其他版本时，
+     该扩展对 <literal>bar</literal> 的依赖就会被去掉。
+    </para>
+   </sect2>
+
+   <sect2 id="extend-extensions-security">
+    <title>扩展的安全注意事项</title>
+
+    <para>
+     广泛分发的扩展应尽量少假定其所处数据库的环境。因此，以一种不会被基于
+     搜索路径的攻击破坏的安全风格来编写扩展所提供的函数，是合适的做法。
+    </para>
+
+    <para>
+     将 <varname>superuser</varname> 属性设为 <literal>true</literal> 的
+     扩展，还必须考虑其安装脚本和更新脚本中操作所带来的安全风险。恶意用户并不难创建出特洛伊木
+     马对象，从而在后续粗心编写的扩展脚本执行时造成破坏，并借此获得超级用
+     户权限。
+    </para>
+
+    <para>
+     如果一个扩展被标记为 <varname>trusted</varname>，那么安装用户可以自己
+     选择安装模式，而该用户可能会有意使用不安全的模式，希望借此获得超级用
+     户权限。因此，从安全角度看，<varname>trusted</varname> 扩展暴露程度
+     极高，必须仔细审查其所有脚本命令，确保不存在任何可被利用之处。
+    </para>
+
+    <para>
+     关于如何安全地编写函数，建议见下面的
+     <xref linkend="extend-extensions-security-funcs"/>；关于如何安全地编
+     写安装脚本，建议见
+     <xref linkend="extend-extensions-security-scripts"/>。
+    </para>
+
+    <sect3 id="extend-extensions-security-funcs">
+     <title>扩展函数的安全注意事项</title>
+
+     <para>
+      扩展提供的 SQL 语言函数和 PL 语言函数在执行时会面临基于搜索路径的攻
+      击风险，因为这些函数是在执行时而不是创建时解析的。
+     </para>
+
+     <para>
+      <link linkend="sql-createfunction-security"><command>CREATE
+      FUNCTION</command></link> 参考页中包含了关于如何安全编写
+      <literal>SECURITY DEFINER</literal> 函数的建议。对于扩展提供的任意函
+      数，都最好应用这些技术，因为该函数可能会被高权限用户调用。
+     </para>
+
+     <!-- XXX 仅仅使用限定名仍然不够，因为你可能会把限定名写到一个其自身又
+          使用非限定名的对象上。例如，许多 information_schema 函数就有这个
+          缺陷。不过，那是被引用对象本身的缺陷，受影响的查询相对较少。另
+          外，我们会在应用连接到不受信任的数据库时，要求其使用安全的
+          search_path；如果应用这样做了，即便某个扩展引用了有缺陷的对象，
+          它们也能免受已知攻击。因此，在给扩展作者提供指导时，可以把核心
+          PostgreSQL 视为并不存在这类缺陷。 -->
+     <para>
+      如果你无法把 <varname>search_path</varname> 设置为只包含安全模式，那就
+      应假定每个非限定名都可能被解析为恶意用户定义的对象。要警惕那些会隐
+      式依赖 <varname>search_path</varname> 的构造；例如，
+      <token>IN</token> 和
+      <literal>CASE <replaceable>expression</replaceable> WHEN</literal>
+      总是通过搜索路径来选择操作符。应改用
+      <literal>OPERATOR(<replaceable>schema</replaceable>.=) ANY</literal>
+      和 <literal>CASE WHEN <replaceable>expression</replaceable></literal>。
+     </para>
+
+     <para>
+      通用扩展通常不应假定它被安装到了安全模式中，这意味着即使对其自身对象
+      使用了模式限定引用，也并非完全没有风险。例如，如果扩展定义了函数
+      <literal>myschema.myfunc(bigint)</literal>，那么像
+      <literal>myschema.myfunc(42)</literal> 这样的调用，就可能被恶意函数
+      <literal>myschema.myfunc(integer)</literal> 截获。要注意函数和操作符
+      参数的数据类型必须与声明的实参类型精确匹配，必要时请使用显式类型转
+      换。
+     </para>
+    </sect3>
+
+    <sect3 id="extend-extensions-security-scripts">
+     <title>扩展脚本的安全注意事项</title>
+
+     <para>
+      编写扩展安装脚本或更新脚本时，应防范脚本执行过程中发生基于搜索路径的
+      攻击。如果脚本中的对象引用可能被解析为脚本作者原本无意引用的其他对
+      象，那么破坏既可能立刻发生，也可能在稍后使用这个定义错误的扩展对象时
+      才发生。
+     </para>
+
+     <para>
+      像 <command>CREATE FUNCTION</command> 和
+      <command>CREATE OPERATOR CLASS</command> 这样的 DDL 命令通常是安全
+      的，但要警惕任何把通用表达式作为组成部分的命令。例如，
+      <command>CREATE VIEW</command> 就需要仔细审查，
+      <command>CREATE FUNCTION</command> 中的
+      <literal>DEFAULT</literal> 表达式也是如此。
+     </para>
+
+     <para>
+      有时扩展脚本可能需要执行通用 SQL，例如为完成 DDL 无法做到的系统目录
+      调整。执行这类命令时，要确保使用安全的
+      <varname>search_path</varname>；<emphasis>不要</emphasis>相信
+      <command>CREATE/ALTER EXTENSION</command> 提供的路径一定是安全的。
+      最佳做法是临时把 <varname>search_path</varname> 设为
+      <literal>pg_catalog, pg_temp</literal>，并在需要时显式插入对扩展安装
+      模式的引用。（这种做法对创建视图也可能有帮助。）在
+      <productname>PostgreSQL</productname> 源代码发行包的
+      <filename>contrib</filename> 模块中可以找到示例。
+     </para>
+
+     <para>
+      安全的跨扩展引用通常要求使用
+      <literal>@extschema:<replaceable>name</replaceable>@</literal> 语法为其
+      他扩展对象的名称加上模式限定，并且还要仔细匹配函数和操作符的参数类
+      型。
+     </para>
+    </sect3>
+   </sect2>
+
+   <sect2 id="extend-extensions-example">
+    <title>扩展示例</title>
+
+    <para>
+     下面给出一个纯 <acronym>SQL</acronym> 扩展的完整示例：一个双元素组合
+     类型，它可以在两个槽位中存储任意类型的值，这两个槽位名为
+     <quote>k</quote> 和 <quote>v</quote>。非文本值会自动强制转换为文本后
+     再存储。
+    </para>
+
+    <para>
+     脚本文件 <filename>pair--1.0.sql</filename> 如下所示：
+
+<programlisting><![CDATA[
+-- complain if script is sourced in psql, rather than via CREATE EXTENSION
+\echo Use "CREATE EXTENSION pair" to load this file. \quit
+
+CREATE TYPE pair AS ( k text, v text );
+
+CREATE FUNCTION pair(text, text)
+RETURNS pair LANGUAGE SQL AS 'SELECT ROW($1, $2)::@extschema@.pair;';
+
+CREATE OPERATOR ~> (LEFTARG = text, RIGHTARG = text, FUNCTION = pair);
+
+-- "SET search_path" is easy to get right, but qualified names perform better.
+CREATE FUNCTION lower(pair)
+RETURNS pair LANGUAGE SQL
+AS 'SELECT ROW(lower($1.k), lower($1.v))::@extschema@.pair;'
+SET search_path = pg_temp;
+
+CREATE FUNCTION pair_concat(pair, pair)
+RETURNS pair LANGUAGE SQL
+AS 'SELECT ROW($1.k OPERATOR(pg_catalog.||) $2.k,
+               $1.v OPERATOR(pg_catalog.||) $2.v)::@extschema@.pair;';
+]]>
+</programlisting>
+    </para>
+
+    <para>
+     控制文件 <filename>pair.control</filename> 如下所示：
+
+<programlisting>
+# pair extension
+comment = 'A key/value pair data type'
+default_version = '1.0'
+# cannot be relocatable because of use of @extschema@
+relocatable = false
+</programlisting>
+    </para>
+
+    <para>
+     虽然你几乎不需要专门写一个 makefile 来把这两个文件安装到正确的目录
+     中，但你也可以使用如下内容的 <filename>Makefile</filename>：
+
+<programlisting>
+EXTENSION = pair
+DATA = pair--1.0.sql
+
+PG_CONFIG = pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+include $(PGXS)
+</programlisting>
+
+     这个 makefile 依赖于 <acronym>PGXS</acronym>，其说明见
+     <xref linkend="extend-pgxs"/>。执行 <literal>make install</literal>
+     命令会把控制文件和脚本文件安装到 <application>pg_config</application>
+     报告的正确目录中。
+    </para>
+
+    <para>
+     文件安装好之后，就可以使用 <command>CREATE EXTENSION</command> 命令把
+     这些对象装入任何特定数据库中。
+    </para>
+   </sect2>
+  </sect1>
+
+  <sect1 id="extend-pgxs">
+   <title>扩展构建基础设施</title>
+
+   <indexterm zone="extend-pgxs">
+    <primary>pgxs</primary>
+   </indexterm>
+
+   <para>
+    如果你打算分发自己的 <productname>PostgreSQL</productname> 扩展模块，
+    那么为它们搭建一个可移植的构建系统会相当困难。因此，
+    <productname>PostgreSQL</productname> 安装提供了一套称为
+    <acronym>PGXS</acronym> 的扩展构建基础设施，使简单的扩展模块可以针对
+    已安装好的服务器直接构建。<acronym>PGXS</acronym> 主要面向包含 C 代码
+    的扩展，不过它也能用于纯 SQL 扩展。注意，
+    <acronym>PGXS</acronym> 并不打算成为一个可以用来构建任意与
+    <productname>PostgreSQL</productname> 交互软件的通用构建系统框架；它
+    只是把简单服务器扩展模块的常见构建规则自动化。对于更复杂的软件包，你
+    可能还是需要自己编写构建系统。
+   </para>
+
+   <para>
+    要为你的扩展使用 <acronym>PGXS</acronym> 基础设施，你必须写一个简单
+    的 makefile。在这个 makefile 中，需要设置一些变量并包含全局
+    <acronym>PGXS</acronym> makefile。下面是一个示例，它构建一个名为
+    <literal>isbn_issn</literal> 的扩展模块，该模块包含一个装有一些 C 代
+    码的共享库、一个扩展控制文件、一个 SQL 脚本、一个头文件（只有当其他
+    模块可能需要绕过 SQL 直接访问扩展函数时才需要），以及一个文档文本文
+    件：
+<programlisting>
+MODULES = isbn_issn
+EXTENSION = isbn_issn
+DATA = isbn_issn--1.0.sql
+DOCS = README.isbn_issn
+HEADERS_isbn_issn = isbn_issn.h
+
+PG_CONFIG = pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+include $(PGXS)
+</programlisting>
+    最后三行始终都应相同。你应在文件前面的部分设置变量或添加自定义的
+    <application>make</application> 规则。
+   </para>
+
+   <para>
+    设定下列三个变量中的一个，以指定要构建的内容：
+
+    <variablelist>
+     <varlistentry id="extend-pgxs-modules">
+      <term><varname>MODULES</varname></term>
+      <listitem>
+       <para>
+        要从同名源文件构建的共享库对象列表（列表中不要包含库后缀）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-module-big">
+      <term><varname>MODULE_big</varname></term>
+      <listitem>
+       <para>
+        要从多个源文件构建的共享库（在 <varname>OBJS</varname> 中列出对象
+        文件）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-program">
+      <term><varname>PROGRAM</varname></term>
+      <listitem>
+       <para>
+        要构建的可执行程序（在 <varname>OBJS</varname> 中列出对象文件）
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+
+    还可以设置以下变量：
+
+    <variablelist>
+     <varlistentry id="extend-pgxs-extension">
+      <term><varname>EXTENSION</varname></term>
+      <listitem>
+       <para>
+        扩展名称；对于每个名称，你都必须提供一个
+        <literal><replaceable>extension</replaceable>.control</literal> 文
+        件，它将安装到
+        <literal><replaceable>prefix</replaceable>/share/extension</literal>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-moduledir">
+      <term><varname>MODULEDIR</varname></term>
+      <listitem>
+       <para>
+        <literal><replaceable>prefix</replaceable>/share</literal> 下的子目录，
+        用于安装 DATA 和 DOCS 文件（若未设置，则在设置了
+        <varname>EXTENSION</varname> 时默认为
+        <literal>extension</literal>，否则默认为
+        <literal>contrib</literal>）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-data">
+      <term><varname>DATA</varname></term>
+      <listitem>
+       <para>
+        要安装到 <literal><replaceable>prefix</replaceable>/share/$MODULEDIR</literal>
+        的任意文件
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-data-built">
+      <term><varname>DATA_built</varname></term>
+      <listitem>
+       <para>
+        要安装到 <literal><replaceable>prefix</replaceable>/share/$MODULEDIR</literal>
+        的任意文件，但它们需要先被构建
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-data-tsearch">
+      <term><varname>DATA_TSEARCH</varname></term>
+      <listitem>
+       <para>
+        要安装到
+        <literal><replaceable>prefix</replaceable>/share/tsearch_data</literal>
+        下的任意文件
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-docs">
+      <term><varname>DOCS</varname></term>
+      <listitem>
+       <para>
+        要安装到
+        <literal><replaceable>prefix</replaceable>/doc/$MODULEDIR</literal>
+        下的任意文件
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-headers">
+      <term><varname>HEADERS</varname></term>
+      <term><varname>HEADERS_built</varname></term>
+      <listitem>
+       <para>
+        要（可选地先构建并）安装到
+        <literal><replaceable>prefix</replaceable>/include/server/$MODULEDIR/$MODULE_big</literal>
+        下的文件。
+       </para>
+       <para>
+        与 <literal>DATA_built</literal> 不同，
+        <literal>HEADERS_built</literal> 中的文件不会被
+        <literal>clean</literal> 目标删除；如果你希望删除它们，也应把它们
+        加入 <literal>EXTRA_CLEAN</literal>，或者自行添加规则来完成删除。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-headers-module">
+      <term><varname>HEADERS_$MODULE</varname></term>
+      <term><varname>HEADERS_built_$MODULE</varname></term>
+      <listitem>
+       <para>
+        要安装的文件（如果指定了则先构建），安装位置为
+        <literal><replaceable>prefix</replaceable>/include/server/$MODULEDIR/$MODULE</literal>，
+        其中 <literal>$MODULE</literal> 必须是
+        <literal>MODULES</literal> 或 <literal>MODULE_big</literal> 中使
+        用的某个模块名。
+       </para>
+       <para>
+        与 <literal>DATA_built</literal> 不同，
+        <literal>HEADERS_built_$MODULE</literal> 中的文件不会被
+        <literal>clean</literal> 目标删除；如果你希望删除它们，也应把它们
+        加入 <literal>EXTRA_CLEAN</literal>，或者自行添加规则来完成删除。
+       </para>
+       <para>
+        对同一个模块同时使用这两个变量，或以任意方式组合使用，都是合法的；
+        但如果你在 <literal>MODULES</literal> 列表中有两个模块名只相差一
+        个前缀 <literal>built_</literal>，就会产生歧义。在这种情况（希望不
+        太可能发生）下，你应只使用
+        <literal>HEADERS_built_$MODULE</literal> 变量。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-scripts">
+      <term><varname>SCRIPTS</varname></term>
+      <listitem>
+       <para>
+        要安装到 <literal><replaceable>prefix</replaceable>/bin</literal>
+        的脚本文件（不是二进制文件）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-scripts-built">
+      <term><varname>SCRIPTS_built</varname></term>
+      <listitem>
+       <para>
+        要安装到 <literal><replaceable>prefix</replaceable>/bin</literal>
+        的脚本文件（不是二进制文件），但它们需要先被构建
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-regress">
+      <term><varname>REGRESS</varname></term>
+      <listitem>
+       <para>
+        回归测试用例列表（不带后缀），详见下文
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-regress-opts">
+      <term><varname>REGRESS_OPTS</varname></term>
+      <listitem>
+       <para>
+        传递给 <application>pg_regress</application> 的额外开关
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-isolation">
+      <term><varname>ISOLATION</varname></term>
+      <listitem>
+       <para>
+        隔离测试用例列表，更多细节见下文
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-isolation-opts">
+      <term><varname>ISOLATION_OPTS</varname></term>
+      <listitem>
+       <para>
+        传递给 <application>pg_isolation_regress</application> 的额外开关
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-tap-tests">
+      <term><varname>TAP_TESTS</varname></term>
+      <listitem>
+       <para>
+        定义是否需要运行 TAP 测试的开关，详见下文
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-no-install">
+      <term><varname>NO_INSTALL</varname></term>
+      <listitem>
+       <para>
+        不定义 <literal>install</literal> 目标，适用于其构建产物无需安装的
+        测试模块
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-no-installcheck">
+      <term><varname>NO_INSTALLCHECK</varname></term>
+      <listitem>
+       <para>
+        不定义 <literal>installcheck</literal> 目标，适用于测试需要特殊配置，
+        或者不使用 <application>pg_regress</application> 的情况
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-extra-clean">
+      <term><varname>EXTRA_CLEAN</varname></term>
+      <listitem>
+       <para>
+        在 <literal>make clean</literal> 中要额外删除的文件
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-pg-cppflags">
+      <term><varname>PG_CPPFLAGS</varname></term>
+      <listitem>
+       <para>
+        将被添加到 <varname>CPPFLAGS</varname> 前面
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-pg-cflags">
+      <term><varname>PG_CFLAGS</varname></term>
+      <listitem>
+       <para>
+        将被添加到 <varname>CFLAGS</varname> 后面
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-pg-cxxflags">
+      <term><varname>PG_CXXFLAGS</varname></term>
+      <listitem>
+       <para>
+        将被添加到 <varname>CXXFLAGS</varname> 后面
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-pg-ldflags">
+      <term><varname>PG_LDFLAGS</varname></term>
+      <listitem>
+       <para>
+        将被添加到 <varname>LDFLAGS</varname> 前面
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-pg-libs">
+      <term><varname>PG_LIBS</varname></term>
+      <listitem>
+       <para>
+        将被加入 <varname>PROGRAM</varname> 的链接命令行
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-shlib-link">
+      <term><varname>SHLIB_LINK</varname></term>
+      <listitem>
+       <para>
+        将被加入 <varname>MODULE_big</varname> 的链接命令行
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="extend-pgxs-pg-config">
+      <term><varname>PG_CONFIG</varname></term>
+      <listitem>
+       <para>
+        要针对其进行构建的 <productname>PostgreSQL</productname> 安装所对应
+        的 <application>pg_config</application> 程序路径（通常只写
+        <literal>pg_config</literal>，表示使用你 <varname>PATH</varname>
+        中找到的第一个）
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    把这个 makefile 命名为 <literal>Makefile</literal>，并放在保存扩展的目录中。
+    然后你就可以执行 <literal>make</literal> 进行编译，再执行
+    <literal>make install</literal> 安装你的模块。默认情况下，该扩展会针
+    对你 <varname>PATH</varname> 中找到的第一个
+    <command>pg_config</command> 所对应的
+    <productname>PostgreSQL</productname> 安装进行编译和安装。你也可以使
+    用不同的安装，只需让 <varname>PG_CONFIG</varname> 指向它的
+    <command>pg_config</command> 程序，无论是在 makefile 中设置，还是在
+    <literal>make</literal> 命令行上设置都可以。
+   </para>
+
+   <para>
+    你还可以在执行 <literal>make install</literal> 时，通过设置
+    <command>make</command> 变量 <varname>prefix</varname> 来选择一个独立
+    的目录前缀，以安装扩展文件，例如：
+<programlisting>
+make install prefix=/usr/local/postgresql
+</programlisting>
+    这样会把扩展控制文件和 SQL 文件安装到
+    <filename>/usr/local/postgresql/share</filename>，把共享模块安装到
+    <filename>/usr/local/postgresql/lib</filename>。如果该前缀不包含
+    <literal>postgres</literal> 或 <literal>pgsql</literal> 字符串，例如：
+<programlisting>
+make install prefix=/usr/local/extras
+</programlisting>
+    那么 <literal>postgresql</literal> 会被附加到目录名中，从而把控制文件
+    和 SQL 文件安装到
+    <filename>/usr/local/extras/share/postgresql/extension</filename>，
+    把共享模块安装到
+    <filename>/usr/local/extras/lib/postgresql</filename>。无论哪种情况，
+    你都需要设置 <xref linkend="guc-extension-control-path"/> 和
+    <xref linkend="guc-dynamic-library-path"/>，以便
+    <productname>PostgreSQL</productname> 服务器能找到这些文件：
+<programlisting>
+extension_control_path = '/usr/local/extras/share/postgresql:$system'
+dynamic_library_path = '/usr/local/extras/lib/postgresql:$libdir'
+</programlisting>
+   </para>
+
+   <para>
+    如果你想保持构建目录与源代码目录分离，也可以在扩展源代码树之外的目录
+    中运行 <literal>make</literal>。这一过程也称为
+    <indexterm><primary>VPATH</primary></indexterm><firstterm>VPATH</firstterm>
+    构建。做法如下：
+<programlisting>
+mkdir build_dir
+cd build_dir
+make -f /path/to/extension/source/tree/Makefile
+make -f /path/to/extension/source/tree/Makefile install
+</programlisting>
+   </para>
+
+   <para>
+    另外，你也可以像核心代码那样为 VPATH 构建准备一个目录。其中一种方法是
+    使用核心脚本 <filename>config/prep_buildtree</filename>。准备好之后，
+    就可以像下面这样通过设置 <literal>make</literal> 变量
+    <varname>VPATH</varname> 来构建：
+<programlisting>
+make VPATH=/path/to/extension/source/tree
+make VPATH=/path/to/extension/source/tree install
+</programlisting>
+    这种方式适用于更多种目录布局。
+   </para>
+
+   <para>
+    在 <varname>REGRESS</varname> 变量中列出的脚本用于对模块做回归测试，可
+    在执行完 <literal>make install</literal> 之后，通过
+    <literal>make installcheck</literal> 来运行。要让它工作，你必须有一个
+    正在运行的 <productname>PostgreSQL</productname> 服务器。列在
+    <varname>REGRESS</varname> 中的脚本文件必须位于扩展目录下名为
+    <literal>sql/</literal> 的子目录中。这些文件必须具有
+    <literal>.sql</literal> 扩展名，而该扩展名不应出现在 makefile 的
+    <varname>REGRESS</varname> 列表中。对于每个测试，还应在名为
+    <literal>expected/</literal> 的子目录中有一个包含期望输出的文件，其主
+    干名相同，扩展名为 <literal>.out</literal>。
+    <literal>make installcheck</literal> 会用 <application>psql</application>
+    执行每个测试脚本，并把得到的输出与对应的期望文件比较。任何差异都会以
+    <command>diff -c</command> 格式写入
+    <literal>regression.diffs</literal> 文件。注意，如果尝试运行一个缺少
+    期望文件的测试，将被报告为 <quote>trouble</quote>，所以请确保所有期望
+    文件都已准备好。
+   </para>
+
+   <para>
+    在 <varname>ISOLATION</varname> 变量中列出的脚本用于测试你的模块在并
+    发会话下的行为，也可以在执行完 <literal>make install</literal> 之后，
+    通过 <literal>make installcheck</literal> 来运行。要让它工作，你同样
+    必须有一个正在运行的 <productname>PostgreSQL</productname> 服务器。列
+    在 <varname>ISOLATION</varname> 中的脚本文件必须位于扩展目录下名为
+    <literal>specs/</literal> 的子目录中。这些文件必须具有
+    <literal>.spec</literal> 扩展名，而该扩展名不应出现在 makefile 的
+    <varname>ISOLATION</varname> 列表中。对于每个测试，还应在名为
+    <literal>expected/</literal> 的子目录中有一个包含期望输出的文件，其主
+    干名相同，扩展名为 <literal>.out</literal>。
+    <literal>make installcheck</literal> 会执行每个测试脚本，并把结果输出
+    与对应的期望文件比较。任何差异都会以 <command>diff -c</command> 格式
+    写入 <literal>output_iso/regression.diffs</literal> 文件。注意，如果
+    尝试运行一个缺少期望文件的测试，将被报告为 <quote>trouble</quote>，所
+    以请确保所有期望文件都已准备好。
+   </para>
+
+   <para>
+    <literal>TAP_TESTS</literal> 可启用 TAP 测试。每次运行的数据都会放在
+    名为 <literal>tmp_check/</literal> 的子目录中。更多细节参见
+    <xref linkend="regress-tap"/>。
+   </para>
+
+   <tip>
+    <para>
+     创建期望文件最简单的方法是先建立空文件，然后运行一次测试（当然这会报
+     告差异）。检查 <literal>results/</literal> 目录中的实际结果文件（对应
+     <literal>REGRESS</literal> 测试），或者
+     <literal>output_iso/results/</literal> 目录中的实际结果文件（对应
+     <literal>ISOLATION</literal> 测试）；如果它们与你对测试的预期一致，就
+     把它们复制到 <literal>expected/</literal> 中。
+    </para>
+
+   </tip>
+  </sect1>
+
+ </chapter>

@@ -1,0 +1,92 @@
+<!-- doc/src/sgml/pgsurgery.sgml -->
+
+<sect1 id="pgsurgery" xreflabel="pg_surgery">
+ <title>pg_surgery &mdash; 对关系数据执行底层手术</title>
+
+ <indexterm zone="pgsurgery">
+  <primary>pg_surgery</primary>
+ </indexterm>
+
+ <para>
+  <filename>pg_surgery</filename>模块提供了多个函数，用于对受损的关系进行手术式修复。这些函数在设计上就是不安全的，使用它们可能会损坏（或进一步损坏）你的数据库。例如，这些函数很容易被用来使表与其自身的索引不一致，造成<literal>UNIQUE</literal>或<literal>FOREIGN KEY</literal>约束违反，甚至可以让某些元组变得可见，而读取这些元组时会导致数据库服务器崩溃。应极其谨慎地使用这些函数，并且仅作为最后手段。
+ </para>
+
+ <sect2 id="pgsurgery-funcs">
+  <title>函数</title>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-pgsurgery-varlistentry-1">
+    <term>
+     <function>heap_force_kill(regclass, tid[]) returns void</function>
+    </term>
+
+    <listitem>
+     <para>
+      <function>heap_force_kill</function>在不检查元组的情况下，将<quote>used</quote>行指针标记为<quote>dead</quote>。该函数的预期用途是强制移除那些无法通过其他方式访问的元组。例如：
+<programlisting>
+test=&gt; SELECT * FROM t1 WHERE ctid = '(0, 1)';
+ERROR:  could not access status of transaction 4007513275
+DETAIL:  Could not open file "pg_xact/0EED": No such file or directory.
+
+test=# SELECT heap_force_kill('t1'::regclass, ARRAY['(0, 1)']::tid[]);
+ heap_force_kill
+-----------------
+
+(1 row)
+
+test=# SELECT * FROM t1 WHERE ctid = '(0, 1)';
+(0 rows)
+
+</programlisting>
+    </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgsurgery-varlistentry-2">
+    <term>
+     <function>heap_force_freeze(regclass, tid[]) returns void</function>
+    </term>
+
+    <listitem>
+     <para>
+      <function>heap_force_freeze</function>在不检查元组数据的情况下，将元组标记为已冻结。该函数的预期用途是使那些因可见性信息损坏而无法访问的元组重新变为可访问，或者解决因可见性信息损坏而导致无法成功对表执行清理（VACUUM）的问题。例如：
+<programlisting>
+test=&gt; vacuum t1;
+ERROR:  found xmin 507 from before relfrozenxid 515
+CONTEXT:  while scanning block 0 of relation "public.t1"
+
+test=# SELECT ctid FROM t1 WHERE xmin = 507;
+ ctid
+-------
+ (0,3)
+(1 row)
+
+test=# SELECT heap_force_freeze('t1'::regclass, ARRAY['(0, 3)']::tid[]);
+ heap_force_freeze
+-------------------
+
+(1 row)
+
+test=# SELECT ctid FROM t1 WHERE xmin = 2;
+ ctid
+-------
+ (0,3)
+(1 row)
+
+</programlisting>
+    </para>
+   </listitem>
+  </varlistentry>
+
+  </variablelist>
+ </sect2>
+
+ <sect2 id="pgsurgery-authors">
+  <title>作者</title>
+
+  <para>
+   Ashutosh Sharma <email>ashu.coek88@gmail.com</email>
+  </para>
+ </sect2>
+
+</sect1>

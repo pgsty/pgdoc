@@ -1,0 +1,378 @@
+<!-- doc/src/sgml/fuzzystrmatch.sgml -->
+
+<sect1 id="fuzzystrmatch" xreflabel="fuzzystrmatch">
+ <title>fuzzystrmatch &mdash; 确定字符串的相似性和距离</title>
+
+ <indexterm zone="fuzzystrmatch">
+  <primary>fuzzystrmatch</primary>
+ </indexterm>
+
+ <para>
+  <filename>fuzzystrmatch</filename>模块提供多个函数，用于确定字符串的相似性和距离。
+ </para>
+
+ <caution>
+  <para>
+   目前，<function>soundex</function>、<function>metaphone</function>、
+   <function>dmetaphone</function> 和 <function>dmetaphone_alt</function> 函数
+   不能很好地处理多字节编码（例如 UTF-8）。对于这类数据，请使用
+   <function>daitch_mokotoff</function> 或 <function>levenshtein</function>。
+  </para>
+ </caution>
+
+ <para>
+  该模块被视为<quote>trusted</quote>，也就是说，拥有当前数据库
+  <literal>CREATE</literal> 权限的非超级用户也可以安装它。
+ </para>
+
+ <sect2 id="fuzzystrmatch-soundex">
+  <title>Soundex</title>
+
+  <para>
+   Soundex 系统是一种通过将发音相近的名字转换为相同代码来进行匹配的方法。
+   它最初在 1880 年、1900 年和 1910 年的美国人口普查中使用。注意，
+   Soundex 对非英语名字并不是很有用。
+  </para>
+
+  <para>
+   <filename>fuzzystrmatch</filename>模块提供两个用于处理 Soundex 代码的函数：
+  </para>
+
+  <indexterm>
+   <primary>soundex</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>difference</primary>
+  </indexterm>
+
+<synopsis>
+soundex(text) 返回 text
+difference(text, text) 返回 int
+</synopsis>
+
+  <para>
+   <function>soundex</function>函数将字符串转换为其 Soundex 代码。
+   <function>difference</function>函数将两个字符串转换为各自的 Soundex 代码，
+   然后返回代码中相同位置上匹配的个数。由于 Soundex 代码有四个字符，
+   因此结果范围为 0 到 4，其中 0 表示没有匹配，4 表示完全匹配。
+   （因此，这个函数的命名并不贴切，<function>similarity</function>
+   会是更好的名字。）
+  </para>
+
+  <para>
+   下面是一些用法示例：
+  </para>
+
+<programlisting>
+SELECT soundex('hello world!');
+
+SELECT soundex('Anne'), soundex('Ann'), difference('Anne', 'Ann');
+SELECT soundex('Anne'), soundex('Andrew'), difference('Anne', 'Andrew');
+SELECT soundex('Anne'), soundex('Margaret'), difference('Anne', 'Margaret');
+
+CREATE TABLE s (nm text);
+
+INSERT INTO s VALUES ('john');
+INSERT INTO s VALUES ('joan');
+INSERT INTO s VALUES ('wobbly');
+INSERT INTO s VALUES ('jack');
+
+SELECT * FROM s WHERE soundex(nm) = soundex('john');
+
+SELECT * FROM s WHERE difference(s.nm, 'john') &gt; 2;
+</programlisting>
+ </sect2>
+
+ <sect2 id="fuzzystrmatch-daitch-mokotoff">
+  <title>Daitch-Mokotoff Soundex</title>
+
+  <para>
+   与原始的 Soundex 系统一样，Daitch-Mokotoff Soundex 也是通过将发音相近的名字
+   转换为相同代码来进行匹配。不过，与原始系统相比，Daitch-Mokotoff Soundex
+   对非英语名字要有用得多。相对于原始系统，主要改进包括：
+
+   <itemizedlist spacing="compact" mark="bullet">
+    <listitem>
+     <para>
+      代码基于前六个有意义的字母，而不是前四个。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      一个字母或字母组合可映射为十种可能的代码，而不是七种。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      如果两个连续字母只对应一个发音，则它们会被编码为单个数字。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      当某个字母或字母组合可能有不同发音时，会生成多个代码以覆盖所有可能性。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+
+  <indexterm>
+   <primary>daitch_mokotoff</primary>
+  </indexterm>
+
+  <para>
+   该函数为输入生成 Daitch-Mokotoff Soundex 代码：
+  </para>
+
+<synopsis>
+daitch_mokotoff(<parameter>source</parameter> text) 返回 text[]
+</synopsis>
+
+  <para>
+   结果可能包含一个或多个代码，取决于存在多少种合理的发音，因此以数组表示。
+  </para>
+
+  <para>
+   由于 Daitch-Mokotoff Soundex 代码仅由 6 个数字组成，
+   <parameter>source</parameter> 最好是单个单词或名字。
+  </para>
+
+  <para>
+   下面是一些示例：
+  </para>
+
+<programlisting>
+SELECT daitch_mokotoff('George');
+ daitch_mokotoff
+-----------------
+ {595000}
+
+SELECT daitch_mokotoff('John');
+ daitch_mokotoff
+-----------------
+ {160000,460000}
+
+SELECT daitch_mokotoff('Bierschbach');
+                      daitch_mokotoff
+-----------------------------------------------------------
+ {794575,794574,794750,794740,745750,745740,747500,747400}
+
+SELECT daitch_mokotoff('Schwartzenegger');
+ daitch_mokotoff
+-----------------
+ {479465}
+</programlisting>
+
+  <para>
+   对于单个名字的匹配，可以直接使用 <literal>&amp;&amp;</literal> 操作符比较返回的
+   text 数组：只要存在任意重叠就可视为匹配。为提高效率，可以使用 GIN 索引，
+   见 <xref linkend="gin"/> 以及下面的示例：
+  </para>
+
+<programlisting>
+CREATE TABLE s (nm text);
+CREATE INDEX ix_s_dm ON s USING gin (daitch_mokotoff(nm)) WITH (fastupdate = off);
+
+INSERT INTO s (nm) VALUES
+  ('Schwartzenegger'),
+  ('John'),
+  ('James'),
+  ('Steinman'),
+  ('Steinmetz');
+
+SELECT * FROM s WHERE daitch_mokotoff(nm) &amp;&amp; daitch_mokotoff('Swartzenegger');
+SELECT * FROM s WHERE daitch_mokotoff(nm) &amp;&amp; daitch_mokotoff('Jane');
+SELECT * FROM s WHERE daitch_mokotoff(nm) &amp;&amp; daitch_mokotoff('Jens');
+</programlisting>
+
+  <para>
+   若要对任意数量、任意顺序的名字进行索引和匹配，可以使用全文检索功能。
+   见 <xref linkend="textsearch"/> 以及下面的示例：
+  </para>
+
+<programlisting>
+CREATE FUNCTION soundex_tsvector(v_name text) RETURNS tsvector
+BEGIN ATOMIC
+  SELECT to_tsvector('simple',
+                     string_agg(array_to_string(daitch_mokotoff(n), ' '), ' '))
+  FROM regexp_split_to_table(v_name, '\s+') AS n;
+END;
+
+CREATE FUNCTION soundex_tsquery(v_name text) RETURNS tsquery
+BEGIN ATOMIC
+  SELECT string_agg('(' || array_to_string(daitch_mokotoff(n), '|') || ')', '&amp;')::tsquery
+  FROM regexp_split_to_table(v_name, '\s+') AS n;
+END;
+
+CREATE TABLE s (nm text);
+CREATE INDEX ix_s_txt ON s USING gin (soundex_tsvector(nm)) WITH (fastupdate = off);
+
+INSERT INTO s (nm) VALUES
+  ('John Doe'),
+  ('Jane Roe'),
+  ('Public John Q.'),
+  ('George Best'),
+  ('John Yamson');
+
+SELECT * FROM s WHERE soundex_tsvector(nm) @@ soundex_tsquery('john');
+SELECT * FROM s WHERE soundex_tsvector(nm) @@ soundex_tsquery('jane doe');
+SELECT * FROM s WHERE soundex_tsvector(nm) @@ soundex_tsquery('john public');
+SELECT * FROM s WHERE soundex_tsvector(nm) @@ soundex_tsquery('besst, giorgio');
+SELECT * FROM s WHERE soundex_tsvector(nm) @@ soundex_tsquery('Jameson John');
+</programlisting>
+
+  <para>
+   如果希望在索引重新检查时避免重新计算 soundex 代码，可以使用单独列上的索引
+   来代替表达式索引。为此可使用存储生成列；参见
+   <xref linkend="ddl-generated-columns"/>。
+  </para>
+ </sect2>
+
+ <sect2 id="fuzzystrmatch-levenshtein">
+  <title>Levenshtein</title>
+
+  <para>
+   该函数计算两个字符串之间的 Levenshtein 距离：
+  </para>
+
+  <indexterm>
+   <primary>levenshtein</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>levenshtein_less_equal</primary>
+  </indexterm>
+
+<synopsis>
+levenshtein(source text, target text, ins_cost int, del_cost int, sub_cost int) 返回 int
+levenshtein(source text, target text) 返回 int
+levenshtein_less_equal(source text, target text, ins_cost int, del_cost int, sub_cost int, max_d int) 返回 int
+levenshtein_less_equal(source text, target text, max_d int) 返回 int
+</synopsis>
+
+  <para>
+   <literal>source</literal> 和 <literal>target</literal> 都可以是任意非空字符串，
+   最大长度为 255 个字符。代价参数分别指定字符插入、删除或替换的代价。
+   可以像该函数的第二种形式那样省略代价参数；此时它们都默认为 1。
+  </para>
+
+  <para>
+   <function>levenshtein_less_equal</function> 是 Levenshtein 函数的加速版本，
+   用于只关心较小距离的场景。如果实际距离小于等于 <literal>max_d</literal>，
+   那么 <function>levenshtein_less_equal</function> 会返回正确的距离；
+   否则它会返回某个大于 <literal>max_d</literal> 的值。如果
+   <literal>max_d</literal> 为负，则其行为与 <function>levenshtein</function>
+   相同。
+  </para>
+
+  <para>
+   示例：
+  </para>
+
+<screen>
+test=# SELECT levenshtein('GUMBO', 'GAMBOL');
+ levenshtein
+-------------
+           2
+(1 row)
+
+test=# SELECT levenshtein('GUMBO', 'GAMBOL', 2, 1, 1);
+ levenshtein
+-------------
+           3
+(1 row)
+
+test=# SELECT levenshtein_less_equal('extensive', 'exhaustive', 2);
+ levenshtein_less_equal
+------------------------
+                      3
+(1 row)
+
+test=# SELECT levenshtein_less_equal('extensive', 'exhaustive', 4);
+ levenshtein_less_equal
+------------------------
+                      4
+(1 row)
+</screen>
+ </sect2>
+
+ <sect2 id="fuzzystrmatch-metaphone">
+  <title>Metaphone</title>
+
+  <para>
+   Metaphone 与 Soundex 一样，基于为输入字符串构造一个代表性代码的思想。
+   如果两个字符串具有相同的代码，则认为它们相似。
+  </para>
+
+  <para>
+   该函数计算输入字符串的 Metaphone 代码：
+  </para>
+
+  <indexterm>
+   <primary>metaphone</primary>
+  </indexterm>
+
+<synopsis>
+metaphone(source text, max_output_length int) 返回 text
+</synopsis>
+
+  <para>
+   <literal>source</literal> 必须是非空字符串，最大长度为 255 个字符。
+   <literal>max_output_length</literal> 设置输出 Metaphone 代码的最大长度；
+   如果超过该长度，输出会被截断为该长度。
+  </para>
+
+  <para>
+   示例：
+  </para>
+
+<screen>
+test=# SELECT metaphone('GUMBO', 4);
+ metaphone
+-----------
+ KM
+(1 row)
+</screen>
+ </sect2>
+
+ <sect2 id="fuzzystrmatch-double-metaphone">
+  <title>Double Metaphone</title>
+
+  <para>
+   Double Metaphone 系统会为给定输入字符串计算两个<quote>近音</quote>代码，
+   即一个<quote>主</quote>代码和一个<quote>备选</quote>代码。在大多数情况下，
+   它们相同，但尤其对于非英语名字，这两个代码可能会因发音不同而略有差异。
+   这些函数分别计算主代码和备选代码：
+  </para>
+
+  <indexterm>
+   <primary>dmetaphone</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>dmetaphone_alt</primary>
+  </indexterm>
+
+<synopsis>
+dmetaphone(source text) 返回 text
+dmetaphone_alt(source text) 返回 text
+</synopsis>
+
+  <para>
+   输入字符串没有长度限制。
+  </para>
+
+  <para>
+   示例：
+  </para>
+
+<screen>
+test=# SELECT dmetaphone('gumbo');
+ dmetaphone
+------------
+ KMP
+(1 row)
+</screen>
+ </sect2>
+
+</sect1>

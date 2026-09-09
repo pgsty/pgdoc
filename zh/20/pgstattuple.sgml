@@ -1,0 +1,614 @@
+<!-- doc/src/sgml/pgstattuple.sgml -->
+
+<sect1 id="pgstattuple" xreflabel="pgstattuple">
+ <title>pgstattuple &mdash; 获取元组级统计信息</title>
+
+ <indexterm zone="pgstattuple">
+  <primary>pgstattuple</primary>
+ </indexterm>
+
+ <para>
+  <filename>pgstattuple</filename> 模块提供了多种用于获取元组级统计信息的函数。
+ </para>
+
+ <para>
+  由于这些函数会返回详细的页级信息，因此默认会限制访问。默认情况下，只有
+  角色 <literal>pg_stat_scan_tables</literal> 拥有 <literal>EXECUTE</literal>
+  权限。超级用户当然可以绕过这一限制。安装该扩展后，用户可以发出
+  <command>GRANT</command> 命令来更改这些函数上的权限，以允许其他用户
+  执行它们。不过，更可取的做法可能是将这些用户加入
+  <literal>pg_stat_scan_tables</literal> 角色。
+ </para>
+
+ <sect2 id="pgstattuple-funcs">
+  <title>函数</title>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-pgstattuple-varlistentry-1">
+    <term>
+     <indexterm>
+      <primary>pgstattuple</primary>
+     </indexterm>
+     <function>pgstattuple(regclass) returns record</function>
+    </term>
+
+    <listitem>
+     <para>
+      <function>pgstattuple</function> 返回一个关系的物理长度、<quote>死</quote>
+      元组所占百分比以及其他信息。这可以帮助用户判断是否需要执行清理。参数是
+      目标关系的名称（可选带模式限定）或 OID。例如：
+<programlisting>
+test=&gt; SELECT * FROM pgstattuple('pg_catalog.pg_proc');
+-[ RECORD 1 ]------+-------
+table_len          | 458752
+tuple_count        | 1470
+tuple_len          | 438896
+tuple_percent      | 95.67
+dead_tuple_count   | 11
+dead_tuple_len     | 3157
+dead_tuple_percent | 0.69
+free_space         | 8932
+free_percent       | 1.95
+</programlisting>
+     输出列的说明见 <xref linkend="pgstattuple-columns"/>。
+    </para>
+
+    <table id="pgstattuple-columns">
+     <title><function>pgstattuple</function> 输出列</title>
+     <tgroup cols="3">
+      <thead>
+       <row>
+        <entry>列</entry>
+        <entry>类型</entry>
+        <entry>描述</entry>
+       </row>
+      </thead>
+
+      <tbody>
+       <row>
+        <entry><structfield>table_len</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>关系的物理长度（字节）</entry>
+       </row>
+       <row>
+        <entry><structfield>tuple_count</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>活元组数量</entry>
+       </row>
+       <row>
+        <entry><structfield>tuple_len</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>活元组总长度（字节）</entry>
+       </row>
+       <row>
+        <entry><structfield>tuple_percent</structfield></entry>
+        <entry><type>float8</type></entry>
+        <entry>活元组百分比</entry>
+       </row>
+       <row>
+        <entry><structfield>dead_tuple_count</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>死元组数量</entry>
+       </row>
+       <row>
+        <entry><structfield>dead_tuple_len</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>死元组总长度（字节）</entry>
+       </row>
+       <row>
+        <entry><structfield>dead_tuple_percent</structfield></entry>
+        <entry><type>float8</type></entry>
+        <entry>死元组百分比</entry>
+       </row>
+       <row>
+        <entry><structfield>free_space</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>总空闲空间（字节）</entry>
+       </row>
+       <row>
+        <entry><structfield>free_percent</structfield></entry>
+        <entry><type>float8</type></entry>
+        <entry>空闲空间百分比</entry>
+       </row>
+
+      </tbody>
+     </tgroup>
+    </table>
+
+    <note>
+     <para>
+      <literal>table_len</literal> 总会大于 <literal>tuple_len</literal>、
+      <literal>dead_tuple_len</literal> 和 <literal>free_space</literal>
+      之和。差值来自固定的页开销、每页的元组指针表，以及为保证元组正确
+      对齐而产生的填充。
+     </para>
+    </note>
+
+    <para>
+     <function>pgstattuple</function> 只会在该关系上获取读锁。因此，结果并不
+     代表一个瞬时快照；并发更新会影响结果。
+    </para>
+
+    <para>
+     如果 <function>HeapTupleSatisfiesDirty</function> 返回 false，
+     <function>pgstattuple</function> 就会将该元组判定为<quote>死</quote>。
+    </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgstattuple-varlistentry-2">
+    <term>
+     <function>pgstattuple(text) returns record</function>
+    </term>
+
+    <listitem>
+     <para>
+      这与 <function>pgstattuple(regclass)</function> 相同，只是目标关系是以
+      TEXT 指定的。该函数目前保留只是出于向后兼容考虑，并将在未来的某个
+      版本中弃用。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgstattuple-varlistentry-3">
+    <term>
+    <indexterm>
+     <primary>pgstatindex</primary>
+    </indexterm>
+     <function>pgstatindex(regclass) returns record</function>
+    </term>
+
+    <listitem>
+     <para>
+      <function>pgstatindex</function> 返回一条记录，显示有关 B-树索引的信息。
+      例如：
+<programlisting>
+test=&gt; SELECT * FROM pgstatindex('pg_cast_oid_index');
+-[ RECORD 1 ]------+------
+version            | 2
+tree_level         | 0
+index_size         | 16384
+root_block_no      | 1
+internal_pages     | 0
+leaf_pages         | 1
+empty_pages        | 0
+deleted_pages      | 0
+avg_leaf_density   | 54.27
+leaf_fragmentation | 0
+</programlisting>
+     </para>
+
+    <para>
+     输出列如下：
+
+    <informaltable>
+     <tgroup cols="3">
+      <thead>
+       <row>
+        <entry>列</entry>
+        <entry>类型</entry>
+        <entry>描述</entry>
+       </row>
+      </thead>
+
+      <tbody>
+       <row>
+        <entry><structfield>version</structfield></entry>
+        <entry><type>integer</type></entry>
+        <entry>B-树版本号</entry>
+       </row>
+
+       <row>
+        <entry><structfield>tree_level</structfield></entry>
+        <entry><type>integer</type></entry>
+        <entry>根页所在的树层级</entry>
+       </row>
+
+       <row>
+        <entry><structfield>index_size</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>索引总大小（字节）</entry>
+       </row>
+
+       <row>
+        <entry><structfield>root_block_no</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>根页的位置（若无则为零）</entry>
+       </row>
+
+       <row>
+        <entry><structfield>internal_pages</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry><quote>内部</quote>（上层）页的数量</entry>
+       </row>
+
+       <row>
+        <entry><structfield>leaf_pages</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>叶子页数量</entry>
+       </row>
+
+       <row>
+        <entry><structfield>empty_pages</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>空页数量</entry>
+       </row>
+
+       <row>
+        <entry><structfield>deleted_pages</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>已删除页数量</entry>
+       </row>
+
+       <row>
+        <entry><structfield>avg_leaf_density</structfield></entry>
+        <entry><type>float8</type></entry>
+        <entry>叶子页平均密度</entry>
+       </row>
+
+       <row>
+        <entry><structfield>leaf_fragmentation</structfield></entry>
+        <entry><type>float8</type></entry>
+        <entry>叶子页碎片化程度</entry>
+       </row>
+
+      </tbody>
+     </tgroup>
+    </informaltable>
+    </para>
+
+    <para>
+     报告的 <literal>index_size</literal> 通常会比
+     <literal>internal_pages + leaf_pages + empty_pages + deleted_pages</literal>
+     所对应的页数多 1 页，因为它还包含索引的元页。
+     <literal>avg_leaf_density</literal> 表示索引大小中由用户数据占据的比例。
+     由于索引默认的 fillfactor 是 90，对于新建且大小不是可以忽略不计的索引，
+     这个值通常应当在 90 左右，但一般会随着时间推移而恶化。
+     <literal>leaf_fragmentation</literal> 表示无序程度的量度。
+     更高的 <literal>leaf_fragmentation</literal> 说明索引叶子页的物理顺序
+     与其逻辑顺序的偏离越来越大。如果索引的很大一部分需要从磁盘读取，
+     这会带来显著影响。
+    </para>
+
+    <para>
+     与 <function>pgstattuple</function> 一样，结果是逐页累积得到的，因此不
+     应期望它表示整个索引的瞬时快照。
+    </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgstattuple-varlistentry-4">
+    <term>
+     <function>pgstatindex(text) returns record</function>
+    </term>
+
+    <listitem>
+     <para>
+      这与 <function>pgstatindex(regclass)</function> 相同，只是目标索引是以
+      TEXT 指定的。该函数目前保留只是出于向后兼容考虑，并将在未来的某个
+      版本中弃用。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgstattuple-varlistentry-5">
+    <term>
+     <indexterm>
+      <primary>pgstatginindex</primary>
+     </indexterm>
+     <function>pgstatginindex(regclass) returns record</function>
+    </term>
+
+    <listitem>
+     <para>
+      <function>pgstatginindex</function> 返回一条记录，显示有关 GIN 索引的信息。
+      例如：
+<programlisting>
+test=&gt; SELECT * FROM pgstatginindex('test_gin_index');
+-[ RECORD 1 ]--+--
+version        | 1
+pending_pages  | 0
+pending_tuples | 0
+</programlisting>
+     </para>
+
+    <para>
+     输出列如下：
+
+    <informaltable>
+     <tgroup cols="3">
+      <thead>
+       <row>
+        <entry>列</entry>
+        <entry>类型</entry>
+        <entry>描述</entry>
+       </row>
+      </thead>
+
+      <tbody>
+       <row>
+        <entry><structfield>version</structfield></entry>
+        <entry><type>integer</type></entry>
+        <entry>GIN 版本号</entry>
+       </row>
+
+       <row>
+        <entry><structfield>pending_pages</structfield></entry>
+        <entry><type>integer</type></entry>
+        <entry>待处理列表中的页数</entry>
+       </row>
+
+       <row>
+        <entry><structfield>pending_tuples</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>待处理列表中的元组数</entry>
+       </row>
+
+      </tbody>
+     </tgroup>
+    </informaltable>
+    </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgstattuple-varlistentry-6">
+    <term>
+     <indexterm>
+      <primary>pgstathashindex</primary>
+     </indexterm>
+     <function>pgstathashindex(regclass) returns record</function>
+    </term>
+
+    <listitem>
+     <para>
+      <function>pgstathashindex</function> 返回一条记录，显示有关 HASH 索引的
+      信息。例如：
+<programlisting>
+test=&gt; SELECT * FROM pgstathashindex('con_hash_index');
+-[ RECORD 1 ]--+-----------------
+version        | 4
+bucket_pages   | 33081
+overflow_pages | 0
+bitmap_pages   | 1
+unused_pages   | 32455
+live_items     | 10204006
+dead_items     | 0
+free_percent   | 61.8005949100872
+</programlisting>
+     </para>
+
+    <para>
+     输出列如下：
+
+    <informaltable>
+     <tgroup cols="3">
+      <thead>
+       <row>
+        <entry>列</entry>
+        <entry>类型</entry>
+        <entry>描述</entry>
+       </row>
+      </thead>
+
+      <tbody>
+       <row>
+        <entry><structfield>version</structfield></entry>
+        <entry><type>integer</type></entry>
+        <entry>HASH 版本号</entry>
+       </row>
+
+       <row>
+        <entry><structfield>bucket_pages</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>桶页数量</entry>
+       </row>
+
+       <row>
+        <entry><structfield>overflow_pages</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>溢出页数量</entry>
+       </row>
+
+       <row>
+        <entry><structfield>bitmap_pages</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>位图页数量</entry>
+       </row>
+
+       <row>
+        <entry><structfield>unused_pages</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>未使用页数量</entry>
+       </row>
+
+       <row>
+        <entry><structfield>live_items</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>活元组数量</entry>
+       </row>
+
+       <row>
+        <entry><structfield>dead_tuples</structfield></entry>
+        <entry><type>bigint</type></entry>
+        <entry>死元组数量</entry>
+       </row>
+
+       <row>
+        <entry><structfield>free_percent</structfield></entry>
+        <entry><type>float</type></entry>
+        <entry>空闲空间百分比</entry>
+       </row>
+
+      </tbody>
+     </tgroup>
+    </informaltable>
+    </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgstattuple-varlistentry-7">
+    <term>
+     <indexterm>
+      <primary>pg_relpages</primary>
+     </indexterm>
+     <function>pg_relpages(regclass) returns bigint</function>
+    </term>
+
+    <listitem>
+     <para>
+      <function>pg_relpages</function> 返回该关系中的页数。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgstattuple-varlistentry-8">
+    <term>
+     <function>pg_relpages(text) returns bigint</function>
+    </term>
+
+    <listitem>
+     <para>
+      这与 <function>pg_relpages(regclass)</function> 相同，只是目标关系是以
+      TEXT 指定的。该函数目前保留只是出于向后兼容考虑，并将在未来的某个
+      版本中弃用。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgstattuple-varlistentry-9">
+    <term>
+     <indexterm>
+      <primary>pgstattuple_approx</primary>
+     </indexterm>
+     <function>pgstattuple_approx(regclass) returns record</function>
+    </term>
+
+    <listitem>
+     <para>
+      <function>pgstattuple_approx</function> 是 <function>pgstattuple</function>
+      的一种更快替代方案，返回近似结果。参数是目标关系的名称或 OID。
+      例如：
+<programlisting>
+test=&gt; SELECT * FROM pgstattuple_approx('pg_catalog.pg_proc'::regclass);
+-[ RECORD 1 ]--------+-------
+table_len            | 573440
+scanned_percent      | 2
+approx_tuple_count   | 2740
+approx_tuple_len     | 561210
+approx_tuple_percent | 97.87
+dead_tuple_count     | 0
+dead_tuple_len       | 0
+dead_tuple_percent   | 0
+approx_free_space    | 11996
+approx_free_percent  | 2.09
+</programlisting>
+      输出列的说明见 <xref linkend="pgstatapprox-columns"/>。
+     </para>
+
+     <para>
+      <function>pgstattuple</function> 总是执行全表扫描，并返回活元组和死元组
+      的精确计数及其总长度，以及空闲空间；相比之下，
+      <function>pgstattuple_approx</function> 试图避免全表扫描，返回精确的
+      死元组统计信息，以及活元组数量、活元组总长度和空闲空间的近似值。
+     </para>
+
+     <para>
+      它通过跳过那些根据可见性映射只包含可见元组的页来做到这一点（如果某页
+      设置了相应的 VM 位，就假定该页不包含死元组）。对于这类页，它从空闲
+      空间映射中得出空闲空间值，并假定页中其余空间都被活元组占用。
+     </para>
+
+     <para>
+      对于不能跳过的页，它会扫描每个元组，在相应的计数器中记录其存在和
+      大小，并累加该页上的空闲空间。最后，它根据扫描过的页数和元组数来估算
+      活元组总数（方法与 VACUUM 估算 pg_class.reltuples 时相同）。
+     </para>
+
+     <table id="pgstatapprox-columns">
+      <title><function>pgstattuple_approx</function> 输出列</title>
+      <tgroup cols="3">
+       <thead>
+        <row>
+         <entry>列</entry>
+         <entry>类型</entry>
+         <entry>描述</entry>
+        </row>
+       </thead>
+
+       <tbody>
+        <row>
+         <entry><structfield>table_len</structfield></entry>
+         <entry><type>bigint</type></entry>
+         <entry>关系的物理长度（字节，精确）</entry>
+        </row>
+        <row>
+         <entry><structfield>scanned_percent</structfield></entry>
+         <entry><type>float8</type></entry>
+         <entry>已扫描表的百分比</entry>
+        </row>
+        <row>
+         <entry><structfield>approx_tuple_count</structfield></entry>
+         <entry><type>bigint</type></entry>
+         <entry>活元组数量（估计）</entry>
+        </row>
+        <row>
+         <entry><structfield>approx_tuple_len</structfield></entry>
+         <entry><type>bigint</type></entry>
+         <entry>活元组总长度（字节，估计）</entry>
+        </row>
+        <row>
+         <entry><structfield>approx_tuple_percent</structfield></entry>
+         <entry><type>float8</type></entry>
+         <entry>活元组百分比</entry>
+        </row>
+        <row>
+         <entry><structfield>dead_tuple_count</structfield></entry>
+         <entry><type>bigint</type></entry>
+         <entry>死元组数量（精确）</entry>
+        </row>
+        <row>
+         <entry><structfield>dead_tuple_len</structfield></entry>
+         <entry><type>bigint</type></entry>
+         <entry>死元组总长度（字节，精确）</entry>
+        </row>
+        <row>
+         <entry><structfield>dead_tuple_percent</structfield></entry>
+         <entry><type>float8</type></entry>
+         <entry>死元组百分比</entry>
+        </row>
+        <row>
+         <entry><structfield>approx_free_space</structfield></entry>
+         <entry><type>bigint</type></entry>
+         <entry>总空闲空间（字节，估计）</entry>
+        </row>
+        <row>
+         <entry><structfield>approx_free_percent</structfield></entry>
+         <entry><type>float8</type></entry>
+         <entry>空闲空间百分比</entry>
+        </row>
+
+       </tbody>
+      </tgroup>
+     </table>
+
+     <para>
+      在上述输出中，空闲空间数值可能与 <function>pgstattuple</function> 的
+      输出不完全一致，因为空闲空间映射给出的数值是确定的，但不保证精确到
+      字节。
+     </para>
+
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+ </sect2>
+
+ <sect2 id="pgstattuple-authors">
+  <title>作者</title>
+
+  <para>
+   Tatsuo Ishii、Satoshi Nagayasu 和 Abhijit Menon-Sen
+  </para>
+ </sect2>
+
+</sect1>

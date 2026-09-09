@@ -1,0 +1,208 @@
+<!-- doc/src/sgml/backup-manifest.sgml -->
+
+<chapter id="backup-manifest-format">
+ <title>备份清单格式</title>
+
+  <indexterm>
+   <primary>Backup Manifest</primary>
+  </indexterm>
+
+  <para>
+   <xref linkend="app-pgbasebackup" /> 生成的备份清单，主要是为了允许使用
+   <xref linkend="app-pgverifybackup" /> 验证备份。不过，其他工具也可以读取备份
+   清单文件，并将其中包含的信息用于它们自己的用途。为此，本章描述备份清单
+   文件的格式。
+  </para>
+
+  <para>
+   备份清单是一个以 UTF-8 编码的 JSON 文档。（尽管一般来说 JSON 文档必须
+   是 Unicode，但 PostgreSQL 允许将 <type>json</type> 和
+   <type>jsonb</type> 数据类型用于任何受支持的服务器编码。备份清单则没有类
+   似的例外。）该 JSON 文档始终是一个对象；该对象中出现的键将在下一节中说
+   明。
+  </para>
+
+ <sect1 id="backup-manifest-toplevel">
+  <title>备份清单顶层对象</title>
+
+  <para>
+   备份清单 JSON 文档包含以下键。
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><literal>PostgreSQL-Backup-Manifest-Version</literal></term>
+    <listitem>
+     <para>
+      其对应的值是一个整数。从 <productname>PostgreSQL</productname>
+      <literal>17</literal> 开始，该值为 <literal>2</literal>；在较早的版
+      本中，该值为 <literal>1</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>System-Identifier</literal></term>
+    <listitem>
+     <para>
+      执行该备份的 <productname>PostgreSQL</productname> 实例的数据库系统标识
+      符。只有当 <literal>PostgreSQL-Backup-Manifest-Version</literal> 为
+      <literal>2</literal> 时，才会出现该字段。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>Files</literal></term>
+    <listitem>
+     <para>
+      其对应的值总是一个对象列表，其中每个对象描述备份中存在的一个文件。为
+      了使用该备份所需的 WAL 文件，以及备份清单文件本身，都不会在此列表中出
+      现条目。该列表中每个对象的结构见
+      <xref linkend="backup-manifest-files" />。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>WAL-Ranges</literal></term>
+    <listitem>
+     <para>
+      其对应的值总是一个对象列表，其中每个对象描述一个 WAL 记录范围。为了使
+      用该备份，必须能够从某条特定时间线上读取该范围内的 WAL 记录。这些对象
+      的结构在 <xref linkend="backup-manifest-wal-ranges" /> 中有进一步说
+      明。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>Manifest-Checksum</literal></term>
+    <listitem>
+     <para>
+      该键总是出现在备份清单文件的最后一行。其对应的值是此前所有行的
+      SHA-256 校验和。这里使用固定的校验和方法，是为了让客户端能够对清单进
+      行增量解析。尽管 SHA-256 校验和明显比 CRC-32C 校验和开销更高，但清单
+      通常足够小，因此这些额外计算一般并不重要。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+
+ <sect1 id="backup-manifest-files">
+  <title>备份清单文件对象</title>
+
+  <para>
+   描述单个文件的对象包含 <literal>Path</literal> 键或
+   <literal>Encoded-Path</literal> 键之一。通常会出现
+   <literal>Path</literal> 键。其对应的字符串值是该文件相对于备份目录根目
+   录的路径。位于用户定义表空间中的文件，其路径的前两个组成部分分别是
+   <filename>pg_tblspc</filename> 和该表空间的 OID。如果该路径不是 UTF-8
+   中的合法字符串，或者用户要求对所有文件都使用编码路径，则会改为出现
+   <literal>Encoded-Path</literal> 键。它保存的是相同的数据，只是将其编码
+   为十六进制数字串，其中字符串中的每一对十六进制数字表示一个字节。
+  </para>
+
+  <para>
+   以下两个键始终存在：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><literal>Size</literal></term>
+    <listitem>
+     <para>
+      该文件的预期大小，以整数表示。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>Last-Modified</literal></term>
+    <listitem>
+     <para>
+      该文件的最后修改时间，以服务器在备份时报告的值为准。与备份中存储的其
+      他字段不同，<xref linkend="app-pgverifybackup" /> 不会使用该字段。包
+      含它仅是为了提供信息。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   如果执行备份时启用了文件校验和，则还会包含以下键：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><literal>Checksum-Algorithm</literal></term>
+    <listitem>
+     <para>
+      用于计算该文件校验和的算法。目前，备份清单中的每个文件都会使用相同的
+      算法，但在未来版本中这可能会改变。目前支持的校验和算法有
+      <literal>CRC32C</literal>、<literal>SHA224</literal>、
+      <literal>SHA256</literal>、<literal>SHA384</literal> 和
+      <literal>SHA512</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>Checksum</literal></term>
+    <listitem>
+     <para>
+      为该文件计算出的校验和，以十六进制字符序列存储，其中每两个字符表示校验和的一个字节。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+
+ <sect1 id="backup-manifest-wal-ranges">
+  <title>备份清单 WAL 范围对象</title>
+
+  <para>
+   描述 WAL 范围的对象始终有三个键：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><literal>Timeline</literal></term>
+    <listitem>
+     <para>
+      该 WAL 记录范围所属的时间线，以整数表示。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>Start-LSN</literal></term>
+    <listitem>
+     <para>
+      为了使用该备份，必须在指定时间线上从这个 LSN 开始回放。该 LSN 按
+      <productname>PostgreSQL</productname> 通常使用的格式存储；也就是说，
+      它是一个字符串，由两段十六进制字符串构成，每段长度在 1 到 8 之间，并
+      以斜杠分隔。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>End-LSN</literal></term>
+    <listitem>
+     <para>
+      使用该备份时，指定时间线上的回放可结束于此 LSN，而这也是允许的最早
+      LSN。其存储格式与 <literal>Start-LSN</literal> 相同。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   通常只会有一个 WAL 范围。不过，如果备份是从某个备库获取的，并且该备库
+   在备份期间由于上游提升而切换了时间线，则可能会出现多个范围，而且每个范
+   围对应不同的时间线。同一条时间线上绝不会出现多个 WAL 范围。
+  </para>
+ </sect1>
+</chapter>

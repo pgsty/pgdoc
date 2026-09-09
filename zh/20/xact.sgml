@@ -1,0 +1,147 @@
+<!-- doc/src/sgml/xact.sgml -->
+
+<chapter id="transactions">
+
+ <title>事务处理</title>
+
+ <para>
+  本章概述<productname>PostgreSQL</productname>事务管理系统的内部机制。
+  transaction 一词通常缩写为<firstterm>xact</firstterm>。
+ </para>
+
+ <sect1 id="transaction-id">
+
+  <title>事务与标识符</title>
+
+  <para>
+   事务可以使用<command>BEGIN</command>或
+   <command>START TRANSACTION</command>显式创建，并使用
+   <command>COMMIT</command>或<command>ROLLBACK</command>结束。显式
+   事务之外的 SQL 语句会自动使用单语句事务。
+  </para>
+
+  <para>
+   每个事务都由唯一的<literal>VirtualTransactionId</literal>
+   标识（也称为<literal>virtualXID</literal>或<literal>vxid</literal>），它由
+   后端的进程号（即<literal>procNumber</literal>）和每个后端本地按顺序分配的编号组成，
+   后者称为<literal>localXID</literal>。例如，虚拟事务 ID
+   <literal>4/12532</literal>的<literal>procNumber</literal>
+   为<literal>4</literal>，<literal>localXID</literal>为
+   <literal>12532</literal>。
+  </para>
+
+  <para>
+   非虚拟的<literal>TransactionId</literal>（或<type>xid</type>），例如
+   <literal>278394</literal>，由
+   <productname>PostgreSQL</productname>集簇内所有数据库共用的全局计数器按顺序分配给事务。
+   这种分配发生在事务首次向数据库写入时。这意味着编号较小的 xid 比编号较大的 xid 更早开始写入。
+   需要注意的是，事务首次执行数据库写入的顺序可能与事务开始的顺序不同，尤其是在事务开始时的语句只执行数据库读取的情况下。
+  </para>
+
+  <para>
+   内部事务 ID 类型<type>xid</type>宽 32 位，每 40 亿个事务就会
+   <link linkend="vacuum-for-wraparound">回卷</link>一次。每次回卷时都会递增一个 32 位 epoch。
+   另外还有一个 64 位类型<type>xid8</type>，它包含这个 epoch，因此在一次安装的生命周期内不会回卷；
+   必要时可以通过强制类型转换将其转换为 xid。<xref linkend="functions-pg-snapshot"/>
+   中的函数返回<type>xid8</type>值。xid 是
+   <productname>PostgreSQL</productname><link
+   linkend="mvcc">MVCC</link>并发机制和流复制的基础。
+  </para>
+
+  <para>
+   当带有（非虚拟）xid 的顶层事务提交时，它会在<filename>pg_xact</filename>
+   目录中被标记为已提交。如果启用了<xref
+   linkend="guc-track-commit-timestamp"/>，还会在<filename>pg_commit_ts</filename>
+   目录中记录附加信息。
+  </para>
+
+  <para>
+   除了<literal>vxid</literal>和<literal>xid</literal>之外，
+   预备事务还会被赋予全局事务标识符（<acronym>GID</acronym>）。GID 是长度最多
+   200 字节的字符串字面量，并且必须在当前其他处于预备状态的事务中保持唯一。GID 到 xid 的映射可在
+   <link linkend="view-pg-prepared-xacts"><structname>pg_prepared_xacts</structname></link>中查看。
+  </para>
+ </sect1>
+
+ <sect1 id="xact-locking">
+
+  <title>事务与锁</title>
+
+  <para>
+   当前正在执行的事务 ID 显示在
+   <link linkend="view-pg-locks"><structname>pg_locks</structname></link>
+   的<structfield>virtualxid</structfield>和
+   <structfield>transactionid</structfield>列中。只读事务会有
+   <structfield>virtualxid</structfield>，但
+   <structfield>transactionid</structfield> 为 NULL；读写事务则会设置这两列。
+  </para>
+
+  <para>
+   某些锁类型等待<structfield>virtualxid</structfield>，
+   而另一些锁类型等待<structfield>transactionid</structfield>。行级读锁和写锁直接记录在被锁定的行中，
+   可使用<xref linkend="pgrowlocks"/>扩展进行检查。行级读锁还可能需要分配多事务 ID（multixact ID，<literal>mxid</literal>；见<xref
+   linkend="vacuum-for-multixact-wraparound"/>）。
+  </para>
+ </sect1>
+
+ <sect1 id="subxacts">
+
+  <title>子事务</title>
+
+  <para>
+   子事务在事务内部启动，允许把大事务拆分为较小的单元。子事务可以提交或中止而不影响其父事务，从而使父事务可以继续执行。这使得错误更容易处理，这是应用开发中的常见模式。
+   subtransaction 一词通常缩写为
+   <firstterm>subxact</firstterm>。
+  </para>
+
+  <para>
+   子事务可以使用<command>SAVEPOINT</command>命令显式启动，也可以通过其他方式启动，例如
+   PL/pgSQL 的<literal>EXCEPTION</literal>子句。PL/Python 和 PL/Tcl 也支持显式子事务。
+   子事务还可以在其他子事务内部启动。顶层事务及其子事务形成一个层级或树状结构，这就是我们把主事务称为顶层事务的原因。
+  </para>
+
+  <para>
+   如果某个子事务被赋予非虚拟事务 ID，则其事务 ID 被称为
+   <quote>subxid</quote>。只读子事务不会被赋予 subxid，但一旦尝试写入，就会被赋予一个。这也会导致该 subxid 的所有父事务，直至并包括顶层事务，都被赋予非虚拟事务 ID。我们确保父 xid 总是小于其任一子 subxid。
+  </para>
+
+  <para>
+   每个 subxid 的直接父 xid 都记录在<filename>pg_subtrans</filename>
+   目录中。顶层 xid 因为没有父事务而不会有记录，只读子事务也不会有记录。
+  </para>
+
+  <para>
+   当子事务提交时，它所有已提交且带有 subxid 的子事务在该事务中也会被视为处于 subcommitted 状态。当子事务中止时，它的所有子事务也都会被视为已中止。
+  </para>
+
+  <para>
+   当带有 xid 的顶层事务提交时，其所有处于 subcommitted 状态的子事务也会在<filename>pg_xact</filename>子目录中被持久地记录为已提交。如果顶层事务中止，则其所有子事务也都会中止，即使它们此前已经被视为处于 subcommitted 状态。
+  </para>
+
+  <para>
+   每个事务保持打开状态（未回滚也未释放）的子事务越多，事务管理开销就越大。每个后端最多会在共享内存中缓存 64 个打开的 subxid；超过这一点之后，由于需要额外查找<filename>pg_subtrans</filename>
+   中的 subxid 条目，存储 I/O 开销会显著增加。
+  </para>
+ </sect1>
+
+ <sect1 id="two-phase">
+
+  <title>两阶段事务</title>
+
+  <para>
+   <productname>PostgreSQL</productname>支持两阶段提交（2PC）
+   协议，它允许多个分布式系统以事务方式协同工作。相关命令是<command>PREPARE
+   TRANSACTION</command>、<command>COMMIT PREPARED</command>和
+   <command>ROLLBACK PREPARED</command>。两阶段事务旨在供外部事务管理系统使用。
+   <productname>PostgreSQL</productname>遵循 X/Open XA 标准提出的特性和模型，但没有实现其中某些不太常用的部分。
+  </para>
+
+  <para>
+   当用户执行<command>PREPARE TRANSACTION</command>时，后续唯一可能执行的命令就是<command>COMMIT PREPARED</command>
+   或<command>ROLLBACK PREPARED</command>。一般来说，这种预备状态预期只会持续很短时间，但外部可用性问题可能意味着事务会在这种状态下停留较长一段时间。短期存在的预备事务只存储在共享内存和 WAL 中。跨越检查点的事务会记录在
+   <filename>pg_twophase</filename>目录中。当前处于预备状态的事务可通过
+   <link linkend="view-pg-prepared-xacts"><structname>pg_prepared_xacts</structname></link>查看。
+  </para>
+ </sect1>
+
+</chapter>

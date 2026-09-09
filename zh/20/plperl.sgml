@@ -1,0 +1,1579 @@
+<!-- doc/src/sgml/plperl.sgml -->
+
+ <chapter id="plperl">
+
+  <title>PL/Perl &mdash; Perl 过程语言</title>
+
+  <indexterm zone="plperl">
+   <primary>PL/Perl</primary>
+  </indexterm>
+
+  <indexterm zone="plperl">
+   <primary>Perl</primary>
+  </indexterm>
+
+  <para>
+   PL/Perl 是一种可载入的过程语言，它允许使用
+   <ulink url="https://www.perl.org">Perl 编程语言</ulink>编写
+   <productname>PostgreSQL</productname> 函数和过程。
+  </para>
+
+  <para>
+   使用 PL/Perl 的主要优势在于，它允许在存储函数和过程中使用 Perl 提供的
+   大量<quote>字符串处理</quote>操作符和函数。与 PL/pgSQL 提供的字符串函数
+   和控制结构相比，使用 Perl 解析复杂字符串可能更容易。
+  </para>
+
+  <para>
+   要在特定数据库中安装 PL/Perl，可使用
+   <literal>CREATE EXTENSION plperl</literal>。
+  </para>
+
+  <tip>
+
+   <para>
+    如果把该语言安装到 <literal>template1</literal> 中，之后创建的所有
+    数据库都会自动安装该语言。
+   </para>
+  </tip>
+
+  <note>
+
+   <para>
+    使用源码包的用户必须在安装过程中专门启用 PL/Perl 的构建（更多信息见
+    <xref linkend="installation"/>）。使用二进制包的用户可能会在单独的
+    子包中找到 PL/Perl。
+   </para>
+  </note>
+
+ <sect1 id="plperl-funcs">
+
+  <title>PL/Perl 函数和参数</title>
+
+  <para>
+   要用 PL/Perl 语言创建一个函数，可使用标准的
+   <xref linkend="sql-createfunction"/>语法：
+
+<programlisting>
+CREATE FUNCTION <replaceable>funcname</replaceable> (<replaceable>argument-types</replaceable>)
+RETURNS <replaceable>return-type</replaceable>
+-- function attributes can go here
+AS $$
+    # PL/Perl function body goes here
+$$ LANGUAGE plperl;
+</programlisting>
+
+   函数的主体就是普通的 Perl 代码。事实上，PL/Perl 的粘合代码会把它
+   包裹在一个 Perl 子程序中。PL/Perl 函数在标量上下文中被调用，因此
+   不能返回列表。如下文所述，可以通过返回引用来返回
+   非标量值（数组、记录和集合）。
+  </para>
+
+  <para>
+   在 PL/Perl 过程中，Perl 代码返回的任何值都会被忽略。
+  </para>
+
+  <para>
+   PL/Perl 也支持用 <xref linkend="sql-do"/> 语句调用的匿名代码块：
+
+<programlisting>
+DO $$
+    # PL/Perl code
+$$ LANGUAGE plperl;
+</programlisting>
+
+   匿名代码块不接收参数，它可能返回的任何值都会被丢弃。除此之外，
+   它的行为与函数完全相同。
+  </para>
+
+  <note>
+
+   <para>
+    在 Perl 中使用命名嵌套子程序是有危险的，特别是当它们引用外层作用域
+    中的词法变量时。因为 PL/Perl 函数被包装成一个子程序，任何放在其中的
+    命名子程序都会成为嵌套子程序。一般来说，创建通过代码引用
+    （coderef）调用的匿名子程序会安全得多。更多信息可见
+    <citerefentry><refentrytitle>perldiag</refentrytitle></citerefentry>手册页
+    中的<literal>Variable "%s" will not stay shared</literal>以及
+    <literal>Variable "%s" is not available</literal>，或者在互联网上
+    搜索<quote>perl nested named subroutine</quote>。
+   </para>
+  </note>
+
+  <para>
+   <command>CREATE FUNCTION</command> 命令的语法要求函数体写成一个
+   字符串常量。通常对该字符串常量使用美元引用（见
+   <xref linkend="sql-syntax-dollar-quoting"/>）最方便。如果选择使用转义
+   字符串语法 <literal>E''</literal>，则必须将函数体中用到的单引号
+   （<literal>'</literal>）和反斜线（<literal>\</literal>）都写成双份（见
+   <xref linkend="sql-syntax-strings"/>）。
+  </para>
+
+  <para>
+   参数和结果的处理与其他 Perl 子程序一样：参数通过
+   <varname>@_</varname> 传入，结果值通过 <literal>return</literal>
+   返回，或者作为函数中最后一个被求值的表达式返回。
+  </para>
+
+  <para>
+   例如，一个返回两个整数值中较大值的函数可以定义为：
+
+<programlisting>
+CREATE FUNCTION perl_max (integer, integer) RETURNS integer AS $$
+    if ($_[0] &gt; $_[1]) { return $_[0]; }
+    return $_[1];
+$$ LANGUAGE plperl;
+</programlisting>
+  </para>
+
+  <note>
+
+    <para>
+      参数会从数据库编码转换为 PL/Perl 中使用的 UTF-8，返回时再从
+      UTF-8 转回数据库编码。
+    </para>
+  </note>
+
+  <para>
+   如果一个 SQL 空值<indexterm><primary>空值</primary><secondary
+   sortas="PL/Perl">in PL/Perl</secondary></indexterm>被传给一个函数，在
+   Perl 中该参数值将呈现为<quote>undefined</quote>。上述函数定义对于
+   空输入的行为并不理想（实际上，它会把它们当作零）。我们可以在函数
+   定义中添加 <literal>STRICT</literal>，让
+   <productname>PostgreSQL</productname> 采取更合理的做法：如果传入空值，
+   函数将根本不会被调用，而是自动返回空结果。另一种方式是在函数体中
+   检查未定义输入。例如，假设我们希望在
+   <function>perl_max</function> 的两个参数中一个为空、另一个非空时，
+   返回非空参数而不是空值：
+
+<programlisting>
+CREATE FUNCTION perl_max (integer, integer) RETURNS integer AS $$
+    my ($x, $y) = @_;
+    if (not defined $x) {
+        return undef if not defined $y;
+        return $y;
+    }
+    return $x if not defined $y;
+    return $x if $x &gt; $y;
+    return $y;
+$$ LANGUAGE plperl;
+</programlisting>
+   如上所示，要从 PL/Perl 函数返回 SQL 空值，就返回一个未定义值。
+   无论函数是否为严格函数，都可以这样做。
+  </para>
+
+  <para>
+   函数参数中任何不是引用的值都是字符串，其格式是相应数据类型的标准
+   <productname>PostgreSQL</productname> 外部文本表示。对于普通的数值或
+   文本类型，Perl 通常会正确处理，程序员一般不必操心。不过在其他情况下，
+   参数可能需要转换成 Perl 中更易用的形式。例如，可以用
+   <function>decode_bytea</function> 函数把 <type>bytea</type> 类型的
+   参数转换成未转义的二进制数据。
+  </para>
+
+  <para>
+   同样，返回给 <productname>PostgreSQL</productname> 的值也必须采用
+   外部文本表示格式。例如，可以用 <function>encode_bytea</function>
+   函数把二进制数据转义成适合作为 <type>bytea</type> 类型返回值的形式。
+  </para>
+
+  <para>
+   有一种特别重要的情况是布尔值。如前所述，<type>bool</type> 值默认会以
+   文本形式传给 Perl，因此要么是 <literal>'t'</literal>，要么是
+   <literal>'f'</literal>。这会带来问题，因为 Perl 不会把
+   <literal>'f'</literal> 当成假值！可以通过使用<quote>转换</quote>
+   来改进这一点（见 <xref linkend="sql-createtransform"/>）。
+   <filename>bool_plperl</filename> 扩展提供了合适的转换。要使用它，
+   请先安装该扩展：
+<programlisting>
+CREATE EXTENSION bool_plperl;  -- or bool_plperlu for PL/PerlU
+</programlisting>
+   然后对接收或返回 <type>bool</type> 的 PL/Perl 函数使用
+   <literal>TRANSFORM</literal> 函数属性，例如：
+<programlisting>
+CREATE FUNCTION perl_and(bool, bool) RETURNS bool
+TRANSFORM FOR TYPE bool
+AS $$
+  my ($a, $b) = @_;
+  return $a &amp;&amp; $b;
+$$ LANGUAGE plperl;
+</programlisting>
+   应用该转换后，Perl 会将 <type>bool</type> 参数视为
+   <literal>1</literal> 或空值，从而能正确表示真或假。如果函数结果类型为
+   <type>bool</type>，则其真或假取决于 Perl 是否会将返回值求值为真。
+   对函数内部执行的 SPI 查询，其布尔查询参数和结果也会进行类似的转换
+   （<xref linkend="plperl-database"/>）。
+  </para>
+
+  <para>
+   Perl 可以把 <productname>PostgreSQL</productname> 数组返回为对
+   Perl 数组的引用。这里有一个示例：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION returns_array()
+RETURNS text[][] AS $$
+    return [['a&quot;b','c,d'],['e\\f','g']];
+$$ LANGUAGE plperl;
+
+SELECT returns_array();
+</programlisting>
+  </para>
+
+  <para>
+   Perl 把 <productname>PostgreSQL</productname> 数组作为一个经 bless 的
+   <type>PostgreSQL::InServer::ARRAY</type> 对象传递。该对象既可以当作
+   数组引用，也可以当作字符串处理，从而可以运行为 9.1 之前版本的
+   <productname>PostgreSQL</productname> 编写的 Perl 代码，以保持向后兼容性。
+   例如：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION concat_array_elements(text[]) RETURNS TEXT AS $$
+    my $arg = shift;
+    my $result = "";
+    return undef if (!defined $arg);
+
+    # as an array reference
+    for (@$arg) {
+        $result .= $_;
+    }
+
+    # also works as a string
+    $result .= $arg;
+
+    return $result;
+$$ LANGUAGE plperl;
+
+SELECT concat_array_elements(ARRAY['PL','/','Perl']);
+</programlisting>
+
+  <note>
+   <para>
+    多维数组会以所有 Perl 程序员都熟悉的方式，表示为对低维数组引用的引用。
+   </para>
+  </note>
+  </para>
+
+  <para>
+   复合类型参数被作为哈希的引用传递给函数。哈希的键是复合类型的
+   属性名。这里是一个示例：
+
+<programlisting>
+CREATE TABLE employee (
+    name text,
+    basesalary integer,
+    bonus integer
+);
+
+CREATE FUNCTION empcomp(employee) RETURNS integer AS $$
+    my ($emp) = @_;
+    return $emp-&gt;{basesalary} + $emp-&gt;{bonus};
+$$ LANGUAGE plperl;
+
+SELECT name, empcomp(employee.*) FROM employee;
+</programlisting>
+  </para>
+
+  <para>
+   PL/Perl 函数也可以用相同的方法返回复合类型：返回一个具有所需属性的
+   哈希的引用。例如：
+
+<programlisting>
+CREATE TYPE testrowperl AS (f1 integer, f2 text, f3 text);
+
+CREATE OR REPLACE FUNCTION perl_row() RETURNS testrowperl AS $$
+    return {f2 =&gt; 'hello', f1 =&gt; 1, f3 =&gt; 'world'};
+$$ LANGUAGE plperl;
+
+SELECT * FROM perl_row();
+</programlisting>
+
+   在声明的结果数据类型中，凡是哈希中未出现的列都将作为空值返回。
+  </para>
+
+  <para>
+   同样，过程的输出参数也可以作为哈希引用返回：
+
+<programlisting>
+CREATE PROCEDURE perl_triple(INOUT a integer, INOUT b integer) AS $$
+    my ($a, $b) = @_;
+    return {a =&gt; $a * 3, b =&gt; $b * 3};
+$$ LANGUAGE plperl;
+
+CALL perl_triple(5, 10);
+</programlisting>
+  </para>
+
+  <para>
+    PL/Perl 函数还可以返回标量类型或复合类型的集合。通常会希望逐行返回，
+    这既能加快启动时间，也能避免把整个结果集排入内存。如下所示，
+    可以用 <function>return_next</function> 实现这一点。注意，在最后一次
+    <function>return_next</function> 之后，必须写上
+    <literal>return</literal> 或者（更好）<literal>return
+    undef</literal>。
+
+<programlisting>
+CREATE OR REPLACE FUNCTION perl_set_int(int)
+RETURNS SETOF INTEGER AS $$
+    foreach (0..$_[0]) {
+        return_next($_);
+    }
+    return undef;
+$$ LANGUAGE plperl;
+
+SELECT * FROM perl_set_int(5);
+
+CREATE OR REPLACE FUNCTION perl_set()
+RETURNS SETOF testrowperl AS $$
+    return_next({ f1 =&gt; 1, f2 =&gt; 'Hello', f3 =&gt; 'World' });
+    return_next({ f1 =&gt; 2, f2 =&gt; 'Hello', f3 =&gt; 'PostgreSQL' });
+    return_next({ f1 =&gt; 3, f2 =&gt; 'Hello', f3 =&gt; 'PL/Perl' });
+    return undef;
+$$ LANGUAGE plperl;
+</programlisting>
+
+    对于较小的结果集，可以返回一个数组引用，其中对简单类型、数组类型
+    和复合类型分别包含标量、数组引用或哈希引用。下面是把整个结果集
+    作为数组引用返回的几个简单示例：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION perl_set_int(int) RETURNS SETOF INTEGER AS $$
+    return [0..$_[0]];
+$$ LANGUAGE plperl;
+
+SELECT * FROM perl_set_int(5);
+
+CREATE OR REPLACE FUNCTION perl_set() RETURNS SETOF testrowperl AS $$
+    return [
+        { f1 =&gt; 1, f2 =&gt; 'Hello', f3 =&gt; 'World' },
+        { f1 =&gt; 2, f2 =&gt; 'Hello', f3 =&gt; 'PostgreSQL' },
+        { f1 =&gt; 3, f2 =&gt; 'Hello', f3 =&gt; 'PL/Perl' }
+    ];
+$$ LANGUAGE plperl;
+
+SELECT * FROM perl_set();
+</programlisting>
+  </para>
+
+  <para>
+   如果希望在代码中使用 <literal>strict</literal> 编译指示，可以有几种
+   选择。对于临时的全局用法，可以 <command>SET</command>
+   <literal>plperl.use_strict</literal> 为 true。这会影响后续编译的
+   <application>PL/Perl</application> 函数，但不会影响当前会话中已经编译的
+   函数。对于永久的全局用法，可以在
+   <filename>postgresql.conf</filename> 文件中将
+   <literal>plperl.use_strict</literal> 设为 true。
+  </para>
+
+  <para>
+   如果要在特定函数中永久启用它，可以简单地把
+<programlisting>
+use strict;
+</programlisting>
+   放在函数体顶部。
+  </para>
+
+  <para>
+  如果 Perl 版本为 5.10.0 或更高，也可以通过 <function>use</function>
+  使用 <literal>feature</literal> 编译指示。
+  </para>
+
+ </sect1>
+
+ <sect1 id="plperl-data">
+
+  <title>PL/Perl 中的数据值</title>
+
+  <para>
+   提供给 PL/Perl 函数代码的参数值，就是转换成文本形式的输入参数
+   （就像它们由 <command>SELECT</command> 语句显示出来一样）。相反，
+   <function>return</function> 和 <function>return_next</function> 命令
+   接受任何可作为该函数声明返回类型输入格式的字符串。
+  </para>
+
+  <para>
+   如果这种行为在特定情况下不方便，可以像前面针对 <type>bool</type> 值
+   演示的那样，通过使用转换来改进。
+   <productname>PostgreSQL</productname> 发行版中包含了多个转换
+   模块示例。
+  </para>
+ </sect1>
+
+ <sect1 id="plperl-builtins">
+
+  <title>内置函数</title>
+
+ <sect2 id="plperl-database">
+
+  <title>从 PL/Perl 访问数据库</title>
+
+  <para>
+   可以通过下列函数在 Perl 函数中访问数据库本身：
+  </para>
+
+   <variablelist>
+    <varlistentry id="zh18-auto-plperl-varlistentry-1">
+
+     <term>
+      <literal><function>spi_exec_query</function>(<replaceable>query</replaceable> [, <replaceable>limit</replaceable>])</literal>
+      <indexterm>
+       <primary>spi_exec_query</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+     <listitem>
+
+      <para>
+       <function>spi_exec_query</function> 执行 SQL 命令，并把整个行集作为
+       哈希引用数组的引用返回。如果指定了 <replaceable>limit</replaceable>
+       且其大于零，则 <function>spi_exec_query</function> 最多只会取回
+       <replaceable>limit</replaceable> 行，就像查询中包含了
+       <literal>LIMIT</literal> 子句一样。省略
+       <replaceable>limit</replaceable> 或将其指定为零时，不会限制返回行数。
+      </para>
+
+      <para>
+<emphasis>只有在确定结果集会比较小时，才应使用此命令。</emphasis>下面是一个带可选最大行数的查询（<command>SELECT</command> 命令）示例：
+
+<programlisting>
+$rv = spi_exec_query('SELECT * FROM my_table', 5);
+</programlisting>
+        这样会从表 <structname>my_table</structname> 返回最多 5 行。如果
+        <structname>my_table</structname> 有一列 <structfield>my_column</structfield>，
+        可以像下面这样从结果的第 <literal>$i</literal> 行取得该值：
+<programlisting>
+$foo = $rv-&gt;{rows}[$i]-&gt;{my_column};
+</programlisting>
+       可以这样访问 <command>SELECT</command> 查询返回的总行数：
+<programlisting>
+$nrows = $rv-&gt;{processed}
+</programlisting>
+      </para>
+
+      <para>
+       下面是使用另一种命令类型的示例：
+<programlisting>
+$query = "INSERT INTO my_table VALUES (1, 'test')";
+$rv = spi_exec_query($query);
+</programlisting>
+       可以这样访问命令状态（例如 <literal>SPI_OK_INSERT</literal>）：
+<programlisting>
+$res = $rv-&gt;{status};
+</programlisting>
+       要获取受影响的行数，可使用：
+<programlisting>
+$nrows = $rv-&gt;{processed};
+</programlisting>
+      </para>
+
+      <para>
+       这里是一个完整的示例：
+<programlisting>
+CREATE TABLE test (
+    i int,
+    v varchar
+);
+
+INSERT INTO test (i, v) VALUES (1, 'first line');
+INSERT INTO test (i, v) VALUES (2, 'second line');
+INSERT INTO test (i, v) VALUES (3, 'third line');
+INSERT INTO test (i, v) VALUES (4, 'immortal');
+
+CREATE OR REPLACE FUNCTION test_munge() RETURNS SETOF test AS $$
+    my $rv = spi_exec_query('SELECT i, v FROM test;');
+    my $status = $rv-&gt;{status};
+    my $nrows = $rv-&gt;{processed};
+    foreach my $rn (0 .. $nrows - 1) {
+        my $row = $rv-&gt;{rows}[$rn];
+        $row-&gt;{i} += 200 if defined($row-&gt;{i});
+        $row-&gt;{v} =~ tr/A-Za-z/a-zA-Z/ if (defined($row-&gt;{v}));
+        return_next($row);
+    }
+    return undef;
+$$ LANGUAGE plperl;
+
+SELECT * FROM test_munge();
+</programlisting>
+    </para>
+    </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-2">
+
+     <term>
+      <literal><function>spi_query(<replaceable>command</replaceable>)</function></literal>
+      <indexterm>
+       <primary>spi_query</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+
+     <term>
+      <literal><function>spi_fetchrow(<replaceable>cursor</replaceable>)</function></literal>
+      <indexterm>
+       <primary>spi_fetchrow</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+
+     <term>
+      <literal><function>spi_cursor_close(<replaceable>cursor</replaceable>)</function></literal>
+      <indexterm>
+       <primary>spi_cursor_close</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+
+    <listitem>
+
+    <para>
+    <literal>spi_query</literal> 和 <literal>spi_fetchrow</literal>
+    需要配合使用，适用于结果集可能很大，或者希望在行到达时立即返回的情况。
+    <literal>spi_fetchrow</literal> <emphasis>只能</emphasis> 与
+    <literal>spi_query</literal> 一起使用。下面的示例演示了它们的配合方式：
+
+<programlisting>
+CREATE TYPE foo_type AS (the_num INTEGER, the_text TEXT);
+
+CREATE OR REPLACE FUNCTION lotsa_md5 (INTEGER) RETURNS SETOF foo_type AS $$
+    use Digest::MD5 qw(md5_hex);
+    my $file = '/usr/share/dict/words';
+    my $t = localtime;
+    elog(NOTICE, "opening file $file at $t" );
+    open my $fh, '&lt;', $file # ooh, it's a file access!
+        or elog(ERROR, "cannot open $file for reading: $!");
+    my @words = &lt;$fh&gt;;
+    close $fh;
+    $t = localtime;
+    elog(NOTICE, "closed file $file at $t");
+    chomp(@words);
+    my $row;
+    my $sth = spi_query("SELECT * FROM generate_series(1,$_[0]) AS b(a)");
+    while (defined ($row = spi_fetchrow($sth))) {
+        return_next({
+            the_num =&gt; $row-&gt;{a},
+            the_text =&gt; md5_hex($words[rand @words])
+        });
+    }
+    return;
+$$ LANGUAGE plperlu;
+
+SELECT * FROM lotsa_md5(500);
+</programlisting>
+    </para>
+
+    <para>
+     通常，应重复调用 <function>spi_fetchrow</function>，直到它返回
+     <literal>undef</literal>，这表示已经没有更多行可读。当
+     <function>spi_fetchrow</function> 返回 <literal>undef</literal> 时，
+     <literal>spi_query</literal> 返回的游标会被自动释放。如果不打算读取
+     所有行，则应调用 <function>spi_cursor_close</function> 释放游标。
+     否则会导致内存泄漏。
+    </para>
+
+    </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-3">
+
+     <term>
+      <literal><function>spi_prepare(<replaceable>command</replaceable>, <replaceable>argument types</replaceable>)</function></literal>
+      <indexterm>
+       <primary>spi_prepare</primary>
+       <secondary>in PL/Perl</secondary>
+     </indexterm>
+     </term>
+
+     <term>
+      <literal><function>spi_query_prepared(<replaceable>plan</replaceable>, <replaceable>arguments</replaceable>)</function></literal>
+      <indexterm>
+       <primary>spi_query_prepared</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+
+     <term>
+      <literal><function>spi_exec_prepared(<replaceable>plan</replaceable> [, <replaceable>attributes</replaceable>], <replaceable>arguments</replaceable>)</function></literal>
+      <indexterm>
+       <primary>spi_exec_prepared</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+
+     <term>
+      <literal><function>spi_freeplan(<replaceable>plan</replaceable>)</function></literal>
+      <indexterm>
+       <primary>spi_freeplan</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+
+    <listitem>
+
+    <para>
+    <literal>spi_prepare</literal>、<literal>spi_query_prepared</literal>、
+    <literal>spi_exec_prepared</literal> 和 <literal>spi_freeplan</literal>
+    提供相同的功能，但用于预处理查询。<literal>spi_prepare</literal>
+    接受一个带编号参数占位符（$1、$2 等）的查询字符串，以及参数类型的
+    字符串列表：
+<programlisting>
+$plan = spi_prepare('SELECT * FROM test WHERE id &gt; $1 AND name = $2',
+                                                     'INTEGER', 'TEXT');
+</programlisting>
+    一旦通过调用 <literal>spi_prepare</literal> 准备好查询计划，就可以用它
+    代替字符串查询。可以在 <literal>spi_exec_prepared</literal> 中使用，
+    此时结果与 <literal>spi_exec_query</literal> 返回的结果相同；也可以在
+    <literal>spi_query_prepared</literal> 中使用，它会像
+    <literal>spi_query</literal> 一样返回一个游标，随后可传给
+    <literal>spi_fetchrow</literal>。<literal>spi_exec_prepared</literal>
+    的可选第二个参数是属性哈希引用；目前唯一支持的属性是
+    <literal>limit</literal>，它用于设置查询返回的最大行数。省略
+    <literal>limit</literal> 或将其指定为零时，不会限制返回行数。
+</para>
+
+    <para>
+    预处理查询的优点在于，一个准备好的计划可以用于多次查询执行。当计划
+    不再需要时，可以用 <literal>spi_freeplan</literal> 将其释放：
+<programlisting>
+CREATE OR REPLACE FUNCTION init() RETURNS VOID AS $$
+        $_SHARED{my_plan} = spi_prepare('SELECT (now() + $1)::date AS now',
+                                        'INTERVAL');
+$$ LANGUAGE plperl;
+
+CREATE OR REPLACE FUNCTION add_time( INTERVAL ) RETURNS TEXT AS $$
+        return spi_exec_prepared(
+                $_SHARED{my_plan},
+                $_[0]
+        )->{rows}->[0]->{now};
+$$ LANGUAGE plperl;
+
+CREATE OR REPLACE FUNCTION done() RETURNS VOID AS $$
+        spi_freeplan( $_SHARED{my_plan});
+        undef $_SHARED{my_plan};
+$$ LANGUAGE plperl;
+
+SELECT init();
+SELECT add_time('1 day'), add_time('2 days'), add_time('3 days');
+SELECT done();
+
+  add_time  |  add_time  |  add_time
+------------+------------+------------
+ 2005-12-10 | 2005-12-11 | 2005-12-12
+</programlisting>
+    请注意，<literal>spi_prepare</literal> 中的参数下标由 $1、$2、$3
+    等表示，因此应避免用双引号声明查询字符串，以免轻易引入难以察觉的错误。
+    </para>
+
+    <para>
+    下面的另一个示例展示了如何在
+    <literal>spi_exec_prepared</literal> 中使用可选参数：
+<programlisting>
+CREATE TABLE hosts AS SELECT id, ('192.168.1.'||id)::inet AS address
+                      FROM generate_series(1,3) AS id;
+
+CREATE OR REPLACE FUNCTION init_hosts_query() RETURNS VOID AS $$
+        $_SHARED{plan} = spi_prepare('SELECT * FROM hosts
+                                      WHERE address &lt;&lt; $1', 'inet');
+$$ LANGUAGE plperl;
+
+CREATE OR REPLACE FUNCTION query_hosts(inet) RETURNS SETOF hosts AS $$
+        return spi_exec_prepared(
+                $_SHARED{plan},
+                {limit =&gt; 2},
+                $_[0]
+        )->{rows};
+$$ LANGUAGE plperl;
+
+CREATE OR REPLACE FUNCTION release_hosts_query() RETURNS VOID AS $$
+        spi_freeplan($_SHARED{plan});
+        undef $_SHARED{plan};
+$$ LANGUAGE plperl;
+
+SELECT init_hosts_query();
+SELECT query_hosts('192.168.1.0/30');
+SELECT release_hosts_query();
+
+    query_hosts
+-----------------
+ (1,192.168.1.1)
+ (2,192.168.1.2)
+(2 rows)
+</programlisting>
+    </para>
+    </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-4">
+
+     <term>
+      <literal><function>spi_commit()</function></literal>
+      <indexterm>
+       <primary>spi_commit</primary>
+       <secondary>in PL/Perl</secondary>
+     </indexterm>
+     </term>
+
+     <term>
+      <literal><function>spi_rollback()</function></literal>
+      <indexterm>
+       <primary>spi_rollback</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+     <listitem>
+
+      <para>
+       提交或回滚当前事务。只能在从顶层调用的过程或匿名代码块
+       （<command>DO</command> 命令）中调用这些函数。请注意，无法通过
+       <function>spi_exec_query</function> 或类似函数执行
+       <command>COMMIT</command> 或 <command>ROLLBACK</command> 这类 SQL
+       命令；必须使用这些函数来完成。在一个事务结束后，会自动启动一个
+       新事务，因此不需要单独的函数来开始新事务。
+      </para>
+
+      <para>
+       这里是一个示例：
+<programlisting>
+CREATE PROCEDURE transaction_test1()
+LANGUAGE plperl
+AS $$
+foreach my $i (0..9) {
+    spi_exec_query("INSERT INTO test1 (a) VALUES ($i)");
+    if ($i % 2 == 0) {
+        spi_commit();
+    } else {
+        spi_rollback();
+    }
+}
+$$;
+
+CALL transaction_test1();
+</programlisting>
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+ </sect2>
+
+ <sect2 id="plperl-utility-functions">
+
+  <title>PL/Perl 中的工具函数</title>
+
+   <variablelist>
+    <varlistentry id="zh18-auto-plperl-varlistentry-5">
+
+     <term>
+      <literal><function>elog(<replaceable>level</replaceable>, <replaceable>msg</replaceable>)</function></literal>
+      <indexterm>
+       <primary>elog</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+     <listitem>
+
+      <para>
+       发出日志消息或错误信息。可用级别包括
+       <literal>DEBUG</literal>、<literal>LOG</literal>、<literal>INFO</literal>、
+       <literal>NOTICE</literal>、<literal>WARNING</literal>以及<literal>ERROR</literal>。
+       <literal>ERROR</literal> 会引发错误条件；如果周围的 Perl 代码没有
+       捕获它，错误就会传播到调用查询，导致当前事务或子事务被中止。这实质上
+       等同于 Perl 的 <literal>die</literal> 命令。其他级别只会生成不同优先级
+       的消息。某一优先级的消息是报告给客户端、写入服务器日志，还是两者兼有，
+       由配置变量 <xref linkend="guc-log-min-messages"/> 和
+       <xref linkend="guc-client-min-messages"/> 控制。详见
+        <xref linkend="runtime-config"/>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-6">
+
+     <term>
+      <literal><function>quote_literal(<replaceable>string</replaceable>)</function></literal>
+      <indexterm>
+       <primary>quote_literal</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+     <listitem>
+
+      <para>
+        返回给定字符串适当加引号后的形式，以便把它用作 SQL 语句字符串中的
+        字符串字面量。嵌入的单引号和反斜线会被正确地双写。注意，对于
+        undef 输入，<function>quote_literal</function> 会返回 undef；
+        如果参数可能为 undef，<function>quote_nullable</function>
+        往往更合适。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-7">
+
+     <term>
+      <literal><function>quote_nullable(<replaceable>string</replaceable>)</function></literal>
+      <indexterm>
+       <primary>quote_nullable</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+     <listitem>
+
+      <para>
+        返回给定字符串适当加引号后的形式，以便把它用作 SQL 语句字符串中的
+        字符串字面量；如果参数为 undef，则返回未加引号的字符串
+        "NULL"。嵌入的单引号和反斜线会被正确地双写。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-8">
+
+     <term>
+      <literal><function>quote_ident(<replaceable>string</replaceable>)</function></literal>
+      <indexterm>
+       <primary>quote_ident</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+     <listitem>
+
+      <para>
+        返回给定字符串适当加引号后的形式，以便把它用作 SQL 语句字符串中的
+        标识符。只有在必要时才会添加引号，也就是当字符串包含非标识符字符，
+        或者会发生大小写折叠时。嵌入的引号会被正确地双写。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-9">
+
+     <term>
+      <literal><function>decode_bytea(<replaceable>string</replaceable>)</function></literal>
+      <indexterm>
+       <primary>decode_bytea</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+     <listitem>
+
+      <para>
+        返回由给定字符串的内容表示的未转义二进制数据，该字符串应为
+        <type>bytea</type> 编码形式。
+        </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-10">
+
+     <term>
+      <literal><function>encode_bytea(<replaceable>string</replaceable>)</function></literal>
+      <indexterm>
+       <primary>encode_bytea</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+     <listitem>
+
+      <para>
+        返回给定字符串中二进制数据内容的 <type>bytea</type> 编码形式。
+        </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-11">
+
+     <term>
+      <literal><function>encode_array_literal(<replaceable>array</replaceable>)</function></literal>
+      <indexterm>
+       <primary>encode_array_literal</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+     <term>
+      <literal><function>encode_array_literal(<replaceable>array</replaceable>, <replaceable>delimiter</replaceable>)</function></literal>
+     </term>
+     <listitem>
+
+      <para>
+        将引用数组的内容以数组字面量格式（见
+        <xref linkend="arrays-input"/>）返回为字符串。若参数不是数组引用，
+        则原样返回该参数值。如果未指定分隔符，或者分隔符为 undef，则数组
+        字面量元素之间默认使用 "<literal>, </literal>" 作为分隔符。
+        </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-12">
+
+     <term>
+      <literal><function>encode_typed_literal(<replaceable>value</replaceable>, <replaceable>typename</replaceable>)</function></literal>
+      <indexterm>
+       <primary>encode_typed_literal</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+      <listitem>
+
+       <para>
+         将一个 Perl 变量转换为第二个参数指定的数据类型的值，并返回该值的
+         字符串表示。它能正确处理嵌套数组和复合类型的值。
+       </para>
+      </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-13">
+
+     <term>
+      <literal><function>encode_array_constructor(<replaceable>array</replaceable>)</function></literal>
+      <indexterm>
+       <primary>encode_array_constructor</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+     <listitem>
+
+      <para>
+        将引用数组的内容以数组构造器格式（
+        <xref linkend="sql-syntax-array-constructors"/>）返回为字符串。其中
+        每个值都使用 <function>quote_nullable</function> 加引号。如果参数
+        不是数组引用，则返回使用 <function>quote_nullable</function>
+        加引号后的参数值。
+        </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-14">
+
+     <term>
+      <literal><function>looks_like_number(<replaceable>string</replaceable>)</function></literal>
+      <indexterm>
+       <primary>looks_like_number</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+     <listitem>
+
+      <para>
+        如果按照 Perl 的规则看，给定字符串的内容像数字，则返回真值，
+        否则返回假值。如果参数为 undef，则返回 undef。前导和尾随空格
+        会被忽略。<literal>Inf</literal> 和 <literal>Infinity</literal>
+        被视为数字。
+        </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-15">
+
+     <term>
+      <literal><function>is_array_ref(<replaceable>argument</replaceable>)</function></literal>
+      <indexterm>
+       <primary>is_array_ref</primary>
+       <secondary>in PL/Perl</secondary>
+      </indexterm>
+     </term>
+     <listitem>
+
+      <para>
+        如果给定参数可被视为数组引用，则返回真值；也就是该参数的
+        <literal>ref</literal> 值为 <literal>ARRAY</literal> 或
+        <literal>PostgreSQL::InServer::ARRAY</literal>。否则返回假值。
+      </para>
+     </listitem>
+    </varlistentry>
+
+   </variablelist>
+  </sect2>
+ </sect1>
+
+ <sect1 id="plperl-global">
+
+  <title>PL/Perl 中的全局值</title>
+
+  <para>
+    可以使用全局哈希 <varname>%_SHARED</varname> 在当前会话的整个生命
+    周期内跨函数调用存储数据，包括代码引用。
+  </para>
+
+  <para>
+    这是共享数据的一个简单示例：
+<programlisting>
+CREATE OR REPLACE FUNCTION set_var(name text, val text) RETURNS text AS $$
+    if ($_SHARED{$_[0]} = $_[1]) {
+        return 'ok';
+    } else {
+        return "cannot set shared variable $_[0] to $_[1]";
+    }
+$$ LANGUAGE plperl;
+
+CREATE OR REPLACE FUNCTION get_var(name text) RETURNS text AS $$
+    return $_SHARED{$_[0]};
+$$ LANGUAGE plperl;
+
+SELECT set_var('sample', 'Hello, PL/Perl!  How''s tricks?');
+SELECT get_var('sample');
+</programlisting>
+  </para>
+
+  <para>
+   下面是一个稍复杂一些的、使用代码引用的示例：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION myfuncs() RETURNS void AS $$
+    $_SHARED{myquote} = sub {
+        my $arg = shift;
+        $arg =~ s/(['\\])/\\$1/g;
+        return "'$arg'";
+    };
+$$ LANGUAGE plperl;
+
+SELECT myfuncs(); /* initializes the function */
+
+/* Set up a function that uses the quote function */
+
+CREATE OR REPLACE FUNCTION use_quote(TEXT) RETURNS text AS $$
+    my $text_to_quote = shift;
+    my $qfunc = $_SHARED{myquote};
+    return &amp;$qfunc($text_to_quote);
+$$ LANGUAGE plperl;
+</programlisting>
+
+   （上面的代码也可以替换为单行
+   <literal>return $_SHARED{myquote}-&gt;($_[0]);</literal>，
+   但代价是可读性会变差。）
+  </para>
+
+  <para>
+   出于安全原因，PL/Perl 会为某个 SQL 角色调用的函数在该角色专用的独立
+   Perl 解释器中执行。这可以防止一个用户意外或恶意地干扰另一个用户的
+   PL/Perl 函数行为。每个这样的解释器都有自己的
+   <varname>%_SHARED</varname> 变量值和其他全局状态。因此，只有在两个
+   PL/Perl 函数都由同一 SQL 角色执行时，它们才会共享
+   <varname>%_SHARED</varname> 的值。在某些应用中，一个会话可能会在多个
+   SQL 角色下执行代码（通过 <literal>SECURITY DEFINER</literal> 函数、
+   使用 <command>SET ROLE</command> 等），这时可能需要显式采取措施，
+   确保 PL/Perl 函数能够通过 <varname>%_SHARED</varname> 共享数据。为此，
+   要确保需要相互通信的函数由同一用户拥有，并将它们标记为
+   <literal>SECURITY DEFINER</literal>。当然，必须注意不要让这些函数被
+   用于任何非预期用途。
+</para>
+ </sect1>
+
+ <sect1 id="plperl-trusted">
+
+  <title>可信与不可信的 PL/Perl</title>
+
+  <indexterm zone="plperl-trusted">
+   <primary>trusted</primary>
+   <secondary>PL/Perl</secondary>
+  </indexterm>
+
+  <para>
+   通常，PL/Perl 会被安装为一种名为 <literal>plperl</literal> 的
+   <quote>可信</quote>编程语言。在这种设置下，为了保持安全性，某些 Perl
+   操作会被禁用。一般来说，受限制的是那些与环境交互的操作，包括文件句柄
+   操作、<literal>require</literal> 和 <literal>use</literal>
+   （针对外部模块）。它无法像 C 函数那样访问数据库服务器进程的内部，
+   也无法以服务器进程的权限获取操作系统级访问。因此，可以允许任何无权限
+   的数据库用户使用这种语言。
+  </para>
+
+  <warning>
+   <para>
+    可信 PL/Perl 依赖 Perl 的 <literal>Opcode</literal> 模块来维持安全性。
+    Perl 的
+    <ulink url="https://perldoc.perl.org/Opcode#WARNING">文档</ulink>
+    指出，该模块对于可信 PL/Perl 这一使用场景并不有效。若你的安全需求
+    不能接受该警告中的不确定性，请考虑执行
+    <literal>REVOKE USAGE ON LANGUAGE plperl FROM PUBLIC</literal>。
+   </para>
+  </warning>
+
+  <para>
+   下面示例中的函数将无法工作，因为出于安全原因不允许它做文件操作：
+<programlisting>
+CREATE FUNCTION badfunc() RETURNS integer AS $$
+    my $tmpfile = "/tmp/badfile";
+    open my $fh, '&gt;', $tmpfile
+        or elog(ERROR, qq{could not open the file "$tmpfile": $!});
+    print $fh "Testing writing to a file\n";
+    close $fh or elog(ERROR, qq{could not close the file "$tmpfile": $!});
+    return 1;
+$$ LANGUAGE plperl;
+</programlisting>
+    这个函数的创建会失败，因为验证器会捕捉到它使用了禁用的操作。
+  </para>
+
+  <para>
+   有时需要编写不受这些限制的 Perl 函数。例如，可能需要一个能发送邮件的
+   Perl 函数。为处理这类情况，也可以把 PL/Perl 安装成一种
+   <quote>不可信</quote>语言（通常称为
+   <application>PL/PerlU</application><indexterm><primary>PL/PerlU</primary></indexterm>）。
+   在这种情况下，完整的 Perl 语言都可用。安装该语言时，使用语言名
+   <literal>plperlu</literal> 就会选择不可信的 PL/Perl 变体。
+  </para>
+
+  <para>
+   <application>PL/PerlU</application> 函数的编写者必须注意，函数不能被
+   用于任何非预期用途，因为它能够执行以数据库管理员身份登录的用户所能
+   做的任何事情。请注意，数据库系统只允许数据库超级用户用不可信语言创建
+   函数。
+  </para>
+
+  <para>
+   如果上述函数是由超级用户使用 <literal>plperlu</literal> 语言创建的，
+   执行就会成功。
+  </para>
+
+  <para>
+   同样地，如果把语言指定为 <literal>plperlu</literal> 而不是
+   <literal>plperl</literal>，用 Perl 编写的匿名代码块也可以使用原本受限的
+   操作，但调用者必须是超级用户。
+  </para>
+
+  <note>
+
+   <para>
+    虽然 <application>PL/Perl</application> 函数会为每个 SQL 角色在独立的
+    Perl 解释器中运行，但给定会话中执行的所有
+    <application>PL/PerlU</application> 函数都运行在同一个 Perl 解释器中
+    （而且这个解释器并不是任何一个用于 <application>PL/Perl</application>
+    函数的解释器）。这允许 <application>PL/PerlU</application> 函数自由共享
+    数据，但 <application>PL/Perl</application> 与
+    <application>PL/PerlU</application> 函数之间不能进行通信。
+   </para>
+  </note>
+
+  <note>
+
+   <para>
+    Perl 无法在单个进程内支持多个解释器，除非构建时使用了适当的标志，
+    即 <literal>usemultiplicity</literal> 或 <literal>useithreads</literal>
+    之一。（除非确实需要使用线程，否则更推荐
+    <literal>usemultiplicity</literal>。更多细节见
+    <citerefentry><refentrytitle>perlembed</refentrytitle></citerefentry>
+    手册页。）如果 <application>PL/Perl</application> 使用的是未按这种方式
+    构建的 Perl 副本，那么每个会话中就只能有一个 Perl 解释器，因此任一
+    会话只能执行 <application>PL/PerlU</application> 函数，或者执行全部由同一
+    SQL 角色调用的 <application>PL/Perl</application> 函数。
+   </para>
+  </note>
+
+ </sect1>
+
+ <sect1 id="plperl-triggers">
+
+  <title>PL/Perl 触发器</title>
+
+  <para>
+   PL/Perl 可用于编写触发器函数。在触发器函数中，哈希引用
+   <varname>$_TD</varname> 包含有关当前触发器事件的信息。
+   <varname>$_TD</varname> 是一个全局变量，对触发器的每一次调用都会得到
+   一个单独的局部值。<varname>$_TD</varname> 哈希引用包含以下字段：
+
+   <variablelist>
+    <varlistentry id="zh18-auto-plperl-varlistentry-28">
+     <term><literal>$_TD-&gt;{new}{foo}</literal></term>
+     <listitem>
+      <para>
+       列 <structfield>foo</structfield> 的 <literal>NEW</literal> 值
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-29">
+     <term><literal>$_TD-&gt;{old}{foo}</literal></term>
+     <listitem>
+      <para>
+       列 <structfield>foo</structfield> 的 <literal>OLD</literal> 值
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-30">
+     <term><literal>$_TD-&gt;{name}</literal></term>
+     <listitem>
+     <para>
+       被调用的触发器名称
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-31">
+     <term><literal>$_TD-&gt;{event}</literal></term>
+     <listitem>
+      <para>
+       触发器事件：<literal>INSERT</literal>、<literal>UPDATE</literal>、
+       <literal>DELETE</literal>、<literal>TRUNCATE</literal>或者<literal>UNKNOWN</literal>
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-32">
+     <term><literal>$_TD-&gt;{when}</literal></term>
+     <listitem>
+     <para>
+       触发器被调用的时机：<literal>BEFORE</literal>、
+       <literal>AFTER</literal>、<literal>INSTEAD OF</literal> 或
+       <literal>UNKNOWN</literal>
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-33">
+     <term><literal>$_TD-&gt;{level}</literal></term>
+     <listitem>
+      <para>
+       触发器级别：<literal>ROW</literal>、<literal>STATEMENT</literal>或者<literal>UNKNOWN</literal>
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-34">
+     <term><literal>$_TD-&gt;{relid}</literal></term>
+     <listitem>
+     <para>
+       触发该触发器的表的 OID
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-35">
+     <term><literal>$_TD-&gt;{table_name}</literal></term>
+     <listitem>
+     <para>
+       触发该触发器的表名
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-36">
+     <term><literal>$_TD-&gt;{relname}</literal></term>
+     <listitem>
+     <para>
+       触发该触发器的表名。该字段已废弃，并且可能会在未来版本中移除。
+       请改用 $_TD-&gt;{table_name}。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-37">
+     <term><literal>$_TD-&gt;{table_schema}</literal></term>
+     <listitem>
+     <para>
+       触发该触发器的表所在模式的名称
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-38">
+     <term><literal>$_TD-&gt;{argc}</literal></term>
+     <listitem>
+      <para>
+       触发器函数的参数数目
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-39">
+     <term><literal>@{$_TD-&gt;{args}}</literal></term>
+     <listitem>
+     <para>
+       触发器函数的参数。如果 <literal>$_TD-&gt;{argc}</literal> 为 0，则该字段不存在
+      </para>
+     </listitem>
+    </varlistentry>
+
+   </variablelist>
+  </para>
+
+  <para>
+   行级触发器可以返回下列之一：
+
+   <variablelist>
+    <varlistentry id="zh18-auto-plperl-varlistentry-43">
+     <term><literal>return;</literal></term>
+     <listitem>
+      <para>
+       执行操作
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-44">
+     <term><literal>"SKIP"</literal></term>
+     <listitem>
+      <para>
+       不执行操作
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-45">
+     <term><literal>"MODIFY"</literal></term>
+     <listitem>
+      <para>
+       指示触发器函数修改了 <literal>NEW</literal> 行
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+  <para>
+   下面是一个触发器函数示例，用于说明上述部分内容：
+<programlisting>
+CREATE TABLE test (
+    i int,
+    v varchar
+);
+
+CREATE OR REPLACE FUNCTION valid_id() RETURNS trigger AS $$
+    if (($_TD-&gt;{new}{i} &gt;= 100) || ($_TD-&gt;{new}{i} &lt;= 0)) {
+        return "SKIP";    # skip INSERT/UPDATE command
+    } elsif ($_TD-&gt;{new}{v} ne "immortal") {
+        $_TD-&gt;{new}{v} .= "(modified by trigger)";
+        return "MODIFY";  # modify row and execute INSERT/UPDATE command
+    } else {
+        return;           # execute INSERT/UPDATE command
+    }
+$$ LANGUAGE plperl;
+
+CREATE TRIGGER test_valid_id_trig
+    BEFORE INSERT OR UPDATE ON test
+    FOR EACH ROW EXECUTE FUNCTION valid_id();
+</programlisting>
+  </para>
+ </sect1>
+
+ <sect1 id="plperl-event-triggers">
+
+  <title>PL/Perl 事件触发器</title>
+
+  <para>
+   PL/Perl 可用于编写事件触发器函数。在事件触发器函数中，哈希引用
+   <varname>$_TD</varname> 包含有关当前触发器事件的信息。
+   <varname>$_TD</varname> 是一个全局变量，对触发器的每一次调用都会得到
+   一个单独的局部值。<varname>$_TD</varname> 哈希引用包含以下字段：
+
+   <variablelist>
+    <varlistentry id="zh18-auto-plperl-varlistentry-48">
+     <term><literal>$_TD-&gt;{event}</literal></term>
+     <listitem>
+     <para>
+       该触发器所针对的事件名称。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="zh18-auto-plperl-varlistentry-49">
+     <term><literal>$_TD-&gt;{tag}</literal></term>
+     <listitem>
+     <para>
+       该触发器所针对的命令标签。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+  <para>
+   触发器函数的返回值会被忽略。
+  </para>
+
+  <para>
+   下面是一个事件触发器函数示例，用于说明上述部分内容：
+<programlisting>
+CREATE OR REPLACE FUNCTION perlsnitch() RETURNS event_trigger AS $$
+  elog(NOTICE, "perlsnitch: " . $_TD->{event} . " " . $_TD->{tag} . " ");
+$$ LANGUAGE plperl;
+
+CREATE EVENT TRIGGER perl_a_snitch
+    ON ddl_command_start
+    EXECUTE FUNCTION perlsnitch();
+</programlisting>
+  </para>
+ </sect1>
+
+ <sect1 id="plperl-under-the-hood">
+
+  <title>PL/Perl 内部机制</title>
+
+ <sect2 id="plperl-config">
+
+  <title>配置</title>
+
+  <para>
+  本节列出影响 <application>PL/Perl</application> 的配置参数。
+  </para>
+
+  <variablelist>
+
+     <varlistentry id="guc-plperl-on-init" xreflabel="plperl.on_init">
+
+      <term>
+       <varname>plperl.on_init</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>plperl.on_init</varname> 配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        指定在 Perl 解释器首次初始化时、在它被专用于
+        <literal>plperl</literal> 或 <literal>plperlu</literal> 之前，要执行
+        的 Perl 代码。执行这段代码时 SPI 函数不可用。如果代码因错误而失败，
+        就会中止解释器初始化，并把错误传播到调用查询，导致当前事务或子事务
+        被中止。
+       </para>
+
+       <para>
+       Perl 代码仅限一个字符串。更长的代码可以放在模块中，并由
+       <literal>on_init</literal> 字符串加载。示例：
+<programlisting>
+plperl.on_init = 'require "plperlinit.pl"'
+plperl.on_init = 'use lib "/my/app"; use MyApp::PgInit;'
+</programlisting>
+       </para>
+
+       <para>
+       任何通过 <literal>plperl.on_init</literal> 直接或间接加载的模块，都可
+       供 <literal>plperl</literal> 使用。这可能带来安全风险。要查看已经加载了
+       哪些模块，可以使用：
+<programlisting>
+DO 'elog(WARNING, join ", ", sort keys %INC)' LANGUAGE plperl;
+</programlisting>
+       </para>
+
+       <para>
+        如果 <literal>plperl</literal> 库被包含在
+        <xref linkend="guc-shared-preload-libraries"/> 中，初始化就会在
+        postmaster 中发生；在这种情况下，需要额外考虑使 postmaster
+        不稳定的风险。使用此特性的主要原因是，通过
+        <literal>plperl.on_init</literal> 加载的 Perl 模块只需在
+        postmaster 启动时加载一次，之后在各个数据库会话中都可立即使用，
+        而无需承担加载开销。不过要记住，这种开销只会对数据库会话使用的
+        第一个 Perl 解释器被省掉，也就是 PL/PerlU，或者第一个调用
+        PL/Perl 函数的 SQL 角色所对应的 PL/Perl。数据库会话中后来创建的
+        任何额外 Perl 解释器，都必须重新执行
+        <literal>plperl.on_init</literal>。此外，在 Windows 上预加载完全
+        不会带来节省，因为在 postmaster 进程中创建的 Perl 解释器不会传播到
+        子进程中。
+       </para>
+
+       <para>
+       这个参数只能在 <filename>postgresql.conf</filename> 文件中，或在服务器命令行上设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-plperl-on-plperl-init" xreflabel="plperl.on_plperl_init">
+
+      <term>
+       <varname>plperl.on_plperl_init</varname> (<type>string</type>)
+       <indexterm>
+        <primary><varname>plperl.on_plperl_init</varname> 配置参数</primary>
+       </indexterm>
+      </term>
+
+      <term>
+       <varname>plperl.on_plperlu_init</varname> (<type>string</type>)
+       <indexterm>
+        <primary><varname>plperl.on_plperlu_init</varname> 配置参数</primary>
+       </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        这些参数分别指定在 Perl 解释器被专用于 <literal>plperl</literal>
+        或 <literal>plperlu</literal> 时要执行的 Perl 代码。这会在数据库
+        会话中首次执行 PL/Perl 或 PL/PerlU 函数时发生；如果因为调用另一种
+        语言，或某个新的 SQL 角色调用了 PL/Perl 函数而需要创建额外解释器时，
+        也会发生。这是在 <literal>plperl.on_init</literal> 完成的任何初始化
+        之后进行的。执行这段代码时 SPI 函数不可用。
+        <literal>plperl.on_plperl_init</literal> 中的 Perl 代码是在对解释器
+        进行<quote>锁定</quote>之后执行的，因此只能执行可信操作。
+       </para>
+
+       <para>
+        如果代码因错误而失败，就会中止初始化，并把错误传播到调用查询，
+        导致当前事务或子事务被中止。在 Perl 中已经完成的任何动作都不会被
+        撤销；不过，该解释器将不再被使用。如果再次使用该语言，就会在一个
+        新的 Perl 解释器中再次尝试初始化。
+       </para>
+
+       <para>
+        只有超级用户可以更改这些设置。尽管这些设置可以在会话中修改，但这类
+        更改不会影响已经用于执行函数的 Perl 解释器。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-plperl-use-strict" xreflabel="plperl.use_strict">
+
+      <term>
+       <varname>plperl.use_strict</varname> (<type>boolean</type>)
+       <indexterm>
+        <primary><varname>plperl.use_strict</varname> 配置参数</primary>
+       </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        如果将其设为真，后续编译的 PL/Perl 函数都会启用
+        <literal>strict</literal> 编译指示。该参数不影响当前会话中已经编译
+        的函数。
+       </para>
+      </listitem>
+     </varlistentry>
+
+  </variablelist>
+</sect2>
+
+ <sect2 id="plperl-missing">
+
+  <title>限制与缺失特性</title>
+
+  <para>
+   PL/Perl 目前仍缺少下列特性，但欢迎为此作出贡献。
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      PL/Perl 函数不能直接调用彼此。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      SPI 尚未完全实现。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      如果使用 <literal>spi_exec_query</literal> 取回非常大的数据集，
+      应注意这些数据都会进入内存。可以像前面所示那样，通过使用
+      <literal>spi_query</literal>/<literal>spi_fetchrow</literal> 来避免
+      这种情况。
+     </para>
+     <para>
+        如果集合返回函数通过 <literal>return</literal> 把一个大型行集
+        返回给 <productname>PostgreSQL</productname>，也会出现类似问题。
+        前面已经说明过，可以改为对每一行使用
+        <literal>return_next</literal>，从而避免这个问题。
+     </para>
+    </listitem>
+
+     <listitem>
+      <para>
+        当会话正常结束（而不是由于致命错误结束）时，任何已经定义的
+        <literal>END</literal> 块都会被执行。目前不会执行其他操作。具体来说，
+        文件句柄不会自动刷写，对象也不会自动销毁。
+      </para>
+     </listitem>
+   </itemizedlist>
+  </para>
+ </sect2>
+
+ </sect1>
+
+</chapter>

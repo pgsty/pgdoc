@@ -1,0 +1,300 @@
+<!-- doc/src/sgml/manage-ag.sgml -->
+
+<chapter id="managing-databases">
+ <title>管理数据库</title>
+
+ <indexterm zone="managing-databases"><primary>database</primary></indexterm>
+
+ <para>
+  每个正在运行的<productname>PostgreSQL</productname>服务器实例都管理着一个或多个数据库。因此，数据库是组织<acronym>SQL</acronym>对象（<quote>数据库对象</quote>）的最高层级。本章描述数据库的属性，以及如何创建、管理和删除数据库。
+ </para>
+
+ <sect1 id="manage-ag-overview">
+  <title>概述</title>
+
+  <indexterm zone="manage-ag-overview">
+   <primary>模式</primary>
+  </indexterm>
+
+  <para>
+   少量对象，例如角色名、数据库名和表空间名，是在集簇级别定义并存储在<literal>pg_global</literal>表空间中的。集簇内部有多个数据库，它们彼此隔离，但可以访问集簇级对象。每个数据库内部又有多个模式，其中包含表、函数等对象。因此，完整的层次结构是：集簇、数据库、模式、表（或者函数等其他类型的对象）。
+  </para>
+
+  <para>
+   当连接到数据库服务器时，客户端必须在连接请求中指定数据库名。一个连接无法访问多个数据库。不过，客户端可以对同一个数据库建立多个连接，也可以连接到不同的数据库。数据库级安全由两部分组成：访问控制（见<xref linkend="auth-pg-hba-conf"/>），在连接级管理；授权控制（见<xref linkend="ddl-priv"/>），通过 GRANT 系统管理。外部数据包装器（见<xref linkend="postgres-fdw"/>）允许一个数据库中的对象充当其他数据库或集簇中对象的代理。较早的 dblink 模块（见<xref linkend="dblink"/>）也提供了类似能力。默认情况下，所有用户都可以使用所有连接方法连接到所有数据库。
+  </para>
+
+  <para>
+   如果一个<productname>PostgreSQL</productname>服务器集簇计划容纳彼此无关、在大多数情况下也不需要感知彼此存在的项目或用户，建议将它们放入不同的数据库，并相应地调整授权和访问控制。如果这些项目或用户彼此相关，因此应当能够使用彼此的资源，那么它们应当位于同一个数据库中，但通常应放入不同的模式；这能提供具有名字空间隔离和授权控制的模块化结构。关于管理模式的更多信息见<xref linkend="ddl-schemas"/>。
+  </para>
+
+  <para>
+   虽然可以在单个集簇中创建多个数据库，但仍建议仔细权衡其收益是否超过风险和限制。尤其要考虑共享 WAL（见<xref linkend="wal"/>）对备份和恢复选项的影响。虽然从用户角度看，集簇中的各个数据库彼此隔离，但从数据库管理员的角度看，它们又是紧密绑定的。
+  </para>
+
+  <para>
+   数据库使用<command>CREATE DATABASE</command>命令创建（见<xref linkend="manage-ag-createdb"/>），使用<command>DROP DATABASE</command>命令删除（见<xref linkend="manage-ag-dropdb"/>）。要确定现有数据库的集合，可以检查系统目录<structname>pg_database</structname>，例如：
+<synopsis>
+SELECT datname FROM pg_database;
+</synopsis>
+   <xref linkend="app-psql"/>程序的<literal>\l</literal>元命令和<option>-l</option>命令行选项也可用于列出现有数据库。
+  </para>
+
+  <note>
+   <para>
+    <acronym>SQL</acronym>标准将数据库称为<quote>目录</quote>，但在实践中两者没有区别。
+   </para>
+  </note>
+ </sect1>
+
+ <sect1 id="manage-ag-createdb">
+  <title>创建数据库</title>
+
+  <indexterm><primary>CREATE DATABASE</primary></indexterm>
+
+  <para>
+   要创建数据库，<productname>PostgreSQL</productname>服务器必须已经启动并正在运行（见<xref
+   linkend="server-start"/>）。
+  </para>
+
+  <para>
+   数据库用 SQL 命令<xref linkend="sql-createdatabase"/>创建：
+<synopsis>
+CREATE DATABASE <replaceable>name</replaceable>;
+</synopsis>
+   其中<replaceable>name</replaceable>遵循<acronym>SQL</acronym>标识符的一般规则。当前角色会自动成为新数据库的拥有者。数据库拥有者有权在日后删除该数据库（这也会删除其中的全部对象，即使那些对象具有不同的拥有者）。
+  </para>
+
+  <para>
+   创建数据库是一项受限操作。关于如何授予该权限，见<xref
+   linkend="role-attributes"/>。
+  </para>
+
+  <para>
+   由于执行<command>CREATE DATABASE</command>命令时必须先连接到数据库服务器，因此还会有一个问题：某个站点上的<emphasis>第一个</emphasis>数据库是如何创建的？第一个数据库总是由<command>initdb</command>命令在初始化数据存储区时创建的（见<xref linkend="creating-cluster"/>）。这个数据库叫作<literal>postgres</literal>。<indexterm><primary>postgres</primary></indexterm>因此，要创建第一个<quote>普通</quote>数据库，可以连接到<literal>postgres</literal>。
+  </para>
+
+  <para>
+   在初始化数据库集簇时，还会额外创建两个数据库，即<literal>template1</literal><indexterm><primary>template1</primary></indexterm>和<literal>template0</literal>。<indexterm><primary>template0</primary></indexterm>每当在集簇中创建一个新数据库时，新数据库本质上都是通过克隆<literal>template1</literal>得到的。这意味着你在<literal>template1</literal>中所做的任何更改，都会传播到后来创建的所有数据库中。因此，除非你希望这些对象出现在每一个新建数据库中，否则应避免在<literal>template1</literal>中创建对象。<literal>template0</literal>则被设计为<literal>template1</literal>原始内容的一份纯净副本。当需要创建一个不带任何此类站点本地附加对象的数据库时，可以复制它而不是复制<literal>template1</literal>。更多细节见<xref linkend="manage-ag-templatedbs"/>。
+  </para>
+
+  <para>
+   为了方便，还可以从 shell 中执行一个程序来创建新数据库，即<command>createdb</command>。<indexterm><primary>createdb</primary></indexterm>
+
+<synopsis>
+createdb <replaceable class="parameter">dbname</replaceable>
+</synopsis>
+
+   <command>createdb</command>并没有什么特殊之处。它连接到<literal>postgres</literal>数据库并发出<command>CREATE DATABASE</command>命令，和上面描述的完全一样。关于调用细节见<xref linkend="app-createdb"/>参考页。注意，不带任何参数的<command>createdb</command>会创建一个与当前用户名同名的数据库。
+  </para>
+
+  <note>
+   <para>
+    <xref linkend="client-authentication"/>包含关于如何限制谁能连接到给定数据库的信息。
+   </para>
+  </note>
+
+  <para>
+   有时你会想为其他人创建数据库，并让他们成为新数据库的拥有者，以便他们自行配置和管理它。要实现这一点，可使用下列命令之一：
+<programlisting>
+CREATE DATABASE <replaceable>dbname</replaceable> OWNER <replaceable>rolename</replaceable>;
+</programlisting>
+   这是在 SQL 环境中使用；或者：
+<programlisting>
+createdb -O <replaceable>rolename</replaceable> <replaceable>dbname</replaceable>
+</programlisting>
+   这是在 shell 中使用。只有超级用户才允许为其他人（即为一个你不是其成员的角色）创建数据库。
+  </para>
+ </sect1>
+
+ <sect1 id="manage-ag-templatedbs">
+  <title>模板数据库</title>
+
+  <para>
+   <command>CREATE DATABASE</command>实际上是通过复制一个现有数据库来创建新数据库。默认情况下，它复制名为<literal>template1</literal>的标准系统数据库。<indexterm><primary>template1</primary></indexterm>因此，该数据库就是创建新数据库时使用的<quote>模板</quote>。如果你向<literal>template1</literal>中添加对象，这些对象也会被复制到以后创建的用户数据库中。这种行为允许对数据库中的标准对象集合进行站点本地修改。例如，如果你将过程语言<application>PL/Perl</application>安装到<literal>template1</literal>中，那么以后创建用户数据库时无需额外操作，它就会自动可用。
+  </para>
+
+  <para>
+   然而，<command>CREATE DATABASE</command>不会复制附着在源数据库上的数据库级<command>GRANT</command>权限。新数据库将具有默认的数据库级权限。
+  </para>
+
+  <para>
+   还有第二个标准系统数据库，名为<literal>template0</literal>。<indexterm><primary>template0</primary></indexterm>该数据库包含与<literal>template1</literal>初始内容相同的数据，也就是说，只包含你的<productname>PostgreSQL</productname>版本预定义的标准对象。在数据库集簇初始化之后，<literal>template0</literal>就不应再被修改。通过指示<command>CREATE DATABASE</command>复制<literal>template0</literal>而不是<literal>template1</literal>，你可以创建一个<quote>纯净的</quote>用户数据库（其中不存在用户定义对象，系统对象也未被改动），它不包含<literal>template1</literal>中的任何站点本地附加对象。这在恢复<literal>pg_dump</literal>转储时特别方便：转储脚本应当恢复到一个纯净的数据库中，以确保重建出被转储数据库的正确内容，而不会与后来可能加入<literal>template1</literal>的对象发生冲突。
+  </para>
+
+  <para>
+   复制<literal>template0</literal>而不是<literal>template1</literal>的另一个常见原因是：复制<literal>template0</literal>时可以指定新的编码和区域设置，而<literal>template1</literal>的副本则必须使用与它相同的设置。这是因为<literal>template1</literal>可能包含依赖特定编码或区域设置的数据，而已知<literal>template0</literal>不会包含这类数据。
+  </para>
+
+  <para>
+   要通过复制<literal>template0</literal>创建数据库，可在 SQL 环境中使用：
+<programlisting>
+CREATE DATABASE <replaceable>dbname</replaceable> TEMPLATE template0;
+</programlisting>
+   或在 shell 中使用：
+<programlisting>
+createdb -T template0 <replaceable>dbname</replaceable>
+</programlisting>
+  </para>
+
+  <para>
+   可以创建额外的模板数据库，实际上也可以通过将集簇中任意数据库的名称指定为<command>CREATE DATABASE</command>的模板来复制它。不过，必须理解的是，这（至少目前）并不是一个通用的<quote><command>COPY DATABASE</command></quote>功能。最主要的限制是：复制源数据库时，不能有其他会话连接到该数据库。如果<command>CREATE DATABASE</command>开始时存在任何其他连接，该命令就会失败；在复制操作期间，也会阻止到源数据库的新连接。
+  </para>
+
+  <para>
+   对每个数据库，<literal>pg_database</literal><indexterm><primary>pg_database</primary></indexterm>中都有两个有用的标志列：<literal>datistemplate</literal>和<literal>datallowconn</literal>。<literal>datistemplate</literal>可设置为表明某个数据库将作为<command>CREATE DATABASE</command>的模板。如果设置了该标志，任何拥有<literal>CREATEDB</literal>权限的用户都可以克隆该数据库；如果未设置，则只有超级用户和数据库拥有者才能克隆它。如果<literal>datallowconn</literal>为假，则不允许建立到该数据库的新连接（但仅仅把该标志设为假并不会终止已有会话）。为了防止被修改，<literal>template0</literal>数据库通常被标记为<literal>datallowconn = false</literal>。<literal>template0</literal>和<literal>template1</literal>始终都应标记为<literal>datistemplate = true</literal>。
+  </para>
+
+  <note>
+   <para>
+    <literal>template1</literal>和<literal>template0</literal>除了<literal>template1</literal>这个名字是<command>CREATE DATABASE</command>默认源数据库名这一点之外，并无任何特殊地位。例如，可以删除<literal>template1</literal>，然后再从<literal>template0</literal>重新创建它，而不会有任何不良后果。如果有人不小心在<literal>template1</literal>里加入了许多杂项对象，这样做也许是可取的。（要删除<literal>template1</literal>，必须先令其具有<literal>pg_database.datistemplate = false</literal>。）
+   </para>
+
+   <para>
+    初始化数据库集簇时也会创建<literal>postgres</literal>数据库。这个数据库被用作用户和应用连接时的默认数据库。它只是<literal>template1</literal>的一个副本，因此在必要时也可以删除并重建。
+   </para>
+  </note>
+ </sect1>
+
+ <sect1 id="manage-ag-config">
+  <title>数据库配置</title>
+
+  <para>
+   正如<xref linkend="runtime-config"/>所述，<productname>PostgreSQL</productname>服务器提供了大量运行时配置变量。你可以为其中许多设置指定数据库特定的默认值。
+  </para>
+
+  <para>
+   例如，如果你因为某种原因想在某个数据库中禁用<acronym>GEQO</acronym>优化器，通常要么必须对所有数据库都禁用它，要么必须确保每个连入的客户端都会执行<literal>SET geqo
+   TO off</literal>。若要让这个设置在某个特定数据库中成为默认值，可以执行如下命令：
+<programlisting>
+ALTER DATABASE mydb SET geqo TO off;
+</programlisting>
+   这会保存该设置（但不会立即生效）。以后连接到该数据库时，它看起来就像是在会话开始前刚执行过<literal>SET geqo TO off;</literal>一样。注意，用户仍然可以在自己的会话中更改该设置；它只会作为默认值。要撤销这样的设置，可使用<literal>ALTER DATABASE <replaceable>dbname</replaceable> RESET
+   <replaceable>varname</replaceable></literal>。
+  </para>
+ </sect1>
+
+ <sect1 id="manage-ag-dropdb">
+  <title>删除数据库</title>
+
+  <para>
+   数据库使用<xref linkend="sql-dropdatabase"/>命令删除：<indexterm><primary>DROP DATABASE</primary></indexterm>
+<synopsis>
+DROP DATABASE <replaceable>name</replaceable>;
+</synopsis>
+   只有数据库拥有者或超级用户可以删除数据库。删除数据库会移除其中包含的全部对象。数据库的删除无法撤销。
+  </para>
+
+  <para>
+   当你连接到目标数据库时，不能执行<command>DROP DATABASE</command>命令。不过，你可以连接到任何其他数据库，包括<literal>template1</literal>数据库。若要删除某个集簇中的最后一个用户数据库，<literal>template1</literal>将是唯一的选择。
+  </para>
+
+  <para>
+   为了方便，还有一个 shell 程序可用于删除数据库，即<xref linkend="app-dropdb"/>。<indexterm><primary>dropdb</primary></indexterm>
+<synopsis>
+dropdb <replaceable class="parameter">dbname</replaceable>
+</synopsis>
+   （与<command>createdb</command>不同，默认操作并不是删除与当前用户名同名的数据库。）
+  </para>
+ </sect1>
+
+ <sect1 id="manage-ag-tablespaces">
+  <title>表空间</title>
+
+  <indexterm zone="manage-ag-tablespaces">
+   <primary>表空间</primary>
+  </indexterm>
+
+  <para>
+   <productname>PostgreSQL</productname>中的表空间允许数据库管理员在文件系统中定义存放表示数据库对象的文件的位置。表空间一旦创建，在创建数据库对象时就可以通过名称引用它。
+  </para>
+
+  <para>
+   通过使用表空间，管理员可以控制<productname>PostgreSQL</productname>安装的磁盘布局。这至少有两方面的用途。首先，如果初始化集簇所在的分区或卷空间耗尽且无法扩展，可以在另一个分区上创建表空间并使用它，直到系统能够重新配置。
+  </para>
+
+  <para>
+   其次，表空间允许管理员利用对数据库对象使用模式的了解来优化性能。例如，一个使用非常频繁的索引可以放在速度非常快且高可用的磁盘上，例如昂贵的固态设备。同时，一个存放归档数据且很少使用或对性能并不关键的表，则可以放在成本更低、速度更慢的磁盘系统上。
+  </para>
+
+  <warning>
+   <para>
+     即使位于 PostgreSQL 主数据目录之外，表空间仍然是数据库集簇不可分割的一部分，<emphasis>不能</emphasis>被视为一个独立的数据文件集合。它们依赖于主数据目录中的元数据，因此不能附加到不同的数据库集簇，也不能单独备份。同样，如果丢失一个表空间（文件被删除、磁盘故障等），数据库集簇可能会变得不可读或者无法启动。把表空间放在 RAM 磁盘这类临时文件系统上，会危及整个集簇的可靠性。
+   </para>
+  </warning>
+
+  <para>
+   要定义一个表空间，使用<xref
+   linkend="sql-createtablespace"/>
+   命令，例如：<indexterm><primary>CREATE TABLESPACE</primary></indexterm>
+<programlisting>
+CREATE TABLESPACE fastspace LOCATION '/ssd1/postgresql/data';
+</programlisting>
+   该位置必须是一个已经存在、为空并且由<productname>PostgreSQL</productname>操作系统用户拥有的目录。随后在这个表空间中创建的所有对象都会存储在该目录下的文件中。该位置不得位于可移动或瞬态存储上，因为如果表空间缺失或丢失，集簇可能无法正常工作。
+  </para>
+
+  <note>
+   <para>
+    通常来说，在每个逻辑文件系统上创建多个表空间意义不大，因为你无法控制单个文件在一个逻辑文件系统中的具体位置。不过，<productname>PostgreSQL</productname>并不强制这种限制，而且它实际上并不能直接感知你的系统中文件系统的边界。它只是在你指定的目录中存储文件。
+   </para>
+  </note>
+
+  <para>
+   表空间本身必须由数据库超级用户创建，但之后你可以允许普通数据库用户使用它。为此，需要向他们授予其上的<literal>CREATE</literal>权限。
+  </para>
+
+  <para>
+   表、索引以及整个数据库都可以被分配到特定的表空间。为此，对给定表空间拥有<literal>CREATE</literal>权限的用户必须把表空间名作为参数传给相应命令。例如，下列命令会在表空间<literal>space1</literal>中创建一个表：
+<programlisting>
+CREATE TABLE foo(i int) TABLESPACE space1;
+</programlisting>
+  </para>
+
+  <para>
+   另一种方式是使用<xref linkend="guc-default-tablespace"/>参数：
+<programlisting>
+SET default_tablespace = space1;
+CREATE TABLE foo(i int);
+</programlisting>
+   当<varname>default_tablespace</varname>被设置为非空字符串时，它会为未显式指定<literal>TABLESPACE</literal>子句的<command>CREATE TABLE</command>和<command>CREATE INDEX</command>命令隐含地补上该子句。
+  </para>
+
+  <para>
+   还有一个<xref linkend="guc-temp-tablespaces"/>参数，用来决定临时表和索引以及为大数据集排序等用途所使用的临时文件应放置在哪里。它可以是一个表空间名列表，而不只是单个表空间，这样与临时对象相关的负载就可以分散到多个表空间上。每次创建临时对象时，都会从该列表中随机挑选一个成员。
+  </para>
+
+  <para>
+   与数据库关联的表空间用于存储该数据库的系统目录。此外，如果没有给出<literal>TABLESPACE</literal>子句，并且<varname>default_tablespace</varname>或<varname>temp_tablespaces</varname>（视情况而定）也没有指定其他选择，那么它还是在该数据库中创建的表、索引和临时文件所使用的默认表空间。如果创建数据库时没有为其指定表空间，它将使用其所复制模板数据库的同一个表空间。
+  </para>
+
+  <para>
+   初始化数据库集簇时会自动创建两个表空间。<literal>pg_global</literal>表空间只用于共享系统目录。<literal>pg_default</literal>表空间是<literal>template1</literal>和<literal>template0</literal>数据库的默认表空间（因此，除非被<literal>TABLESPACE</literal>子句覆盖，而该子句可在<command>CREATE
+   DATABASE</command>中指定，否则它也会是其他数据库的默认表空间）。
+  </para>
+
+  <para>
+   表空间一旦创建，只要请求的用户具有足够权限，就可以从任何数据库中使用它。这意味着，只有当使用该表空间的所有数据库中的所有对象都已被移除之后，才能删除该表空间。
+  </para>
+
+  <para>
+   要移除一个空表空间，使用<xref
+   linkend="sql-droptablespace"/>
+   命令。
+  </para>
+
+  <para>
+   要确定现有表空间的集合，可以检查<link linkend="catalog-pg-tablespace"><structname>pg_tablespace</structname>
+   </link>系统目录，例如：
+<synopsis>
+SELECT spcname, spcowner::regrole, pg_tablespace_location(oid) FROM pg_tablespace;
+</synopsis>
+   还可以找出哪些数据库使用了哪些表空间；见<xref linkend="functions-info-catalog-table"/>。<xref
+   linkend="app-psql"/>程序的<literal>\db</literal>元命令对列出现有表空间也很有用。
+  </para>
+
+  <para>
+   <filename>$PGDATA/pg_tblspc</filename>目录包含符号链接，它们指向集簇中定义的每一个非内置表空间。虽然不推荐，但也可以通过重新定义这些链接来手工调整表空间布局。无论如何，都不要在服务器运行时执行此操作。
+  </para>
+
+ </sect1>
+</chapter>

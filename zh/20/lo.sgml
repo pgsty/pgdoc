@@ -1,0 +1,95 @@
+<!-- doc/src/sgml/lo.sgml -->
+
+<sect1 id="lo" xreflabel="lo">
+ <title>lo &mdash; 管理大对象</title>
+
+ <indexterm zone="lo">
+  <primary>lo</primary>
+ </indexterm>
+
+ <para>
+  <filename>lo</filename>模块为管理大对象（也称为 LO 或 BLOB）提供支持，其中包括数据类型<type>lo</type>和触发器<function>lo_manage</function>。
+ </para>
+
+ <para>
+  这个模块被视为<quote>受信任的</quote>，也就是说，只要在当前数据库上具有<literal>CREATE</literal>权限，非超级用户也可以安装它。
+ </para>
+
+ <sect2 id="lo-rationale">
+  <title>原理</title>
+
+  <para>
+   JDBC 驱动的一个问题是（ODBC 驱动也受此影响），其规范假定对 BLOB（二进制大对象）的引用存储在表内，并且如果该表项被更改，相关的 BLOB 就会从数据库中删除。
+  </para>
+
+  <para>
+   但在目前的<productname>PostgreSQL</productname>中并非如此。大对象被视为独立对象；表中的一个项可以通过 OID 引用某个大对象，但也可能有多个表项引用同一个大对象 OID，因此系统不会仅因你更改或删除了其中一个表项就删除该大对象。
+  </para>
+
+  <para>
+   这对于<productname>PostgreSQL</productname>专用应用没有问题，但使用 JDBC 或 ODBC 的标准代码不会删除这些对象，从而产生孤立对象，也就是不再被任何内容引用、只是占用磁盘空间的对象。
+  </para>
+
+  <para>
+   <filename>lo</filename>模块允许通过把触发器附加到包含 LO 引用列的表上来解决这个问题。该触发器本质上就是在你删除或修改引用大对象的值时调用<function>lo_unlink</function>。使用这个触发器时，你实际上是假定：凡是出现在受该触发器控制列中的大对象，在数据库中都只有一个引用！
+  </para>
+
+  <para>
+   该模块还提供了数据类型<type>lo</type>，它实际上只是<type>oid</type>类型上的一个<glossterm linkend="glossary-domain">域</glossterm>。这有助于区分保存大对象引用的数据库列与保存其他对象 OID 的列。使用该触发器并不要求必须使用<type>lo</type>类型，但用它来标识数据库中哪些列表示由该触发器管理的大对象，可能会更方便。还有传言说，如果 BLOB 列不用<type>lo</type>，ODBC 驱动会感到困惑。
+  </para>
+ </sect2>
+
+ <sect2 id="lo-how-to-use">
+  <title>如何使用</title>
+
+  <para>
+   下面是一个简单的用法示例：
+  </para>
+
+<programlisting>
+CREATE TABLE image (title text, raster lo);
+
+CREATE TRIGGER t_raster BEFORE UPDATE OR DELETE ON image
+    FOR EACH ROW EXECUTE FUNCTION lo_manage(raster);
+</programlisting>
+
+  <para>
+   对于每个将保存指向大对象的唯一引用的列，创建一个<literal>BEFORE UPDATE OR DELETE</literal>触发器，并将该列名作为唯一的触发器参数。你也可以使用<literal>BEFORE UPDATE OF</literal> <replaceable class="parameter">column_name</replaceable>，将该触发器限制为仅在更新该列时执行。如果同一张表中需要多个<type>lo</type>列，就为每一列分别创建一个触发器，并记得为同一张表上的每个触发器指定不同的名称。
+  </para>
+ </sect2>
+
+ <sect2 id="lo-limitations">
+  <title>限制</title>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     删除表时，其中包含的任何对象仍会变成孤立对象，因为这种情况下不会执行触发器。为避免这种情况，可以先执行<command>DELETE FROM <replaceable>table</replaceable></command>，再执行<command>DROP TABLE</command>。
+    </para>
+
+    <para>
+     <command>TRUNCATE</command>也有同样的风险。
+    </para>
+
+    <para>
+     如果你已经有，或者怀疑有，孤立的大对象，请参见<xref linkend="vacuumlo"/>模块来帮助清理它们。偶尔运行<application>vacuumlo</application>，作为对<function>lo_manage</function>触发器的补充保障，是个不错的主意。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     某些前端可能会创建自己的表，但不会创建相应的触发器。此外，用户也可能不记得（或根本不知道）要创建这些触发器。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect2>
+
+ <sect2 id="lo-author">
+  <title>作者</title>
+
+  <para>
+   Peter Mount <email>peter@retep.org.uk</email>
+  </para>
+ </sect2>
+
+</sect1>

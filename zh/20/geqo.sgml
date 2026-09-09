@@ -1,0 +1,192 @@
+<!-- doc/src/sgml/geqo.sgml -->
+
+ <chapter id="geqo">
+  <title>遗传查询优化器</title>
+
+  <para>
+   <note>
+    <title>作者</title>
+    <para>
+     由 Martin Utesch <email>utesch@aut.tu-freiberg.de</email> 为德国弗赖贝格矿业和技术大学自动控制研究所编写。
+    </para>
+   </note>
+  </para>
+
+  <sect1 id="geqo-intro">
+   <title>将查询处理看成是一个复杂的优化问题</title>
+
+   <para>
+    在所有关系操作符中，最难处理和优化的是<firstterm>连接</firstterm>。随着查询中连接数目的增加，可能的查询计划数量会呈指数增长。为了处理单个连接而支持多种<firstterm>连接方法</firstterm>（例如 <productname>PostgreSQL</productname> 中的嵌套循环、哈希连接和归并连接），以及作为关系访问路径的多种<firstterm>索引</firstterm>（例如 <productname>PostgreSQL</productname> 中的 B-树、哈希、GiST 和 GIN），也进一步增加了优化工作量。
+   </para>
+
+   <para>
+    常规的<productname>PostgreSQL</productname>查询优化器会在可选策略空间中执行<firstterm>近似穷举搜索</firstterm>。该算法最早出现在 IBM 的 System R 数据库中，能够产生近乎最优的连接顺序；但当查询中的连接数变得很大时，它可能耗费极大的时间和内存空间。因此，普通的<productname>PostgreSQL</productname>查询优化器并不适合需要连接大量表的查询。
+   </para>
+
+   <para>
+    德国弗赖贝格矿业和技术大学自动控制研究所在尝试将 <productname>PostgreSQL</productname> 用作一个用于电网维护的基于知识的决策支持系统后端时遇到了一些问题。该 DBMS 需要为该基于知识系统中的推理机处理大型连接查询。这些查询中的连接数量使得使用普通查询优化器变得不可行。
+   </para>
+
+   <para>
+    下文将介绍一种<firstterm>遗传算法</firstterm>的实现，它以适合涉及大量连接的查询的高效方式来解决连接顺序问题。
+   </para>
+  </sect1>
+
+  <sect1 id="geqo-intro2">
+   <title>遗传算法</title>
+
+   <para>
+    遗传算法（<acronym>GA</acronym>）是一种通过随机化搜索进行工作的启发式优化方法。优化问题的可能解集合被视为由若干<firstterm>个体</firstterm>组成的<firstterm>种群</firstterm>。个体对其环境的适应程度由其<firstterm>适应度</firstterm>表示。
+   </para>
+
+   <para>
+    一个个体在搜索空间中的坐标由<firstterm>染色体</firstterm>表示，本质上是一组字符串。<firstterm>基因</firstterm>是染色体的一个片段，它编码某个待优化参数的值。基因的典型编码可以是<firstterm>二进制</firstterm>或<firstterm>整数</firstterm>。
+   </para>
+
+   <para>
+    通过模拟<firstterm>重组</firstterm>、<firstterm>变异</firstterm>和<firstterm>选择</firstterm>这些进化操作，可以找到平均适应度高于前代的新一代搜索点。
+    <xref linkend="geqo-figure"/> 说明了这些步骤。
+   </para>
+
+   <figure id="geqo-figure">
+    <title>遗传算法的结构</title>
+    <mediaobject>
+     <imageobject>
+      <imagedata fileref="images/genetic-algorithm.svg" format="SVG" width="100%"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+
+   <para>
+    根据<systemitem class="resource">comp.ai.genetic</systemitem> <acronym>FAQ</acronym> 中的说法，再怎么强调也不过分：<acronym>GA</acronym>并不是为了求解问题而进行的纯粹随机搜索。<acronym>GA</acronym>会使用随机过程，但其结果显然并非随机的（优于随机）。
+   </para>
+
+  </sect1>
+
+  <sect1 id="geqo-pg-intro">
+   <title>PostgreSQL 中的遗传查询优化（<acronym>GEQO</acronym>）</title>
+
+   <para>
+    <acronym>GEQO</acronym>模块把查询优化问题视为著名的旅行商问题（<acronym>TSP</acronym>）来处理。可能的查询计划被编码为整数串。每个串表示查询中从一个关系到下一个关系的连接顺序。例如，连接树
+<literallayout class="monospaced">
+   /\
+  /\ 2
+ /\ 3
+4  1
+</literallayout>
+    会被编码为整数串 '4-1-3-2'，这意味着先连接关系 '4' 和 '1'，再连接 '3'，最后连接 '2'；其中 1、2、3、4 是<productname>PostgreSQL</productname>优化器内部的关系 ID。
+   </para>
+
+   <para>
+    <productname>PostgreSQL</productname> 中 <acronym>GEQO</acronym> 实现的具体特征包括：
+
+    <itemizedlist spacing="compact" mark="bullet">
+     <listitem>
+      <para>
+       采用<firstterm>稳态</firstterm> <acronym>GA</acronym>（替换种群中适应度最低的个体，而不是整代替换），能够快速收敛到更优的查询计划。这对于在合理时间内处理查询至关重要；
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       采用<firstterm>边重组交叉</firstterm>，它特别适合在利用 <acronym>GA</acronym> 求解 <acronym>TSP</acronym> 时将边损失保持在较低水平；
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       不使用变异作为遗传操作符，因此无须借助修复机制来生成合法的 <acronym>TSP</acronym> 回路。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    <acronym>GEQO</acronym>模块的部分内容改编自 D. Whitley 的 Genitor 算法。
+   </para>
+
+   <para>
+    <acronym>GEQO</acronym>模块使<productname>PostgreSQL</productname>查询优化器能够通过非穷举搜索有效支持大型连接查询。
+   </para>
+
+  <sect2 id="geqo-pg-intro-gen-possible-plans">
+   <title>使用<acronym>GEQO</acronym>生成可能的计划</title>
+
+   <para>
+    <acronym>GEQO</acronym> 规划过程使用标准规划器代码来生成各个关系扫描的计划，然后再用遗传方法生成连接计划。如上所示，每个候选连接计划都表示为一个连接基本关系的顺序。在初始阶段，<acronym>GEQO</acronym> 代码只是随机生成一些可能的连接序列。对于每一个待考察的连接序列，都会调用标准规划器代码来估算按该序列执行查询的代价。（对于连接序列中的每一步，都会考虑全部三种可能的连接策略；并且所有预先确定的关系扫描计划也都可用。估计代价取这些可能性中最低者。）估计代价较低的连接序列会被认为比代价较高的序列<quote>更适合</quote>。遗传算法会丢弃最不适合的候选，然后通过组合更适合候选的基因来生成新的候选，也就是从已知低代价连接序列中随机选取片段，构造新的序列以供考察。这个过程会重复进行，直到已经考察的连接序列数量达到预设值；然后，在搜索过程中任何时刻找到的最佳序列都会被用来生成最终计划。
+   </para>
+
+   <para>
+    由于初始种群选择以及后续对最佳候选的<quote>变异</quote>都包含随机选择，因此这一过程天生就是非确定性的。为了避免所选计划发生令人意外的变化，每次运行 GEQO 算法时，都会用当前的 <xref linkend="guc-geqo-seed"/> 参数设置重新初始化其随机数生成器。只要 <varname>geqo_seed</varname>、其他 GEQO 参数以及统计信息等其他规划器输入保持不变，对于给定查询就会生成相同的计划。若想试验不同的搜索路径，可以尝试修改 <varname>geqo_seed</varname>。
+   </para>
+
+  </sect2>
+
+  <sect2 id="geqo-future">
+   <title><productname>PostgreSQL</productname> <acronym>GEQO</acronym>的未来实现任务</title>
+
+     <para>
+      为了改进遗传算法的参数设置，仍有一些工作要做。在文件<filename>src/backend/optimizer/geqo/geqo_main.c</filename>中的例程<function>gimme_pool_size</function>和<function>gimme_number_generations</function>里，我们必须为参数设置找到一种折中，以满足两个相互竞争的需求：
+      <itemizedlist spacing="compact">
+       <listitem>
+        <para>
+         查询计划的最优性
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         计算时间
+        </para>
+       </listitem>
+      </itemizedlist>
+     </para>
+
+     <para>
+      在当前实现中，每个候选连接序列的适应度都是通过从头运行标准规划器的连接选择和代价估算代码来估算的。只要不同候选使用了相似的连接子序列，就会有大量工作被重复执行。如果能保留子连接的代价估算，就可以显著加快这一过程。问题在于，必须避免为了保存这种状态而消耗不合理数量的内存。
+     </para>
+
+     <para>
+      从更基础的层面看，用一个为 <acronym>TSP</acronym> 设计的 <acronym>GA</acronym> 算法来解决查询优化问题是否合适，也并不明确。在 <acronym>TSP</acronym> 情况下，与任何子串（部分巡回）相关的代价都独立于巡回的其余部分，但对于查询优化显然并非如此。因此，边重组交叉是否是最有效的变异过程，仍然值得怀疑。
+     </para>
+
+   </sect2>
+  </sect1>
+
+ <sect1 id="geqo-biblio">
+  <title>进一步阅读</title>
+
+  <para>
+   下列资源包含关于遗传算法的更多信息：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <ulink url="http://www.faqs.org/faqs/ai-faq/genetic/part1/">
+      《Hitch-Hiker 演化计算指南》</ulink>（<ulink
+      url="news://comp.ai.genetic">comp.ai.genetic</ulink> FAQ）
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      <ulink url="https://www.red3d.com/cwr/evolve.html">
+      《演化计算及其在艺术和设计中的应用》</ulink>，Craig Reynolds 著
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      <xref linkend="elma04"/>
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      <xref linkend="fong"/>
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+
+ </sect1>
+</chapter>

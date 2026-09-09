@@ -1,0 +1,125 @@
+<!-- doc/src/sgml/pgvisibility.sgml -->
+
+<sect1 id="pgvisibility" xreflabel="pg_visibility">
+ <title>pg_visibility &mdash; 可见性映射信息与工具</title>
+
+ <indexterm zone="pgvisibility">
+  <primary>pg_visibility</primary>
+ </indexterm>
+
+ <para>
+  <filename>pg_visibility</filename> 模块提供了一种检查表的可见性映射（VM）以及页级可见性信息的手段。
+  它还提供了一些函数，用于检查可见性映射的完整性，并强制重建该映射。
+ </para>
+
+ <para>
+  页级可见性信息使用三个不同的位来存储。可见性映射中的全部可见（all-visible）位表示该关系对应页中的每个元组对当前及未来的所有事务均可见。可见性映射中的全部冻结（all-frozen）位表示该页中的每个元组都已被冻结；也就是说，在该页上发生插入、更新、删除或锁定操作之前，未来的清理（VACUUM）都不需要修改该页。页头中的<literal>PD_ALL_VISIBLE</literal>位与可见性映射中的 all-visible 位含义相同，但它存储在数据页本身之中，而非单独的数据结构中。这两个位通常应当一致，但在崩溃恢复之后，有时页面上的 all-visible 位可能已被置位，而可见性映射中的对应位却仍然为零。由于在<literal>pg_visibility</literal>检查可见性映射之后、检查数据页之前可能发生变更，因此报告的值也可能不一致。任何导致数据损坏的事件也可能导致这些位不一致。
+ </para>
+
+ <para>
+  显示<literal>PD_ALL_VISIBLE</literal>位信息的函数比仅查询可见性映射的函数代价高得多，因为它们必须读取关系的数据块，而不只是读取（小得多的）可见性映射。检查关系数据块的函数同样代价高昂。
+ </para>
+
+ <sect2 id="pgvisibility-funcs">
+  <title>函数</title>
+
+  <variablelist>
+   <varlistentry id="zh18-auto-pgvisibility-varlistentry-1">
+    <term><function>pg_visibility_map(relation regclass, blkno bigint, all_visible OUT boolean, all_frozen OUT boolean) returns record</function></term>
+    <listitem>
+     <para>
+      返回给定关系中给定块在可见性映射中的 all-visible 位和 all-frozen 位。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgvisibility-varlistentry-2">
+    <term><function>pg_visibility(relation regclass, blkno bigint, all_visible OUT boolean, all_frozen OUT boolean, pd_all_visible OUT boolean) returns record</function></term>
+    <listitem>
+     <para>
+      返回给定关系中给定块在可见性映射中的 all-visible 位和 all-frozen 位，
+      以及该块的 <literal>PD_ALL_VISIBLE</literal> 位。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgvisibility-varlistentry-3">
+    <term><function>pg_visibility_map(relation regclass, blkno OUT bigint, all_visible OUT boolean, all_frozen OUT boolean) returns setof record</function></term>
+    <listitem>
+     <para>
+      返回给定关系中每个块在可见性映射中的 all-visible 位和 all-frozen 位。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgvisibility-varlistentry-4">
+    <term><function>pg_visibility(relation regclass, blkno OUT bigint, all_visible OUT boolean, all_frozen OUT boolean, pd_all_visible OUT boolean) returns setof record</function></term>
+
+    <listitem>
+     <para>
+      返回给定关系中每个块在可见性映射中的 all-visible 位和 all-frozen 位，
+      以及每个块的 <literal>PD_ALL_VISIBLE</literal> 位。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgvisibility-varlistentry-5">
+    <term><function>pg_visibility_map_summary(relation regclass, all_visible OUT bigint, all_frozen OUT bigint) returns record</function></term>
+
+    <listitem>
+     <para>
+      根据可见性映射，返回关系中 all-visible 页面和 all-frozen 页面的数量。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgvisibility-varlistentry-6">
+    <term><function>pg_check_frozen(relation regclass, t_ctid OUT tid) returns setof tid</function></term>
+
+    <listitem>
+     <para>
+      返回存储在可见性映射中标记为 all-frozen 的页面里、实际上并未冻结的
+      元组的 TID。如果该函数返回的 TID 集合非空，则说明可见性映射已损坏。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgvisibility-varlistentry-7">
+    <term><function>pg_check_visible(relation regclass, t_ctid OUT tid) returns setof tid</function></term>
+
+    <listitem>
+     <para>
+      返回存储在可见性映射中标记为 all-visible 的页面里、实际上并非对所有事务
+      都可见的元组的 TID。如果该函数返回的 TID 集合非空，则说明可见性映射已损坏。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="zh18-auto-pgvisibility-varlistentry-8">
+    <term><function>pg_truncate_visibility_map(relation regclass) returns void</function></term>
+
+    <listitem>
+     <para>
+      截断给定关系的可见性映射。如果你认为该关系的可见性映射已损坏并希望强制重建它，此函数就很有用。在执行此函数之后，对该关系执行的第一次<command>VACUUM</command>将会扫描关系中的每一页并重建可见性映射。（在此完成之前，查询会将可见性映射视为全部为零。）
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   默认情况下，这些函数只能由超级用户以及拥有
+   <literal>pg_stat_scan_tables</literal> 角色权限的角色执行；但
+   <function>pg_truncate_visibility_map(relation regclass)</function> 是个例外，
+   它只能由超级用户执行。
+  </para>
+ </sect2>
+
+ <sect2 id="pgvisibility-author">
+  <title>作者</title>
+
+  <para>
+   Robert Haas <email>rhaas@postgresql.org</email>
+  </para>
+ </sect2>
+
+</sect1>

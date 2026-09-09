@@ -1,0 +1,128 @@
+<!-- doc/src/sgml/pgprewarm.sgml -->
+
+<sect1 id="pgprewarm" xreflabel="pg_prewarm">
+ <title>pg_prewarm &mdash; 将关系数据预热到缓冲区缓存中</title>
+
+ <indexterm zone="pgprewarm">
+  <primary>pg_prewarm</primary>
+ </indexterm>
+
+ <para>
+  <filename>pg_prewarm</filename>模块提供了一种便捷方式，可将关系数据加载到操作系统缓冲区缓存
+  或 <productname>PostgreSQL</productname>缓冲区缓存中。预热既可以使用
+  <filename>pg_prewarm</filename>函数手动执行，也可以通过将<literal>pg_prewarm</literal>加入
+  <xref linkend="guc-shared-preload-libraries"/>自动执行。
+  在后一种情况下，系统会运行一个后台工作进程，定期将共享缓冲区的内容记录到名为
+  <filename>autoprewarm.blocks</filename>的文件中，并在重启后使用两个后台工作进程重新加载这些块。
+ </para>
+
+ <sect2 id="pgprewarm-funcs">
+  <title>函数</title>
+
+<synopsis>
+pg_prewarm(regclass, mode text default 'buffer', fork text default 'main',
+           first_block int8 default null,
+           last_block int8 default null) RETURNS int8
+</synopsis>
+
+  <para>
+   第一个参数是要预热的关系。第二个参数是要使用的预热方法，下文会进一步讨论；第三个参数
+   是要预热的关系 fork，通常为<literal>main</literal>。第四个参数是要预热的第一个块号
+   （<literal>NULL</literal>可作为 0 的同义值）；第五个参数是要预热的最后一个块号
+   （<literal>NULL</literal>表示一直预热到该关系中的最后一个块）。返回值是已预热的块数。
+  </para>
+
+  <para>
+   可用的预热方法有三种。<literal>prefetch</literal>会在支持的情况下向操作系统发出异步预取
+   请求，否则就会报错。<literal>read</literal>会读取所请求范围内的块；与
+   <literal>prefetch</literal>不同，它是同步的，并且在所有平台和构建方式上都受支持，但可能
+   较慢。<literal>buffer</literal>会将所请求范围内的块读入数据库缓冲区缓存。
+  </para>
+
+  <para>
+   请注意，无论采用哪种方法，如果试图预热的块数超过可缓存的数量，那么无论是在使用
+   <literal>prefetch</literal>或<literal>read</literal>时由操作系统缓存，还是在
+   <productname>PostgreSQL</productname>使用<literal>buffer</literal>时缓存，都很可能会
+   在读入更高块号的块时逐出较低块号的块。预热后的数据同样不会得到任何特殊的缓存
+   逐出保护，因此其他系统活动可能会在这些新近预热的块被读入后不久就将其逐出；反过来，预热
+   也可能会把其他数据从缓存中逐出。因此，预热通常在启动时最有用，因为此时缓存大多还是空的。
+  </para>
+
+<synopsis>
+autoprewarm_start_worker() RETURNS void
+</synopsis>
+
+  <para>
+   启动主 autoprewarm 工作进程。这通常会自动发生；但如果服务器启动时未配置自动预热，而又
+   希望稍后再启动该工作进程，这个函数就很有用。
+  </para>
+
+<synopsis>
+autoprewarm_dump_now() RETURNS int8
+</synopsis>
+
+  <para>
+   立即更新<filename>autoprewarm.blocks</filename>。如果 autoprewarm 工作进程当前没有
+   运行，但预计会在下一次重启后运行它，这个函数就很有用。返回值是写入
+   <filename>autoprewarm.blocks</filename>的记录数。
+  </para>
+ </sect2>
+
+ <sect2 id="pgprewarm-config-params">
+  <title>配置参数</title>
+
+  <variablelist>
+   <varlistentry>
+    <term>
+     <varname>pg_prewarm.autoprewarm</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>pg_prewarm.autoprewarm</varname> 配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      控制服务器是否应运行 autoprewarm 工作进程。默认值为 on。该参数只能在服务器启动时设置。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <variablelist>
+   <varlistentry>
+    <term>
+     <varname>pg_prewarm.autoprewarm_interval</varname> (<type>integer</type>)
+     <indexterm>
+      <primary><varname>pg_prewarm.autoprewarm_interval</varname> 配置参数</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      这是更新<literal>autoprewarm.blocks</literal>的时间间隔。默认值为 300 秒。如果设置为 0，则该文件不会按固定间隔转储，而只会在服务器关闭时转储。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+  <para>
+   这些参数必须在<filename>postgresql.conf</filename>中设置。典型用法如下：
+  </para>
+
+<programlisting>
+# postgresql.conf
+shared_preload_libraries = 'pg_prewarm'
+
+pg_prewarm.autoprewarm = true
+pg_prewarm.autoprewarm_interval = 300s
+
+</programlisting>
+
+ </sect2>
+
+ <sect2 id="pgprewarm-author">
+  <title>作者</title>
+
+  <para>
+   Robert Haas <email>rhaas@postgresql.org</email>
+  </para>
+ </sect2>
+
+</sect1>
