@@ -1,0 +1,16 @@
+# PostgreSQL 10—13 中文归档文档
+
+13.23、12.22、11.22、10.23四版已完成，12项正式构建、源文和版式验收通过。最终源码SHA256清单：`dd2c53ebf07c9d39d407d11c7439d1c2e21da5273bbe6da24b1d9160001ab401`。
+
+| 版本 | 中文源文 | HTML | A4 PDF | US PDF |
+|---|---|---|---|---|
+| 13.23 | [源码目录](/Users/vonng/pgsty/pgdoc/zh/13) · [源码包](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/postgresql-13.23-zh-source.tar.gz) | [HTML](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/13-html/html/index.html) · [HTML包](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/postgresql-13.23-zh-html.tar.gz) | [A4](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/13-A4/postgresql-13.23-zh-A4.pdf)（2654页） | [US](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/13-US/postgresql-13.23-zh-US.pdf)（2804页） |
+| 12.22 | [源码目录](/Users/vonng/pgsty/pgdoc/zh/12) · [源码包](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/postgresql-12.22-zh-source.tar.gz) | [HTML](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/12-html/html/index.html) · [HTML包](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/postgresql-12.22-zh-html.tar.gz) | [A4](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/12-A4/postgresql-12.22-zh-A4.pdf)（2640页） | [US](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/12-US/postgresql-12.22-zh-US.pdf)（2770页） |
+| 11.22 | [源码目录](/Users/vonng/pgsty/pgdoc/zh/11) · [源码包](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/postgresql-11.22-zh-source.tar.gz) | [HTML](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/11-html/html/index.html) · [HTML包](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/postgresql-11.22-zh-html.tar.gz) | [A4](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/11-A4/postgresql-11.22-zh-A4.pdf)（2570页） | [US](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/11-US/postgresql-11.22-zh-US.pdf)（2709页） |
+| 10.23 | [源码目录](/Users/vonng/pgsty/pgdoc/zh/10) · [源码包](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/postgresql-10.23-zh-source.tar.gz) | [HTML](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/10-html/html/index.html) · [HTML包](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/postgresql-10.23-zh-html.tar.gz) | [A4](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/10-A4/postgresql-10.23-zh-A4.pdf)（2435页） | [US](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/10-US/postgresql-10.23-zh-US.pdf)（2563页） |
+
+[完整报告](/Users/vonng/pgsty/pgdoc/en/diff/pg10-13-from-14/20260909-150220/FINAL-REPORT.md) · [审计材料包](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/audit.tar.gz) · [产物清单](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/DELIVERY-MANIFEST.json) · [SHA256SUMS](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/SHA256SUMS) · [固定官方来源](/Users/vonng/pgsty/pgdoc/outputs/pg10-13-from-14-20260909-150220/official-sources.json)
+
+共处理18052个共享组、177330次实际应用，待译0。四版源码、HTML、两种纸型PDF分别校验；最终实际PDF视检A4 76页、US 53页，HTML26页。具体范围和继承样式说明在完整报告中。PG14—20及既有人工修改保留；未提交、推送或发布。
+
+源码包按zh/<major>/组织，HTML包按postgresql-<version>-zh-html/组织；包内文件哈希已逐个与最终清单核对。每个构建目录保留result.json、build.log和internal-logs/。历史失败与被替代构建在attempt-01/02/03，最终证据以本页及r4清单为准。
