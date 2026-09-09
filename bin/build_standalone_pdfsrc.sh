@@ -28,6 +28,14 @@ version="$3"
 paper_input="${5:-A4}"
 keep_work="${KEEP_WORK:-0}"
 
+# A fixed checkout is opt-in; incomplete input must never fall back online.
+if [[ -n "${PGDOC_SOURCE_DIR:-}" || -n "${PGDOC_SOURCE_COMMIT:-}" ]]; then
+  if [[ -z "${PGDOC_SOURCE_DIR:-}" || -z "${PGDOC_SOURCE_COMMIT:-}" ]]; then
+    echo "PGDOC_SOURCE_DIR and PGDOC_SOURCE_COMMIT must be supplied together." >&2
+    exit 1
+  fi
+fi
+
 case "${lang}" in
   en|zh) ;;
   *)
@@ -379,7 +387,10 @@ work_tree="$(mktemp -d "${REPO_ROOT}/.cache/work/standalone-pdf-${lang}-${versio
 trap '[[ "${keep_work}" == "1" ]] || rm -rf "${work_tree}"' EXIT
 
 echo "Preparing build workspace: ${work_tree}"
-if is_release_version "${version}"; then
+if [[ -n "${PGDOC_SOURCE_DIR:-}" ]]; then
+  python3 "${SCRIPT_DIR}/prepare_pinned_doc_source.py" \
+    "${PGDOC_SOURCE_DIR}" "${PGDOC_SOURCE_COMMIT}" "${version}" "${work_tree}"
+elif is_release_version "${version}"; then
   archive="${REPO_ROOT}/.cache/upstream/postgresql-${version}.tar.bz2"
 
   if [[ ! -f "${archive}" ]]; then
@@ -420,6 +431,15 @@ if [[ "${lang}" != "en" ]]; then
   sed -i.bak \
     -e 's/--valid/--catalogs --loaddtd/g' \
     "${work_tree}/doc/src/sgml/Makefile"
+fi
+
+# Incremental generated-text overlays are kept with each Chinese source.
+# Generate from the selected upstream inputs before applying exact-hash edits.
+if [[ "${lang}" == "zh" && -f "${doc_src_root}/localize-generated.py" ]]; then
+  (cd "${work_tree}" && "${MAKE_CMD}" -C doc/src/sgml \
+    features-supported.sgml features-unsupported.sgml errcodes-table.sgml \
+    keywords-table.sgml targets-meson.sgml wait_event_types.sgml)
+  python3 "${doc_src_root}/localize-generated.py" "${work_tree}/doc/src/sgml"
 fi
 
 if [[ "${ALLOW_NET:-0}" == "1" ]]; then
