@@ -1,0 +1,1131 @@
+<!--
+doc/src/sgml/ref/pgbench.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="pgbench">
+ <indexterm zone="pgbench">
+  <primary>pgbench</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle><application>pgbench</application></refentrytitle>
+  <manvolnum>1</manvolnum>
+  <refmiscinfo>Application</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>pgbench</refname>
+  <refpurpose>运行 <productname>PostgreSQL</productname> 基准测试</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+  <cmdsynopsis>
+   <command>pgbench</command>
+   <arg choice="plain"><option>-i</option></arg>
+   <arg rep="repeat"><replaceable>option</replaceable></arg>
+   <arg choice="opt"><replaceable>dbname</replaceable></arg>
+  </cmdsynopsis>
+  <cmdsynopsis>
+   <command>pgbench</command>
+   <arg rep="repeat"><replaceable>option</replaceable></arg>
+   <arg choice="opt"><replaceable>dbname</replaceable></arg>
+  </cmdsynopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>描述</title>
+ <para>
+  <application>pgbench</application>是一个用于对<productname>PostgreSQL</productname>执行基准测试的简单程序。它会反复执行同一组 SQL 命令，必要时可在多个并发数据库会话中运行，然后计算平均事务速率（每秒事务数）。默认情况下，<application>pgbench</application>测试的是一个大体上基于 TPC-B 的场景，每个事务包含五条<command>SELECT</command>、<command>UPDATE</command>和<command>INSERT</command>命令。不过，通过编写自己的事务脚本文件，也很容易测试其他场景。
+ </para>
+
+ <para>
+  下面是 <application>pgbench</application> 的典型输出：
+
+<screen>
+transaction type: &lt;builtin: TPC-B (sort of)&gt;
+scaling factor: 10
+query mode: simple
+number of clients: 10
+number of threads: 1
+number of transactions per client: 1000
+number of transactions actually processed: 10000/10000
+tps = 85.184871 (including connections establishing)
+tps = 85.296346 (excluding connections establishing)
+</screen>
+
+  前六行报告了一些最重要的参数设置。下一行报告已完成的事务数和预期的事务数（后者就是客户端数与每个客户端的事务数的乘积）；除非运行在完成前失败，否则这两个数应该相等。（在 <option>-T</option> 模式下，只打印实际的事务数。）最后两行报告每秒事务数，分别计入和不计入启动数据库会话的时间。
+  </para>
+
+  <para>默认的类 TPC-B 事务测试要求预先建立特定的表。<application>pgbench</application>应使用<option>-i</option>（初始化）选项调用，以创建并填充这些表。（测试自定义脚本时不需要这一步，但需要自行完成测试所需的准备工作。）初始化命令如下：<programlisting>
+pgbench -i <optional> <replaceable>other-options</replaceable> </optional> <replaceable>dbname</replaceable>
+</programlisting>
+
+   其中，
+   <replaceable>dbname</replaceable>是已创建好的、用于执行测试的数据库名称。（可能还需要使用<option>-h</option>，
+   <option>-p</option>和/或<option>-U</option>选项来指定如何连接到数据库服务器。）</para>
+
+  <caution>
+
+   <para>
+    <literal>pgbench -i</literal>会创建四个表<structname>pgbench_accounts</structname>、
+    <structname>pgbench_branches</structname>、<structname>pgbench_history</structname>和<structname>pgbench_tellers</structname>，并销毁任何已存在的同名表。如果数据库中已经存在这些名称的表，请务必改用其他数据库！
+   </para>
+  </caution>
+
+  <para>
+   在默认的<quote>比例因子</quote> 1 下，这些表最初包含如下行数：
+<screen>
+table                   # of rows
+---------------------------------
+pgbench_branches        1
+pgbench_tellers         10
+pgbench_accounts        100000
+pgbench_history         0
+</screen>
+   可以使用<option>-s</option>（比例因子）选项来增加行数，而且在大多数场景下也确实应该这样做。此时还可以配合使用<option>-F</option>（fillfactor）选项。
+  </para>
+
+  <para>
+   完成必要的准备后，就可以使用不带<option>-i</option>的命令运行基准测试，也就是：
+
+<programlisting>
+pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>dbname</replaceable>
+</programlisting>
+
+   几乎在所有情况下，都需要附加一些选项才能得到有意义的测试。最重要的选项是<option>-c</option>（客户端数）、
+   <option>-t</option>（事务数）、<option>-T</option>（时间限制）以及<option>-f</option>（指定自定义脚本文件）。完整列表见下文。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>选项</title>
+
+  <para>
+   以下内容分为三个小节：数据库初始化和运行基准测试时使用不同的选项，而有些选项在这两种情况下都适用。
+  </para>
+
+ <refsect2 id="pgbench-init-options">
+  <title>初始化选项</title>
+
+   <para>
+    <application>pgbench</application> 接受以下用于初始化的命令行参数：
+
+<variablelist>
+
+     <varlistentry>
+      <term><option>-i</option></term>
+      <term><option>--initialize</option></term>
+      <listitem>
+
+       <para>
+        进入初始化模式所必需。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-F</option> <replaceable>fillfactor</replaceable></term>
+      <term><option>--fillfactor=</option><replaceable>fillfactor</replaceable></term>
+      <listitem>
+
+       <para>
+        以给定的 fillfactor 创建<structname>pgbench_accounts</structname>、
+        <structname>pgbench_tellers</structname>和
+        <structname>pgbench_branches</structname>表。
+        默认值为 100。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-n</option></term>
+      <term><option>--no-vacuum</option></term>
+      <listitem>
+       <para>
+        初始化后不执行任何清理。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-q</option></term>
+      <term><option>--quiet</option></term>
+      <listitem>
+       <para>
+        将日志切换为安静模式，每 5 秒只输出一条进度消息。默认日志每 100000 行打印一条消息，因此通常每秒输出很多行（尤其是在性能良好的硬件上）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-s</option> <replaceable>scale_factor</replaceable></term>
+      <term><option>--scale=</option><replaceable>scale_factor</replaceable></term>
+      <listitem>
+
+       <para>
+        将生成的行数乘以比例因子。
+        例如，<literal>-s 100</literal>会在<structname>pgbench_accounts</structname>表中创建 10,000,000 行。
+        默认值为 1。
+        当比例达到 20,000 或更大时，用于保存账户标识符的列（<structfield>aid</structfield>列）
+        将切换到使用更大的整数（<type>bigint</type>），
+        以便容纳账户标识符的取值范围。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--foreign-keys</option></term>
+      <listitem>
+       <para>
+        在标准表之间创建外键约束。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--index-tablespace=<replaceable>index_tablespace</replaceable></option></term>
+      <listitem>
+
+       <para>
+        在指定的表空间中创建索引，而不是默认的表空间。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--tablespace=<replaceable>tablespace</replaceable></option></term>
+      <listitem>
+
+       <para>
+        在指定的表空间中创建表，而不是默认的表空间。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--unlogged-tables</option></term>
+      <listitem>
+
+       <para>
+        将所有表创建为不记录 WAL 的表，而不是永久表。
+       </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>
+   </para>
+
+ </refsect2>
+
+ <refsect2 id="pgbench-run-options">
+  <title>基准测试选项</title>
+
+   <para>
+    <application>pgbench</application> 接受以下用于基准测试的命令行参数：
+
+<variablelist>
+     <varlistentry>
+      <term><option>-b</option> <replaceable>scriptname[@weight]</replaceable></term>
+      <term><option>--builtin</option>=<replaceable>scriptname[@weight]</replaceable></term>
+      <listitem>
+
+       <para>
+        将指定的内置脚本添加到待执行脚本列表中。
+        可用的内置脚本包括：<literal>tpcb-like</literal>、
+        <literal>simple-update</literal>和<literal>select-only</literal>。
+        也接受内置名称的无歧义前缀。
+        使用特殊名称<literal>list</literal>时，会显示内置脚本列表
+        并立即退出。
+       </para>
+
+       <para>
+        可选地，可在<literal>@</literal>后写一个整数权重，以调整此脚本相对于其他脚本的选中概率。
+        默认权重为 1。
+        详情请参见下文。
+       </para>
+      </listitem>
+     </varlistentry>
+
+
+     <varlistentry>
+      <term><option>-c</option> <replaceable>clients</replaceable></term>
+      <term><option>--client=</option><replaceable>clients</replaceable></term>
+      <listitem>
+
+       <para>
+        模拟的客户端数量，也就是并发数据库会话的数量。默认值为 1。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-C</option></term>
+      <term><option>--connect</option></term>
+      <listitem>
+
+       <para>
+        为每个事务建立一个新连接，而不是仅在每个客户端会话中执行一次。
+        这对于测量连接开销很有用。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-d</option></term>
+      <term><option>--debug</option></term>
+      <listitem>
+       <para>
+        打印调试输出。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-D</option> <replaceable>varname</replaceable><literal>=</literal><replaceable>value</replaceable></term>
+      <term><option>--define=</option><replaceable>varname</replaceable><literal>=</literal><replaceable>value</replaceable></term>
+      <listitem>
+
+       <para>
+        定义一个变量，供自定义脚本使用（见下文）。
+        允许使用多个<option>-D</option>选项。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-f</option> <replaceable>filename[@weight]</replaceable></term>
+      <term><option>--file=</option><replaceable>filename[@weight]</replaceable></term>
+      <listitem>
+
+       <para>
+        将从<replaceable>filename</replaceable>读取的事务脚本添加到要执行的脚本列表中。
+       </para>
+
+       <para>
+        可选地，可在<literal>@</literal>后写一个整数权重，以调整此脚本相对于其他脚本的选中概率。
+        默认权重为 1。
+        （如果脚本文件名本身包含<literal>@</literal>字符，可追加一个权重以消除歧义，例如<literal>filen@me@1</literal>。）
+        详情见下文。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-j</option> <replaceable>threads</replaceable></term>
+      <term><option>--jobs=</option><replaceable>threads</replaceable></term>
+      <listitem>
+
+       <para>
+        <application>pgbench</application>中的工作线程数。
+        在多 CPU 机器上使用多个线程可能会有所帮助。
+        客户端尽可能均匀地分布在可用线程中。
+        默认值为 1。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-l</option></term>
+      <term><option>--log</option></term>
+      <listitem>
+
+       <para>
+        将每个事务的信息写入日志文件。
+        详情见下文。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-L</option> <replaceable>limit</replaceable></term>
+      <term><option>--latency-limit=</option><replaceable>limit</replaceable></term>
+      <listitem>
+       <para>
+        持续时间超过<replaceable>limit</replaceable>毫秒的事务会被单独计数和报告，称为<firstterm>late</firstterm>。
+       </para>
+       <para>
+        使用限流（<option>--rate=...</option>）时，若某个事务落后于计划时间超过<replaceable>limit</replaceable>毫秒，
+        从而已经不可能满足延迟限制，则它根本不会被发送到服务器。此类事务会被单独计数并报告为<firstterm>skipped</firstterm>。
+       </para>
+       </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-M</option> <replaceable>querymode</replaceable></term>
+      <term><option>--protocol=</option><replaceable>querymode</replaceable></term>
+      <listitem>
+       <para>
+        用于向服务器提交查询的协议：
+          <itemizedlist>
+           <listitem>
+            <para><literal>simple</literal>: 使用简单查询协议。</para>
+           </listitem>
+           <listitem>
+            <para><literal>extended</literal>: 使用扩展查询协议。</para>
+           </listitem>
+           <listitem>
+            <para><literal>prepared</literal>: 使用带有预备语句的扩展查询协议。</para>
+           </listitem>
+          </itemizedlist>
+        默认为简单查询协议。（详见 <xref linkend="protocol">。）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-n</option></term>
+      <term><option>--no-vacuum</option></term>
+      <listitem>
+
+       <para>
+        在运行测试前不执行任何清理。
+        如果运行的是不包含标准表<structname>pgbench_accounts</structname>、
+        <structname>pgbench_branches</structname>、<structname>pgbench_history</structname>和
+        <structname>pgbench_tellers</structname>的自定义测试场景，则此选项是<emphasis>必需的</emphasis>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-N</option></term>
+      <term><option>--skip-some-updates</option></term>
+      <listitem>
+
+       <para>
+        运行内置的 simple-update 脚本。
+        是<option>-b simple-update</option>的简写。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-P</option> <replaceable>sec</replaceable></term>
+      <term><option>--progress=</option><replaceable>sec</replaceable></term>
+      <listitem>
+       <para>
+        每<replaceable>sec</>秒显示一次进度报告。报告包括自运行开始以来的时间、自上次报告以来的 TPS，以及自上次报告以来事务延迟的平均值和标准差。使用限流（<option>-R</>）时，延迟是相对于事务计划开始时间计算的，而不是实际开始时间，因此其中也包含平均计划滞后时间。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-r</option></term>
+      <term><option>--report-latencies</option></term>
+      <listitem>
+       <para>
+        在基准测试完成后，报告每条命令的平均语句延迟（从客户端视角看到的执行时间）。详情见下文。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-R</option> <replaceable>rate</replaceable></term>
+      <term><option>--rate=</option><replaceable>rate</replaceable></term>
+      <listitem>
+
+       <para>
+        以指定速率执行事务，而不是像默认行为那样尽可能快地运行。速率以每秒事务数表示。
+        如果目标速率高于可达到的最大速率，则速率限制不会影响结果。
+       </para>
+
+       <para>
+        该速率通过让事务沿着一条符合泊松分布的时间线启动来实现。预期开始时间表是根据客户端首次启动的时间向前推进的，而不是根据前一个事务结束的时间。这意味着，当某些事务超过其原定结束时间时，后续事务仍有可能重新赶上计划。
+       </para>
+
+       <para>
+        启用限流后，运行结束时报告的事务延迟是从计划开始时间计算的，因此它包含每个事务等待前一个事务完成的时间。
+        这段等待时间称为计划滞后时间，其平均值和最大值也会单独报告。若要得到相对于事务实际开始时间的延迟，也就是事务在数据库中实际执行所花费的时间，
+        可以用报告中的延迟减去计划滞后时间。
+       </para>
+
+       <para>
+        如果同时使用<option>--latency-limit</option>和<option>--rate</option>，
+        一个事务可能会落后太多，以至于在前一个事务结束时已经超过了
+        延迟限制，因为延迟是从计划开始时间计算的。这样的事务
+        不会发送到服务器，而是完全跳过并单独计数。
+       </para>
+
+       <para>
+        较高的计划滞后时间表明，在所选客户端数和线程数下，系统无法以指定速率处理事务。
+        当平均事务执行时间长于事务之间的计划间隔时，后续事务会不断进一步落后，
+        而计划滞后时间也会随着测试持续时间增加。在这种情况下，只能降低指定的事务速率。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-s</option> <replaceable>scale_factor</replaceable></term>
+      <term><option>--scale=</option><replaceable>scale_factor</replaceable></term>
+      <listitem>
+
+       <para>
+        在<application>pgbench</application>输出中报告指定的比例因子。
+        对于内置测试，这通常没有必要；系统会通过统计<structname>pgbench_branches</structname>表中的行数来检测正确的比例因子。
+        但在只测试自定义基准（<option>-f</option>选项）时，
+        除非使用此选项，否则比例因子会被报告为 1。
+</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-S</option></term>
+      <term><option>--select-only</option></term>
+      <listitem>
+
+       <para>
+        运行内置的 select-only 脚本。
+        是<option>-b select-only</option>的简写。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-t</option> <replaceable>transactions</replaceable></term>
+      <term><option>--transactions=</option><replaceable>transactions</replaceable></term>
+      <listitem>
+
+       <para>
+        每个客户端运行的事务数量。默认值为10。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-T</option> <replaceable>seconds</replaceable></term>
+      <term><option>--time=</option><replaceable>seconds</replaceable></term>
+      <listitem>
+
+       <para>
+        让测试运行指定的秒数，而不是让每个客户端执行固定数量的事务。<option>-t</option> 和
+        <option>-T</option> 是互斥的。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-v</option></term>
+      <term><option>--vacuum-all</option></term>
+      <listitem>
+
+       <para>
+        在运行测试之前，对四个标准表全部执行清理。
+        如果既不使用<option>-n</option>也不使用<option>-v</option>，<application>pgbench</application>会对
+        <structname>pgbench_tellers</structname>和<structname>pgbench_branches</structname>
+        表进行清理，并截断<structname>pgbench_history</structname>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--aggregate-interval=<replaceable>seconds</replaceable></option></term>
+      <listitem>
+
+       <para>
+        聚合间隔的长度（以秒为单位）。只能与<option>-l</option>选项一起使用。
+        使用此选项时，日志包含每个间隔的摘要数据，如下所述。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--log-prefix=<replaceable>prefix</replaceable></option></term>
+      <listitem>
+
+       <para>
+        设置由<option>--log</option>创建的日志文件的文件名前缀。默认值为<literal>pgbench_log</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--progress-timestamp</option></term>
+      <listitem>
+
+       <para>
+        显示进度（选项<option>-P</option>）时，使用时间戳（Unix 纪元）而不是自运行开始以来的秒数。
+        单位为秒，小数点后精确到毫秒。
+        这有助于比较各种工具生成的日志。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--sampling-rate=<replaceable>rate</replaceable></option></term>
+      <listitem>
+       <para>
+        写入日志时使用的采样率，用于减少生成的日志量。如果给定此选项，
+        则只记录指定比例的事务。1.0 表示记录全部事务，0.05 表示只记录 5% 的事务。
+       </para>
+       <para>
+        处理日志文件时，记得把采样率考虑进去。例如，计算 TPS 值时，需要按采样率将数字乘以相应倍数（例如采样率为 0.01 时，只能得到实际 TPS 的 1/100）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>
+   </para>
+
+ </refsect2>
+
+ <refsect2 id="pgbench-common-options">
+  <title>公共选项</title>
+
+   <para>
+    <application>pgbench</application> 接受以下通用命令行参数：
+
+<variablelist>
+
+     <varlistentry>
+      <term><option>-h</option> <replaceable>hostname</replaceable></term>
+      <term><option>--host=</option><replaceable>hostname</replaceable></term>
+      <listitem>
+       <para>
+        数据库服务器的主机名。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-p</option> <replaceable>port</replaceable></term>
+      <term><option>--port=</option><replaceable>port</replaceable></term>
+      <listitem>
+       <para>
+        数据库服务器的端口号。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-U</option> <replaceable>login</replaceable></term>
+      <term><option>--username=</option><replaceable>login</replaceable></term>
+      <listitem>
+       <para>
+        连接时使用的用户名。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-V</option></term>
+      <term><option>--version</option></term>
+      <listitem>
+       <para>
+        打印<application>pgbench</application>版本并退出。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-?</option></term>
+      <term><option>--help</option></term>
+      <listitem>
+       <para>
+        显示<application>pgbench</application>命令行参数的帮助信息并退出。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+ </refsect2>
+ </refsect1>
+
+ <refsect1>
+  <title>注解</title>
+
+ <refsect2>
+  <title>实际执行的<quote>事务</quote>在<application>pgbench</application>中是什么？</title>
+
+  <para>
+   <application>pgbench</application>会从指定列表中随机选取测试脚本来执行。
+   这些脚本既可以是用<option>-b</option>指定的内置脚本，也可以是用<option>-f</option>指定的用户脚本。
+   每个脚本都可以在其后加上一个以<literal>@</literal>引出的相对权重，以改变其被选中的概率。
+   默认权重为<literal>1</literal>。权重为<literal>0</literal>的脚本会被忽略。
+ </para>
+
+  <para>
+   默认的内置事务脚本（也可通过<option>-b tpcb-like</option>调用）会针对随机选取的<literal>aid</literal>、
+   <literal>tid</literal>、<literal>bid</literal>和<literal>delta</literal>在每个事务中发出七条命令。
+   该场景受 TPC-B 基准启发，但并不是真正的 TPC-B，因此才取了这个名字。
+  </para>
+
+  <orderedlist>
+   <listitem><para><literal>BEGIN;</literal></para></listitem>
+   <listitem><para><literal>UPDATE pgbench_accounts SET abalance = abalance + :delta WHERE aid = :aid;</literal></para></listitem>
+   <listitem><para><literal>SELECT abalance FROM pgbench_accounts WHERE aid = :aid;</literal></para></listitem>
+   <listitem><para><literal>UPDATE pgbench_tellers SET tbalance = tbalance + :delta WHERE tid = :tid;</literal></para></listitem>
+   <listitem><para><literal>UPDATE pgbench_branches SET bbalance = bbalance + :delta WHERE bid = :bid;</literal></para></listitem>
+   <listitem><para><literal>INSERT INTO pgbench_history (tid, bid, aid, delta, mtime) VALUES (:tid, :bid, :aid, :delta, CURRENT_TIMESTAMP);</literal></para></listitem>
+   <listitem><para><literal>END;</literal></para></listitem>
+  </orderedlist>
+
+  <para>
+   如果选择<literal>simple-update</literal>内置脚本（也就是<option>-N</option>），事务中将不包含第 4 步和第 5 步。这会避免在这些表上发生更新争用，但也会让该测试场景更不像 TPC-B。
+  </para>
+
+  <para>
+   如果选择<literal>select-only</literal>内置脚本（也就是<option>-S</option>），则只执行<command>SELECT</command>。
+  </para>
+ </refsect2>
+
+ <refsect2>
+  <title>自定义脚本</title>
+
+  <para>
+   <application>pgbench</application>支持自定义基准测试场景：只需用从文件中读取的事务脚本（<option>-f</option>选项）替换默认事务脚本（见上文）即可。在这种情况下，一个<quote>事务</quote>就表示脚本文件的一次执行。
+  </para>
+
+  <para>
+   脚本文件包含一个或多个以分号结束的 SQL 命令。空行以及以<literal>--</literal>开头的行会被忽略。脚本文件还可以包含<quote>元命令</quote>，它们由<application>pgbench</application>自身解释，详见下文。
+  </para>
+
+  <note>
+   <para>
+    在<productname>PostgreSQL</productname> 9.6 之前，脚本文件中的 SQL 命令以换行符结束，因此不能跨行续写。现在，连续的 SQL 命令之间<emphasis>必须</emphasis>用分号分隔（不过，如果 SQL 命令后面跟着元命令，则不需要分号）。如果需要创建适用于新旧版本<application>pgbench</application>的脚本文件，请务必将每条 SQL 命令写在单独一行，并以分号结尾。
+   </para>
+  </note>
+
+  <para>
+   脚本文件提供了简单的变量替换功能。变量可以通过前面介绍的命令行<option>-D</>选项设置，也可以通过下面介绍的元命令设置。除了由<option>-D</>命令行选项预设的变量外，还有一些自动预设的变量，列于<xref linkend="pgbench-automatic-variables">中。使用<option>-D</>为这些变量指定的值优先于自动预设值。设置变量后，就可以通过书写<literal>:</><replaceable>variablename</>将变量值插入 SQL 命令。在运行多个客户端会话时，每个会话都有自己的一组变量。
+  </para>
+
+   <table id="pgbench-automatic-variables">
+    <title>自动变量</title>
+    <tgroup cols="2">
+     <thead>
+
+      <row>
+       <entry>变量</entry>
+       <entry>简介</entry>
+      </row>
+     </thead>
+
+     <tbody>
+      <row>
+       <entry> <literal>scale</literal> </entry>
+       <entry>当前比例因子</entry>
+      </row>
+
+      <row>
+       <entry> <literal>client_id</literal> </entry>
+       <entry>标识客户端会话的唯一编号（从零开始）</entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
+
+  <para>
+   脚本文件中的元命令以反斜线（<literal>\</literal>）开头，通常延伸到行尾，不过也可以通过写反斜线换行继续到后续行。元命令及其参数之间以空白分隔。支持的元命令如下：
+  </para>
+
+  <variablelist>
+   <varlistentry id='pgbench-metacommand-set'>
+    <term>
+     <literal>\set <replaceable>varname</replaceable> <replaceable>expression</replaceable></literal>
+    </term>
+
+    <listitem>
+     <para>
+      将变量<replaceable>varname</>设置为根据<replaceable>expression</>计算出的值。表达式可以包含整数常量（例如<literal>5432</>）、double 常量（例如<literal>3.14159</>）、变量引用<literal>:</><replaceable>variablename</>、具有通常优先级和结合性的一元操作符（<literal>+</>、<literal>-</>）和二元操作符（<literal>+</>、<literal>-</>、<literal>*</>、<literal>/</>、<literal>%</>）、<link linkend="pgbench-builtin-functions">函数调用</>以及括号。
+     </para>
+
+     <para>
+      示例：
+ <programlisting>
+\set ntellers 10 * :scale
+\set aid (1021 * random(1, 100000 * :scale)) % \
+           (100000 * :scale) + 1
+</programlisting></para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <literal>\sleep <replaceable>number</replaceable> [ us | ms | s ]</literal>
+    </term>
+
+    <listitem>
+
+     <para>
+      让脚本执行休眠指定时长，单位可以是微秒（<literal>us</literal>）、毫秒（<literal>ms</literal>）或秒（<literal>s</literal>）。如果省略单位，则默认为秒。<replaceable>number</replaceable>可以是整数常量，也可以是引用了整数值变量的<literal>:</literal><replaceable>variablename</replaceable>。
+     </para>
+
+     <para>
+      示例：
+<programlisting>
+\sleep 10 ms
+</programlisting></para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <literal>\setshell <replaceable>varname</replaceable> <replaceable>command</replaceable> [ <replaceable>argument</replaceable> ... ]</literal>
+    </term>
+
+    <listitem>
+
+     <para>
+      将变量<replaceable>varname</replaceable>设置为 shell 命令<replaceable>command</replaceable>在给定<replaceable>argument</replaceable>参数下的结果。该命令必须通过标准输出返回一个整数值。
+     </para>
+
+     <para>
+      <replaceable>command</replaceable>和每个<replaceable>argument</replaceable>都可以是文本常量，也可以是引用某个变量的<literal>:</literal><replaceable>variablename</replaceable>。如果要使用以冒号开头的<replaceable>argument</replaceable>，请在其开头再写一个冒号。
+     </para>
+
+     <para>
+      示例：
+<programlisting>
+\setshell variable_to_be_assigned command literal_argument :variable ::literal_starting_with_colon
+</programlisting></para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <literal>\shell <replaceable>command</replaceable> [ <replaceable>argument</replaceable> ... ]</literal>
+    </term>
+
+    <listitem>
+
+     <para>
+      与<literal>\setshell</literal>相同，但命令结果会被丢弃。
+     </para>
+
+     <para>
+      示例：
+<programlisting>
+\shell command literal_argument :variable ::literal_starting_with_colon
+</programlisting></para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect2>
+
+ <refsect2 id="pgbench-builtin-functions">
+  <title>内置函数</title>
+
+  <para>
+   <xref linkend="pgbench-functions">中列出的函数都内置于<application>pgbench</application>，可用于<link linkend="pgbench-metacommand-set"><literal>\set</literal></link>中的表达式。
+  </para>
+
+   <!-- list pgbench functions in alphabetical order -->
+   <table id="pgbench-functions">
+    <title>pgbench 函数</title>
+    <tgroup cols="5">
+     <thead>
+      <row>
+       <entry>函数</entry>
+       <entry>返回类型</entry>
+       <entry>简介</entry>
+       <entry>示例</entry>
+       <entry>结果</entry>
+      </row>
+     </thead>
+     <tbody>
+      <row>
+       <entry><literal><function>abs(<replaceable>a</replaceable>)</function></literal></>
+       <entry>与<replaceable>a</replaceable>相同</>
+       <entry>绝对值</>
+       <entry><literal>abs(-17)</></>
+       <entry><literal>17</literal></>
+      </row>
+      <row>
+       <entry><literal><function>debug(<replaceable>a</replaceable>)</function></literal></>
+       <entry>与<replaceable>a</replaceable>相同</>
+       <entry>将<replaceable>a</replaceable>打印到<systemitem>stderr</systemitem>，并返回<replaceable>a</replaceable></>
+       <entry><literal>debug(5432.1)</></>
+       <entry><literal>5432.1</literal></>
+      </row>
+      <row>
+       <entry><literal><function>double(<replaceable>i</replaceable>)</function></literal></>
+       <entry>double</>
+       <entry>转换为 double</>
+       <entry><literal>double(5432)</></>
+       <entry><literal>5432.0</literal></>
+      </row>
+      <row>
+       <entry><literal><function>greatest(<replaceable>a</replaceable> [, <replaceable>...</replaceable> ] )</function></literal></>
+       <entry>若任一<replaceable>a</replaceable>为 double，则为 double，否则为 integer</>
+       <entry>参数中的最大值</>
+       <entry><literal>greatest(5, 4, 3, 2)</></>
+       <entry><literal>5</literal></>
+      </row>
+      <row>
+       <entry><literal><function>int(<replaceable>x</replaceable>)</function></literal></>
+       <entry>integer</>
+       <entry>转换为 int</>
+       <entry><literal>int(5.4 + 3.8)</></>
+       <entry><literal>9</literal></entry>
+      </row>
+      <row>
+       <entry><literal><function>least(<replaceable>a</replaceable> [, <replaceable>...</replaceable> ] )</function></literal></>
+       <entry>若任一<replaceable>a</replaceable>为 double，则为 double，否则为 integer</>
+       <entry>参数中的最小值</>
+       <entry><literal>least(5, 4, 3, 2.1)</></>
+       <entry><literal>2.1</literal></>
+      </row>
+      <row>
+       <entry><literal><function>pi()</></></>
+       <entry>double</>
+       <entry>常量 PI 的值</>
+       <entry><literal>pi()</></>
+       <entry><literal>3.14159265358979323846</literal></>
+      </row>
+      <row>
+       <entry><literal><function>random(<replaceable>lb</replaceable>, <replaceable>ub</replaceable>)</function></literal></>
+       <entry>integer</>
+       <entry><literal>[lb, ub]</literal>中均匀分布的随机整数</>
+       <entry><literal>random(1, 10)</></>
+       <entry><literal>1</literal>与<literal>10</literal>之间的整数</>
+      </row>
+      <row>
+       <entry><literal><function>random_exponential(<replaceable>lb</replaceable>, <replaceable>ub</replaceable>, <replaceable>parameter</replaceable>)</function></literal></>
+       <entry>integer</>
+       <entry><literal>[lb, ub]</literal>中服从指数分布的随机整数，见下文</>
+       <entry><literal>random_exponential(1, 10, 3.0)</></>
+       <entry><literal>1</literal>与<literal>10</literal>之间的整数</>
+      </row>
+      <row>
+       <entry><literal><function>random_gaussian(<replaceable>lb</replaceable>, <replaceable>ub</replaceable>, <replaceable>parameter</replaceable>)</function></literal></>
+       <entry>integer</>
+       <entry><literal>[lb, ub]</literal>中服从高斯分布的随机整数，见下文</>
+       <entry><literal>random_gaussian(1, 10, 2.5)</></>
+       <entry><literal>1</literal>与<literal>10</literal>之间的整数</>
+      </row>
+      <row>
+       <entry><literal><function>sqrt(<replaceable>x</replaceable>)</function></literal></>
+       <entry>double</>
+       <entry>平方根</>
+       <entry><literal>sqrt(2.0)</></>
+       <entry><literal>1.414213562</literal></>
+      </row>
+     </tbody>
+     </tgroup>
+   </table>
+
+   <para>
+    <literal>random</>函数使用均匀分布生成值，即指定范围内所有值被抽到的概率相等。<literal>random_exponential</>和<literal>random_gaussian</>函数需要一个额外的 double 参数，用来决定分布的具体形状。
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>对于指数分布，<replaceable>parameter</replaceable>通过在以下位置截断一个快速衰减的指数分布来控制分布：<replaceable>parameter</replaceable>，然后将其投影到边界之间的整数上。准确地说，令<literallayout>
+f(x) = exp(-parameter * (x - min) / (max - min + 1)) / (1 - exp(-parameter))
+</literallayout>则值<replaceable>i</> 位于 <replaceable>min</> 和
+     <replaceable>max</> 之间（包括端点），被抽到的概率为：
+      <literal>f(i) - f(i + 1)</literal>。
+     </para>
+
+     <para>直观地说，<replaceable>parameter</replaceable>越大，接近<replaceable>min</>的值被访问得越频繁，而接近<replaceable>max</>的值被访问得越少。<replaceable>parameter</replaceable>越接近 0，访问分布就越平坦（越均匀）。对该分布的一个粗略近似是：范围内最常出现的 1% 的值，即接近<replaceable>min</>的那些值，会在<replaceable>parameter</replaceable>% 的时间里被抽中。<replaceable>parameter</replaceable>的值必须严格为正。</para>
+    </listitem>
+
+    <listitem>
+     <para>
+      对于高斯分布，该区间映射到标准正态分布（经典的钟形高斯曲线），左侧截断于 <literal>-parameter</literal>，右侧截断于 <literal>+parameter</literal>。区间中部的值更容易被抽到。准确地说，如果 <literal>PHI(x)</literal> 为标准正态分布的累积分布函数，均值 <literal>mu</literal> 定义为 <literal>(max + min) / 2.0</literal>，并且
+ <literallayout>
+f(x) = PHI(2.0 * parameter * (x - mu) / (max - min + 1)) /
+       (2.0 * PHI(parameter) - 1)
+</literallayout>
+      那么，值 <replaceable>i</> 位于 <replaceable>min</> 和
+     <replaceable>max</> 之间（包括端点），被抽到的概率为：
+      <literal>f(i + 0.5) - f(i - 0.5)</literal>。直观地说，<replaceable>parameter</replaceable> 越大，越靠近区间中部的值被抽到的频率就越高，而越靠近 <replaceable>min</> 和
+     <replaceable>max</> 边界的值被抽到的频率就越低。约 67% 的值抽自区间中间的 <literal>1.0 / parameter</literal>，即均值周围相对 <literal>0.5 / parameter</literal> 的范围；95% 的值抽自区间中间的 <literal>2.0 / parameter</literal>，即均值周围相对 <literal>1.0 / parameter</literal> 的范围。例如，如果 <replaceable>parameter</replaceable> 为 4.0，则 67% 的值抽自区间中间四分之一（1.0 / 4.0）的范围（即从
+      <literal>3.0 / 8.0</literal> 到 <literal>5.0 / 8.0</literal>），95% 的值抽自区间中间一半（<literal>2.0 / 4.0</literal>）的范围（第二和第三四分位）。考虑到 Box-Muller 变换的性能，<replaceable>parameter</replaceable> 的最小值为 2.0。
+      </para>
+    </listitem>
+   </itemizedlist>
+
+  <para>
+   作为一个示例，内置的类 TPC-B 事务的全部定义是：
+
+<programlisting>
+\set aid random(1, 100000 * :scale)
+\set bid random(1, 1 * :scale)
+\set tid random(1, 10 * :scale)
+\set delta random(-5000, 5000)
+BEGIN;
+UPDATE pgbench_accounts SET abalance = abalance + :delta WHERE aid = :aid;
+SELECT abalance FROM pgbench_accounts WHERE aid = :aid;
+UPDATE pgbench_tellers SET tbalance = tbalance + :delta WHERE tid = :tid;
+UPDATE pgbench_branches SET bbalance = bbalance + :delta WHERE bid = :bid;
+INSERT INTO pgbench_history (tid, bid, aid, delta, mtime) VALUES (:tid, :bid, :aid, :delta, CURRENT_TIMESTAMP);
+END;
+</programlisting>
+
+   该脚本允许事务的每次迭代都引用不同的随机选中行。（这个示例也说明了为什么每个客户端会话都必须拥有自己的变量 &mdash; 否则它们就无法彼此独立地访问不同的行。）
+  </para>
+
+ </refsect2>
+
+ <refsect2>
+  <title>逐事务日志记录</title>
+
+  <para>
+   使用<option>-l</option>选项时（但未指定<option>--aggregate-interval</option>选项），<application>pgbench</application>会将每个事务的信息写入日志文件。日志文件名为<filename><replaceable>prefix</replaceable>.<replaceable>nnn</replaceable></filename>，其中<replaceable>prefix</replaceable>默认为<literal>pgbench_log</literal>，<replaceable>nnn</replaceable>是<application>pgbench</application>进程的 PID。可以用<option>--log-prefix</option>选项修改此前缀。如果<option>-j</option>选项为 2 或更大，即存在多个工作线程，则每个工作线程都有自己的日志文件。第一个工作线程的日志文件名与标准单工作线程情况相同。其他工作线程的附加日志文件名为<filename><replaceable>prefix</replaceable>.<replaceable>nnn</replaceable>.<replaceable>mmm</replaceable></filename>，其中<replaceable>mmm</replaceable>是每个工作线程从 1 开始的顺序编号。
+  </para>
+
+  <para>
+   日志格式如下：
+
+<synopsis>
+<replaceable>client_id</> <replaceable>transaction_no</> <replaceable>time</> <replaceable>script_no</> <replaceable>time_epoch</> <replaceable>time_us</> <optional> <replaceable>schedule_lag</replaceable> </optional>
+</synopsis>
+
+   其中，
+   <replaceable>client_id</> 表示运行该事务的客户端会话，
+   <replaceable>transaction_no</> 记录该会话已运行的事务数，
+   <replaceable>time</> 是事务经过的总时间，单位为微秒，
+   <replaceable>script_no</> 标识使用的脚本文件（在通过 <option>-f</option> 或 <option>-b</option> 指定多个脚本时很有用），而 <replaceable>time_epoch</>/<replaceable>time_us</> 分别是 Unix 纪元时间戳和以微秒计的偏移量（适合用来生成带小数秒的 ISO 8601 时间戳），表示事务完成的时间。
+   <replaceable>schedule_lag</> 字段是事务计划开始时间与实际开始时间之间的差值，单位为微秒。它仅在使用 <option>--rate</> 选项时出现。如果同时使用 <option>--rate</> 和 <option>--latency-limit</>，则被跳过事务的 <replaceable>time</> 将报告为
+   <literal>skipped</>。
+  </para>
+
+  <para>
+   下面是单个客户端运行时生成的日志文件片段：
+
+<screen>
+0 199 2241 0 1175850568 995598
+0 200 2465 0 1175850568 998079
+0 201 2513 0 1175850569 608
+0 202 2038 0 1175850569 2663
+</screen>
+
+   下面是另一个使用 <literal>--rate=100</> 和 <literal>--latency-limit=5</> 的示例（请注意额外的
+   <replaceable>schedule_lag</> 列）：
+
+<screen>
+0 81 4621 0 1412881037 912698 3005
+0 82 6173 0 1412881037 914578 4304
+0 83 skipped 0 1412881037 914578 5217
+0 83 skipped 0 1412881037 914578 5099
+0 83 4722 0 1412881037 916203 3108
+0 84 4142 0 1412881037 918023 2333
+0 85 2465 0 1412881037 919759 740
+</screen>
+   在这个示例中，事务 82 超时了，因为其延迟（6.173 ms）超过了 5 ms 的限制。接下来的两个事务被跳过，因为它们在开始前就已经超时。
+  </para>
+
+  <para>
+   在能够处理大量事务的硬件上运行长时间测试时，日志文件可能会变得非常大。可以使用<option>--sampling-rate</option>选项，仅记录事务的随机样本。
+  </para>
+ </refsect2>
+
+ <refsect2>
+  <title>聚合日志记录</title>
+
+  <para>
+   使用 <option>--aggregate-interval</option> 选项时，日志文件采用另一种格式：
+
+<synopsis>
+<replaceable>interval_start</> <replaceable>num_transactions</> <replaceable>sum_latency</> <replaceable>sum_latency_2</> <replaceable>min_latency</> <replaceable>max_latency</> <optional> <replaceable>sum_lag</> <replaceable>sum_lag_2</> <replaceable>min_lag</> <replaceable>max_lag</> <optional> <replaceable>skipped</> </optional> </optional>
+</synopsis>
+
+   其中，
+   <replaceable>interval_start</> 是时间区间的开始时间（以 Unix 纪元时间戳表示），
+   <replaceable>num_transactions</> 是区间内的事务数，
+   <replaceable>sum_latency</replaceable> 是区间内事务延迟的总和，
+   <replaceable>sum_latency_2</replaceable> 是区间内事务延迟的平方和，
+   <replaceable>min_latency</> 是区间内的最小延迟，而
+   <replaceable>max_latency</> 是区间内的最大延迟。接下来的字段
+   <replaceable>sum_lag</>， <replaceable>sum_lag_2</>， <replaceable>min_lag</> 和 <replaceable>max_lag</> 仅在使用 <option>--rate</> 选项时出现。它们提供各事务等待前一事务完成的时间统计，即各事务计划开始时间与实际开始时间之间的差值。最后一个字段 <replaceable>skipped</> 仅在还使用 <option>--latency-limit</> 选项时出现。它记录因开始时间过晚而被跳过的事务数。每个事务都计入其提交时所在的时间区间。
+   </para>
+
+  <para>
+   下面是一些输出示例：
+ <screen>
+1345828501 5601 1542744 483552416 61 2573
+1345828503 7884 1979812 565806736 60 1479
+1345828505 7208 1979422 567277552 59 1391
+1345828507 7685 1980268 569784714 60 1398
+1345828509 7073 1979779 573489941 236 1411
+</screen></para>
+
+  <para>
+   请注意，普通（未聚合）日志格式会显示每个事务所使用的脚本，而聚合格式不会。因此，如果需要按脚本区分的数据，就必须自行聚合。
+  </para>
+
+ </refsect2>
+
+ <refsect2>
+  <title>逐语句报告</title>
+
+  <para>
+   使用<option>-r</option>选项时，<application>pgbench</application>会收集每个客户端执行的每条语句所经过的事务时间。基准测试完成后，它会报告这些值的平均值，称为每条语句的延迟。
+  </para>
+
+  <para>
+   对于默认脚本，输出与下面类似：
+ <screen>
+starting vacuum...end.
+transaction type: &lt;builtin: TPC-B (sort of)&gt;
+scaling factor: 1
+query mode: simple
+number of clients: 10
+number of threads: 1
+number of transactions per client: 1000
+number of transactions actually processed: 10000/10000
+latency average = 15.844 ms
+latency stddev = 2.715 ms
+tps = 618.764555 (including connections establishing)
+tps = 622.977698 (excluding connections establishing)
+script statistics:
+ - statement latencies in milliseconds:
+        0.002  \set aid random(1, 100000 * :scale)
+        0.005  \set bid random(1, 1 * :scale)
+        0.002  \set tid random(1, 10 * :scale)
+        0.001  \set delta random(-5000, 5000)
+        0.326  BEGIN;
+        0.603  UPDATE pgbench_accounts SET abalance = abalance + :delta WHERE aid = :aid;
+        0.454  SELECT abalance FROM pgbench_accounts WHERE aid = :aid;
+        5.528  UPDATE pgbench_tellers SET tbalance = tbalance + :delta WHERE tid = :tid;
+        7.335  UPDATE pgbench_branches SET bbalance = bbalance + :delta WHERE bid = :bid;
+        0.371  INSERT INTO pgbench_history (tid, bid, aid, delta, mtime) VALUES (:tid, :bid, :aid, :delta, CURRENT_TIMESTAMP);
+        1.212  END;
+</screen>
+  </para>
+
+  <para>
+   所有数值都是针对每个客户端执行的每条语句计算的，并在基准测试完成后报告。
+  </para>
+
+  <para>
+   请注意，收集计算每条语句延迟所需的额外计时信息会增加一些开销。这会降低平均执行速度，使计算出的 TPS 下降。减速程度因平台和硬件而异，差别可能很大。比较启用和未启用延迟报告时的平均 TPS 值，是衡量计时开销是否显著的好方法。
+  </para>
+ </refsect2>
+
+ <refsect2>
+
+  <title>良好实践</title>
+
+  <para>
+   很容易用<application>pgbench</application>得出完全没有意义的数字。下面给出一些有助于获得有用结果的准则。
+  </para>
+
+  <para>
+   首先，<emphasis>绝不要</emphasis>相信任何只运行了几秒钟的测试。使用<option>-t</option>或<option>-T</option>选项让测试至少持续几分钟，以便平滑掉噪声。在某些情况下，可能需要数小时才能得到可复现的结果。一个好做法是把同一测试运行几次，看看结果是否可复现。
+  </para>
+
+  <para>
+   对于默认的类 TPC-B 测试场景，初始化比例因子（<option>-s</option>）应至少与计划测试的最大客户端数（<option>-c</option>）一样大；否则，测到的主要将是更新争用。<structname>pgbench_branches</structname>表中只有<option>-s</option>行，而每个事务都要更新其中一行，因此<option>-c</option>超过<option>-s</option>时，必然会有大量事务阻塞等待其他事务。
+  </para>
+
+  <para>
+   默认测试场景还会对表初始化后的时间长短非常敏感：表中死元组和空闲空间的累积会改变结果。要理解这些结果，必须跟踪更新总数以及何时发生清理。如果启用了自动清理，它可能会给测得的性能带来不可预测的变化。
+  </para>
+
+  <para>
+   <application>pgbench</application>的一个局限是：在尝试测试大量客户端会话时，它自己也可能成为瓶颈。可以通过在与数据库服务器不同的机器上运行<application>pgbench</application>来缓解这一点，不过网络延迟必须足够低。甚至可以在多台客户端机器上同时运行多个<application>pgbench</application>实例，对同一台数据库服务器施压。
+  </para>
+ </refsect2>
+ <refsect2>
+
+  <title>安全性</title>
+
+  <para>
+    如果不可信用户能够访问尚未采用<link linkend="ddl-schemas-patterns">模式的安全使用方式</link>的数据库，就不要在该数据库中运行<application>pgbench</application>。<application>pgbench</application>使用非限定名称，并且不会更改搜索路径。
+  </para>
+ </refsect2>
+ </refsect1>
+</refentry>

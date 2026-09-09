@@ -1,0 +1,614 @@
+<!-- doc/src/sgml/logicaldecoding.sgml -->
+ <chapter id="logicaldecoding">
+  <title>逻辑解码</title>
+  <indexterm zone="logicaldecoding">
+   <primary>逻辑解码</primary>
+  </indexterm>
+  <para>
+   PostgreSQL 提供了基础设施，可将通过 SQL 执行的修改流式发送给外部消费
+   者。此功能可用于多种目的，包括复制方案和审计。
+  </para>
+
+  <para>
+   更改通过由逻辑复制槽标识的流发送出去。
+  </para>
+
+  <para>
+   这些更改以何种格式流式传输，由所使用的输出插件决定。PostgreSQL 发行版提
+   供了一个示例插件。还可以编写额外的插件，在不修改任何核心代码的情况下扩展
+   可用格式的选择。每个输出插件都可以访问由 <command>INSERT</command> 产生
+   的每一个新行，以及由 <command>UPDATE</command> 创建的新行版本。对于
+   <command>UPDATE</command> 和 <command>DELETE</command>，旧行版本是否可
+   用取决于所配置的复制标识（见
+   <xref linkend="SQL-CREATETABLE-REPLICA-IDENTITY">）。
+  </para>
+
+  <para>
+   更改既可以通过流复制协议消费（见 <xref linkend="protocol-replication"> 和
+   <xref linkend="logicaldecoding-walsender">），也可以通过 SQL 调用函数来消
+   费（见 <xref linkend="logicaldecoding-sql">）。还可以在不修改核心代码的
+   情况下编写其他消费复制槽输出的方法（见
+   <xref linkend="logicaldecoding-writer">）。
+  </para>
+
+  <sect1 id="logicaldecoding-example">
+   <title>逻辑解码示例</title>
+
+   <para>
+    下面的示例演示如何使用 SQL 接口控制逻辑解码。
+   </para>
+
+   <para>
+    在使用逻辑解码之前，必须将 <xref linkend="guc-wal-level"> 设置为
+    <literal>logical</literal>，并将 <xref linkend="guc-max-replication-slots">
+    至少设置为 1。然后，应当以超级用户身份连接到目标数据库（下面的示例中为
+    <literal>postgres</literal>）。
+   </para>
+
+<programlisting>
+postgres=# -- Create a slot named 'regression_slot' using the output plugin 'test_decoding'
+postgres=# SELECT * FROM pg_create_logical_replication_slot('regression_slot', 'test_decoding');
+    slot_name    |    lsn
+-----------------+-----------
+ regression_slot | 0/16B1970
+(1 row)
+
+postgres=# SELECT slot_name, plugin, slot_type, database, active, restart_lsn, confirmed_flush_lsn FROM pg_replication_slots;
+    slot_name    |    plugin     | slot_type | database | active | restart_lsn | confirmed_flush_lsn
+-----------------+---------------+-----------+----------+--------+-------------+-----------------
+ regression_slot | test_decoding | logical   | postgres | f      | 0/16A4408   | 0/16A4440
+(1 row)
+
+postgres=# -- There are no changes to see yet
+postgres=# SELECT * FROM pg_logical_slot_get_changes('regression_slot', NULL, NULL);
+ lsn | xid | data 
+-----+-----+------
+(0 rows)
+
+postgres=# CREATE TABLE data(id serial primary key, data text);
+CREATE TABLE
+
+postgres=# -- DDL isn't replicated, so all you'll see is the transaction
+postgres=# SELECT * FROM pg_logical_slot_get_changes('regression_slot', NULL, NULL);
+    lsn    |  xid  |     data     
+-----------+-------+--------------
+ 0/BA2DA58 | 10297 | BEGIN 10297
+ 0/BA5A5A0 | 10297 | COMMIT 10297
+(2 rows)
+
+postgres=# -- Once changes are read, they're consumed and not emitted
+postgres=# -- in a subsequent call:
+postgres=# SELECT * FROM pg_logical_slot_get_changes('regression_slot', NULL, NULL);
+ lsn | xid | data 
+-----+-----+------
+(0 rows)
+
+postgres=# BEGIN;
+postgres=# INSERT INTO data(data) VALUES('1');
+postgres=# INSERT INTO data(data) VALUES('2');
+postgres=# COMMIT;
+
+postgres=# SELECT * FROM pg_logical_slot_get_changes('regression_slot', NULL, NULL);
+    lsn    |  xid  |                          data                           
+-----------+-------+---------------------------------------------------------
+ 0/BA5A688 | 10298 | BEGIN 10298
+ 0/BA5A6F0 | 10298 | table public.data: INSERT: id[integer]:1 data[text]:'1'
+ 0/BA5A7F8 | 10298 | table public.data: INSERT: id[integer]:2 data[text]:'2'
+ 0/BA5A8A8 | 10298 | COMMIT 10298
+(4 rows)
+
+postgres=# INSERT INTO data(data) VALUES('3');
+
+postgres=# -- You can also peek ahead in the change stream without consuming changes
+postgres=# SELECT * FROM pg_logical_slot_peek_changes('regression_slot', NULL, NULL);
+    lsn    |  xid  |                          data                           
+-----------+-------+---------------------------------------------------------
+ 0/BA5A8E0 | 10299 | BEGIN 10299
+ 0/BA5A8E0 | 10299 | table public.data: INSERT: id[integer]:3 data[text]:'3'
+ 0/BA5A990 | 10299 | COMMIT 10299
+(3 rows)
+
+postgres=# -- The next call to pg_logical_slot_peek_changes() returns the same changes again
+postgres=# SELECT * FROM pg_logical_slot_peek_changes('regression_slot', NULL, NULL);
+    lsn    |  xid  |                          data                           
+-----------+-------+---------------------------------------------------------
+ 0/BA5A8E0 | 10299 | BEGIN 10299
+ 0/BA5A8E0 | 10299 | table public.data: INSERT: id[integer]:3 data[text]:'3'
+ 0/BA5A990 | 10299 | COMMIT 10299
+(3 rows)
+
+postgres=# -- options can be passed to output plugin, to influence the formatting
+postgres=# SELECT * FROM pg_logical_slot_peek_changes('regression_slot', NULL, NULL, 'include-timestamp', 'on');
+    lsn    |  xid  |                          data                           
+-----------+-------+---------------------------------------------------------
+ 0/BA5A8E0 | 10299 | BEGIN 10299
+ 0/BA5A8E0 | 10299 | table public.data: INSERT: id[integer]:3 data[text]:'3'
+ 0/BA5A990 | 10299 | COMMIT 10299 (at 2017-05-10 12:07:21.272494-04)
+(3 rows)
+
+postgres=# -- Remember to destroy a slot you no longer need to stop it consuming
+postgres=# -- server resources:
+postgres=# SELECT pg_drop_replication_slot('regression_slot');
+ pg_drop_replication_slot
+-----------------------
+
+(1 row)
+</programlisting>
+
+   <para>
+    下面的示例展示了如何通过流复制协议控制逻辑解码，所用程序是 PostgreSQL
+    发行版中自带的 <xref linkend="app-pgrecvlogical">。这要求已经配置好客
+    户端认证以允许复制连接（见
+    <xref linkend="streaming-replication-authentication">），并且
+    <varname>max_wal_senders</varname> 的设置足够高，以容纳额外的连接。
+   </para>
+<programlisting>
+$ pg_recvlogical -d postgres --slot test --create-slot
+$ pg_recvlogical -d postgres --slot test --start -f -
+<keycombo action="simul"><keycap>Control</><keycap>Z</></>
+$ psql -d postgres -c "INSERT INTO data(data) VALUES('4');"
+$ fg
+BEGIN 693
+table public.data: INSERT: id[integer]:4 data[text]:'4'
+COMMIT 693
+<keycombo action="simul"><keycap>Control</><keycap>C</></>
+$ pg_recvlogical -d postgres --slot test --drop-slot
+</programlisting>
+  </sect1>
+
+  <sect1 id="logicaldecoding-explanation">
+   <title>逻辑解码概念</title>
+   <sect2>
+    <title>逻辑解码</title>
+
+    <indexterm>
+     <primary>逻辑解码</primary>
+    </indexterm>
+
+    <para>
+     逻辑解码是将数据库表上的所有持久更改提取为一种连贯、易于理解的格式的过
+     程，这种格式无需详细了解数据库内部状态就能解释。
+    </para>
+
+    <para>
+     在 <productname>PostgreSQL</productname> 中，逻辑解码通过解码
+     <link linkend="wal">预写式日志</link>的内容来实现。预写式日志描述的是存
+     储层面的更改，而逻辑解码会将其转换成应用程序特定的形式，例如元组流或 SQL
+     语句流。
+    </para>
+   </sect2>
+
+   <sect2 id="logicaldecoding-replication-slots">
+    <title>复制槽</title>
+
+    <indexterm>
+     <primary>复制槽</primary>
+     <secondary>逻辑复制</secondary>
+    </indexterm>
+
+    <para>
+     在逻辑复制的上下文中，一个槽表示一个更改流，客户端可以按照这些更改在源服
+     务器上发生的顺序来重放它们。每个槽都从单个数据库流式传输一系列更改。
+    </para>
+
+    <note>
+     <para><productname>PostgreSQL</productname> 也有流复制槽（见
+     <xref linkend="streaming-replication">），但它们在那里的使用方式略有不
+     同。
+     </para>
+    </note>
+
+    <para>
+     复制槽在整个 <productname>PostgreSQL</productname> 集簇的所有数据库中都
+     有唯一标识符。槽独立于使用它们的连接而持久存在，并且具备崩溃安全性。
+    </para>
+
+    <para>
+     逻辑槽在正常运行时会让每个更改只发送一次。每个槽的当前位置只会在检查点
+     时持久化，因此在发生崩溃时，该槽可能会回退到较早的 LSN，这会导致服务器
+     重启后最近的更改再次被发送。逻辑解码客户端有责任避免多次处理同一消息带
+     来的不良影响。客户端可能希望记录解码时见到的最后一个 LSN，并跳过任何重
+     复数据；或者（在使用复制协议时）请求从该 LSN 开始解码，而不是让服务器自
+     行决定起始点。复制进度跟踪功能正是为此设计的，参见
+     <link linkend="replication-origins">复制源</link>。
+    </para>
+
+    <para>
+     对于同一个数据库，可以存在多个彼此独立的槽。每个槽都有自己的状态，允许不
+     同的消费者从数据库更改流中的不同位置接收更改。对于大多数应用，每个消费
+     者都需要一个单独的槽。
+    </para>
+
+    <para>
+     逻辑复制槽并不了解接收端的状态。甚至可以让多个不同的接收端在不同时间使用
+     同一个槽；它们只会从前一个接收端停止消费更改的位置之后继续获得更改。但
+     在任意给定时刻，只允许一个接收端从某个槽中消费更改。
+    </para>
+
+    <note>
+     <para>
+      复制槽可跨崩溃持久存在，而且不了解其消费者的状态。即使没有连接使用它们，
+      它们也会阻止所需资源被移除。这会消耗存储，因为只要复制槽仍然需要，
+      <command>VACUUM</command> 就不能移除所需的 WAL 和系统目录中的相关行。因此，如果槽已经不再需要，就
+      应当将其删除。
+     </para>
+    </note>
+   </sect2>
+
+   <sect2>
+    <title>输出插件</title>
+    <para>
+     输出插件把预写式日志内部表示的数据转换成复制槽消费者所需的格式。
+    </para>
+   </sect2>
+
+   <sect2>
+    <title>导出快照</title>
+    <para>
+     当使用流复制接口创建新的复制槽时（见
+     <xref linkend="protocol-replication-create-slot">），会导出
+     一个快照（见 <xref linkend="functions-snapshot-synchronization">），
+     它准确反映了数据库的这样一种状态：从该状态之后开始，所有更改都会被纳入
+     更改流。这可以通过使用
+     <link linkend="sql-set-transaction"><literal>SET TRANSACTION
+     SNAPSHOT</literal></link> 读取创建槽那一刻的数据库状态，据此创建一个新
+     副本。随后，该事务就可以用来转储该时刻的数据库状态，之后再利用该槽的内
+     容进行更新，而不会丢失任何更改。
+    </para>
+    <para>并非总能创建快照。特别是，连接到热备服务器时，创建快照会失败。不需要导出快照的应用程序可以使用 <literal>NOEXPORT_SNAPSHOT</literal> 选项禁止导出。</para>
+   </sect2>
+  </sect1>
+
+  <sect1 id="logicaldecoding-walsender">
+   <title>流复制协议接口</title>
+
+   <para>
+    命令
+    <itemizedlist>
+     <listitem>
+      <para><literal>CREATE_REPLICATION_SLOT <replaceable>slot_name</replaceable> LOGICAL <replaceable>output_plugin</replaceable></literal></para>
+     </listitem>
+
+     <listitem>
+      <para><literal>DROP_REPLICATION_SLOT <replaceable>slot_name</replaceable></literal> <optional> <literal>WAIT</literal> </optional></para>
+     </listitem>
+
+     <listitem>
+      <para><literal>START_REPLICATION SLOT <replaceable>slot_name</replaceable> LOGICAL ...</literal></para>
+     </listitem>
+    </itemizedlist>
+    分别用于创建复制槽、删除复制槽，以及从复制槽流式传输更改。这些命令只在
+    复制连接上可用，不能通过 SQL 使用。关于这些命令的细节，见
+    <xref linkend="protocol-replication">。
+   </para>
+
+   <para>
+    命令 <xref linkend="app-pgrecvlogical"> 可以用来在流复制连接上控制逻
+    辑解码（它在内部使用上述命令）。
+   </para>
+  </sect1>
+
+  <sect1 id="logicaldecoding-sql">
+   <title>逻辑解码 <acronym>SQL</acronym> 接口</title>
+
+   <para>
+     关于与逻辑解码交互的 SQL 层 API 的详细文档，见
+     <xref linkend="functions-replication">。
+   </para>
+
+   <para>
+    同步复制（见 <xref linkend="synchronous-replication">）只支持通过流复
+    制接口使用的复制槽。函数接口以及额外的、非核心的接口都不支持同步复制。
+   </para>
+  </sect1>
+
+  <sect1 id="logicaldecoding-catalogs">
+   <title>与逻辑解码相关的系统目录</title>
+
+   <para>
+    <link linkend="view-pg-replication-slots"><structname>pg_replication_slots</structname></link>
+    视图和
+    <link linkend="pg-stat-replication-view"><structname>pg_stat_replication</structname></link>
+    视图分别提供了有关复制槽和流复制连接当前状态的信息。这些视图同时适用于
+    物理复制和逻辑复制。
+    </para>
+  </sect1>
+
+  <sect1 id="logicaldecoding-output-plugin">
+   <title>逻辑解码输出插件</title>
+   <para>
+    PostgreSQL 源码树中的
+    <link linkend="test-decoding">
+     <filename>contrib/test_decoding</filename>
+    </link>
+    子目录里有一个输出插件示例。
+   </para>
+   <sect2 id="logicaldecoding-output-init">
+    <title>初始化函数</title>
+    <indexterm zone="logicaldecoding-output-init">
+     <primary>_PG_output_plugin_init</primary>
+    </indexterm>
+    <para>加载输出插件的方式是动态加载共享库，并以输出插件的名称作为库的基本名称。定位该库时使用常规库搜索路径。为了提供所需的输出插件回调，并表明这个库确实是输出插件，库必须提供一个名为<function>_PG_output_plugin_init</function>的函数。此函数会接收一个结构体，需要在其中填写各项操作的回调函数指针。<programlisting>
+typedef struct OutputPluginCallbacks
+{
+    LogicalDecodeStartupCB startup_cb;
+    LogicalDecodeBeginCB begin_cb;
+    LogicalDecodeChangeCB change_cb;
+    LogicalDecodeCommitCB commit_cb;
+    LogicalDecodeMessageCB message_cb;
+    LogicalDecodeFilterByOriginCB filter_by_origin_cb;
+    LogicalDecodeShutdownCB shutdown_cb;
+} OutputPluginCallbacks;
+
+typedef void (*LogicalOutputPluginInit) (struct OutputPluginCallbacks *cb);
+</programlisting>其中，<function>begin_cb</function>， <function>change_cb</function>和<function>commit_cb</function>回调是必需的，而<function>startup_cb</function>，
+     <function>filter_by_origin_cb</function>和<function>shutdown_cb</function>是可选的。</para>
+   </sect2>
+
+   <sect2 id="logicaldecoding-capabilities">
+    <title>能力</title>
+
+    <para>为了对变更进行解码、格式化和输出，输出插件可以使用后端的大部分常规基础设施，包括调用输出函数。可以对关系进行只读访问，但仅限于以下两种关系：由<command>initdb</command>创建在<literal>pg_catalog</literal>模式中的关系，或者使用以下方式标记为用户提供的系统目录表的关系：<programlisting>
+ALTER TABLE user_catalog_table SET (user_catalog_table = true);
+CREATE TABLE another_catalog_table(data text) WITH (user_catalog_table = true);
+</programlisting>禁止执行任何会导致分配事务 ID 的操作。这包括向表写入数据、执行 DDL 更改以及调用<literal>txid_current()</literal>。
+    </para>
+   </sect2>
+
+   <sect2 id="logicaldecoding-output-mode">
+    <title>输出模式</title>
+
+    <para>
+     输出插件回调几乎可以用任意格式向消费者传递数据。对于某些用例，例如通过
+     SQL 查看更改，把数据返回为能够容纳任意数据的数据类型（例如
+     <type>bytea</type>）会很笨拙。如果输出插件只输出服务器编码中的文本数
+     据，它可以把 <literal>OutputPluginOptions.output_type</literal> 设置为
+     <literal>OUTPUT_PLUGIN_TEXTUAL_OUTPUT</literal> 而不是
+     <literal>OUTPUT_PLUGIN_BINARY_OUTPUT</literal>，并在
+     <link linkend="logicaldecoding-output-plugin-startup">启动回调</link>
+     中声明这一点。在这种情况下，所有数据都必须采用服务器编码，这样才能装入 <type>text</type>
+     datum。断言开启的构建会检查这一点。
+    </para>
+   </sect2>
+
+   <sect2 id="logicaldecoding-output-plugin-callbacks">
+    <title>输出插件回调</title>
+
+    <para>
+     输出插件通过它所提供的各类回调获知正在发生的更改。
+    </para>
+
+    <para>
+     并发事务按提交顺序解码，并且只有属于某个特定事务的更改，才会在
+     <literal>begin</literal> 和 <literal>commit</literal> 回调之间被解码。
+     显式或隐式回滚的事务永远不会被解码。成功的保存点会按照它们在该事务中执行的顺序，被折叠进包含它们的事务中。</para>
+
+    <note>
+     <para>
+      只有已经安全刷写到磁盘的事务才会被解码。这可能导致
+      <command>COMMIT</command> 在紧随其后的
+      <literal>pg_logical_slot_get_changes()</literal> 调用中不会立即被解
+      码，当 <varname>synchronous_commit</varname> 被设置为
+      <literal>off</literal> 时尤其如此。
+     </para>
+    </note>
+
+    <sect3 id="logicaldecoding-output-plugin-startup">
+     <title>启动回调</title>
+     <para>可选的<function>startup_cb</function>回调会在每次创建复制槽或请求其流式传输变更时调用，无论有多少变更已准备好输出。<programlisting>
+typedef void (*LogicalDecodeStartupCB) (struct LogicalDecodingContext *ctx,
+                                        OutputPluginOptions *options,
+                                        bool is_init);
+</programlisting>其中，<literal>is_init</literal>参数在创建复制槽时为 true，否则为 false。<parameter>options</parameter>指向一个输出插件可以设置的选项结构体：<programlisting>
+typedef struct OutputPluginOptions
+{
+    OutputPluginOutputType output_type;
+} OutputPluginOptions;
+</programlisting>
+      <literal>output_type</literal>必须设为<literal>OUTPUT_PLUGIN_TEXTUAL_OUTPUT</literal>或<literal>OUTPUT_PLUGIN_BINARY_OUTPUT</literal>。另见<xref linkend="logicaldecoding-output-mode">。
+     </para>
+
+     <para>
+      启动回调应当验证
+      <literal>ctx-&gt;output_plugin_options</literal> 中的选项。如果输出插
+      件需要保存状态，可以使用
+      <literal>ctx-&gt;output_plugin_private</literal> 来存储。
+     </para>
+    </sect3>
+
+    <sect3 id="logicaldecoding-output-plugin-shutdown">
+     <title>关闭回调</title>
+
+     <para>
+      当一个此前处于活动状态的复制槽不再使用时，就会调用可选的
+      <function>shutdown_cb</function> 回调。它可用于释放输出插件私有的资
+      源。此时未必是在删除该槽，也可能只是停止流式传输。
+<programlisting>
+typedef void (*LogicalDecodeShutdownCB) (struct LogicalDecodingContext *ctx);
+</programlisting>
+     </para>
+    </sect3>
+
+    <sect3 id="logicaldecoding-output-plugin-begin">
+     <title>事务开始回调</title>
+
+     <para>
+      只要某个已提交事务的开始被解码，就会调用必需的
+      <function>begin_cb</function> 回调。已中止的事务及其内容永远不会被解
+      码。
+<programlisting>
+typedef void (*LogicalDecodeBeginCB) (struct LogicalDecodingContext *ctx,
+                                      ReorderBufferTXN *txn);
+</programlisting>
+      <parameter>txn</parameter> 参数包含该事务的元信息，例如它提交时的时间
+      戳以及它的 XID。
+     </para>
+    </sect3>
+
+    <sect3 id="logicaldecoding-output-plugin-commit">
+     <title>事务结束回调</title>
+
+     <para>
+      只要事务提交被解码，就会调用必需的 <function>commit_cb</function> 回
+      调。如果有被修改的行，那么在此之前，所有已修改行的
+      <function>change_cb</function> 回调都已经被调用过。
+<programlisting>
+typedef void (*LogicalDecodeCommitCB) (struct LogicalDecodingContext *ctx,
+                                       ReorderBufferTXN *txn,
+                                       XLogRecPtr commit_lsn);
+</programlisting>
+     </para>
+    </sect3>
+
+    <sect3 id="logicaldecoding-output-plugin-change">
+     <title>更改回调</title>
+
+     <para>必需的<function>change_cb</function>回调会在事务中的每次行修改时被调用，不论该修改是<command>INSERT</command>， <command>UPDATE</command>或<command>DELETE</command>。即使原命令一次修改了多行，也会针对每一行单独调用此回调。<programlisting>
+typedef void (*LogicalDecodeChangeCB) (struct LogicalDecodingContext *ctx,
+                                       ReorderBufferTXN *txn,
+                                       Relation relation,
+                                       ReorderBufferChange *change);
+</programlisting>参数<parameter>ctx</parameter>和<parameter>txn</parameter>所含的内容与<function>begin_cb</function>和<function>commit_cb</function>回调中的相同。此外，还会传入关系描述符<parameter>relation</parameter>（指向该行所属的关系），以及结构体<parameter>change</parameter>（描述该行的修改）。</para>
+
+     <note>
+      <para>
+       只有用户定义表中既不是不记录 WAL 的（见
+       <xref linkend="SQL-CREATETABLE-UNLOGGED">），也不是临时的（见
+       <xref linkend="SQL-CREATETABLE-TEMPORARY">）更改，才能通过逻辑解码提
+       取出来。
+      </para>
+     </note>
+    </sect3>
+
+     <sect3 id="logicaldecoding-output-plugin-filter-origin">
+     <title>源过滤回调</title>
+
+     <para>
+       可选的 <function>filter_by_origin_cb</function> 回调用于判定，从
+       <parameter>origin_id</parameter> 重放而来的数据是否为输出插件所关心
+       的数据。
+<programlisting>
+typedef bool (*LogicalDecodeFilterByOriginCB) (struct LogicalDecodingContext *ctx,
+                                               RepOriginId origin_id);
+</programlisting>
+      <parameter>ctx</parameter> 参数的内容与其他回调相同。除了源本身之外，没有
+      其他信息可用。如果要表明来自传入节点的更改并不相关，则返回 true，这会
+      使这些更改被过滤掉；否则返回 false。对于被过滤掉的事务和更改，其他回调
+      都不会被调用。
+     </para>
+     <para>
+       在实现级联复制或多向复制方案时，这个回调很有用。按源过滤可以避免在这类
+       配置中同一更改被来回复制。虽然事务和更改本身也带有源信息，但通过这个
+       回调来过滤会明显更高效。
+     </para>
+     </sect3>
+
+    <sect3 id="logicaldecoding-output-plugin-message">
+     <title>通用消息回调</title>
+
+     <para>可选的<function>message_cb</function>回调会在每次解码出一条逻辑解码消息时被调用。<programlisting>
+typedef void (*LogicalDecodeMessageCB) (struct LogicalDecodingContext *ctx,
+                                        ReorderBufferTXN *txn,
+                                        XLogRecPtr message_lsn,
+                                        bool transactional,
+                                        const char *prefix,
+                                        Size message_size,
+                                        const char *message);
+</programlisting>其中，<parameter>txn</parameter>参数包含事务的元信息，例如提交时间戳及其 XID。但请注意，如果消息是非事务性的，并且记录该消息的事务尚未分配 XID，这个参数可能为 NULL。<parameter>lsn</parameter>包含消息的 WAL 位置。<parameter>transactional</parameter>表示消息是否以事务性方式发送。<parameter>prefix</parameter>是任意的、以空字符终止的前缀，可用于识别当前插件关注的消息。最后，<parameter>message</parameter>参数保存实际消息，其大小为<parameter>message_size</parameter>。</para>
+     <para>
+      应特别注意，确保输出插件视为有意义的消息前缀具有唯一性。使用扩展名或输
+      出插件自身的名称通常是一个不错的选择。
+     </para>
+    </sect3>
+
+   </sect2>
+
+   <sect2 id="logicaldecoding-output-plugin-output">
+    <title>产生输出的函数</title>
+
+    <para>
+     为了真正产生输出，输出插件可以在
+     <literal>StringInfo</literal> 输出缓冲区 <literal>ctx-&gt;out</literal>
+     中写入数据，此时位于 <function>begin_cb</function>、
+     <function>commit_cb</function> 或 <function>change_cb</function> 回调内部。
+     写入输出缓冲区之前，必须先调
+     用 <function>OutputPluginPrepareWrite(ctx, last_write)</function>；写完
+     缓冲区之后，必须调用
+     <function>OutputPluginWrite(ctx, last_write)</function> 来执行写出。
+     <parameter>last_write</parameter> 指示某次写出是否为该回调的最后一次写
+     出。
+    </para>
+
+    <para>
+     下面的示例展示了如何把数据输出给输出插件的消费者：
+<programlisting>
+OutputPluginPrepareWrite(ctx, true);
+appendStringInfo(ctx->out, "BEGIN %u", txn->xid);
+OutputPluginWrite(ctx, true);
+</programlisting>
+    </para>
+   </sect2>
+  </sect1>
+
+  <sect1 id="logicaldecoding-writer">
+   <title>逻辑解码输出写入器</title>
+
+   <para>
+    逻辑解码还可以增加更多输出方法。详情见
+    <filename>src/backend/replication/logical/logicalfuncs.c</filename>。
+    本质上，需要提供三个函数：一个读取 WAL，一个准备写出输出，另一个执行写
+    出（见 <xref linkend="logicaldecoding-output-plugin-output">）。
+   </para>
+  </sect1>
+
+  <sect1 id="logicaldecoding-synchronous">
+   <title>逻辑解码的同步复制支持</title>
+   <sect2>
+    <title>概述</title>
+
+    <para>
+    逻辑解码可用于构建
+     <link linkend="synchronous-replication">同步复制</link>方案，其用户接口
+     与 <link linkend="streaming-replication">流复制</link> 的同步复制相同。要做到这一
+     点，必须使用流复制接口（见
+     <xref linkend="logicaldecoding-walsender">）来流式传出数据。客户端必须像
+     流复制客户端一样发送 <literal>Standby status update (F)</literal>
+     消息（见 <xref linkend="protocol-replication">）。
+    </para>
+
+    <note>
+     <para>
+      通过逻辑解码接收更改的同步副本，只能在单个数据库范围内工作。而与此不同，
+      <parameter>synchronous_standby_names</parameter> 当前是整个服务器范围
+      的，这意味着如果有多个数据库在被活跃使用，这种技术将无法正常工作。
+     </para>
+    </note>
+   </sect2>
+
+   <sect2 id="logicaldecoding-synchronous-caveats">
+    <title>注意事项</title>
+
+    <para>在同步复制配置中，如果事务对[用户]系统目录表加了排他锁，就可能发生死锁。参见<xref linkend="logicaldecoding-capabilities">了解用户系统目录表。这是因为事务的逻辑解码可能会锁定系统目录表以访问它们。为避免这种情况，用户必须避免对[用户]系统目录表获取排他锁。以下方式可能导致这种情况：<itemizedlist>
+      <listitem>
+       <para>
+        在事务中显式发出 <command>LOCK</command> 命令来锁定
+        <structname>pg_class</structname>。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        在事务中执行 <command>CLUSTER</command> 命令处理
+        <structname>pg_class</structname>。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        在事务中对 [user] 目录表执行 <command>TRUNCATE</command>。
+       </para>
+      </listitem>
+     </itemizedlist>注意，这些可能造成死锁的命令不仅适用于上面明确指出的系统目录表，也适用于其他任何[用户]系统目录表。</para>
+   </sect2>
+  </sect1>
+ </chapter>

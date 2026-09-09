@@ -1,0 +1,226 @@
+<!-- doc/src/sgml/pgstandby.sgml -->
+
+<refentry id="pgstandby">
+ <indexterm zone="pgstandby">
+  <primary>pg_standby</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle><application>pg_standby</application></refentrytitle>
+  <manvolnum>1</manvolnum>
+  <refmiscinfo>Application</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>pg_standby</refname>
+  <refpurpose>支持创建 <productname>PostgreSQL</productname> 温备服务器</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+  <cmdsynopsis>
+   <command>pg_standby</command>
+   <arg rep="repeat"><replaceable>option</replaceable></arg>
+   <arg choice="plain"><replaceable>archivelocation</replaceable></arg>
+   <arg choice="plain"><replaceable>nextwalfile</replaceable></arg>
+   <arg choice="plain"><replaceable>walfilepath</replaceable></arg>
+   <arg choice="opt"><replaceable>restartwalfile</replaceable></arg>
+  </cmdsynopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>描述</title>
+
+ <para><application>pg_standby</application> 支持创建<quote>温备</quote>数据库服务器。它既是可用于生产环境的程序，也是可定制的模板，便于在有需要时进行特定修改。</para>
+
+ <para><application>pg_standby</application> 设计为一个会等待的 <varname>restore_command</varname>，将标准归档恢复转变为温备运行需要这样的命令。此外还需要其他配置，服务器的主手册中对此均有介绍（参见 <xref linkend="warm-standby">）。</para>
+
+  <para>要配置备库使用 <application>pg_standby</application>，请将以下内容放入其 <filename>recovery.conf</filename> 配置文件：<programlisting>
+restore_command = 'pg_standby <replaceable>archiveDir</> %f %p %r'
+</programlisting>其中，<replaceable>archiveDir</> 是恢复 WAL 段文件时所读取的目录。</para>
+  <para>如果指定了 <replaceable>restartwalfile</replaceable>（通常使用 <literal>%r</literal> 宏），就会从 <replaceable>archivelocation</replaceable> 中删除逻辑上位于该文件之前的所有 WAL 文件。这样既能尽量减少需要保留的文件数量，又能保留崩溃后重启的能力。如果 <replaceable>archivelocation</replaceable> 是专供此备库使用的临时暂存区，就适合使用此参数；但如果 <replaceable>archivelocation</replaceable> 用作长期 WAL 归档区，就<emphasis>不应</emphasis>使用。</para>
+  <para><application>pg_standby</application> 假定 <replaceable>archivelocation</replaceable> 是服务器所属用户可读的目录。如果指定了 <replaceable>restartwalfile</replaceable>（或 <literal>-k</literal>），<replaceable>archivelocation</replaceable> 目录还必须可写。</para>
+  <para>主库发生故障时，切换到<quote>温备</>数据库服务器有以下两种方式：<variablelist>
+    <varlistentry>
+     <term>智能故障切换</term>
+     <listitem>
+      <para>在智能故障切换中，服务器会先应用归档中所有可用的 WAL 文件，再正式启动。即使备库已经落后，这也能做到零数据丢失；但如果尚未应用的 WAL 很多，备库可能需要很长时间才能就绪。要触发智能故障切换，请创建包含单词 <literal>smart</literal> 的触发文件，或者直接创建一个空的触发文件。</para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>快速故障切换</term>
+     <listitem>
+      <para>在快速故障切换中，服务器会立即正式启动。归档中所有尚未应用的 WAL 文件都会被忽略，这些文件中的全部事务都会丢失。要触发快速故障切换，请创建触发文件，并在其中写入单词 <literal>fast</literal>。也可以配置 <application>pg_standby</application>，使其在指定时间间隔内没有出现新 WAL 文件时，自动执行快速故障切换。</para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+ </refsect1>
+
+ <refsect1>
+  <title>选项</title>
+
+   <para>
+    <application>pg_standby</application> 接受以下命令行参数：<variablelist>
+
+     <varlistentry>
+      <term><option>-c</option></term>
+      <listitem>
+       <para>使用 <literal>cp</literal> 或 <literal>copy</literal> 命令从归档恢复 WAL 文件。由于这是唯一受支持的行为，因此该选项没有实际作用。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-d</option></term>
+      <listitem>
+       <para>
+        在 <filename>stderr</filename> 上输出大量调试日志。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-k</option></term>
+      <listitem>
+       <para>从 <replaceable>archivelocation</replaceable> 中删除文件，使归档中保留的、位于当前文件之前的 WAL 文件不超过此数量。零（默认值）表示不从 <replaceable>archivelocation</replaceable> 中删除任何文件。如果指定了 <replaceable>restartwalfile</replaceable>，就会静默忽略此参数，因为前者能更准确地确定归档的正确截断点。从 <productname>PostgreSQL</productname> 8.3 起，已<emphasis>弃用</emphasis>此参数；指定 <replaceable>restartwalfile</replaceable> 参数更安全、更高效。设置过小可能删除备库重启仍需使用的文件，设置过大则会浪费归档空间。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-r</option> <replaceable>maxretries</></term>
+      <listitem>
+       <para>设置复制命令失败后的最大重试次数（默认为 3）。每次失败后，都会等待 <replaceable>sleeptime</replaceable> * <replaceable>num_retries</replaceable>，因此等待时间会逐次增加。默认情况下，会依次等待 5 秒、10 秒、15 秒，然后才向备库报告失败。这会被解释为恢复结束，从而使备库完全启动。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-s</option> <replaceable>sleeptime</></term>
+      <listitem>
+       <para>设置两次检查之间的等待秒数（最多 60 秒，默认 5 秒），检查的内容是待恢复的 WAL 文件是否已在归档中可用。默认设置不一定就是推荐设置；相关讨论参见 <xref linkend="warm-standby">。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-t</option> <replaceable>triggerfile</></term>
+      <listitem>
+       <para>指定触发文件；一旦该文件出现，就会引发故障切换。建议使用带有明确结构的文件名，例如 <filename>/tmp/pgsql.trigger.5432</filename>，以免同一系统上存在多个服务器时，混淆被触发的是哪个服务器。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-V</option></term>
+      <term><option>--version</option></term>
+      <listitem>
+       <para>打印 <application>pg_standby</application> 的版本并退出。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-w</option> <replaceable>maxwaittime</></term>
+      <listitem>
+       <para>设置等待下一个 WAL 文件的最长秒数，超过此时间后执行快速故障切换。零（默认值）表示永远等待。默认设置不一定就是推荐设置；相关讨论参见 <xref linkend="warm-standby">。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-?</option></term>
+      <term><option>--help</option></term>
+      <listitem>
+       <para>显示有关 <application>pg_standby</application> 命令行参数的帮助信息并退出。</para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+ </refsect1>
+
+ <refsect1>
+  <title>说明</title>
+
+  <para><application>pg_standby</application> 设计为与 <productname>PostgreSQL</productname> 8.2 及更高版本配合使用。</para>
+  <para><productname>PostgreSQL</productname> 8.3 提供了 <literal>%r</literal> 宏，用于让 <application>pg_standby</application> 知道需要保留的最后一个文件。使用 <productname>PostgreSQL</productname> 8.2 时，如果需要清理归档，就必须使用 <literal>-k</literal> 选项。该选项在 8.3 中仍然可用，但已弃用。</para>
+  <para><productname>PostgreSQL</productname> 8.4 提供了 <varname>recovery_end_command</varname> 选项。如果没有此选项，遗留的触发文件可能带来危险。</para>
+
+  <para><application>pg_standby</application> 用 C 编写，源码易于修改，并专门标出了可根据自身需要进行修改的部分。</para>
+ </refsect1>
+
+ <refsect1>
+  <title>示例</title>
+
+  <para>在 Linux 或 Unix 系统上，可以使用：<programlisting>
+archive_command = 'cp %p .../archive/%f'
+
+restore_command = 'pg_standby -d -s 2 -t /tmp/pgsql.trigger.5442 .../archive %f %p %r 2>>standby.log'
+
+recovery_end_command = 'rm -f /tmp/pgsql.trigger.5442'
+</programlisting>这里，归档目录实际位于备库上，因此 <varname>archive_command</varname> 通过 NFS 访问该目录，但这些文件对备库而言是本地文件（因此可以使用 <literal>ln</>）。此配置会：<itemizedlist>
+   <listitem>
+    <para>将调试输出写入 <filename>standby.log</filename></para>
+   </listitem>
+   <listitem>
+    <para>每隔 2 秒检查一次下一个 WAL 文件是否可用</para>
+   </listitem>
+   <listitem>
+    <para>仅在名为 <filename>/tmp/pgsql.trigger.5442</filename> 的触发文件出现时停止等待，并根据其内容执行故障切换</para>
+   </listitem>
+   <listitem>
+    <para>恢复结束时删除触发文件</para>
+   </listitem>
+   <listitem>
+    <para>
+     从归档目录中移除不再需要的文件
+    </para>
+   </listitem>
+  </itemizedlist>
+  </para>
+
+  <para>在 Windows 上，可以使用：<programlisting>
+archive_command = 'copy %p ...\\archive\\%f'
+
+restore_command = 'pg_standby -d -s 5 -t C:\pgsql.trigger.5442 ...\archive %f %p %r 2>>standby.log'
+
+recovery_end_command = 'del C:\pgsql.trigger.5442'
+</programlisting>注意，需要双写反斜杠的设置是 <varname>archive_command</varname>，而<emphasis>无需</emphasis>双写的设置是 <varname>restore_command</varname> 或 <varname>recovery_end_command</varname>。此配置会：<itemizedlist>
+   <listitem>
+    <para>使用 <literal>copy</literal> 命令从归档恢复 WAL 文件</para>
+   </listitem>
+   <listitem>
+    <para>将调试输出写入 <filename>standby.log</filename></para>
+   </listitem>
+   <listitem>
+    <para>每隔 5 秒检查一次下一个 WAL 文件是否可用</para>
+   </listitem>
+   <listitem>
+    <para>仅在名为 <filename>C:\pgsql.trigger.5442</filename> 的触发文件出现时停止等待，并根据其内容执行故障切换</para>
+   </listitem>
+   <listitem>
+    <para>恢复结束时删除触发文件</para>
+   </listitem>
+   <listitem>
+    <para>
+     从归档目录中移除不再需要的文件
+    </para>
+   </listitem>
+  </itemizedlist>
+  </para>
+
+  <para>Windows 上的 <literal>copy</literal> 命令会在文件复制完成之前设置最终文件大小，这通常会让 <application>pg_standby</application> 产生误判。因此，<application>pg_standby</application> 一旦看到正确的文件大小，还会等待 <replaceable>sleeptime</replaceable> 秒。GNUWin32 的 <literal>cp</literal> 只有在文件复制完成后才设置文件大小。</para>
+
+  <para>由于 Windows 示例在两端都使用 <literal>copy</literal>，任一服务器或两个服务器都可能通过网络访问归档目录。</para>
+
+ </refsect1>
+
+ <refsect1>
+  <title>作者</title>
+
+  <para>Simon Riggs <email>simon@2ndquadrant.com</email></para>
+ </refsect1>
+
+ <refsect1>
+  <title>参见</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="pgarchivecleanup"></member>
+  </simplelist>
+ </refsect1>
+</refentry>
