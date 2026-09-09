@@ -1,0 +1,357 @@
+<!-- doc/src/sgml/btree.sgml -->
+
+<chapter id="btree">
+<title>B-树索引</title>
+
+   <indexterm>
+    <primary>index</primary>
+    <secondary>B-树</secondary>
+   </indexterm>
+
+<sect1 id="btree-intro">
+ <title>简介</title>
+
+ <para>
+  <productname>PostgreSQL</productname> 包含标准 B-树（<acronym>btree</acronym>，即多路平衡树）索引数据结构的一种实现。凡是能够排成定义明确的线性顺序的数据类型，都可以使用
+  B-树 索引。唯一的限制是，索引项在经过 TOAST
+  压缩（如果适用）后，大小也不能超过一个页面的大约三分之一。
+ </para>
+
+ <para>
+  由于每个 B-树 操作符类都会为其数据类型施加一种排序顺序，B-树
+  操作符类（更准确地说，是操作符族）已经成为
+  <productname>PostgreSQL</productname> 用来统一表示和理解排序语义的方式。因此，它们具备了一些超出单纯支持
+  B-树 索引所需范围的特性，系统中某些与 btree AM
+  相距甚远的部分也会利用它们。
+ </para>
+
+</sect1>
+
+<sect1 id="btree-behavior">
+ <title>B-树操作符类的行为</title>
+
+ <para>
+  正如<xref linkend="xindex-btree-strat-table"/>所示，B-树 操作符类必须提供五个比较操作符，
+  <literal>&lt;</literal>、
+  <literal>&lt;=</literal>、
+  <literal>=</literal>、
+  <literal>&gt;=</literal> 和
+  <literal>&gt;</literal>。
+  人们可能会以为 <literal>&lt;&gt;</literal> 也应当属于操作符类的一部分，但事实并非如此，因为在索引搜索中使用
+  <literal>&lt;&gt;</literal> 的 WHERE 子句几乎毫无用处。
+  （出于某些目的，规划器会把 <literal>&lt;&gt;</literal> 视为与 B-树
+  操作符类相关联；但规划器是通过 <literal>=</literal> 操作符的求反器链接找到该操作符，而不是从
+  <structname>pg_amop</structname> 中找到它。）
+ </para>
+
+ <para>
+  当多种数据类型共享几乎相同的排序语义时，可以将它们的操作符类归入同一个操作符族。这样做的好处是，规划器就能够对跨类型比较作出推理。族中的每个操作符类都应当包含对应其输入数据类型的单类型操作符（以及相关支持函数），而跨类型比较操作符及其支持函数则作为该族中的<quote>松散</quote>成员存在。建议在族中包含一套完整的跨类型操作符，从而确保规划器能够表示它根据传递性推导出来的任意比较条件。
+ </para>
+
+ <para>
+  B-树 操作符族必须满足一些基本假设：
+ </para>
+
+ <itemizedlist>
+  <listitem>
+   <para>
+    <literal>=</literal> 操作符必须是一种等价关系；也就是说，对于该数据类型的所有非空值
+    <replaceable>A</replaceable>、
+    <replaceable>B</replaceable>、
+    <replaceable>C</replaceable>：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       <replaceable>A</replaceable> <literal>=</literal>
+       <replaceable>A</replaceable> 为真
+       （<firstterm>自反律</firstterm>）
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       如果 <replaceable>A</replaceable> <literal>=</literal>
+       <replaceable>B</replaceable>，
+       则 <replaceable>B</replaceable> <literal>=</literal>
+       <replaceable>A</replaceable>
+       （<firstterm>对称律</firstterm>）
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       如果 <replaceable>A</replaceable> <literal>=</literal>
+       <replaceable>B</replaceable> 且 <replaceable>B</replaceable>
+       <literal>=</literal> <replaceable>C</replaceable>，
+       则 <replaceable>A</replaceable> <literal>=</literal>
+       <replaceable>C</replaceable>
+       （<firstterm>传递律</firstterm>）
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+  </listitem>
+
+  <listitem>
+   <para>
+    <literal>&lt;</literal> 操作符必须是一种强排序关系；也就是说，对于所有非空值
+    <replaceable>A</replaceable>、
+    <replaceable>B</replaceable>、
+    <replaceable>C</replaceable>：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       <replaceable>A</replaceable> <literal>&lt;</literal>
+       <replaceable>A</replaceable> 为假
+       （<firstterm>非自反律</firstterm>）
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       如果 <replaceable>A</replaceable> <literal>&lt;</literal>
+       <replaceable>B</replaceable>
+       且 <replaceable>B</replaceable> <literal>&lt;</literal>
+       <replaceable>C</replaceable>，
+       则 <replaceable>A</replaceable> <literal>&lt;</literal>
+       <replaceable>C</replaceable>
+       （<firstterm>传递律</firstterm>）
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+  </listitem>
+
+  <listitem>
+   <para>
+    此外，该顺序还是全序的；也就是说，对于所有非空值
+    <replaceable>A</replaceable>、
+    <replaceable>B</replaceable>：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       <replaceable>A</replaceable> <literal>&lt;</literal>
+       <replaceable>B</replaceable>、<replaceable>A</replaceable>
+       <literal>=</literal> <replaceable>B</replaceable> 以及
+       <replaceable>B</replaceable> <literal>&lt;</literal>
+       <replaceable>A</replaceable> 中恰有一个为真
+       （<firstterm>三分律</firstterm>）
+      </para>
+     </listitem>
+    </itemizedlist>
+
+    （三分律当然也正是定义比较支持函数的依据。）
+   </para>
+  </listitem>
+ </itemizedlist>
+
+ <para>
+  另外三个操作符都可以用 <literal>=</literal> 和
+  <literal>&lt;</literal> 以显而易见的方式定义，并且必须与它们保持一致。
+ </para>
+
+ <para>
+  对于支持多种数据类型的操作符族，当 <replaceable>A</replaceable>、
+  <replaceable>B</replaceable>、<replaceable>C</replaceable>
+  取自该族中的任意数据类型时，上述定律都必须成立。传递律最难保证，因为在跨类型情况下，它要求两种或三种不同操作符的行为彼此一致。举例来说，不能把
+  <type>float8</type> 和 <type>numeric</type>
+  放进同一个操作符族，至少在当前这种语义下不行：会先将
+  <type>numeric</type> 值转换为 <type>float8</type>，以便与
+  <type>float8</type> 比较。由于
+  <type>float8</type> 精度有限，这意味着会存在不同的
+  <type>numeric</type> 值都与同一个 <type>float8</type>
+  值比较为相等，于是传递律就会失效。
+ </para>
+
+ <para>
+  对于多数据类型操作符族，另一个要求是：在族内数据类型之间定义的任何隐式或二进制强制转换，都不得改变相应的排序顺序。
+ </para>
+
+ <para>
+  很容易理解为什么 B-树 索引要求这些定律在单一数据类型内部成立：没有这些定律，就不存在可用于排列键的顺序。此外，使用不同数据类型比较键的索引搜索，也要求跨两种数据类型的比较行为合理一致。把这些要求扩展到一个族内的三种或更多数据类型，虽然并非 B-树 索引机制本身的严格要求，但规划器会出于优化目的依赖它们。
+ </para>
+
+</sect1>
+
+<sect1 id="btree-support-funcs">
+ <title>B-树支持函数</title>
+
+ <para>如<xref linkend="xindex-btree-support-table"/>所示，btree 定义了一个必需支持函数和两个可选支持函数。</para>
+
+ <para>
+     对于 B-树 操作符族为其提供比较操作符的每一种数据类型组合，都必须提供一个比较支持函数。该函数在
+     <structname>pg_amproc</structname> 中注册，支持函数编号为 1，并且
+     <structfield>amproclefttype</structfield>/<structfield>amprocrighttype</structfield>
+     要等于该比较的左右数据类型（也就是与匹配操作符在
+     <structname>pg_amop</structname> 中注册时相同的数据类型）。比较函数必须接受两个非空值
+     <replaceable>A</replaceable> 和 <replaceable>B</replaceable>，并返回一个
+     <type>int32</type> 值，其值为
+     <literal>&lt;</literal> <literal>0</literal>、
+     <literal>0</literal> 或 <literal>&gt;</literal>
+     <literal>0</literal>，分别对应 <replaceable>A</replaceable>
+     <literal>&lt;</literal> <replaceable>B</replaceable>、
+     <replaceable>A</replaceable> <literal>=</literal>
+     <replaceable>B</replaceable> 或 <replaceable>A</replaceable>
+     <literal>&gt;</literal> <replaceable>B</replaceable>。不允许返回空值：该数据类型的所有值都必须可比较。示例见
+     <filename>src/backend/access/nbtree/nbtcompare.c</filename>。
+    </para>
+
+ <para>
+     如果参与比较的值属于可排序数据类型，则会通过标准的
+     <function>PG_GET_COLLATION()</function> 机制，把适当的排序规则 OID
+     传递给比较支持函数。
+    </para>
+
+ <para>
+     可选地，B-树 操作符族可以提供<firstterm>排序支持</firstterm>函数，注册为支持函数编号
+     2。这些函数允许以比朴素地直接调用比较支持函数更高效的方式，实现用于排序的比较。相关
+     API 定义在
+     <filename>src/include/utils/sortsupport.h</filename> 中。
+    </para>
+
+ <indexterm>
+     <primary>in_range support functions</primary>
+    </indexterm>
+
+ <indexterm>
+     <primary>support functions</primary>
+     <secondary>in_range</secondary>
+    </indexterm>
+
+ <para>
+     可选地，B-树 操作符族可以提供
+     <firstterm>in_range</firstterm> 支持函数，注册为支持函数编号 3。这些函数不会在 B-树
+     索引操作期间使用；相反，它们会扩展操作符族的语义，使其能够支持包含
+     <literal>RANGE</literal> <replaceable>offset</replaceable>
+     <literal>PRECEDING</literal> 和 <literal>RANGE</literal>
+     <replaceable>offset</replaceable> <literal>FOLLOWING</literal>
+     这两种帧边界类型的窗口子句（见<xref
+      linkend="syntax-window-functions"/>）。本质上，它额外提供的信息是：如何以与该族数据排序兼容的方式，对
+     <replaceable>offset</replaceable> 值进行加减。
+    </para>
+
+ <para>该<function>in_range</function>函数必须具有以下签名：<synopsis>
+in_range(<replaceable>val</replaceable> type1, <replaceable>base</replaceable> type1, <replaceable>offset</replaceable> type2, <replaceable>sub</replaceable> bool, <replaceable>less</replaceable> bool)
+returns bool
+</synopsis>
+  <replaceable>val</replaceable>和<replaceable>base</replaceable>必须具有相同的类型，且该类型是操作符族支持的类型之一（即该操作符族为其提供排序顺序的类型）。但是，<replaceable>offset</replaceable>可以具有不同的类型，甚至可以是操作符族在其他方面不支持的类型。例如，内置的<literal>time_ops</literal>操作符族提供一个<function>in_range</function>函数，其中<replaceable>offset</replaceable>的类型为<type>interval</type>。操作符族可以提供<function>in_range</function>函数，用于其支持的任意类型与一种或多种<replaceable>offset</replaceable>类型的组合。每个<function>in_range</function>函数都应登记在<structname>pg_amproc</structname>中，并使<structfield>amproclefttype</structfield>等于<type>type1</type>和<structfield>amprocrighttype</structfield>等于<type>type2</type>。
+ </para>
+
+ <para>对于<function>in_range</function>函数，其核心语义取决于两个布尔标志参数。它应当先对<replaceable>base</replaceable>和<replaceable>offset</replaceable>做加法或减法，再把<replaceable>val</replaceable>与结果比较，具体如下：<itemizedlist>
+      <listitem>
+       <para>
+        如果 <literal>!</literal><replaceable>sub</replaceable> 且
+        <literal>!</literal><replaceable>less</replaceable>，返回
+        <replaceable>val</replaceable> <literal>&gt;=</literal>
+        (<replaceable>base</replaceable> <literal>+</literal>
+        <replaceable>offset</replaceable>)
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        如果 <literal>!</literal><replaceable>sub</replaceable> 且
+        <replaceable>less</replaceable>，返回
+        <replaceable>val</replaceable> <literal>&lt;=</literal>
+        (<replaceable>base</replaceable> <literal>+</literal>
+        <replaceable>offset</replaceable>)
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        如果 <replaceable>sub</replaceable> 且
+        <literal>!</literal><replaceable>less</replaceable>，返回
+        <replaceable>val</replaceable> <literal>&gt;=</literal>
+        (<replaceable>base</replaceable> <literal>-</literal>
+        <replaceable>offset</replaceable>)
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        如果 <replaceable>sub</replaceable> 且
+        <replaceable>less</replaceable>，返回
+        <replaceable>val</replaceable> <literal>&lt;=</literal>
+        (<replaceable>base</replaceable> <literal>-</literal>
+        <replaceable>offset</replaceable>)
+       </para>
+      </listitem>
+     </itemizedlist>在此之前，函数应检查<replaceable>offset</replaceable>的符号：如果它小于零，就引发错误<literal>ERRCODE_INVALID_PRECEDING_OR_FOLLOWING_SIZE</literal>(22013)，错误文本类似于<quote>invalid preceding or following size in window function</quote>。（这是 SQL 标准的要求，尽管非标准操作符族或许会选择忽略这一限制，因为从语义上看似乎并没有太大必要。）把这个要求委托给<function>in_range</function>函数，是为了让核心代码无需理解<quote>小于零</quote>对于某个特定数据类型究竟意味着什么。</para>
+
+ <para>
+     另外还希望 <function>in_range</function> 函数在可行时避免因为
+     <replaceable>base</replaceable> <literal>+</literal>
+     <replaceable>offset</replaceable> 或
+     <replaceable>base</replaceable> <literal>-</literal>
+     <replaceable>offset</replaceable> 会溢出而抛出错误。即便该值会超出该数据类型的取值范围，仍然可以判定正确的比较结果。注意，如果该数据类型包含诸如
+     <quote>infinity</quote> 或 <quote>NaN</quote>
+     之类的概念，就可能需要格外小心，以确保
+     <function>in_range</function> 的结果与该操作符族的正常排序顺序一致。
+    </para>
+
+ <para>该<function>in_range</function>函数的结果必须与操作符族规定的排序顺序一致。具体而言，对于任意固定的<replaceable>offset</replaceable>和<replaceable>sub</replaceable>值，应满足以下条件：<itemizedlist>
+      <listitem>
+       <para>
+        如果 <function>in_range</function> 在
+        <replaceable>less</replaceable> = true 时，对某个
+        <replaceable>val1</replaceable> 和
+        <replaceable>base</replaceable> 返回真，那么对于每一个
+        <replaceable>val2</replaceable> <literal>&lt;=</literal>
+        <replaceable>val1</replaceable>，只要其
+        <replaceable>base</replaceable> 相同，它也必须返回真。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        如果 <function>in_range</function> 在
+        <replaceable>less</replaceable> = true 时，对某个
+        <replaceable>val1</replaceable> 和
+        <replaceable>base</replaceable> 返回假，那么对于每一个
+        <replaceable>val2</replaceable> <literal>&gt;=</literal>
+        <replaceable>val1</replaceable>，只要其
+        <replaceable>base</replaceable> 相同，它也必须返回假。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        如果 <function>in_range</function> 在
+        <replaceable>less</replaceable> = true 时，对某个
+        <replaceable>val</replaceable> 和
+        <replaceable>base1</replaceable> 返回真，那么对于每一个
+        <replaceable>base2</replaceable> <literal>&gt;=</literal>
+        <replaceable>base1</replaceable>，只要其
+        <replaceable>val</replaceable> 相同，它也必须返回真。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        如果 <function>in_range</function> 在
+        <replaceable>less</replaceable> = true 时，对某个
+        <replaceable>val</replaceable> 和
+        <replaceable>base1</replaceable> 返回假，那么对于每一个
+        <replaceable>base2</replaceable> <literal>&lt;=</literal>
+        <replaceable>base1</replaceable>，只要其
+        <replaceable>val</replaceable> 相同，它也必须返回假。
+       </para>
+      </listitem>
+     </itemizedlist>当<replaceable>less</replaceable>= false 时，类似的结论成立，但条件相反。</para>
+
+ <para>
+     如果被排序的类型（<type>type1</type>）属于可排序数据类型，则会通过标准的
+     PG_GET_COLLATION() 机制，把适当的排序规则 OID 传递给
+     <function>in_range</function> 函数。
+    </para>
+
+ <para>
+     <function>in_range</function> 函数不必处理 NULL
+     输入，并且通常会被标记为 strict。
+    </para>
+
+</sect1>
+
+<sect1 id="btree-implementation">
+ <title>实现</title>
+
+  <para>可在<filename>src/backend/access/nbtree/README</filename>中找到对 btree 索引实现的介绍。</para>
+
+</sect1>
+
+</chapter>
