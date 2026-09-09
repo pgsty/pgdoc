@@ -1,0 +1,2366 @@
+<!-- doc/src/sgml/charset.sgml -->
+
+<chapter id="charset">
+ <title>本地化</title>
+
+ <para>
+  本章从管理员的角度介绍可用的本地化特性。
+  <productname>PostgreSQL</productname>支持两类本地化机制：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      利用操作系统的区域设置（locale）特性，提供与区域设置相关的排序顺序、
+      数字格式、翻译后的消息以及其他方面的支持。详见<xref
+      linkend="locale"/>和<xref linkend="collation"/>。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      提供多种字符集，以支持存储各种语言的文本，并提供客户端与服务器之间的
+      字符集转换。详见<xref linkend="multibyte"/>。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+
+
+ <sect1 id="locale">
+  <title>区域设置支持</title>
+
+  <indexterm zone="locale"><primary>locale</primary></indexterm>
+
+  <para>
+   <firstterm>区域设置</firstterm>支持是指应用程序在字母表、排序、数字格式等
+   方面尊重文化偏好。<productname>PostgreSQL</productname>使用服务器操作系统
+   提供的标准 ISO C 和<acronym>POSIX</acronym>区域设置机制。更多信息请参考
+   系统文档。
+  </para>
+
+  <sect2>
+   <title>概述</title>
+
+   <para>
+    在使用<command>initdb</command>创建数据库集簇时，区域设置支持会自动
+    初始化。默认情况下，<command>initdb</command>会使用其执行环境中的区域
+    设置来初始化数据库集簇，因此如果你的系统已经设置为数据库集簇想要使用的
+    区域设置，就无需额外操作。如果想使用不同的区域设置（或者不确定系统当前
+    设置了哪种区域设置），可以通过指定<option>--locale</option>选项，精确
+    告诉<command>initdb</command>使用哪种区域设置。例如：
+<screen>
+initdb --locale=sv_SE
+</screen>
+   </para>
+
+   <para>
+    这个 Unix 系统上的示例把区域设置为在瑞典（<literal>SE</literal>）使用的
+    瑞典语（<literal>sv</literal>）。其他可能的值包括<literal>en_US</literal>
+    （美国英语）和<literal>fr_CA</literal>（加拿大法语）。如果一个区域设置
+    可以使用多于一种字符集，则说明可以采用
+    <replaceable>language_territory.codeset</replaceable>这样的形式。例如，
+    <literal>fr_BE.UTF-8</literal>表示在比利时（BE）使用、采用
+    <acronym>UTF-8</acronym>字符集编码的法语（fr）。
+   </para>
+
+   <para>
+    系统上有哪些区域设置可用，以及它们以什么名称出现，取决于操作系统供应商
+    提供了什么以及实际安装了什么。在大多数 Unix 系统上，命令
+    <literal>locale -a</literal>会给出所有可用区域设置的列表。Windows 使用
+    更冗长的区域设置名称，例如<literal>German_Germany</literal>或
+    <literal>Swedish_Sweden.1252</literal>，但原则是相同的。
+   </para>
+
+   <para>
+    有时混合多个区域设置的规则会很有用，例如使用英语排序规则但使用西班牙语
+    消息。为此，存在一组只控制本地化规则某些方面的区域设置子类别：
+
+    <informaltable>
+     <tgroup cols="2">
+      <colspec colname="col1" colwidth="1*"/>
+      <colspec colname="col2" colwidth="3*"/>
+      <tbody>
+       <row>
+        <entry><envar>LC_COLLATE</envar></entry>
+        <entry>字符串排序顺序</entry>
+       </row>
+       <row>
+        <entry><envar>LC_CTYPE</envar></entry>
+        <entry>字符分类（什么算字母？它的大写等价形式是什么？）</entry>
+       </row>
+       <row>
+        <entry><envar>LC_MESSAGES</envar></entry>
+        <entry>消息的语言</entry>
+       </row>
+       <row>
+        <entry><envar>LC_MONETARY</envar></entry>
+        <entry>货币数量使用的格式</entry>
+       </row>
+       <row>
+        <entry><envar>LC_NUMERIC</envar></entry>
+        <entry>数字的格式</entry>
+       </row>
+       <row>
+        <entry><envar>LC_TIME</envar></entry>
+        <entry>日期和时间的格式</entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </informaltable>
+
+    这些类别名会转换成<command>initdb</command>选项名，用于覆盖特定类别的
+    区域设置选择。例如，要将区域设置设为加拿大法语，但对货币格式采用美国规
+    则，可以使用<literal>initdb --locale=fr_CA --lc-monetary=en_US</literal>。
+   </para>
+
+   <para>
+    如果希望系统表现得像没有区域设置支持一样，可使用特殊区域设置名
+    <literal>C</literal>，或等效的<literal>POSIX</literal>。
+   </para>
+
+   <para>
+    某些区域设置类别的值必须在创建数据库时固定下来。你可以为不同数据库使用
+    不同设置，但数据库一旦创建，这些类别的值就不能再更改。
+    <literal>LC_COLLATE</literal>和<literal>LC_CTYPE</literal>就属于这类
+    类别。它们会影响索引的排序顺序，因此必须保持固定，否则文本列上的索引会
+    损坏。（不过，可以通过排序规则缓解这一限制，参见<xref
+    linkend="collation"/>。）这些类别的默认值在运行<command>initdb</command>
+    时确定，创建新数据库时会使用这些值，除非在<command>CREATE DATABASE</command>
+    命令中另行指定。
+   </para>
+
+   <para>
+    其他区域设置类别可以在任何时候通过设置与其同名的服务器配置参数来更改
+    （详见<xref linkend="runtime-config-client-format"/>）。<command>initdb</command>
+    选择的值实际上只是写入配置文件<filename>postgresql.conf</filename>中，
+    作为服务器启动时的默认值。如果从<filename>postgresql.conf</filename>中
+    删除这些赋值，服务器就会从其执行环境继承相应设置。
+   </para>
+
+   <para>
+    请注意，服务器的区域设置行为由服务器看到的环境变量决定，而不是由任何客
+    户端的环境决定。因此，务必在启动服务器前配置好正确的区域设置。由此带来
+    的一个结果是，如果客户端和服务器使用不同的区域设置，消息可能会因其来源
+    不同而显示为不同语言。
+   </para>
+
+   <note>
+    <para>
+     这里所说的从执行环境继承区域设置，在大多数操作系统上是指：对于某个给
+     定的区域设置类别，例如排序规则，会按以下顺序检查环境变量，直到找到一个
+     已设置的变量为止：<envar>LC_ALL</envar>、
+     <envar>LC_COLLATE</envar>（或相应类别对应的变量）、<envar>LANG</envar>。
+     如果这些环境变量都没有设置，则区域设置默认为<literal>C</literal>。
+    </para>
+
+    <para>
+     某些消息本地化库还会查看环境变量<envar>LANGUAGE</envar>，它会覆盖所有
+     其他用于设置消息语言的区域设置。如果有疑问，请参考操作系统文档，尤其是
+     关于<application>gettext</application>的文档。
+    </para>
+   </note>
+
+   <para>
+    若要让消息可以翻译为用户偏好的语言，构建时必须启用<acronym>NLS</acronym>
+    （<literal>configure --enable-nls</literal>）。所有其他区域设置支持都会
+    自动内置。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>行为</title>
+
+   <para>
+    区域设置会影响下列 SQL 特性：
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       在对文本数据使用<literal>ORDER BY</literal>或标准比较操作符的查询
+       中的排序顺序
+       <indexterm><primary>ORDER BY</primary><secondary>与区域设置</secondary></indexterm>
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       <function>upper</function>、<function>lower</function>和
+       <function>initcap</function>函数
+       <indexterm><primary>upper</primary><secondary>与区域设置</secondary></indexterm>
+       <indexterm><primary>lower</primary><secondary>与区域设置</secondary></indexterm>
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       模式匹配操作符（<literal>LIKE</literal>、<literal>SIMILAR TO</literal>
+       以及 POSIX 风格正则表达式）；区域设置既会影响大小写不敏感匹配，也会
+       影响字符类正则表达式中的字符分类
+       <indexterm><primary>LIKE</primary><secondary>与区域设置</secondary></indexterm>
+       <indexterm><primary>regular expressions</primary><secondary>与区域设置</secondary></indexterm>
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       <function>to_char</function>函数族
+       <indexterm><primary>to_char</primary><secondary>与区域设置</secondary></indexterm>
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       对<literal>LIKE</literal>子句使用索引的能力
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    在<productname>PostgreSQL</productname>中使用<literal>C</literal>或
+    <literal>POSIX</literal>之外的区域设置，缺点是会影响性能。它会减慢字
+    符处理速度，并阻止普通索引用于<literal>LIKE</literal>。因此，只有在确
+    有需要时才应使用区域设置。
+   </para>
+
+   <para>
+    为了让<productname>PostgreSQL</productname>在非 C 区域设置下也能对
+    <literal>LIKE</literal>子句使用索引，存在若干自定义操作符类可供使用。
+    它们允许创建执行严格逐字符比较、忽略区域设置比较规则的索引。详见<xref
+    linkend="indexes-opclass"/>。另一种方法是创建使用<literal>C</literal>
+    排序规则的索引，如<xref linkend="collation"/>所述。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>问题</title>
+
+   <para>
+    如果区域设置支持没有像上面说明的那样工作，请检查操作系统中的区域设置支
+    持是否已经正确配置。要检查系统中安装了哪些区域设置，可以使用
+    <literal>locale -a</literal>命令（如果操作系统提供该命令）。
+   </para>
+
+   <para>
+    请确认<productname>PostgreSQL</productname>实际使用的区域设置就是你预
+    期的区域设置。<envar>LC_COLLATE</envar>和<envar>LC_CTYPE</envar>是在创
+    建数据库时确定的，除非重新创建数据库，否则不能更改。其他区域设置，包括
+    <envar>LC_MESSAGES</envar>和<envar>LC_MONETARY</envar>，最初由启动服
+    务器时的环境决定，但可以在运行中动态修改。你可以使用<command>SHOW</command>
+    命令检查当前生效的区域设置。
+   </para>
+
+   <para>
+    源码发布包中的<filename>src/test/locale</filename>目录包含
+    <productname>PostgreSQL</productname>区域设置支持的测试套件。
+   </para>
+
+   <para>
+    那些通过解析错误消息文本来处理服务器端错误的客户端应用，显然会遇到问
+    题，因为服务器消息可能使用不同语言。这类应用的作者应改用错误代码机制。
+   </para>
+
+   <para>
+    维护消息翻译目录需要许多志愿者持续投入，他们希望
+    <productname>PostgreSQL</productname>能够良好地支持他们偏好的语言。如
+    果你所用语言的消息目前还不可用，或尚未完全翻译，我们将非常感谢你的协
+    助。如果你愿意帮忙，请参考<xref linkend="nls"/>，或向开发者邮件列表写
+    信。
+   </para>
+  </sect2>
+ </sect1>
+
+
+ <sect1 id="collation">
+  <title>排序规则支持</title>
+
+  <indexterm zone="collation"><primary>排序规则</primary></indexterm>
+
+  <para>
+   排序规则特性允许为每一列甚至每一次操作指定数据的排序顺序和字符分类行为。
+   这缓解了数据库的<symbol>LC_COLLATE</symbol>和<symbol>LC_CTYPE</symbol>
+   设置在创建之后无法更改这一限制。
+  </para>
+
+  <sect2>
+   <title>概念</title>
+
+   <para>
+    从概念上讲，每个可排序数据类型的表达式都有一个排序规则。（内置的可排序
+    数据类型包括<type>text</type>、<type>varchar</type>和<type>char</type>。
+    用户定义的基本类型也可以标记为可排序，当然，建立在可排序数据类型之上的
+    域也是可排序的。）
+    如果表达式是列引用，则该表达式的排序规则就是该列定义的排序规则。如果表
+    达式是常量，则其排序规则就是该常量数据类型的默认排序规则。更复杂表达式
+    的排序规则则按下文所述，从其输入表达式的排序规则推导出来。
+   </para>
+
+   <para>
+    表达式的排序规则可以是<quote>默认</quote>排序规则，这表示为数据库定义的
+    区域设置。表达式的排序规则也可能是不确定的。在这种情况下，排序操作以及
+    其他需要知道排序规则的操作都会失败。
+   </para>
+
+   <para>
+    当数据库系统必须执行排序或字符分类时，它会使用输入表达式的排序规则。这
+    例如发生在<literal>ORDER BY</literal>子句以及函数或操作符调用（如
+    <literal>&lt;</literal>）中。应用于<literal>ORDER BY</literal>子句的
+    排序规则就是排序键的排序规则。应用于函数或操作符调用的排序规则则按下文
+    所述，从参数中推导出来。除了比较操作符之外，在大小写之间进行转换的函数
+    （例如<function>lower</function>、<function>upper</function>和
+    <function>initcap</function>）、模式匹配操作符，以及<function>to_char</function>
+    及相关函数，也都会考虑排序规则。
+   </para>
+
+   <para>
+    对于函数或操作符调用，通过检查参数排序规则推导出的排序规则，会在运行时
+    用于执行指定操作。如果该函数或操作符调用的结果属于可排序数据类型，那么
+    在解析时它也会被用作该函数或操作符表达式的已定义排序规则，以便在外围表
+    达式需要知道其排序规则时使用。
+   </para>
+
+   <para>
+    表达式的<firstterm>排序规则派生</firstterm>可以是显式的，也可以是隐式
+    的。这一区别会影响当一个表达式中出现多个不同排序规则时，系统如何把它们
+    组合起来。使用<literal>COLLATE</literal>子句时，会发生显式排序规则派
+    生；其他所有排序规则派生都是隐式的。当需要组合多个排序规则时，例如在函
+    数调用中，将使用以下规则：
+
+    <orderedlist>
+     <listitem>
+      <para>
+       如果任一输入表达式具有显式排序规则派生，那么输入表达式中所有显式派生
+       的排序规则都必须相同，否则会报错。如果存在显式派生的排序规则，那么排
+       序规则组合的结果就是该排序规则。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       否则，所有输入表达式都必须具有相同的隐式排序规则派生，或者为默认排序
+       规则。如果存在任何非默认排序规则，那么排序规则组合的结果就是该排序规
+       则；否则，结果就是默认排序规则。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       如果输入表达式之间存在相互冲突的非默认隐式排序规则，则该组合会被视为
+       具有不确定排序规则。除非被调用的特定函数确实需要知道它应当使用哪个排
+       序规则，否则这并不是错误。如果它确实需要，就会在运行时抛出错误。
+      </para>
+     </listitem>
+    </orderedlist>
+
+    例如，考虑如下表定义：
+<programlisting>
+CREATE TABLE test1 (
+    a text COLLATE "de_DE",
+    b text COLLATE "es_ES",
+    ...
+);
+</programlisting>
+
+    那么在
+<programlisting>
+SELECT a &lt; 'foo' FROM test1;
+</programlisting>
+    中，<literal>&lt;</literal>比较会按<literal>de_DE</literal>规则进行，
+    因为该表达式组合了一个隐式派生的排序规则和默认排序规则。但在
+<programlisting>
+SELECT a &lt; ('foo' COLLATE "fr_FR") FROM test1;
+</programlisting>
+    中，比较会按<literal>fr_FR</literal>规则进行，因为显式排序规则派生覆盖
+    了隐式派生。进一步，给定
+<programlisting>
+SELECT a &lt; b FROM test1;
+</programlisting>
+    解析器无法确定应当应用哪个排序规则，因为<structfield>a</structfield>列
+    和<structfield>b</structfield>列具有冲突的隐式排序规则。由于
+    <literal>&lt;</literal>操作符确实需要知道要使用哪个排序规则，因此这会
+    导致一个错误。该错误可以通过给任一输入表达式附加显式排序规则说明符来解
+    决，例如：
+<programlisting>
+SELECT a &lt; b COLLATE "de_DE" FROM test1;
+</programlisting>
+    或者等价地：
+<programlisting>
+SELECT a COLLATE "de_DE" &lt; b FROM test1;
+</programlisting>
+    另一方面，结构相似的情况
+<programlisting>
+SELECT a || b FROM test1;
+</programlisting>
+    不会导致错误，因为<literal>||</literal>操作符不关心排序规则：无论使用
+    什么排序规则，其结果都相同。
+   </para>
+
+   <para>
+    如果函数或操作符返回的是可排序数据类型，那么分配给该函数或操作符组合输
+    入表达式的排序规则，也被认为适用于其结果。因此，在
+<programlisting>
+SELECT * FROM test1 ORDER BY a || 'foo';
+</programlisting>
+    中，排序将按<literal>de_DE</literal>规则进行。但这个查询：
+<programlisting>
+SELECT * FROM test1 ORDER BY a || b;
+</programlisting>
+    会报错，因为即使<literal>||</literal>操作符本身不需要知道排序规则，
+    <literal>ORDER BY</literal>子句仍然需要。与之前一样，可以通过显式排序
+    规则说明符来解决冲突：
+<programlisting>
+SELECT * FROM test1 ORDER BY a || b COLLATE "fr_FR";
+</programlisting>
+   </para>
+  </sect2>
+
+  <sect2 id="collation-managing">
+   <title>管理排序规则</title>
+
+   <para>
+    排序规则是一个 SQL 模式对象，它把某个 SQL 名称映射到操作系统中已安装库
+    提供的区域设置。排序规则定义具有一个<firstterm>提供程序</firstterm>，
+    用于指定由哪个库提供区域设置数据。标准提供程序之一是<literal>libc</literal>，
+    它使用操作系统 C 库提供的区域设置。这些也是大多数操作系统工具所使用的
+    区域设置。另一个提供程序是<literal>icu</literal>，它使用外部
+    ICU<indexterm><primary>ICU</primary></indexterm>库。只有在构建
+    PostgreSQL时配置了 ICU 支持，才能使用 ICU
+    区域设置。
+   </para>
+
+   <para>
+    由<literal>libc</literal>提供的排序规则对象，对应于
+    <symbol>LC_COLLATE</symbol>和<symbol>LC_CTYPE</symbol>设置的组合，
+    其格式与系统库调用<literal>setlocale()</literal>所接受的格式相同。
+    （顾名思义，排序规则的主要用途是设置控制排序顺序的
+    <symbol>LC_COLLATE</symbol>。但在实践中，很少有必要让
+    <symbol>LC_CTYPE</symbol>和<symbol>LC_COLLATE</symbol>不同，因此把
+    二者归为一个概念，比再建立一套为每个表达式设置<symbol>LC_CTYPE</symbol>
+    的机制更方便。）此外，<literal>libc</literal>排序规则还与某种字符集编
+    码绑定（见<xref linkend="multibyte"/>）。同一个排序规则名称可能会在不
+    同编码中出现。
+   </para>
+
+   <para>
+    由<literal>icu</literal>提供的排序规则对象，对应于 ICU 库提供的具名整
+    理器。ICU 不支持将<quote>collate</quote>和<quote>ctype</quote>分开设
+    置，因此二者总是相同的。此外，ICU 排序规则与编码无关，因此在一个数据库
+    中，某个给定名称的 ICU 排序规则始终只有一个。
+   </para>
+
+   <sect3>
+    <title>标准排序规则</title>
+
+   <para>所有平台都提供名为 <literal>default</literal>、<literal>C</literal> 和 <literal>POSIX</literal> 的排序规则。根据操作系统支持情况，还可能提供其他排序规则。<literal>default</literal> 排序规则选择创建数据库时指定的 <symbol>LC_COLLATE</symbol> 和 <symbol>LC_CTYPE</symbol> 值。<literal>C</literal> 和 <literal>POSIX</literal> 排序规则都采用<quote>传统 C</quote>行为，仅将 ASCII 字母 <quote><literal>A</literal></quote> 到 <quote><literal>Z</literal></quote> 视为字母，并严格按字符编码的字节值排序。</para>
+
+   <para>此外，编码 <literal>UTF8</literal> 还可以使用 SQL 标准排序规则名 <literal>ucs_basic</literal>。它等价于 <literal>C</literal>，按 Unicode 码点排序。</para>
+  </sect3>
+
+  <sect3>
+   <title>预定义排序规则</title>
+
+   <para>
+     如果操作系统支持在单个程序中使用多个区域设置（<function>newlocale</function>
+     及相关函数），或者配置了 ICU 支持，那么在初始化数据库集簇时，
+     <command>initdb</command>会根据当时在操作系统中发现的所有区域设置，用
+     排序规则填充系统目录<literal>pg_collation</literal>。
+    </para>
+
+   <para>
+     要检查当前可用的区域设置，可使用查询<literal>SELECT * FROM pg_collation</literal>，
+     或在<application>psql</application>中使用命令<command>\dOS+</command>。
+    </para>
+
+  <sect4>
+   <title>libc 排序规则</title>
+
+   <para>
+     例如，操作系统可能提供一个名为<literal>de_DE.utf8</literal>的区域设
+     置。<command>initdb</command>随后会为<literal>UTF8</literal>编码创建
+     一个名为<literal>de_DE.utf8</literal>的排序规则，其
+     <symbol>LC_COLLATE</symbol>和<symbol>LC_CTYPE</symbol>都设置为
+     <literal>de_DE.utf8</literal>。它还会再创建一个从名称中去掉
+     <literal>.utf8</literal>标签的排序规则。因此，你也可以使用
+     <literal>de_DE</literal>这个名称来使用该排序规则，这样写起来更方便，
+     且名称与编码的耦合更小。不过请注意，初始排序规则名称集合仍然取决于平
+     台。
+    </para>
+
+   <para>
+     由<literal>libc</literal>提供的默认排序规则，直接映射到操作系统中已安
+     装的区域设置，它们可以用<literal>locale -a</literal>命令列出。如果需
+     要某个<literal>libc</literal>排序规则，而其<symbol>LC_COLLATE</symbol>
+     和<symbol>LC_CTYPE</symbol>取值不同，或者数据库系统初始化后又在操作系
+     统中安装了新的区域设置，那么可以使用<xref linkend="sql-createcollation"/>
+     命令创建新的排序规则。新的操作系统区域设置也可以用<link
+     linkend="functions-admin-collation"><function>pg_import_system_collations()</function></link>
+     函数批量导入。
+    </para>
+
+   <para>
+     在任何特定数据库中，只有使用该数据库编码的排序规则才有意义。
+     <literal>pg_collation</literal>中的其他条目会被忽略。因此，像
+     <literal>de_DE</literal>这样去掉编码后缀的排序规则名称，在某个给定数
+     据库内可以视为唯一，即使它在全局范围内并不唯一。推荐使用这种去掉后缀
+     的排序规则名称，因为如果你决定改用另一种数据库编码，需要改动的地方会
+     更少。不过要注意，
+     <literal>default</literal>、<literal>C</literal>和<literal>POSIX</literal>
+     排序规则不受数据库编码影响，始终都可以使用。
+    </para>
+
+   <para>
+     <productname>PostgreSQL</productname>即使面对具有相同属性的不同排序规
+     则对象，也会把它们视为不兼容。例如：
+<programlisting>
+SELECT a COLLATE "C" &lt; b COLLATE "POSIX" FROM test1;
+</programlisting>
+     即使<literal>C</literal>和<literal>POSIX</literal>排序规则的行为完全
+     相同，这仍然会报错。因此，不建议混用去掉后缀和保留后缀的排序规则名
+     称。
+    </para>
+  </sect4>
+
+  <sect4>
+   <title>ICU 排序规则</title>
+
+   <para>
+     对于 ICU，枚举所有可能的区域设置名称并不合理。ICU 为区域设置使用特定
+     的命名系统，但给区域设置命名的方法远多于实际存在的不同区域设置。
+     <command>initdb</command>使用 ICU API 提取一组不同的区域设置，以填充
+     初始排序规则集合。由 ICU 提供的排序规则在 SQL 环境中创建时，其名称采
+     用 BCP 47 语言标签格式，并附加<quote>私有使用</quote>扩展
+     <literal>-x-icu</literal>，以便与 libc 区域设置区分开来。
+    </para>
+
+   <para>以下是可能创建的排序规则示例：<variablelist>
+     <varlistentry>
+      <term><literal>de-x-icu</literal></term>
+      <listitem>
+        <para>德语排序规则，默认变体</para>
+       </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>de-AT-x-icu</literal></term>
+      <listitem>
+        <para>奥地利德语排序规则，默认变体</para>
+        <para>
+         （还有例如<literal>de-DE-x-icu</literal>或<literal>de-CH-x-icu</literal>，
+         但在撰写本文时，它们与<literal>de-x-icu</literal>等价。）
+        </para>
+       </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>und-x-icu</literal>（表示<quote>未定义</quote>）</term>
+      <listitem>
+        <para>
+         ICU<quote>root</quote>排序规则。可用它获得一种较为合理、与特定语
+         言无关的排序顺序。
+        </para>
+       </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+     某些（较少使用的）编码不受 ICU 支持。当数据库编码属于其中之一时，
+     <literal>pg_collation</literal>中的 ICU 排序规则条目会被忽略。尝试使
+     用这样的排序规则会报出类似<quote>collation "de-x-icu" for encoding
+     "WIN874" does not exist</quote>的错误。
+    </para>
+  </sect4>
+  </sect3>
+
+  <sect3 id="collation-create">
+   <title>创建新的排序规则对象</title>
+
+   <para>
+     如果标准和预定义排序规则不足以满足需求，用户可以使用 SQL 命令<xref
+     linkend="sql-createcollation"/>创建自己的排序规则对象。
+    </para>
+
+   <para>
+     与所有预定义对象一样，标准和预定义排序规则都位于模式
+     <literal>pg_catalog</literal>中。用户定义的排序规则应当创建在用户模式
+     中。这也能确保它们被<command>pg_dump</command>保存。
+    </para>
+
+   <sect4>
+    <title>libc 排序规则</title>
+
+    <para>
+      新的 libc 排序规则可以这样创建：
+<programlisting>
+CREATE COLLATION german (provider = libc, locale = 'de_DE');
+</programlisting>
+      该命令中<literal>locale</literal>子句可接受的确切值取决于操作系统。在
+      类 Unix 系统上，命令<literal>locale -a</literal>会给出一个列表。
+     </para>
+
+    <para>
+      由于预定义的 libc 排序规则已经包含了数据库实例初始化时操作系统中定义
+      的所有排序规则，因此通常不需要手工创建新的排序规则。可能需要这样做的
+      原因包括希望采用不同的命名系统（这种情况下另见<xref
+      linkend="collation-copy"/>），或操作系统升级后提供了新的区域设置定义
+      （这种情况下另见<link
+      linkend="functions-admin-collation"><function>pg_import_system_collations()</function></link>）。
+     </para>
+   </sect4>
+
+   <sect4>
+    <title>ICU 排序规则</title>
+
+   <para>除了 <command>initdb</command> 预装载的基本语言与国家组合外，ICU 还允许进一步定制排序规则。建议用户定义自己的排序规则对象，利用这些功能使排序行为满足自己的需求。关于 ICU 区域设置名称的信息，参见 <ulink url="https://unicode-org.github.io/icu/userguide/locale/"></ulink> 和 <ulink url="https://unicode-org.github.io/icu/userguide/collation/api.html"></ulink>。可接受的名称和属性集合取决于具体的 ICU 版本。</para>
+
+   <para>以下是一些示例：<variablelist>
+     <varlistentry>
+      <term><literal>CREATE COLLATION "de-u-co-phonebk-x-icu" (provider = icu, locale = 'de-u-co-phonebk');</literal></term>
+      <term><literal>CREATE COLLATION "de-u-co-phonebk-x-icu" (provider = icu, locale = 'de@collation=phonebook');</literal></term>
+      <listitem>
+       <para>采用电话簿排序类型的德语排序规则</para>
+       <para>第一个示例使用 BCP 47 定义的<quote>语言标签</quote>来选择 ICU 区域设置。第二个示例使用传统的 ICU 专有区域设置语法。今后应优先采用第一种形式，但较旧的 ICU 版本不支持它。</para>
+       <para>注意，可以在 SQL 环境中为排序规则对象任意命名。本例遵循预定义排序规则所采用的命名风格，该风格也遵循 BCP 47，但用户定义的排序规则并不要求如此。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>CREATE COLLATION "und-u-co-emoji-x-icu" (provider = icu, locale = 'und-u-co-emoji');</literal></term>
+      <term><literal>CREATE COLLATION "und-u-co-emoji-x-icu" (provider = icu, locale = '@collation=emoji');</literal></term>
+      <listitem>
+       <para>采用 Unicode 技术标准 #51 所定义 Emoji 排序类型的根排序规则</para>
+       <para>注意，传统的 ICU 区域设置命名系统使用空字符串来选择根区域设置。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>CREATE COLLATION latinlast (provider = icu, locale = 'en-u-kr-grek-latn');</literal></term>
+      <term><literal>CREATE COLLATION latinlast (provider = icu, locale = 'en@colReorder=grek-latn');</literal></term>
+      <listitem>
+       <para>将希腊字母排在拉丁字母之前。（默认是拉丁字母在希腊字母之前。）</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>CREATE COLLATION upperfirst (provider = icu, locale = 'en-u-kf-upper');</literal></term>
+      <term><literal>CREATE COLLATION upperfirst (provider = icu, locale = 'en@colCaseFirst=upper');</literal></term>
+      <listitem>
+       <para>将大写字母排在小写字母之前。（默认是小写字母在前。）</para>
+      </listitem>
+     </varlistentry>
+
+    <varlistentry>
+      <term><literal>CREATE COLLATION special (provider = icu, locale = 'en-u-kf-upper-kr-grek-latn');</literal></term>
+      <term><literal>CREATE COLLATION special (provider = icu, locale = 'en@colCaseFirst=upper;colReorder=grek-latn');</literal></term>
+      <listitem>
+       <para>组合上述两个选项。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>CREATE COLLATION numeric (provider = icu, locale = 'en-u-kn-true');</literal></term>
+      <term><literal>CREATE COLLATION numeric (provider = icu, locale = 'en@colNumeric=yes');</literal></term>
+      <listitem>
+       <para>数值排序，按数值对数字序列排序，例如：<literal>A-21</literal> &lt; <literal>A-123</literal>（也称自然排序）。</para>
+      </listitem>
+     </varlistentry>
+    </variablelist>参见<ulink url="https://www.unicode.org/reports/tr35/tr35-collation.html">Unicode 技术标准 #35</ulink>和<ulink url="https://www.rfc-editor.org/info/bcp47">BCP 47</ulink>了解详情。可用排序类型列表（<literal>co</literal>子标签）可在以下位置找到：<ulink url="https://github.com/unicode-org/cldr/blob/master/common/bcp47/collation.xml">CLDR 仓库</ulink>。
+   </para>
+
+   <para>注意，虽然此系统允许创建<quote>忽略大小写</quote>或<quote>忽略重音</quote>等排序规则（使用 <literal>ks</literal> 键），但要让这些排序规则真正不区分大小写或重音，还必须在 <command>CREATE COLLATION</command> 中将它们声明为非<firstterm>确定性</firstterm>排序规则；参见 <xref linkend="collation-nondeterministic"/>。否则，按排序规则比较相等、但字节不相等的字符串，仍会按字节值排序。</para>
+
+   <note>
+    <para>ICU 的设计允许接受几乎任何字符串作为区域设置名，并按照其文档描述的回退流程，匹配到它能够提供的最接近区域设置。因此，如果排序规则定义使用了当前 ICU 安装实际不支持的功能，不会得到直接反馈。所以建议创建应用层面的测试用例，以检查排序规则定义是否满足需求。</para>
+   </note>
+   </sect4>
+
+   <sect4 id="collation-copy">
+    <title>复制排序规则</title>
+
+    <para>
+     命令<xref linkend="sql-createcollation"/>也可以用来从现有排序规则创建一
+     个新的排序规则。这有助于在应用程序中使用与操作系统无关的排序规则名称、
+     创建兼容性名称，或者以更易读的名称来使用 ICU 提供的排序规则。例如：
+<programlisting>
+CREATE COLLATION german FROM "de_DE";
+CREATE COLLATION french FROM "fr-x-icu";
+</programlisting>
+    </para>
+    </sect4>
+   </sect3>
+
+   <sect3 id="collation-nondeterministic">
+    <title>非确定性排序规则</title>
+
+    <para>排序规则分为<firstterm>确定性</firstterm>和<firstterm>非确定性</firstterm>两类。确定性排序规则使用确定性比较，即仅当字符串由相同的字节序列组成时，才认为它们相等。非确定性比较则可能将字节不同的字符串判为相等。典型情况包括不区分大小写的比较、不区分重音的比较，以及采用不同 Unicode 规范形式的字符串之间的比较。这些不敏感的比较由排序规则提供者实际实现；确定性标志只决定是否使用逐字节比较来打破平局。关于术语的更多信息，另见 <ulink url="https://www.unicode.org/reports/tr10">Unicode 技术标准 10</ulink>。</para>
+
+    <para>
+     要创建非确定性排序规则，可在<command>CREATE COLLATION</command>中指
+     定属性<literal>deterministic = false</literal>，例如：
+<programlisting>
+CREATE COLLATION ndcoll (provider = icu, locale = 'und', deterministic = false);
+</programlisting>
+     这个示例会以非确定性方式使用标准 Unicode 排序规则。特别地，它允许不同
+     规范化形式的字符串被正确比较。更有意思的示例则会用到上文介绍的 ICU 定制
+     功能。例如：
+<programlisting>
+CREATE COLLATION case_insensitive (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+CREATE COLLATION ignore_accents (provider = icu, locale = 'und-u-ks-level1-kc-true', deterministic = false);
+</programlisting>
+    </para>
+
+    <para>
+     所有标准和预定义排序规则都是确定性的，所有用户定义排序规则默认也都是确
+     定性的。虽然非确定性排序规则提供了更<quote>正确</quote>的行为，尤其是
+     在考虑 Unicode 的全部能力及其众多特殊情况时，但它们也有一些缺点。首
+     先，使用它们会带来性能损失。特别要注意的是，B-树不能对使用非确定性排
+     序规则的索引使用去重。此外，某些操作（例如某些模式匹配操作）对非确定性
+     排序规则来说是不可行的。因此，只有在确实需要时才应使用它们。
+    </para>
+
+    <tip>
+     <para>
+      若要处理采用不同 Unicode 规范化形式的文本，另一种办法是使用
+      <function>normalize</function>函数和<literal>is normalized</literal>
+      表达式预处理或检查字符串，而不是使用非确定性排序规则。每种做法都有不
+      同的权衡。
+     </para>
+    </tip>
+   </sect3>
+  </sect2>
+ </sect1>
+
+ <sect1 id="multibyte">
+  <title>字符集支持</title>
+
+  <indexterm zone="multibyte"><primary>字符集</primary></indexterm>
+
+  <para>
+   <productname>PostgreSQL</productname>中的字符集支持允许你以多种字符集
+   （也称为编码）存储文本，包括 ISO 8859 系列之类的单字节字符集，以及
+   <acronym>EUC</acronym>（扩展 Unix 编码）、UTF-8 和 Mule 内部编
+   码等多字节字符集。所有受支持的字符集都可以被客户端透明地使用，但其中少
+   数不支持在服务器内部使用（即不能作为服务器端编码）。默认字符集是在使用
+   <command>initdb</command>初始化<productname>PostgreSQL</productname>
+   数据库集簇时选定的。创建数据库时可以覆盖该设置，因此你可以拥有多个数据
+   库，并让每个数据库使用不同的字符集。
+  </para>
+
+  <para>不过，一项重要限制是，每个数据库的字符集必须与数据库的 <envar>LC_CTYPE</envar>（字符分类）和 <envar>LC_COLLATE</envar>（字符串排序顺序）区域设置兼容。对于 <literal>C</literal> 或 <literal>POSIX</literal> 区域设置，允许使用任何字符集；对于 libc 提供的其他区域设置，只有一种字符集能够正确工作。（但在 Windows 上，UTF-8 编码可以与任何区域设置一起使用。）如果配置了 ICU 支持，ICU 提供的区域设置可以与大多数服务器端编码一起使用，但并非全部。</para>
+
+   <sect2 id="multibyte-charset-supported">
+    <title>支持的字符集</title>
+
+    <para>
+     <xref linkend="charset-table"/>显示了<productname>PostgreSQL</productname>中可用的字符集。
+    </para>
+
+     <table id="charset-table">
+      <title><productname>PostgreSQL</productname> 字符集</title>
+      <tgroup cols="7">
+       <colspec colname="col1" colwidth="3*"/>
+       <colspec colname="col2" colwidth="2*"/>
+       <colspec colname="col3" colwidth="2*"/>
+       <colspec colname="col4" colwidth="1.25*"/>
+       <colspec colname="col5" colwidth="1*"/>
+       <colspec colname="col6" colwidth="1*"/>
+       <colspec colname="col7" colwidth="2*"/>
+       <thead>
+        <row>
+         <entry>名称</entry>
+         <entry>描述</entry>
+         <entry>语言</entry>
+         <entry>是否服务器端？</entry>
+         <entry>ICU？</entry>
+         <!--
+          The Bytes/Char field is populated by looking at the values returned
+          by pg_wchar_table.mblen function for each encoding.
+         -->
+         <entry>字节/&zwsp;字符</entry>
+         <entry>别名</entry>
+        </row>
+       </thead>
+       <tbody>
+        <row>
+         <entry><literal>BIG5</literal></entry>
+         <entry>Big Five</entry>
+         <entry>繁体中文</entry>
+         <entry>否</entry>
+         <entry>否</entry>
+         <entry>1&ndash;2</entry>
+         <entry><literal>WIN950</literal>, <literal>Windows950</literal></entry>
+        </row>
+        <row>
+         <entry><literal>EUC_CN</literal></entry>
+         <entry>扩展 Unix 编码-CN</entry>
+         <entry>简体中文</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1&ndash;3</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>EUC_JP</literal></entry>
+         <entry>扩展 Unix 编码-JP</entry>
+         <entry>日语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1&ndash;3</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>EUC_JIS_2004</literal></entry>
+         <entry>扩展 Unix 编码-JP，JIS X 0213</entry>
+         <entry>日语</entry>
+         <entry>是</entry>
+         <entry>否</entry>
+         <entry>1&ndash;3</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>EUC_KR</literal></entry>
+         <entry>扩展 Unix 编码-KR</entry>
+         <entry>韩语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1&ndash;3</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>EUC_TW</literal></entry>
+         <entry>扩展 Unix 编码-TW</entry>
+         <entry>繁体中文、台湾语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1&ndash;4</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>GB18030</literal></entry>
+         <entry>国家标准</entry>
+         <entry>中文</entry>
+         <entry>否</entry>
+         <entry>否</entry>
+         <entry>1&ndash;4</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>GBK</literal></entry>
+         <entry>扩展国家标准</entry>
+         <entry>简体中文</entry>
+         <entry>否</entry>
+         <entry>否</entry>
+         <entry>1&ndash;2</entry>
+         <entry><literal>WIN936</literal>, <literal>Windows936</literal></entry>
+        </row>
+        <row>
+         <entry><literal>ISO_8859_5</literal></entry>
+         <entry>ISO 8859-5, <acronym>ECMA</acronym> 113</entry>
+         <entry>拉丁语/西里尔语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>ISO_8859_6</literal></entry>
+         <entry>ISO 8859-6, <acronym>ECMA</acronym> 114</entry>
+         <entry>拉丁语/阿拉伯语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>ISO_8859_7</literal></entry>
+         <entry>ISO 8859-7, <acronym>ECMA</acronym> 118</entry>
+         <entry>拉丁语/希腊语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>ISO_8859_8</literal></entry>
+         <entry>ISO 8859-8, <acronym>ECMA</acronym> 121</entry>
+         <entry>拉丁语/希伯来语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>JOHAB</literal></entry>
+         <entry><acronym>JOHAB</acronym></entry>
+         <entry>韩语</entry>
+         <entry>否</entry>
+         <entry>否</entry>
+         <entry>1&ndash;3</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>KOI8R</literal></entry>
+         <entry><acronym>KOI</acronym>8-R</entry>
+         <entry>西里尔语（俄语）</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>KOI8</literal></entry>
+        </row>
+        <row>
+         <entry><literal>KOI8U</literal></entry>
+         <entry><acronym>KOI</acronym>8-U</entry>
+         <entry>西里尔语（乌克兰语）</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>LATIN1</literal></entry>
+         <entry>ISO 8859-1, <acronym>ECMA</acronym> 94</entry>
+         <entry>西欧</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>ISO88591</literal></entry>
+        </row>
+        <row>
+         <entry><literal>LATIN2</literal></entry>
+         <entry>ISO 8859-2, <acronym>ECMA</acronym> 94</entry>
+         <entry>中欧</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>ISO88592</literal></entry>
+        </row>
+        <row>
+         <entry><literal>LATIN3</literal></entry>
+         <entry>ISO 8859-3, <acronym>ECMA</acronym> 94</entry>
+         <entry>南欧</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>ISO88593</literal></entry>
+        </row>
+        <row>
+         <entry><literal>LATIN4</literal></entry>
+         <entry>ISO 8859-4, <acronym>ECMA</acronym> 94</entry>
+         <entry>北欧</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>ISO88594</literal></entry>
+        </row>
+        <row>
+         <entry><literal>LATIN5</literal></entry>
+         <entry>ISO 8859-9, <acronym>ECMA</acronym> 128</entry>
+         <entry>土耳其语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>ISO88599</literal></entry>
+        </row>
+        <row>
+         <entry><literal>LATIN6</literal></entry>
+         <entry>ISO 8859-10, <acronym>ECMA</acronym> 144</entry>
+         <entry>北欧</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>ISO885910</literal></entry>
+        </row>
+        <row>
+         <entry><literal>LATIN7</literal></entry>
+         <entry>ISO 8859-13</entry>
+         <entry>波罗的海</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>ISO885913</literal></entry>
+        </row>
+        <row>
+         <entry><literal>LATIN8</literal></entry>
+         <entry>ISO 8859-14</entry>
+         <entry>凯尔特语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>ISO885914</literal></entry>
+        </row>
+        <row>
+         <entry><literal>LATIN9</literal></entry>
+         <entry>ISO 8859-15</entry>
+         <entry>带欧元符号和重音字符的 LATIN1</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>ISO885915</literal></entry>
+        </row>
+        <row>
+         <entry><literal>LATIN10</literal></entry>
+         <entry>ISO 8859-16, <acronym>ASRO</acronym> SR 14111</entry>
+         <entry>罗马尼亚语</entry>
+         <entry>是</entry>
+         <entry>否</entry>
+         <entry>1</entry>
+         <entry><literal>ISO885916</literal></entry>
+        </row>
+        <row>
+         <entry><literal>MULE_INTERNAL</literal></entry>
+         <entry>Mule 内部编码</entry>
+         <entry>多语种 Emacs</entry>
+         <entry>是</entry>
+         <entry>否</entry>
+         <entry>1&ndash;4</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>SJIS</literal></entry>
+         <entry>Shift JIS</entry>
+         <entry>日语</entry>
+         <entry>否</entry>
+         <entry>否</entry>
+         <entry>1&ndash;2</entry>
+         <entry><literal>Mskanji</literal>, <literal>ShiftJIS</literal>, <literal>WIN932</literal>, <literal>Windows932</literal></entry>
+        </row>
+        <row>
+         <entry><literal>SHIFT_JIS_2004</literal></entry>
+         <entry>Shift JIS, JIS X 0213</entry>
+         <entry>日语</entry>
+         <entry>否</entry>
+         <entry>否</entry>
+         <entry>1&ndash;2</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>SQL_ASCII</literal></entry>
+         <entry>未指定（见正文）</entry>
+         <entry><emphasis>任意</emphasis></entry>
+         <entry>是</entry>
+         <entry>否</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>UHC</literal></entry>
+         <entry>统一韩语编码</entry>
+         <entry>韩语</entry>
+         <entry>否</entry>
+         <entry>否</entry>
+         <entry>1&ndash;2</entry>
+         <entry><literal>WIN949</literal>, <literal>Windows949</literal></entry>
+        </row>
+        <row>
+         <entry><literal>UTF8</literal></entry>
+         <entry>Unicode，8 位</entry>
+         <entry><emphasis>所有</emphasis></entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1&ndash;4</entry>
+         <entry><literal>Unicode</literal></entry>
+        </row>
+        <row>
+         <entry><literal>WIN866</literal></entry>
+         <entry>Windows CP866</entry>
+         <entry>西里尔语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>ALT</literal></entry>
+        </row>
+        <row>
+         <entry><literal>WIN874</literal></entry>
+         <entry>Windows CP874</entry>
+         <entry>泰语</entry>
+         <entry>是</entry>
+         <entry>否</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>WIN1250</literal></entry>
+         <entry>Windows CP1250</entry>
+         <entry>中欧</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>WIN1251</literal></entry>
+         <entry>Windows CP1251</entry>
+         <entry>西里尔语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>WIN</literal></entry>
+        </row>
+        <row>
+         <entry><literal>WIN1252</literal></entry>
+         <entry>Windows CP1252</entry>
+         <entry>西欧</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>WIN1253</literal></entry>
+         <entry>Windows CP1253</entry>
+         <entry>希腊语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>WIN1254</literal></entry>
+         <entry>Windows CP1254</entry>
+         <entry>土耳其语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>WIN1255</literal></entry>
+         <entry>Windows CP1255</entry>
+         <entry>希伯来语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>WIN1256</literal></entry>
+         <entry>Windows CP1256</entry>
+         <entry>阿拉伯语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>WIN1257</literal></entry>
+         <entry>Windows CP1257</entry>
+         <entry>波罗的海</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry></entry>
+        </row>
+        <row>
+         <entry><literal>WIN1258</literal></entry>
+         <entry>Windows CP1258</entry>
+         <entry>越南语</entry>
+         <entry>是</entry>
+         <entry>是</entry>
+         <entry>1</entry>
+         <entry><literal>ABC</literal>, <literal>TCVN</literal>, <literal>TCVN5712</literal>, <literal>VSCII</literal></entry>
+        </row>
+       </tbody>
+      </tgroup>
+     </table>
+
+     <para>
+      并非所有客户端<acronym>API</acronym>都支持上表中的全部字符集。例如，
+      <productname>PostgreSQL</productname> JDBC 驱动就不支持
+      <literal>MULE_INTERNAL</literal>、<literal>LATIN6</literal>、
+      <literal>LATIN8</literal>和<literal>LATIN10</literal>。
+     </para>
+
+     <para>
+      <literal>SQL_ASCII</literal>的行为与其他设置有很大不同。当服务器字符
+      集为<literal>SQL_ASCII</literal>时，服务器会按 ASCII 标准解释字节值
+      0&ndash;127，而将字节值 128&ndash;255 视为未解释字符。设置为
+      <literal>SQL_ASCII</literal>时不会执行编码转换。因此，这一设置与其说
+      是声明正在使用某种特定编码，不如说是承认自己并不知道编码是什么。在大
+      多数情况下，如果要处理任何非 ASCII 数据，使用<literal>SQL_ASCII</literal>
+      都是不明智的，因为<productname>PostgreSQL</productname>无法帮助你
+      转换或校验非 ASCII 字符。
+     </para>
+    </sect2>
+
+   <sect2>
+    <title>设置字符集</title>
+
+    <para>
+     <command>initdb</command>为<productname>PostgreSQL</productname>集
+     簇定义默认字符集（编码）。例如：
+
+<screen>
+initdb -E EUC_JP
+</screen>
+
+     这会把默认字符集设为<literal>EUC_JP</literal>（日语的扩展 Unix 编
+     码）。如果你喜欢更长的选项形式，也可以用<option>--encoding</option>代
+     替<option>-E</option>。如果既没有给出<option>-E</option>也没有给出
+     <option>--encoding</option>，<command>initdb</command>会根据指定的
+     或默认的区域设置，尝试确定应使用的合适编码。
+    </para>
+
+    <para>
+     你可以在创建数据库时指定非默认编码，只要该编码与所选区域设置兼容：
+
+<screen>
+createdb -E EUC_KR -T template0 --lc-collate=ko_KR.euckr --lc-ctype=ko_KR.euckr korean
+</screen>
+
+     这将创建一个名为<literal>korean</literal>的数据库，它使用
+     <literal>EUC_KR</literal>字符集和<literal>ko_KR</literal>区域设置。
+     另一种实现方式是使用以下 SQL 命令：
+
+<programlisting>
+CREATE DATABASE korean WITH ENCODING 'EUC_KR' LC_COLLATE='ko_KR.euckr' LC_CTYPE='ko_KR.euckr' TEMPLATE=template0;
+</programlisting>
+
+     请注意，上述命令指定复制<literal>template0</literal>数据库。如果复制
+     任何其他数据库，就不能更改源数据库的编码和区域设置，因为这可能导致数
+     据损坏。详见<xref linkend="manage-ag-templatedbs"/>。
+    </para>
+
+    <para>
+     数据库编码存储在系统目录<literal>pg_database</literal>中。可以通过
+     <command>psql</command>的<option>-l</option>选项或<command>\l</command>
+     命令查看它。
+
+<screen>
+$ <userinput>psql -l</userinput>
+                                         List of databases
+   Name    |  Owner   | Encoding  |  Collation  |    Ctype    |          Access Privileges
+-----------+----------+-----------+-------------+-------------+-------------------------------------
+ clocaledb | hlinnaka | SQL_ASCII | C           | C           |
+ englishdb | hlinnaka | UTF8      | en_GB.UTF8  | en_GB.UTF8  |
+ japanese  | hlinnaka | UTF8      | ja_JP.UTF8  | ja_JP.UTF8  |
+ korean    | hlinnaka | EUC_KR    | ko_KR.euckr | ko_KR.euckr |
+ postgres  | hlinnaka | UTF8      | fi_FI.UTF8  | fi_FI.UTF8  |
+ template0 | hlinnaka | UTF8      | fi_FI.UTF8  | fi_FI.UTF8  | {=c/hlinnaka,hlinnaka=CTc/hlinnaka}
+ template1 | hlinnaka | UTF8      | fi_FI.UTF8  | fi_FI.UTF8  | {=c/hlinnaka,hlinnaka=CTc/hlinnaka}
+(7 rows)
+</screen>
+    </para>
+
+    <important>
+     <para>
+      在大多数现代操作系统上，<productname>PostgreSQL</productname>能够
+      判断<envar>LC_CTYPE</envar>设置所隐含的字符集，并强制只允许使用与之
+      匹配的数据库编码。在较老的系统上，你需要自行确保所用编码正是所选区域
+      设置期望的编码。这里的错误很可能会导致区域设置相关操作（例如排序）出
+      现奇怪的行为。
+     </para>
+
+     <para>
+      即使<envar>LC_CTYPE</envar>不是<literal>C</literal>或
+      <literal>POSIX</literal>，<productname>PostgreSQL</productname>
+      仍允许超级用户创建使用<literal>SQL_ASCII</literal>编码的数据库。正如
+      前文所述，<literal>SQL_ASCII</literal>并不强制数据库中存储的数据具
+      有任何特定编码，因此这种选择存在区域设置相关误行为的风险。这种设置组
+      合已经被弃用，未来某一天可能会被完全禁止。
+     </para>
+    </important>
+   </sect2>
+
+   <sect2>
+    <title>服务器和客户端之间的自动字符集转换</title>
+
+    <para>
+     <productname>PostgreSQL</productname>支持在许多字符集组合之间自动在
+     服务器和客户端之间进行字符集转换（哪些组合可用，见<xref
+     linkend="multibyte-conversions-supported"/>）。
+    </para>
+
+    <para>
+     若要启用自动字符集转换，必须告诉<productname>PostgreSQL</productname>
+     你希望客户端使用哪种字符集（编码）。有几种方法可以做到这一点：
+
+     <itemizedlist>
+      <listitem>
+       <para>
+        在<application>psql</application>中使用<command>\encoding</command>
+        命令。<command>\encoding</command>允许动态更改客户端编码。例如，要把
+        编码改成<literal>SJIS</literal>，可以输入：
+
+<programlisting>
+\encoding SJIS
+</programlisting>
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        <application>libpq</application>（<xref linkend="libpq-control"/>）
+        提供了控制客户端编码的函数。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        使用<command>SET client_encoding TO</command>。
+
+        可以使用以下 SQL 命令设置客户端编码：
+
+<programlisting>
+SET CLIENT_ENCODING TO '<replaceable>value</replaceable>';
+</programlisting>
+
+        也可以为此使用标准 SQL 语法<literal>SET NAMES</literal>：
+
+<programlisting>
+SET NAMES '<replaceable>value</replaceable>';
+</programlisting>
+
+        要查询当前客户端编码：
+
+<programlisting>
+SHOW client_encoding;
+</programlisting>
+
+        要返回到缺省编码：
+
+<programlisting>
+RESET client_encoding;
+</programlisting>
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        使用<envar>PGCLIENTENCODING</envar>。如果在客户端环境中定义了
+        <envar>PGCLIENTENCODING</envar>环境变量，那么连接服务器时会自动选
+        择该客户端编码。（之后仍可以用上面提到的任何其他方法覆盖它。）
+       </para>
+      </listitem>
+
+      <listitem>
+      <para>
+       使用配置变量<xref linkend="guc-client-encoding"/>。如果设置了
+       <varname>client_encoding</varname>变量，那么连接服务器时会自动选
+       择该客户端编码。（之后仍可以用上面提到的任何其他方法覆盖它。）
+       </para>
+      </listitem>
+
+     </itemizedlist>
+    </para>
+
+    <para>
+     如果某个特定字符无法完成转换，就会报错。例如，假设服务器使用
+     <literal>EUC_JP</literal>而客户端使用<literal>LATIN1</literal>，此
+     时若返回了一些在<literal>LATIN1</literal>中没有表示形式的日语字符，
+     就会出现错误。
+    </para>
+
+    <para>
+     如果客户端字符集被定义为<literal>SQL_ASCII</literal>，那么无论服务
+     器字符集是什么，编码转换都会被禁用。（但是，如果服务器字符集不是
+     <literal>SQL_ASCII</literal>，服务器仍会检查传入数据对该编码是否有
+     效，因此最终效果相当于客户端字符集与服务器字符集相同。）和服务器端一
+     样，除非你处理的全部都是 ASCII 数据，否则使用
+     <literal>SQL_ASCII</literal>并不明智。
+    </para>
+   </sect2>
+
+   <sect2 id="multibyte-conversions-supported">
+    <title>可用的字符集转换</title>
+
+    <para>
+     <productname>PostgreSQL</productname>允许在<link
+     linkend="catalog-pg-conversion"><structname>pg_conversion</structname></link>
+     系统目录中列出了转换函数的任意两个字符集之间进行转换。
+     <productname>PostgreSQL</productname>自带了一些预定义转换，概况见<xref
+     linkend="multibyte-translation-table"/>，更详细的信息见<xref
+     linkend="builtin-conversions-table"/>。你也可以使用 SQL 命令<xref
+     linkend="sql-createconversion"/>创建新的转换。（若要用于自动的客户
+     端/服务器转换，该字符集对的转换必须被标记为<quote>default</quote>。）
+    </para>
+
+    <table id="multibyte-translation-table">
+     <title>内置客户端/服务器字符集转换</title>
+     <tgroup cols="2">
+      <colspec colname="col1" colwidth="1*"/>
+      <colspec colname="col2" colwidth="3*"/>
+      <thead>
+       <row>
+        <entry>服务器字符集</entry>
+        <entry>可用的客户端字符集</entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+        <entry><literal>BIG5</literal></entry>
+        <entry><emphasis>不支持作为服务器编码</emphasis>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>EUC_CN</literal></entry>
+        <entry><emphasis>EUC_CN</emphasis>,
+        <literal>MULE_INTERNAL</literal>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>EUC_JP</literal></entry>
+        <entry><emphasis>EUC_JP</emphasis>,
+        <literal>MULE_INTERNAL</literal>,
+        <literal>SJIS</literal>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>EUC_JIS_2004</literal></entry>
+        <entry><emphasis>EUC_JIS_2004</emphasis>,
+        <literal>SHIFT_JIS_2004</literal>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>EUC_KR</literal></entry>
+        <entry><emphasis>EUC_KR</emphasis>,
+        <literal>MULE_INTERNAL</literal>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>EUC_TW</literal></entry>
+        <entry><emphasis>EUC_TW</emphasis>,
+        <literal>BIG5</literal>,
+        <literal>MULE_INTERNAL</literal>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>GB18030</literal></entry>
+        <entry><emphasis>不支持作为服务器编码</emphasis>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>GBK</literal></entry>
+        <entry><emphasis>不支持作为服务器编码</emphasis>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>ISO_8859_5</literal></entry>
+        <entry><emphasis>ISO_8859_5</emphasis>,
+        <literal>KOI8R</literal>,
+        <literal>MULE_INTERNAL</literal>,
+        <literal>UTF8</literal>,
+        <literal>WIN866</literal>,
+        <literal>WIN1251</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>ISO_8859_6</literal></entry>
+        <entry><emphasis>ISO_8859_6</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>ISO_8859_7</literal></entry>
+        <entry><emphasis>ISO_8859_7</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>ISO_8859_8</literal></entry>
+        <entry><emphasis>ISO_8859_8</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>JOHAB</literal></entry>
+        <entry><emphasis>不支持作为服务器编码</emphasis>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>KOI8R</literal></entry>
+        <entry><emphasis>KOI8R</emphasis>,
+        <literal>ISO_8859_5</literal>,
+        <literal>MULE_INTERNAL</literal>,
+        <literal>UTF8</literal>,
+        <literal>WIN866</literal>,
+        <literal>WIN1251</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>KOI8U</literal></entry>
+        <entry><emphasis>KOI8U</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>LATIN1</literal></entry>
+        <entry><emphasis>LATIN1</emphasis>,
+        <literal>MULE_INTERNAL</literal>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>LATIN2</literal></entry>
+        <entry><emphasis>LATIN2</emphasis>,
+        <literal>MULE_INTERNAL</literal>,
+        <literal>UTF8</literal>,
+        <literal>WIN1250</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>LATIN3</literal></entry>
+        <entry><emphasis>LATIN3</emphasis>,
+        <literal>MULE_INTERNAL</literal>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>LATIN4</literal></entry>
+        <entry><emphasis>LATIN4</emphasis>,
+        <literal>MULE_INTERNAL</literal>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>LATIN5</literal></entry>
+        <entry><emphasis>LATIN5</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>LATIN6</literal></entry>
+        <entry><emphasis>LATIN6</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>LATIN7</literal></entry>
+        <entry><emphasis>LATIN7</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>LATIN8</literal></entry>
+        <entry><emphasis>LATIN8</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>LATIN9</literal></entry>
+        <entry><emphasis>LATIN9</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>LATIN10</literal></entry>
+        <entry><emphasis>LATIN10</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><emphasis>MULE_INTERNAL</emphasis>,
+         <literal>BIG5</literal>,
+         <literal>EUC_CN</literal>,
+         <literal>EUC_JP</literal>,
+         <literal>EUC_KR</literal>,
+         <literal>EUC_TW</literal>,
+         <literal>ISO_8859_5</literal>,
+         <literal>KOI8R</literal>,
+         <literal>LATIN1</literal> 至 <literal>LATIN4</literal>,
+         <literal>SJIS</literal>,
+         <literal>WIN866</literal>,
+         <literal>WIN1250</literal>,
+         <literal>WIN1251</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>SJIS</literal></entry>
+        <entry><emphasis>不支持作为服务器编码</emphasis>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>SHIFT_JIS_2004</literal></entry>
+        <entry><emphasis>不支持作为服务器编码</emphasis>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>SQL_ASCII</literal></entry>
+        <entry><emphasis>任何（不会执行转换）</emphasis>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>UHC</literal></entry>
+        <entry><emphasis>不支持作为服务器编码</emphasis>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>UTF8</literal></entry>
+        <entry><emphasis>所有受支持的编码</emphasis>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>WIN866</literal></entry>
+        <entry><emphasis>WIN866</emphasis>,
+         <literal>ISO_8859_5</literal>,
+         <literal>KOI8R</literal>,
+         <literal>MULE_INTERNAL</literal>,
+         <literal>UTF8</literal>,
+         <literal>WIN1251</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>WIN874</literal></entry>
+        <entry><emphasis>WIN874</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>WIN1250</literal></entry>
+        <entry><emphasis>WIN1250</emphasis>,
+         <literal>LATIN2</literal>,
+         <literal>MULE_INTERNAL</literal>,
+         <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>WIN1251</literal></entry>
+        <entry><emphasis>WIN1251</emphasis>,
+         <literal>ISO_8859_5</literal>,
+         <literal>KOI8R</literal>,
+         <literal>MULE_INTERNAL</literal>,
+         <literal>UTF8</literal>,
+         <literal>WIN866</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>WIN1252</literal></entry>
+        <entry><emphasis>WIN1252</emphasis>,
+         <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>WIN1253</literal></entry>
+        <entry><emphasis>WIN1253</emphasis>,
+         <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>WIN1254</literal></entry>
+        <entry><emphasis>WIN1254</emphasis>,
+         <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>WIN1255</literal></entry>
+        <entry><emphasis>WIN1255</emphasis>,
+         <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>WIN1256</literal></entry>
+        <entry><emphasis>WIN1256</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>WIN1257</literal></entry>
+        <entry><emphasis>WIN1257</emphasis>,
+         <literal>UTF8</literal>
+        </entry>
+       </row>
+       <row>
+        <entry><literal>WIN1258</literal></entry>
+        <entry><emphasis>WIN1258</emphasis>,
+        <literal>UTF8</literal>
+        </entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+
+    <table id="builtin-conversions-table">
+     <title>所有内置字符集转换</title>
+     <tgroup cols="3">
+      <colspec colname="col1" colwidth="2*"/>
+      <colspec colname="col2" colwidth="1*"/>
+      <colspec colname="col3" colwidth="1*"/>
+      <thead>
+       <row>
+        <entry>转换名称
+         <footnote>
+          <para>
+           转换名称遵循标准命名模式：源编码的正式名称，其中所有非字母数字字符
+           都替换为下划线，后跟<literal>_to_</literal>，再跟以相同方式处理
+           后的目标编码名称。因此，这些名称有时会与<xref linkend="charset-table"/>
+           中显示的惯用编码名称不同。
+          </para>
+         </footnote>
+        </entry>
+        <entry>源编码</entry>
+        <entry>目标编码</entry>
+       </row>
+      </thead>
+
+      <tbody>
+       <row>
+        <entry><literal>big5_to_euc_tw</literal></entry>
+        <entry><literal>BIG5</literal></entry>
+        <entry><literal>EUC_TW</literal></entry>
+       </row>
+       <row>
+        <entry><literal>big5_to_mic</literal></entry>
+        <entry><literal>BIG5</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>big5_to_utf8</literal></entry>
+        <entry><literal>BIG5</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>euc_cn_to_mic</literal></entry>
+        <entry><literal>EUC_CN</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>euc_cn_to_utf8</literal></entry>
+        <entry><literal>EUC_CN</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>euc_jp_to_mic</literal></entry>
+        <entry><literal>EUC_JP</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>euc_jp_to_sjis</literal></entry>
+        <entry><literal>EUC_JP</literal></entry>
+        <entry><literal>SJIS</literal></entry>
+       </row>
+       <row>
+        <entry><literal>euc_jp_to_utf8</literal></entry>
+        <entry><literal>EUC_JP</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>euc_kr_to_mic</literal></entry>
+        <entry><literal>EUC_KR</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>euc_kr_to_utf8</literal></entry>
+        <entry><literal>EUC_KR</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>euc_tw_to_big5</literal></entry>
+        <entry><literal>EUC_TW</literal></entry>
+        <entry><literal>BIG5</literal></entry>
+       </row>
+       <row>
+        <entry><literal>euc_tw_to_mic</literal></entry>
+        <entry><literal>EUC_TW</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>euc_tw_to_utf8</literal></entry>
+        <entry><literal>EUC_TW</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>gb18030_to_utf8</literal></entry>
+        <entry><literal>GB18030</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>gbk_to_utf8</literal></entry>
+        <entry><literal>GBK</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_10_to_utf8</literal></entry>
+        <entry><literal>LATIN6</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_13_to_utf8</literal></entry>
+        <entry><literal>LATIN7</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_14_to_utf8</literal></entry>
+        <entry><literal>LATIN8</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_15_to_utf8</literal></entry>
+        <entry><literal>LATIN9</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_16_to_utf8</literal></entry>
+        <entry><literal>LATIN10</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_1_to_mic</literal></entry>
+        <entry><literal>LATIN1</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_1_to_utf8</literal></entry>
+        <entry><literal>LATIN1</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_2_to_mic</literal></entry>
+        <entry><literal>LATIN2</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_2_to_utf8</literal></entry>
+        <entry><literal>LATIN2</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_2_to_windows_1250</literal></entry>
+        <entry><literal>LATIN2</literal></entry>
+        <entry><literal>WIN1250</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_3_to_mic</literal></entry>
+        <entry><literal>LATIN3</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_3_to_utf8</literal></entry>
+        <entry><literal>LATIN3</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_4_to_mic</literal></entry>
+        <entry><literal>LATIN4</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_4_to_utf8</literal></entry>
+        <entry><literal>LATIN4</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_5_to_koi8_r</literal></entry>
+        <entry><literal>ISO_8859_5</literal></entry>
+        <entry><literal>KOI8R</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_5_to_mic</literal></entry>
+        <entry><literal>ISO_8859_5</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_5_to_utf8</literal></entry>
+        <entry><literal>ISO_8859_5</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_5_to_windows_1251</literal></entry>
+        <entry><literal>ISO_8859_5</literal></entry>
+        <entry><literal>WIN1251</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_5_to_windows_866</literal></entry>
+        <entry><literal>ISO_8859_5</literal></entry>
+        <entry><literal>WIN866</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_6_to_utf8</literal></entry>
+        <entry><literal>ISO_8859_6</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_7_to_utf8</literal></entry>
+        <entry><literal>ISO_8859_7</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_8_to_utf8</literal></entry>
+        <entry><literal>ISO_8859_8</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>iso_8859_9_to_utf8</literal></entry>
+        <entry><literal>LATIN5</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>johab_to_utf8</literal></entry>
+        <entry><literal>JOHAB</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>koi8_r_to_iso_8859_5</literal></entry>
+        <entry><literal>KOI8R</literal></entry>
+        <entry><literal>ISO_8859_5</literal></entry>
+       </row>
+       <row>
+        <entry><literal>koi8_r_to_mic</literal></entry>
+        <entry><literal>KOI8R</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>koi8_r_to_utf8</literal></entry>
+        <entry><literal>KOI8R</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>koi8_r_to_windows_1251</literal></entry>
+        <entry><literal>KOI8R</literal></entry>
+        <entry><literal>WIN1251</literal></entry>
+       </row>
+       <row>
+        <entry><literal>koi8_r_to_windows_866</literal></entry>
+        <entry><literal>KOI8R</literal></entry>
+        <entry><literal>WIN866</literal></entry>
+       </row>
+       <row>
+        <entry><literal>koi8_u_to_utf8</literal></entry>
+        <entry><literal>KOI8U</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_big5</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>BIG5</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_euc_cn</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>EUC_CN</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_euc_jp</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>EUC_JP</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_euc_kr</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>EUC_KR</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_euc_tw</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>EUC_TW</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_iso_8859_1</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>LATIN1</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_iso_8859_2</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>LATIN2</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_iso_8859_3</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>LATIN3</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_iso_8859_4</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>LATIN4</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_iso_8859_5</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>ISO_8859_5</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_koi8_r</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>KOI8R</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_sjis</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>SJIS</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_windows_1250</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>WIN1250</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_windows_1251</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>WIN1251</literal></entry>
+       </row>
+       <row>
+        <entry><literal>mic_to_windows_866</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+        <entry><literal>WIN866</literal></entry>
+       </row>
+       <row>
+        <entry><literal>sjis_to_euc_jp</literal></entry>
+        <entry><literal>SJIS</literal></entry>
+        <entry><literal>EUC_JP</literal></entry>
+       </row>
+       <row>
+        <entry><literal>sjis_to_mic</literal></entry>
+        <entry><literal>SJIS</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>sjis_to_utf8</literal></entry>
+        <entry><literal>SJIS</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_1258_to_utf8</literal></entry>
+        <entry><literal>WIN1258</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>uhc_to_utf8</literal></entry>
+        <entry><literal>UHC</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_big5</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>BIG5</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_euc_cn</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>EUC_CN</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_euc_jp</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>EUC_JP</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_euc_kr</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>EUC_KR</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_euc_tw</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>EUC_TW</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_gb18030</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>GB18030</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_gbk</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>GBK</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_1</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>LATIN1</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_10</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>LATIN6</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_13</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>LATIN7</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_14</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>LATIN8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_15</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>LATIN9</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_16</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>LATIN10</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_2</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>LATIN2</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_3</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>LATIN3</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_4</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>LATIN4</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_5</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>ISO_8859_5</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_6</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>ISO_8859_6</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_7</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>ISO_8859_7</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_8</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>ISO_8859_8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_iso_8859_9</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>LATIN5</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_johab</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>JOHAB</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_koi8_r</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>KOI8R</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_koi8_u</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>KOI8U</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_sjis</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>SJIS</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_windows_1258</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>WIN1258</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_uhc</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>UHC</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_windows_1250</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>WIN1250</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_windows_1251</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>WIN1251</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_windows_1252</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>WIN1252</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_windows_1253</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>WIN1253</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_windows_1254</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>WIN1254</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_windows_1255</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>WIN1255</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_windows_1256</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>WIN1256</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_windows_1257</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>WIN1257</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_windows_866</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>WIN866</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_windows_874</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>WIN874</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_1250_to_iso_8859_2</literal></entry>
+        <entry><literal>WIN1250</literal></entry>
+        <entry><literal>LATIN2</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_1250_to_mic</literal></entry>
+        <entry><literal>WIN1250</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_1250_to_utf8</literal></entry>
+        <entry><literal>WIN1250</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_1251_to_iso_8859_5</literal></entry>
+        <entry><literal>WIN1251</literal></entry>
+        <entry><literal>ISO_8859_5</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_1251_to_koi8_r</literal></entry>
+        <entry><literal>WIN1251</literal></entry>
+        <entry><literal>KOI8R</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_1251_to_mic</literal></entry>
+        <entry><literal>WIN1251</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_1251_to_utf8</literal></entry>
+        <entry><literal>WIN1251</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_1251_to_windows_866</literal></entry>
+        <entry><literal>WIN1251</literal></entry>
+        <entry><literal>WIN866</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_1252_to_utf8</literal></entry>
+        <entry><literal>WIN1252</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_1256_to_utf8</literal></entry>
+        <entry><literal>WIN1256</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_866_to_iso_8859_5</literal></entry>
+        <entry><literal>WIN866</literal></entry>
+        <entry><literal>ISO_8859_5</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_866_to_koi8_r</literal></entry>
+        <entry><literal>WIN866</literal></entry>
+        <entry><literal>KOI8R</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_866_to_mic</literal></entry>
+        <entry><literal>WIN866</literal></entry>
+        <entry><literal>MULE_INTERNAL</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_866_to_utf8</literal></entry>
+        <entry><literal>WIN866</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_866_to_windows_1251</literal></entry>
+        <entry><literal>WIN866</literal></entry>
+        <entry><literal>WIN</literal></entry>
+       </row>
+       <row>
+        <entry><literal>windows_874_to_utf8</literal></entry>
+        <entry><literal>WIN874</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>euc_jis_2004_to_utf8</literal></entry>
+        <entry><literal>EUC_JIS_2004</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_euc_jis_2004</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>EUC_JIS_2004</literal></entry>
+       </row>
+       <row>
+        <entry><literal>shift_jis_2004_to_utf8</literal></entry>
+        <entry><literal>SHIFT_JIS_2004</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+       </row>
+       <row>
+        <entry><literal>utf8_to_shift_jis_2004</literal></entry>
+        <entry><literal>UTF8</literal></entry>
+        <entry><literal>SHIFT_JIS_2004</literal></entry>
+       </row>
+       <row>
+        <entry><literal>euc_jis_2004_to_shift_jis_2004</literal></entry>
+        <entry><literal>EUC_JIS_2004</literal></entry>
+        <entry><literal>SHIFT_JIS_2004</literal></entry>
+       </row>
+       <row>
+        <entry><literal>shift_jis_2004_to_euc_jis_2004</literal></entry>
+        <entry><literal>SHIFT_JIS_2004</literal></entry>
+        <entry><literal>EUC_JIS_2004</literal></entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+   </sect2>
+
+   <sect2>
+    <title>进一步阅读</title>
+
+    <para>这些都是开始了解各种编码系统的良好资料。<variablelist>
+      <varlistentry>
+       <term><citetitle>CJKV Information Processing: Chinese, Japanese, Korean &amp; Vietnamese Computing</citetitle></term>
+
+       <listitem>
+        <para>
+         其中对<literal>EUC_JP</literal>、<literal>EUC_CN</literal>、
+         <literal>EUC_KR</literal>和<literal>EUC_TW</literal>做了详细说明。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry>
+       <term><ulink url="https://www.unicode.org/"></ulink></term>
+
+       <listitem>
+        <para>
+         Unicode Consortium 网站。
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry>
+       <term>RFC 3629</term>
+
+       <listitem>
+        <para>
+         这里定义了<acronym>UTF</acronym>-8（8 位 UCS/Unicode 转换格式）。
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </para>
+   </sect2>
+
+  </sect1>
+
+</chapter>

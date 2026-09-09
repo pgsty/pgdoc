@@ -1,0 +1,371 @@
+<!-- doc/src/sgml/logical-replication.sgml -->
+
+<chapter id="logical-replication">
+ <title>逻辑复制</title>
+
+ <para>
+  逻辑复制是一种基于数据对象及其复制标识（通常是主键）来复制数据对象及其变更的方法。这里使用“逻辑”一词，是为了与物理复制相区别；物理复制使用精确的块地址，并按字节逐一复制。PostgreSQL 可以同时支持这两种机制，见 <xref linkend="high-availability"/>。逻辑复制允许对数据复制和安全性进行细粒度控制。
+ </para>
+
+ <para>
+  逻辑复制采用<firstterm>发布</firstterm>和<firstterm>订阅</firstterm>模型，一个或多个<firstterm>订阅者</firstterm>订阅某个<firstterm>发布者</firstterm>节点上的一个或多个<firstterm>发布</firstterm>。订阅者从其订阅的发布中拉取数据，随后还可以重新发布这些数据，以实现级联复制或更复杂的配置。
+ </para>
+
+ <para>
+  表的逻辑复制通常开始于在发布者数据库中为数据建立快照，并将其复制到订阅者。完成后，发布者上的变更会在发生时实时发送给订阅者。订阅者会按与发布者相同的顺序应用这些数据，因此对于单个订阅中的发布，可以保证事务一致性。这种数据复制方法有时也称为事务性复制。
+ </para>
+
+ <para>逻辑复制的典型用途包括：<itemizedlist>
+   <listitem>
+    <para>
+     当单个数据库或数据库的某个子集发生变更时，将增量变更发送给订阅者。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     当单个变更到达订阅端时触发触发器。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     将多个数据库汇总到单个数据库中（例如用于分析）。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     在PostgreSQL的不同主版本之间进行复制。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     在不同平台上（例如Linux到Windows）的PostgreSQL实例之间进行复制。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     向不同用户组开放对复制数据的访问。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     在多个数据库间共享数据库的一个子集。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </para>
+
+ <para>
+  订阅端数据库的行为与任何其他 PostgreSQL 实例相同，并且可以通过定义自己的发布，作为其他数据库的发布者。当应用把订阅端视为只读时，单个订阅不会产生冲突。另一方面，如果应用或其他订阅者对同一组表执行了其他写操作，就可能发生冲突。
+ </para>
+
+ <sect1 id="logical-replication-publication">
+  <title>发布</title>
+
+  <para>
+   <firstterm>发布</firstterm>可以定义在任何物理复制主库上。定义发布的节点称为<firstterm>发布者</firstterm>。发布是一组由某个表或一组表产生的变更，也可称为变更集或复制集。每个发布只存在于一个数据库中。
+  </para>
+
+  <para>
+   发布与模式不同，不影响表的访问方式。每个表在需要时都可以加入多个发布。发布目前只能包含表。除非创建发布时使用<literal>ALL TABLES</literal>，否则对象必须显式添加。
+  </para>
+
+  <para>
+   发布可以选择将要产生的变更限制为<command>INSERT</command>、<command>UPDATE</command>、<command>DELETE</command> 和 <command>TRUNCATE</command>的任意组合，类似于触发器按特定事件类型触发。默认会复制所有操作类型。
+  </para>
+
+  <para>
+   已发布的表必须配置了<quote>复制标识</quote>，才能复制<command>UPDATE</command>和<command>DELETE</command>操作，以便在订阅端能够识别要更新或删除的对应行。默认情况下，使用主键（如果有的话）。也可以将另一个唯一索引（有一些额外要求）设置为复制标识。如果表没有任何合适的键，则可以将其复制标识设置为<quote>full</quote>，这意味着整行都成为键。但这样做效率很低，只应在无其他方案时作为后备使用。如果在发布端设置了<quote>full</quote>以外的复制标识，则订阅端也必须设置包含相同或更少列的复制标识。关于如何设置复制标识的详细信息，见<xref linkend="sql-createtable-replica-identity"/>。如果一个没有复制标识的表被添加到了可复制<command>UPDATE</command>或<command>DELETE</command>操作的发布中，后续的<command>UPDATE</command>或<command>DELETE</command>操作将在发布端产生错误。无论复制标识如何，<command>INSERT</command>操作都可以正常进行。
+  </para>
+
+  <para>
+   每个发布都可以有多个订阅者。
+  </para>
+
+  <para>
+   发布使用<xref linkend="sql-createpublication"/>命令创建，随后可以使用相应命令进行修改或删除。
+  </para>
+
+  <para>
+   可以使用<xref linkend="sql-alterpublication"/>动态添加和移除各个表。<literal>ADD TABLE</literal>和<literal>DROP TABLE</literal>操作都是事务性的；因此一旦事务提交，表将在正确的快照点开始或停止复制。
+  </para>
+ </sect1>
+
+ <sect1 id="logical-replication-subscription">
+  <title>订阅</title>
+
+  <para>
+   <firstterm>订阅</firstterm>是逻辑复制的下游端。定义订阅的节点称为<firstterm>订阅者</firstterm>。订阅定义了与另一个数据库的连接以及它想订阅的一组发布（一个或多个）。
+  </para>
+
+  <para>
+   订阅端数据库的行为与任何其他 PostgreSQL 实例相同，并且可以通过定义自己的发布，作为其他数据库的发布者。
+  </para>
+
+  <para>
+   如果需要，一个订阅者节点可以有多个订阅。可以在单个发布者-订阅者对之间定义多个订阅，但此时必须确保被订阅的发布对象不重叠。
+  </para>
+
+  <para>
+   每个订阅将通过一个复制槽（见<xref linkend="streaming-replication-slots"/>）接收变更。对于已有表数据的初始数据同步，可能需要额外的临时复制槽。
+  </para>
+
+  <para>
+  逻辑复制订阅可以作为同步复制中的备库（见<xref linkend="synchronous-replication"/>）。备库名称默认为订阅名称。可以在订阅的连接信息中通过<literal>application_name</literal>指定一个替代名称。
+  </para>
+
+  <para>
+   如果当前用户是超级用户，<command>pg_dump</command>会转储订阅。否则会写一条警告并跳过订阅，因为非超级用户无法从<structname>pg_subscription</structname>目录读取所有订阅信息。
+  </para>
+
+  <para>
+   订阅使用<xref linkend="sql-createsubscription"/>添加，可随时使用<xref linkend="sql-altersubscription"/>命令停止/恢复，并使用<xref linkend="sql-dropsubscription"/>移除。
+  </para>
+
+  <para>
+   当订阅被删除并重建时，同步信息会丢失。这意味着之后必须重新同步数据。
+  </para>
+
+  <para>
+   模式定义不会被复制，已发布的表必须存在于订阅端。只有常规表可以作为复制的目标。例如，不能复制到视图。
+  </para>
+
+  <para>
+   发布端和订阅端的表通过完全限定的表名进行匹配。不支持复制到订阅端名称不同的表。
+  </para>
+
+  <para>
+   表的列也按名称匹配。订阅端表中列的顺序无需与发布端匹配。列的数据类型也无需匹配，只要数据的文本表示可以转换为目标类型即可。例如，可以从<type>integer</type>类型的列复制到<type>bigint</type>类型的列。目标表也可以有已发布表未提供的额外列。这些额外列将用目标表定义中指定的默认值填充。
+  </para>
+
+  <sect2 id="logical-replication-subscription-slot">
+   <title>复制槽管理</title>
+
+   <para>如前所述，每个（活动）订阅都从远程（发布）端的复制槽接收变更。通常，在使用<command>CREATE SUBSCRIPTION</command>创建订阅时，会自动创建远程复制槽；在使用<command>DROP SUBSCRIPTION</command>删除订阅时，也会自动删除该槽。但是，在某些情况下，分别操作订阅及其底层复制槽可能有用或必要。例如：<itemizedlist>
+     <listitem>
+      <para>
+       创建订阅时复制槽已经存在。此时可使用<literal>create_slot = false</literal>选项创建订阅，以关联到现有的槽。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       创建订阅时远程主机不可达或状态不明确。此时可使用<literal>connect = false</literal>选项创建订阅。这样就完全不会联系远程主机。<application>pg_dump</application>就是这样使用的。在订阅激活前，必须手动创建远程复制槽。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       删除订阅时需要保留复制槽。这在将订阅端数据库迁移到另一台主机并从那里激活时很有用。此时应在尝试删除订阅之前，使用<command>ALTER SUBSCRIPTION</command>解除槽与订阅的关联。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       删除订阅时远程主机不可达。此时应在尝试删除订阅之前，使用<command>ALTER SUBSCRIPTION</command>解除槽与订阅的关联。如果远程数据库实例已经不存在了，则无需其他操作。但如果远程数据库实例只是暂时不可达，则应手动删除复制槽，否则它将继续保留 WAL，并可能最终导致磁盘空间耗尽。此类情况应仔细调查。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="logical-replication-conflicts">
+  <title>冲突</title>
+
+  <para>
+   逻辑复制的行为类似于普通的 DML 操作，即使数据在订阅端本地已被更改，仍会更新数据。如果传入的数据违反了任何约束，复制将停止。这称为<firstterm>冲突</firstterm>。当复制<command>UPDATE</command>或<command>DELETE</command>操作时，缺失的数据不会产生冲突，这类操作只会被简单跳过。
+  </para>
+
+  <para>
+   冲突将产生一个错误并停止复制；它必须由用户手动解决。冲突的详细信息可在订阅端的服务器日志中找到。
+  </para>
+
+  <para>
+   解决冲突可以通过更改订阅端的数据使其不与传入的更改冲突，或者跳过与现有数据冲突的事务来完成。可以通过调用<link linkend="pg-replication-origin-advance"><function>pg_replication_origin_advance()</function></link>函数来跳过事务，传入与订阅名称对应的<parameter>node_name</parameter>和一个位置。复制源的当前位置可在<link linkend="view-pg-replication-origin-status"><structname>pg_replication_origin_status</structname></link>系统视图中查看。
+  </para>
+ </sect1>
+
+ <sect1 id="logical-replication-restrictions">
+  <title>限制</title>
+
+  <para>
+   逻辑复制目前有以下限制或缺失的功能。这些问题可能会在未来的版本中解决。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     数据库模式和DDL命令不会被复制。初始模式可使用<literal>pg_dump --schema-only</literal>手动复制。后续的模式变更需要手动保持同步。（注意，两端的模式不需要完全相同。）当数据库模式在运行中发生变更时，逻辑复制是健壮的：当发布端模式变更后，复制的数据开始到达订阅端但不符合表的模式时，复制会出错，直到模式被更新。在很多情况下，通过先在订阅端应用增量式模式变更，可以避免间歇性错误。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     序列数据不会被复制。由序列支撑的serial或标识列中的数据当然会作为表的一部分被复制，但序列本身在订阅端仍然显示起始值。如果把订阅端用作只读数据库，通常不会有问题。但如果打算切换或故障切换到订阅端数据库，则需要把序列更新到最新值，可以通过从发布端复制当前数据（例如使用<command>pg_dump</command>），或者从表本身确定一个足够大的值。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     支持<command>TRUNCATE</command>命令的复制，但在截断由外键连接的表组时需要注意。当复制truncate操作时，订阅端将截断与发布端截断的同一组表（显式指定的或通过<literal>CASCADE</literal>隐式收集的），但不包括不属于该订阅的表。如果所有受影响的表都属于同一个订阅，这将正确工作。但如果订阅端要被截断的某些表对不属于同一（或任何）订阅的表有外键链接，那么在订阅端应用truncate操作将失败。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     大对象（见<xref linkend="largeobjects"/>）不会被复制。除了将数据存储在普通表中之外，没有其他解决方案。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     只有表（包括分区表）支持复制。尝试复制其他类型的关系（如视图、物化视图或外部表）将导致错误。
+    </para>
+   </listitem>
+
+   <listitem>
+    <para>
+     在分区表之间进行复制时，实际的复制默认源自发布端的叶分区，因此发布端的分区在订阅端也必须作为有效的目标表存在。（它们可以本身是叶分区，也可以进一步子分区，甚至可以是独立的表。）发布也可以指定使用分区根表的标识和模式来复制变更，而不使用变更实际发生的各个叶分区的标识和模式（见<xref linkend="sql-createpublication"/>）。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+
+ <sect1 id="logical-replication-architecture">
+  <title>架构</title>
+
+  <para>
+   逻辑复制首先复制发布端数据库中数据的快照。完成后，发布端的变更会随着发生实时发送给订阅端。订阅端按照发布端提交的顺序应用数据，因此对于单个订阅中的发布，可以保证事务一致性。
+  </para>
+
+  <para>
+   逻辑复制采用类似于物理流复制的架构（见<xref linkend="streaming-replication"/>）。它由<quote>walsender</quote>和<quote>apply</quote>进程实现。walsender 进程启动 WAL 的逻辑解码（见<xref linkend="logicaldecoding"/>），并加载标准逻辑解码输出插件（<literal>pgoutput</literal>）。该插件将从 WAL 读取的变更转换为逻辑复制协议（见<xref linkend="protocol-logical-replication"/>），并根据发布规范过滤数据。然后使用流复制协议将数据持续传输给 apply 工作进程，该工作进程将数据映射到本地表，并按正确的事务顺序逐一应用每个变更。
+  </para>
+
+  <para>
+   订阅端数据库上的 apply 进程总是在<link linkend="guc-session-replication-role"><varname>session_replication_role</varname></link>设置为<literal>replica</literal>的情况下运行。这意味着默认情况下，触发器和规则不会在订阅端触发。用户可以选择使用<link linkend="sql-altertable"><command>ALTER TABLE</command></link>命令和<literal>ENABLE TRIGGER</literal>及<literal>ENABLE RULE</literal>子句在表上启用触发器和规则。
+  </para>
+
+  <para>
+   逻辑复制的apply进程目前只触发行触发器，不触发语句触发器。但初始表同步的实现方式类似于<command>COPY</command>命令，因此会触发<command>INSERT</command>的行触发器和语句触发器。
+  </para>
+
+  <sect2 id="logical-replication-snapshot">
+    <title>初始快照</title>
+    <para>
+     已订阅表中的初始数据由一种特殊的应用进程的并行实例建立快照并复制。该进程将创建自己的临时复制槽并复制现有数据。现有数据复制完成后，工作进程进入同步模式，通过使用标准逻辑复制流式传输初始数据复制期间发生的所有变更，确保该表与主应用进程同步。同步完成后，该表的复制控制权交还给主应用进程，此后复制照常继续。
+    </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="logical-replication-monitoring">
+  <title>监控</title>
+
+  <para>
+   因为逻辑复制基于类似于<link linkend="streaming-replication">物理流复制</link>的架构，发布端节点上的监控也类似于物理复制主库的监控（见<xref linkend="streaming-replication-monitoring"/>）。
+  </para>
+
+  <para>
+   关于订阅的监控信息可在<link linkend="monitoring-pg-stat-subscription"><structname>pg_stat_subscription</structname></link>中查看。此视图中每个订阅工作进程对应一行。一个订阅根据其状态可以有零个或多个活动的订阅工作进程。
+  </para>
+
+  <para>
+   正常情况下，已启用的订阅会有一个apply进程在运行。被禁用或已崩溃的订阅在此视图中将有零行。如果任何表的初始数据同步正在进行中，将有额外的工作进程用于正在同步的表。
+  </para>
+ </sect1>
+
+ <sect1 id="logical-replication-security">
+  <title>安全性</title>
+
+  <para>
+   能够修改订阅端表模式的用户可以以超级用户身份执行任意代码。限制此类表的所有权和<literal>TRIGGER</literal>权限，仅授予超级用户信任的角色。此外，如果不受信任的用户可以创建表，则仅使用显式列出表的发布。也就是说，只有在超级用户信任发布端或订阅端上允许创建非临时表的每个用户时，才创建<literal>FOR ALL TABLES</literal>的订阅。
+  </para>
+
+  <para>
+   用于复制连接的角色必须具有<literal>REPLICATION</literal>属性（或者是超级用户）。如果该角色缺少<literal>SUPERUSER</literal>和<literal>BYPASSRLS</literal>，发布端的行安全策略可能会被执行。如果该角色不信任所有表的所有者，可在连接字符串中包含<literal>options=-crow_security=off</literal>；这样如果某个表所有者添加了行安全策略，该设置将导致复制停止而不是执行该策略。必须在<filename>pg_hba.conf</filename>中配置该角色的访问权限，并且该角色必须具有<literal>LOGIN</literal>属性。
+  </para>
+
+  <para>
+   为了能够复制初始表数据，用于复制连接的角色必须对已发布的表拥有<literal>SELECT</literal>权限（或者是超级用户）。
+  </para>
+
+  <para>
+   要创建发布，用户必须在数据库中拥有<literal>CREATE</literal>权限。
+  </para>
+
+  <para>
+   要向发布添加表，用户必须对该表拥有所有权。要创建自动发布所有表的发布，用户必须是超级用户。
+  </para>
+
+  <para>
+   要创建订阅，用户必须是超级用户。
+  </para>
+
+  <para>
+   订阅的apply进程将以超级用户的权限在本地数据库上运行。
+  </para>
+
+  <para>
+   权限只在复制连接开始时检查一次。不会在读取发布端的每条变更记录时重新检查，也不会在应用每条变更时重新检查。
+  </para>
+ </sect1>
+
+ <sect1 id="logical-replication-config">
+  <title>配置设置</title>
+
+  <para>
+   逻辑复制需要设置几个配置选项。
+  </para>
+
+  <para>
+   在发布端，<varname>wal_level</varname>必须设置为<literal>logical</literal>，<varname>max_replication_slots</varname>必须至少设置为预期连接的订阅数，加上为表同步预留的一些余量。而<varname>max_wal_senders</varname>应至少设置为<varname>max_replication_slots</varname>加上同时连接的物理副本数。
+  </para>
+
+  <para>
+   订阅端也必须设置<varname>max_replication_slots</varname>，以配置能够跟踪的复制源数量。在这种情况下，它至少应为将要添加到订阅端的订阅数。<varname>max_logical_replication_workers</varname>必须至少设置为订阅数，加上为表同步预留的余量。此外，<varname>max_worker_processes</varname>可能需要调整以容纳复制工作进程，至少为（<varname>max_logical_replication_workers</varname> + <literal>1</literal>）。注意一些扩展和并行查询也会占用<varname>max_worker_processes</varname>中的工作进程槽。
+  </para>
+ </sect1>
+
+ <sect1 id="logical-replication-quick-setup">
+  <title>快速设置</title>
+
+  <para>
+   首先在<filename>postgresql.conf</filename>中设置配置选项：
+<programlisting>
+wal_level = logical
+</programlisting>
+   其他必需的设置的默认值对于基本设置已经足够。
+  </para>
+
+  <para>
+   <filename>pg_hba.conf</filename>需要进行调整以允许复制（这里的值取决于你的实际网络配置和你想用于连接的用户）：
+<programlisting>
+host     all     repuser     0.0.0.0/0     md5
+</programlisting>
+  </para>
+
+  <para>
+   然后在发布端数据库上：
+<programlisting>
+CREATE PUBLICATION mypub FOR TABLE users, departments;
+</programlisting>
+  </para>
+
+  <para>
+   在订阅端数据库上：
+<programlisting>
+CREATE SUBSCRIPTION mysub CONNECTION 'dbname=foo host=bar user=repuser' PUBLICATION mypub;
+</programlisting>
+  </para>
+
+  <para>
+   以上操作将启动复制过程，该过程会同步<literal>users</literal>和<literal>departments</literal>表的初始数据，然后开始复制这些表的增量变更。
+  </para>
+ </sect1>
+</chapter>
