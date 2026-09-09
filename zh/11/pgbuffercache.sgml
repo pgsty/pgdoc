@@ -1,0 +1,192 @@
+<!-- doc/src/sgml/pgbuffercache.sgml -->
+
+<sect1 id="pgbuffercache" xreflabel="pg_buffercache">
+ <title>pg_buffercache</title>
+
+ <indexterm zone="pgbuffercache">
+  <primary>pg_buffercache</primary>
+ </indexterm>
+
+ <para>
+  <filename>pg_buffercache</filename> 模块提供了一种手段，可实时检查共享缓冲区缓存中正在发生的情况。
+  它还提供了一种底层方式，可出于测试目的从中逐出数据。
+ </para>
+
+ <indexterm>
+  <primary>pg_buffercache_pages</primary>
+ </indexterm>
+
+ <para>该模块提供一个 C 函数<function>pg_buffercache_pages</function>，它返回一组记录；另外还提供一个视图<structname>pg_buffercache</structname>，该视图封装此函数以便使用。</para>
+
+ <para>
+  默认情况下，上述函数仅限超级用户以及拥有
+  <literal>pg_monitor</literal> 角色权限的角色使用。可以使用
+  <command>GRANT</command> 将访问权限授予其他角色。
+ </para>
+
+ <sect2>
+  <title><structname>pg_buffercache</structname> 视图</title>
+
+  <para>
+   该视图公开的列定义见 <xref linkend="pgbuffercache-columns"/>。
+  </para>
+
+  <table id="pgbuffercache-columns">
+   <title><structname>pg_buffercache</structname> 列</title>
+
+   <tgroup cols="4">
+    <thead>
+     <row>
+      <entry>Name</entry>
+      <entry>类型</entry>
+      <entry>引用</entry>
+      <entry>
+       描述
+      </entry>
+     </row>
+    </thead>
+    <tbody>
+
+     <row>
+      <entry><structfield>bufferid</structfield></entry>
+      <entry><type>integer</type></entry>
+      <entry></entry>
+      <entry>
+       ID，范围为 1..<varname>shared_buffers</varname>
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>relfilenode</structfield></entry>
+      <entry><type>oid</type></entry>
+      <entry><literal>pg_class.relfilenode</literal></entry>
+      <entry>
+       关系的 filenode 编号
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>reltablespace</structfield></entry>
+      <entry><type>oid</type></entry>
+      <entry><literal>pg_tablespace.oid</literal></entry>
+      <entry>
+       关系的表空间 OID
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>reldatabase</structfield></entry>
+      <entry><type>oid</type></entry>
+      <entry><literal>pg_database.oid</literal></entry>
+      <entry>
+       关系的数据库 OID
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>relforknumber</structfield></entry>
+      <entry><type>smallint</type></entry>
+      <entry></entry>
+      <entry>关系中的分支编号；参见<filename>include/common/relpath.h</filename></entry>
+     </row>
+
+     <row>
+      <entry><structfield>relblocknumber</structfield></entry>
+      <entry><type>bigint</type></entry>
+      <entry></entry>
+      <entry>
+       关系中的页号
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>isdirty</structfield></entry>
+      <entry><type>boolean</type></entry>
+      <entry></entry>
+      <entry>
+       该页是否为脏页？
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>usagecount</structfield></entry>
+      <entry><type>smallint</type></entry>
+      <entry></entry>
+      <entry>
+       时钟扫描访问计数
+      </entry>
+     </row>
+
+     <row>
+      <entry><structfield>pinning_backends</structfield></entry>
+      <entry><type>integer</type></entry>
+      <entry></entry>
+      <entry>
+       钉住该缓冲区的后端数量
+      </entry>
+     </row>
+
+    </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   共享缓存中的每个缓冲区都有一行记录。未使用的缓冲区除了
+   <structfield>bufferid</structfield> 之外，其余字段均显示为 null。共享系统目录显示为属于数据库 0。
+  </para>
+
+  <para>
+   由于缓存由所有数据库共享，其中通常会有不属于当前数据库的关系页。
+   这意味着某些行在 <structname>pg_class</structname> 中可能没有可匹配的行，
+   甚至还可能出现错误的连接结果。如果要与 <structname>pg_class</structname> 进行连接，
+   最好将连接限制在 <structfield>reldatabase</structfield> 等于当前数据库 OID 或 0 的那些行上。
+  </para>
+
+  <para>
+   由于复制该视图将要显示的缓冲区状态数据时不会获取缓冲区管理器锁，
+   访问 <structname>pg_buffercache</structname> 视图对正常缓冲区活动的影响较小，
+   但它不会为所有缓冲区提供一致的结果集。不过，我们会确保每个缓冲区的信息本身是一致的。
+  </para>
+ </sect2>
+
+ <sect2>
+  <title>示例输出</title>
+
+<screen>
+regression=# SELECT n.nspname, c.relname, count(*) AS buffers
+             FROM pg_buffercache b JOIN pg_class c
+             ON b.relfilenode = pg_relation_filenode(c.oid) AND
+                b.reldatabase IN (0, (SELECT oid FROM pg_database
+                                      WHERE datname = current_database()))
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             GROUP BY n.nspname, c.relname
+             ORDER BY 3 DESC
+             LIMIT 10;
+
+  nspname   |        relname         | buffers
+------------+------------------------+---------
+ public     | delete_test_table      |     593
+ public     | delete_test_table_pkey |     494
+ pg_catalog | pg_attribute           |     472
+ public     | quad_poly_tbl          |     353
+ public     | tenk2                  |     349
+ public     | tenk1                  |     349
+ public     | gin_test_idx           |     306
+ pg_catalog | pg_largeobject         |     206
+ public     | gin_test_tbl           |     188
+ public     | spgist_text_tbl        |     182
+(10 rows)
+</screen>
+ </sect2>
+
+ <sect2>
+  <title>作者</title>
+
+  <para>Mark Kirkwood <email>markir@paradise.net.nz</email></para>
+
+  <para>设计建议： Neil Conway <email>neilc@samurai.com</email></para>
+
+  <para>调试建议： Tom Lane <email>tgl@sss.pgh.pa.us</email></para>
+ </sect2>
+
+</sect1>
