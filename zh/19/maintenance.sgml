@@ -594,7 +594,7 @@ HINT:  Execute a database-wide VACUUM in that database.
     </indexterm>
 
     <para>
-     <firstterm>多事务 ID</firstterm> 用于支持多个事务对行加锁。由于元组头中用于存储锁信息的空间有限，
+     <firstterm>多事务（multitransaction，MultiXact） ID</firstterm> 用于支持多个事务对行加锁。由于元组头中用于存储锁信息的空间有限，
      当有多个事务同时锁定一行时，这些信息会被编码为一个<quote>多事务 ID</quote>，
      简称 multixact ID。某个特定 multixact ID 包含哪些事务 ID 的信息，
      会单独存放在 <filename>pg_multixact</filename> 子目录中，而元组头的
@@ -625,11 +625,11 @@ HINT:  Execute a database-wide VACUUM in that database.
     </para>
 
     <para>
-    作为一项安全措施，对于 multixact 年龄大于 <xref
-    linkend="guc-autovacuum-multixact-freeze-max-age"/> 的任何表，都会进行一次激进扫描。
-    此外，如果创建的 multixact 成员条目数量超过大约 20 亿个
+    作为一项安全措施，对于 多事务 年龄大于 <xref
+    linkend="guc-autovacuum-multixact-freeze-max-age"/> 的任何表，都会进行一次激进清理扫描。
+    此外，如果创建的 多事务 成员条目数量超过大约 20 亿个
     （在 <literal>pg_multixact/members</literal> 目录中占用大约 10GB），
-    就会更频繁地对所有表进行激进扫描，从 multixact 年龄最老的表开始。
+    就会更频繁地对所有表进行激进清理扫描，从 多事务 年龄最老的表开始。
     即使自动清理名义上被禁用，这两类激进扫描也都会发生。
     当条目数量达到大约 40 亿个
     （在 <literal>pg_multixact/members</literal> 目录中占用大约 20GB）时，
@@ -639,7 +639,7 @@ HINT:  Execute a database-wide VACUUM in that database.
    <para>
     <xref linkend="functions-pg-snapshot"/> 中介绍的
     <function>pg_get_multixact_stats()</function> 函数提供了一种实时监控
-    multixact 分配和使用模式的方法，例如：
+    多事务 分配和使用模式的方法，例如：
 <screen>
 =# SELECT *, pg_size_pretty(members_size) members_size_pretty
      FROM pg_catalog.pg_get_multixact_stats();
@@ -648,11 +648,11 @@ HINT:  Execute a database-wide VACUUM in that database.
  311740299 |  2785241176 |  13926205880 |                2 | 13 GB
 (1 row)
 </screen>
-    该输出显示一个 multixact 活动明显的系统：大约 3.12 亿个 multixact ID，
+    该输出显示一个 多事务 活动明显的系统：大约 3.12 亿个 多事务 ID，
     以及大约 28 亿个成员条目，占用 13 GB 存储空间。
     如果 <literal>num_mxids</literal> 激增，可能表示多个会话正在运行带有外键检查的
     <literal>UPDATE</literal> 语句、并发的 <literal>SELECT FOR SHARE</literal>
-    操作，或者由于保存点频繁导致锁争用。
+    操作，或者由于频繁使用保存点导致锁争用。
     如果 <literal>oldest_multixact</literal> 值保持不变而 <literal>num_members</literal>
     持续增长，则可能表示长时间运行的事务正在阻止清理，或者自动清理没有跟上工作负载。
    </para>
@@ -660,7 +660,7 @@ HINT:  Execute a database-wide VACUUM in that database.
    <para>
     与 XID 的情况类似，如果自动清理没能从某个表中清除旧 MXID，
     当数据库中最老的 MXID 距离回卷点还有一亿个事务时，系统就会开始发出警告。
-    并且，与 XID 的情况一样，如果忽略这些警告，那么当距离回卷点只剩三百万个事务时，
+    并且，与 XID 的情况一样，如果忽略这些警告，那么当距离回卷点剩余少于三百万个事务时，
     系统就会拒绝生成新的 MXID。
    </para>
 
@@ -837,73 +837,73 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
 
     <para>
      自动清理分两步决定处理对象：首先选择一个数据库，然后选择该数据库中的表。
-     自动清理启动器进程会优先处理有事务 ID 或 multixact ID 回卷风险的数据库，
+     自动清理启动器进程会优先处理有事务 ID 或 多事务 ID 回卷风险的数据库，
      否则就选择最久未被处理的数据库。作为例外，它会跳过自上次统计信息重置以来没有连接
      或没有活动的数据库，除非它们有回卷风险。
     </para>
 
     <para>
-     在数据库内部，自动清理工作进程会构建一个需要 vacuum 或 analyze 的表列表，
-     并使用一个评分系统对其排序。它通过取若干组件评分中的最大值来为每个表打分，
-     这些组件反映了对 vacuum 或 analyze 重要的各种标准。各组件如下：
+     在数据库内部，自动清理工作进程会构建一个需要 清理 或 分析 的表列表，
+     并使用一个评分系统对其排序。它通过取若干分量评分中的最大值来为每个表打分，
+     这些分量反映了对 清理 或 分析 重要的各种标准。各分量如下：
     </para>
 
     <itemizedlist>
      <listitem>
       <para>
-       <emphasis>事务 ID</emphasis> 组件衡量表的
+       <emphasis>事务 ID</emphasis> 分量衡量表的
        <structname>pg_class</structname>.<structfield>relfrozenxid</structfield>
        字段按事务数计算的年龄，并与 <xref linkend="guc-autovacuum-freeze-max-age"/>
        比较。此外，一旦年龄超过 <xref linkend="guc-vacuum-failsafe-age"/>，
-       该组件会大幅增加。该组件的最终值可通过
+       该分量会大幅增加。该分量的最终值可通过
        <xref linkend="guc-autovacuum-freeze-score-weight"/> 调整。注意，
-       提高此参数的值也会降低该组件开始激进缩放的年龄，即当其值大于
+       提高此参数的值也会降低该分量开始激进缩放的年龄，即当其值大于
        <literal>1.0</literal> 时，缩放年龄会除以其值。
       </para>
      </listitem>
 
      <listitem>
       <para>
-       <emphasis>multixact ID</emphasis> 组件衡量表的
+       <emphasis>多事务 ID</emphasis> 分量衡量表的
        <structname>pg_class</structname>.<structfield>relminmxid</structfield>
-       字段按 multixact 数计算的年龄，并与
+       字段按 多事务 数计算的年龄，并与
        <xref linkend="guc-autovacuum-multixact-freeze-max-age"/> 比较。此外，
        一旦年龄超过 <xref linkend="guc-vacuum-multixact-failsafe-age"/>，
-       或者已创建的 multixact 成员条目数量超过大约 20 亿条
+       或者已创建的 多事务 成员条目数量超过大约 20 亿条
        （见 <xref linkend="vacuum-for-multixact-wraparound"/>），
-       该组件会大幅增加。该组件的最终值可通过
+       该分量会大幅增加。该分量的最终值可通过
        <xref linkend="guc-autovacuum-multixact-freeze-score-weight"/> 调整。注意，
-       提高此参数的值也会降低该组件开始激进缩放的年龄，即当其值大于
+       提高此参数的值也会降低该分量开始激进缩放的年龄，即当其值大于
        <literal>1.0</literal> 时，缩放年龄会除以其值。
       </para>
      </listitem>
 
      <listitem>
       <para>
-       <emphasis>vacuum</emphasis> 组件衡量已更新或已删除元组的数量，
+       <emphasis>清理</emphasis> 分量衡量已更新或已删除元组的数量，
        并与使用 <xref linkend="guc-autovacuum-vacuum-threshold"/>、
        <xref linkend="guc-autovacuum-vacuum-scale-factor"/> 和
        <xref linkend="guc-autovacuum-vacuum-max-threshold"/> 计算出的阈值比较。
-       该组件的最终值可通过 <xref linkend="guc-autovacuum-vacuum-score-weight"/> 调整。
+       该分量的最终值可通过 <xref linkend="guc-autovacuum-vacuum-score-weight"/> 调整。
       </para>
      </listitem>
 
      <listitem>
       <para>
-       <emphasis>vacuum insert</emphasis> 组件衡量已插入元组的数量，
+       <emphasis>插入清理</emphasis> 分量衡量已插入元组的数量，
        并与使用 <xref linkend="guc-autovacuum-vacuum-insert-threshold"/> 和
        <xref linkend="guc-autovacuum-vacuum-insert-scale-factor"/> 计算出的阈值比较。
-       该组件的最终值可通过
+       该分量的最终值可通过
        <xref linkend="guc-autovacuum-vacuum-insert-score-weight"/> 调整。
       </para>
      </listitem>
 
      <listitem>
       <para>
-       <emphasis>analyze</emphasis> 组件衡量已插入、已更新或已删除元组的数量，
+       <emphasis>分析</emphasis> 分量衡量已插入、已更新或已删除元组的数量，
        并与使用 <xref linkend="guc-autovacuum-analyze-threshold"/> 和
        <xref linkend="guc-autovacuum-analyze-scale-factor"/> 计算出的阈值比较。
-       该组件的最终值可通过 <xref linkend="guc-autovacuum-analyze-score-weight"/> 调整。
+       该分量的最终值可通过 <xref linkend="guc-autovacuum-analyze-score-weight"/> 调整。
       </para>
      </listitem>
     </itemizedlist>
@@ -911,10 +911,10 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
     <para>
      要恢复到 <productname>PostgreSQL</productname> 19 之前使用的优先级策略
      （也就是表在 <literal>pg_class</literal> 系统目录中的排列顺序），请将前述所有
-     “weight” 参数都设为 <literal>0.0</literal>。否则，这些“weight”参数会与各自的
-     组件分数相乘。例如，将
+     “权重” 参数都设为 <literal>0.0</literal>。否则，这些“权重”参数会与各自的
+     分量评分相乘。例如，将
      <xref linkend="guc-autovacuum-analyze-score-weight"/> 提高到 <literal>2.0</literal>
-     会使 <emphasis>analyze</emphasis> 组件分数翻倍。
+     会使 <emphasis>分析</emphasis> 分量评分翻倍。
     </para>
 
     <para>
@@ -926,13 +926,13 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
   </sect2>
 
   <sect2 id="parallel-vacuum" xreflabel="Parallel Vacuum">
-   <title>并行 Vacuum</title>
+   <title>并行 清理</title>
 
    <para>
-    <command>VACUUM</command> 可以使用后台工作进程并行执行索引 vacuum 和索引清理阶段
-    （各个 vacuum 阶段的细节请参见 <xref linkend="vacuum-phases"/>）。
-    并行度由该关系上支持并行 vacuum 的索引数量决定。对于手工 <command>VACUUM</command>，
-    这受 <literal>PARALLEL</literal> 选项限制，如果指定了该选项，还会进一步受
+    <command>VACUUM</command> 可以使用后台工作进程并行执行索引清理（index vacuuming）和索引收尾清理（index cleanup）阶段
+    （各个 清理 阶段的细节请参见 <xref linkend="vacuum-phases"/>）。
+    并行度由该关系上支持并行 清理 的索引数量决定。对于手工 <command>VACUUM</command>，
+    如果指定了<literal>PARALLEL</literal> 选项，则受该选项限制；此外还会进一步受
     <xref linkend="guc-max-parallel-maintenance-workers"/> 限制。对于自动清理，
     这受表的 <xref linkend="reloption-autovacuum-parallel-workers"/> 限制（如果指定），
     并且还会进一步受 <xref linkend="guc-autovacuum-max-parallel-workers"/> 参数限制。
@@ -942,8 +942,8 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
 
    <para>
     只有当索引大小大于 <xref linkend="guc-min-parallel-index-scan-size"/> 时，
-    它才能参与并行 vacuum。每个索引只能使用一个工作进程。因此，只有当表中至少有
-    <literal>2</literal> 个索引时，才会启动并行工作进程。vacuum 的工作进程会在每个阶段开始前启动，
+    它才能参与并行 清理。每个索引只能使用一个工作进程。因此，只有当表中至少有
+    <literal>2</literal> 个索引时，才会启动并行工作进程。清理 的工作进程会在每个阶段开始前启动，
     并在阶段结束时退出。这些行为在未来版本中可能会改变。
    </para>
   </sect2>
