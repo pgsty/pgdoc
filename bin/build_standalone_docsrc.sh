@@ -3,6 +3,8 @@
 # Build PostgreSQL HTML documentation from a standalone doc source directory.
 #
 # Usage: build_standalone_docsrc.sh <doc-src-dir> <en|zh> <version> [output-dir]
+# Fixed source: PGDOC_SOURCE_DIR + PGDOC_SOURCE_COMMIT, or
+# PGDOC_SOURCE_ARCHIVE + PGDOC_SOURCE_SHA256 (verified release package).
 #
 # This script downloads the PG source tarball (cached), extracts it,
 # overlays your SGML files, runs configure + make to produce HTML docs.
@@ -23,7 +25,17 @@ version="$3"
 build_out="${4:-${docsrc_dir}/html}"
 keep_work="${KEEP_WORK:-0}"
 
-# A fixed checkout is opt-in; incomplete input must never fall back online.
+# Fixed Git and archive sources are opt-in; incomplete input never falls back.
+if [[ -n "${PGDOC_SOURCE_ARCHIVE:-}" || -n "${PGDOC_SOURCE_SHA256:-}" ]]; then
+  if [[ -n "${PGDOC_SOURCE_DIR:-}" || -n "${PGDOC_SOURCE_COMMIT:-}" ]]; then
+    echo "Fixed Git and archive source options are mutually exclusive." >&2
+    exit 1
+  fi
+  if [[ -z "${PGDOC_SOURCE_ARCHIVE:-}" || -z "${PGDOC_SOURCE_SHA256:-}" ]]; then
+    echo "PGDOC_SOURCE_ARCHIVE and PGDOC_SOURCE_SHA256 must be supplied together." >&2
+    exit 1
+  fi
+fi
 if [[ -n "${PGDOC_SOURCE_DIR:-}" || -n "${PGDOC_SOURCE_COMMIT:-}" ]]; then
   if [[ -z "${PGDOC_SOURCE_DIR:-}" || -z "${PGDOC_SOURCE_COMMIT:-}" ]]; then
     echo "PGDOC_SOURCE_DIR and PGDOC_SOURCE_COMMIT must be supplied together." >&2
@@ -246,6 +258,9 @@ echo "Preparing build workspace: ${work_tree}"
 if [[ -n "${PGDOC_SOURCE_DIR:-}" ]]; then
   python3 "${SCRIPT_DIR}/prepare_pinned_doc_source.py" \
     "${PGDOC_SOURCE_DIR}" "${PGDOC_SOURCE_COMMIT}" "${version}" "${work_tree}"
+elif [[ -n "${PGDOC_SOURCE_ARCHIVE:-}" ]]; then
+  python3 "${SCRIPT_DIR}/prepare_pinned_doc_source.py" --archive \
+    "${PGDOC_SOURCE_ARCHIVE}" "${PGDOC_SOURCE_SHA256}" "${version}" "${work_tree}"
 elif is_release_version "${version}"; then
   archive="${REPO_ROOT}/.cache/upstream/postgresql-${version}.tar.bz2"
 
@@ -291,18 +306,21 @@ extra_configure_flags="${CONFIGURE_FLAGS:-}"
 # Chinese translations may reference anchors from newer PG versions,
 # causing IDREF validation errors.  Keep DTD/entity loading enabled so
 # standard DocBook entities still resolve, but skip strict validation.
+# XML parsing uses XML_CATALOG_FILES; --catalogs would also load native SGML catalogs.
 if [[ "${lang}" != "en" ]]; then
   sed -i.bak \
-    -e 's/--valid/--catalogs --loaddtd/g' \
+    -e 's/--valid/--loaddtd/g' \
     "${work_tree}/doc/src/sgml/Makefile"
 fi
 
 # Incremental generated-text overlays are kept with each Chinese source.
 # Generate from the selected upstream inputs before applying exact-hash edits.
 if [[ "${lang}" == "zh" && -f "${doc_src_root}/localize-generated.py" ]]; then
+  # Use this version's generated-file list, including pre-Meson releases.
+  printf '.PHONY: pgdoc-generated\npgdoc-generated: $(GENERATED_SGML)\n' \
+    > "${work_tree}/doc/src/sgml/Makefile.pgdoc-generated"
   (cd "${work_tree}" && "${MAKE_CMD}" -C doc/src/sgml \
-    features-supported.sgml features-unsupported.sgml errcodes-table.sgml \
-    keywords-table.sgml targets-meson.sgml wait_event_types.sgml)
+    -f Makefile -f Makefile.pgdoc-generated pgdoc-generated)
   python3 "${doc_src_root}/localize-generated.py" "${work_tree}/doc/src/sgml"
 fi
 
