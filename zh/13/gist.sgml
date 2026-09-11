@@ -4,7 +4,7 @@
 <title>GiST 索引</title>
 
    <indexterm>
-    <primary>index</primary>
+    <primary>索引</primary>
     <secondary>GiST</secondary>
    </indexterm>
 
@@ -45,7 +45,7 @@
     <thead>
      <row>
       <entry>名称</entry>
-      <entry>索引数据类型</entry>
+      <entry>被索引数据类型</entry>
       <entry>可索引操作符</entry>
       <entry>排序操作符</entry>
      </row>
@@ -126,7 +126,7 @@ CREATE INDEX ON my_table USING GIST (my_inet_column inet_ops);
  </para>
 
  <para>
-   这种可扩展性不应与其他标准搜索树在可处理数据方面的可扩展性相混淆。例如，<productname>PostgreSQL</productname>支持可扩展的 B-树和哈希索引。这意味着你可以用<productname>PostgreSQL</productname>在任意数据类型上构建 B-树或哈希索引。但 B-树只支持范围谓词（<literal>&lt;</literal>、<literal>=</literal>、<literal>&gt;</literal>），而哈希索引只支持等值查询。
+   这种可扩展性不应与其他标准搜索树在可处理数据方面的可扩展性相混淆。例如，<productname>PostgreSQL</productname>支持可扩展的 B-树和 hash 索引。这意味着你可以用<productname>PostgreSQL</productname>在任意数据类型上构建 B-树或 hash 索引。但 B-树只支持范围谓词（<literal>&lt;</literal>、<literal>=</literal>、<literal>&gt;</literal>），而 hash 索引只支持等值查询。
  </para>
 
  <para>
@@ -150,12 +150,19 @@ CREATE INDEX ON my_table USING GIST (my_inet_column inet_ops);
        <replaceable>indexable_operator</replaceable> <literal>q</literal></quote>为真。对于叶子索引项，这等同于测试该可索引条件；而对于内部树节点，这决定是否有必要扫描该树节点所表示的索引子树。当结果为<literal>true</literal>时，还必须返回一个<literal>recheck</literal>标志。它表示该谓词是确定为真，还是仅可能为真。如果<literal>recheck</literal> = <literal>false</literal>，则该索引已经精确测试了谓词条件；如果<literal>recheck</literal> = <literal>true</literal>，则该行只是候选匹配。在这种情况下，系统会自动针对实际行值计算<replaceable>indexable_operator</replaceable>，以判断它是否真的匹配。这种约定使<acronym>GiST</acronym>能够同时支持无损和有损的索引结构。
       </para>
 
-      <para>该<acronym>SQL</acronym>声明必须如下所示：<programlisting>
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
 CREATE OR REPLACE FUNCTION my_consistent(internal, data_type, smallint, oid, internal)
 RETURNS bool
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
-</programlisting>C 模块中相应的代码可以采用以下框架：<programlisting>
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
 PG_FUNCTION_INFO_V1(my_consistent);
 
 Datum
@@ -170,19 +177,21 @@ my_consistent(PG_FUNCTION_ARGS)
     bool        retval;
 
     /*
-     * determine return value as a function of strategy, key and query.
+     * 根据 strategy、key 和 query 确定返回值。
      *
-     * Use GIST_LEAF(entry) to know where you're called in the index tree,
-     * which comes handy when supporting the = operator for example (you could
-     * check for non empty union() in non-leaf nodes and equality in leaf
-     * nodes).
+     * 使用 GIST_LEAF(entry) 判断当前调用位于索引树的哪个位置。
+     * 例如，支持 = 操作符时这很有用（可以在非叶节点检查
+     * union() 是否非空，在叶节点检查是否相等）。
      */
 
-    *recheck = true;        /* or false if check is exact */
+    *recheck = true;        /* 如果检查是精确的，则为 false */
 
     PG_RETURN_BOOL(retval);
 }
-</programlisting>这里，<varname>key</varname>是索引中的元素，<varname>query</varname>是要在索引中查找的值。<literal>StrategyNumber</literal>参数指明正在应用操作符类中的哪个操作符，它对应于<command>CREATE OPERATOR CLASS</command>命令中的某个操作符编号。</para>
+</programlisting>
+
+       这里，<varname>key</varname>是索引中的一个元素，而<varname>query</varname>是在该索引中查找的值。<literal>StrategyNumber</literal>参数指示应用的是操作符类中的哪个操作符，它对应于<command>CREATE OPERATOR CLASS</command>命令中的某个操作符编号。
+      </para>
 
       <para>
        取决于你在该类中包含了哪些操作符，<varname>query</varname>的数据类型可能会随操作符而变化，因为它将是操作符右侧的类型，而这可能不同于左侧出现的被索引数据类型。（上面的代码框架假定只可能有一种类型；如果不是这样，获取<varname>query</varname>参数值的方式就必须依赖于具体的操作符。）建议在<function>consistent</function>函数的 SQL 声明中，对<varname>query</varname>参数使用该操作符类的被索引数据类型，即使实际类型可能因为操作符不同而有所不同。
@@ -198,12 +207,19 @@ my_consistent(PG_FUNCTION_ARGS)
        该方法用于汇总树中的信息。给定一组项，该函数生成一个新的索引项，用来表示所有给定项。
       </para>
 
-      <para>该<acronym>SQL</acronym>声明必须如下所示：<programlisting>
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
 CREATE OR REPLACE FUNCTION my_union(internal, internal)
 RETURNS storage_type
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
-</programlisting>C 模块中相应的代码可以采用以下框架：<programlisting>
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
 PG_FUNCTION_INFO_V1(my_union);
 
 Datum
@@ -261,12 +277,19 @@ my_union(PG_FUNCTION_ARGS)
        将一个数据项转换成适合在索引页中物理存储的格式。如果省略<function>compress</function>方法，数据项将不经修改地存储在索引中。
       </para>
 
-      <para>该<acronym>SQL</acronym>声明必须如下所示：<programlisting>
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
 CREATE OR REPLACE FUNCTION my_compress(internal)
 RETURNS internal
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
-</programlisting>C 模块中相应的代码可以采用以下框架：<programlisting>
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
 PG_FUNCTION_INFO_V1(my_compress);
 
 Datum
@@ -277,10 +300,10 @@ my_compress(PG_FUNCTION_ARGS)
 
     if (entry-&gt;leafkey)
     {
-        /* replace entry-&gt;key with a compressed version */
+        /* 将 entry-&gt;key 替换为压缩后的形式 */
         compressed_data_type *compressed_data = palloc(sizeof(compressed_data_type));
 
-        /* fill *compressed_data from entry-&gt;key ... */
+        /* 根据 entry-&gt;key 填充 *compressed_data ... */
 
         retval = palloc(sizeof(GISTENTRY));
         gistentryinit(*retval, PointerGetDatum(compressed_data),
@@ -288,7 +311,7 @@ my_compress(PG_FUNCTION_ARGS)
     }
     else
     {
-        /* typically we needn't do anything with non-leaf entries */
+        /* 通常无需对非叶项做任何处理 */
         retval = entry;
     }
 
@@ -310,12 +333,19 @@ my_compress(PG_FUNCTION_ARGS)
        将数据项的存储表示转换成操作符类中其他 GiST 方法能够操作的格式。如果省略<function>decompress</function>方法，就假定其他 GiST 方法可以直接处理存储的数据格式。（<function>decompress</function>不一定是<function>compress</function>方法的逆操作；特别是如果<function>compress</function>是有损的，那么<function>decompress</function>就不可能精确重建原始数据。<function>decompress</function>也不一定等同于<function>fetch</function>，因为其他 GiST 方法未必需要把数据完全重建出来。）
       </para>
 
-      <para>该<acronym>SQL</acronym>声明必须如下所示：<programlisting>
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
 CREATE OR REPLACE FUNCTION my_decompress(internal)
 RETURNS internal
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
-</programlisting>C 模块中相应的代码可以采用以下框架：<programlisting>
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
 PG_FUNCTION_INFO_V1(my_decompress);
 
 Datum
@@ -323,7 +353,10 @@ my_decompress(PG_FUNCTION_ARGS)
 {
     PG_RETURN_POINTER(PG_GETARG_POINTER(0));
 }
-</programlisting>上述框架适用于无需解压缩的情况。（当然，完全省略该方法更简单，这种情况下也建议如此。）</para>
+</programlisting>
+
+        上述框架适用于不需要解压的情况。（当然，在这种情况下，直接完全省略该方法会更简单，而且也推荐这么做。）
+      </para>
      </listitem>
     </varlistentry>
 
@@ -334,12 +367,19 @@ my_decompress(PG_FUNCTION_ARGS)
        返回一个值，指示把新项插入树中特定分支的<quote>代价</quote>。项会沿着树中<function>penalty</function>最小的路径插入。<function>penalty</function>返回的值应为非负；如果返回负值，它将被按零处理。
       </para>
 
-      <para>该<acronym>SQL</acronym>声明必须如下所示：<programlisting>
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
 CREATE OR REPLACE FUNCTION my_penalty(internal, internal, internal)
 RETURNS internal
 AS 'MODULE_PATHNAME'
-LANGUAGE C STRICT;  -- in some cases penalty functions need not be strict
-</programlisting>C 模块中相应的代码可以采用以下框架：<programlisting>
+LANGUAGE C STRICT;  -- 某些情况下 penalty 函数不必是严格函数
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
 PG_FUNCTION_INFO_V1(my_penalty);
 
 Datum
@@ -354,7 +394,10 @@ my_penalty(PG_FUNCTION_ARGS)
     *penalty = my_penalty_implementation(orig, new);
     PG_RETURN_POINTER(penalty);
 }
-</programlisting>由于历史原因，<function>penalty</function>函数不能仅仅返回一个<type>float</type>结果，而必须将该值存储到第三个参数指向的位置。函数自身的返回值会被忽略，但通常会返回该参数的地址。</para>
+</programlisting>
+
+        出于历史原因，<function>penalty</function>函数并不是直接返回一个<type>float</type>结果；相反，它必须把该值存储到第三个参数指示的位置。返回值本身会被忽略，不过通常会返回该参数所指向的地址。
+      </para>
 
       <para>
         <function>penalty</function>函数对于索引的良好性能至关重要。它会在插入时用于决定在树中应沿着哪个分支向下，以便选择把新项加到哪里。在查询时，索引越平衡，查找就越快。
@@ -369,12 +412,19 @@ my_penalty(PG_FUNCTION_ARGS)
        当索引页必须分裂时，该函数决定页面上的哪些项留在旧页中，哪些移到新页中。
       </para>
 
-      <para>该<acronym>SQL</acronym>声明必须如下所示：<programlisting>
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
 CREATE OR REPLACE FUNCTION my_picksplit(internal, internal)
 RETURNS internal
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
-</programlisting>C 模块中相应的代码可以采用以下框架：<programlisting>
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
 PG_FUNCTION_INFO_V1(my_picksplit);
 
 Datum
@@ -407,7 +457,7 @@ my_picksplit(PG_FUNCTION_ARGS)
     unionL = NULL;
     unionR = NULL;
 
-    /* Initialize the raw entry vector. */
+    /* 初始化原始项向量。 */
     raw_entryvec = (GISTENTRY **) malloc(entryvec-&gt;n * sizeof(void *));
     for (i = FirstOffsetNumber; i &lt;= maxoff; i = OffsetNumberNext(i))
         raw_entryvec[i] = &amp;(entryvec-&gt;vector[i]);
@@ -420,9 +470,9 @@ my_picksplit(PG_FUNCTION_ARGS)
         Assert(tmp_union != NULL);
 
         /*
-         * Choose where to put the index entries and update unionL and unionR
-         * accordingly. Append the entries to either v-&gt;spl_left or
-         * v-&gt;spl_right, and care about the counters.
+         * 选择索引项的存放位置，并相应更新 unionL 和 unionR。
+         * 将项追加到 v-&gt;spl_left 或 v-&gt;spl_right，
+         * 同时更新计数器。
          */
 
         if (my_choice_is_left(unionL, curl, unionR, curr))
@@ -439,7 +489,7 @@ my_picksplit(PG_FUNCTION_ARGS)
         else
         {
             /*
-             * Same on the right
+             * 对右侧执行相同操作
              */
         }
     }
@@ -448,7 +498,9 @@ my_picksplit(PG_FUNCTION_ARGS)
     v-&gt;spl_rdatum = DataTypeGetDatum(unionR);
     PG_RETURN_POINTER(v);
 }
-</programlisting>注意，<function>picksplit</function>函数通过修改传入的<structname>v</structname>结构体来传递结果。函数自身的返回值会被忽略，但通常会返回以下结构体的地址：<structname>v</structname>。
+</programlisting>
+
+       注意，<function>picksplit</function>函数的结果是通过修改传入的<structname>v</structname>结构体来传递的。返回值本身会被忽略，不过通常会返回<structname>v</structname>的地址。
       </para>
 
       <para>
@@ -464,12 +516,19 @@ my_picksplit(PG_FUNCTION_ARGS)
        如果两个索引项相同则返回真，否则返回假。（<quote>索引项</quote>是索引存储类型的值，不一定是原始被索引列的类型。）
       </para>
 
-      <para>该<acronym>SQL</acronym>声明必须如下所示：<programlisting>
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
 CREATE OR REPLACE FUNCTION my_same(storage_type, storage_type, internal)
 RETURNS internal
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
-</programlisting>C 模块中相应的代码可以采用以下框架：<programlisting>
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
 PG_FUNCTION_INFO_V1(my_same);
 
 Datum
@@ -482,7 +541,10 @@ my_same(PG_FUNCTION_ARGS)
     *result = my_eq(v1, v2);
     PG_RETURN_POINTER(result);
 }
-</programlisting>由于历史原因，<function>same</function>函数不能仅仅返回布尔结果，而必须将该标志存储到第三个参数指向的位置。函数自身的返回值会被忽略，但通常会返回该参数的地址。</para>
+</programlisting>
+
+        出于历史原因，<function>same</function>函数并不是直接返回一个布尔结果；相反，它必须把该标志存储到第三个参数指示的位置。返回值本身会被忽略，不过通常会返回该参数所指向的地址。
+      </para>
      </listitem>
     </varlistentry>
 
@@ -493,12 +555,19 @@ my_same(PG_FUNCTION_ARGS)
        给定一个索引项<literal>p</literal>和一个查询值<literal>q</literal>，该函数确定索引项与查询值之间的<quote>距离</quote>。如果操作符类包含任何排序操作符，就必须提供此函数。使用排序操作符的查询会优先返回<quote>距离</quote>值最小的索引项，因此结果必须与该操作符的语义一致。对于叶子索引项，结果仅表示到该索引项的距离；对于内部树节点，结果必须是其任意子项可能具有的最小距离。
       </para>
 
-      <para>该<acronym>SQL</acronym>声明必须如下所示：<programlisting>
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
 CREATE OR REPLACE FUNCTION my_distance(internal, data_type, smallint, oid, internal)
 RETURNS float8
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
-</programlisting>C 模块中相应的代码可以采用以下框架：<programlisting>
+</programlisting>
+
+        而 C 模块中的对应代码则可以遵循如下框架：
+
+<programlisting>
 PG_FUNCTION_INFO_V1(my_distance);
 
 Datum
@@ -513,19 +582,22 @@ my_distance(PG_FUNCTION_ARGS)
     double      retval;
 
     /*
-     * determine return value as a function of strategy, key and query.
+     * 根据 strategy、key 和 query 确定返回值。
      */
 
     PG_RETURN_FLOAT8(retval);
 }
-</programlisting>该<function>distance</function>函数的参数与<function>consistent</function>函数的参数完全相同。</para>
+</programlisting>
 
-      <para>
-       在确定距离时允许有一定近似，只要结果永不大于该项的实际距离即可。因此，例如在几何应用中，到外包盒的距离通常就足够了。对于内部树节点，返回的距离不能大于其任一子节点的距离。如果返回的距离不精确，函数必须将<literal>*recheck</literal>设为 true。（对内部树节点则不必这样做；对它们总是假定计算结果不精确。）在这种情况下，执行器会在从堆中取出元组后计算准确距离，并在必要时重新排序这些元组。
+       <function>distance</function>函数的参数与<function>consistent</function>函数的参数完全相同。
       </para>
 
       <para>
-       如果距离函数对任何叶节点都返回<literal>*recheck = true</literal>，原始排序操作符的返回类型必须是<type>float8</type>或<type>float4</type>，且距离函数的结果值必须能与原始排序操作符的结果进行比较，因为执行器会同时使用距离函数结果和重新计算得到的排序操作符结果进行排序。否则，距离函数的结果值可以是任意有限的<type>float8</type>值，只要这些结果值的相对顺序与排序操作符返回的顺序一致即可。（无穷大和负无穷在内部用于处理空值等情况，因此不建议<function>distance</function>函数返回这些值。）
+       在确定距离时允许有一定近似，只要结果永不大于该项的实际距离即可。因此，例如在几何应用中，到包围盒的距离通常就足够了。对于内部树节点，返回的距离不能大于其任一子节点的距离。如果返回的距离不精确，函数必须将<literal>*recheck</literal>设为 true。（对内部树节点则不必这样做；对它们总是假定计算结果不精确。）在这种情况下，执行器会在从堆中取出元组后计算准确距离，并在必要时重新排序这些元组。
+      </para>
+
+      <para>
+       如果距离函数对任意一个叶节点返回<literal>*recheck = true</literal>，原始排序操作符的返回类型必须是<type>float8</type>或<type>float4</type>，且距离函数的结果值必须能与原始排序操作符的结果进行比较，因为执行器会同时使用距离函数结果和重新计算得到的排序操作符结果进行排序。否则，距离函数的结果值可以是任意有限的<type>float8</type>值，只要这些结果值的相对顺序与排序操作符返回的顺序一致即可。（无穷大和负无穷在内部用于处理空值等情况，因此不建议<function>distance</function>函数返回这些值。）
       </para>
 
      </listitem>
@@ -538,12 +610,18 @@ my_distance(PG_FUNCTION_ARGS)
        为了支持仅索引扫描，将数据项的压缩索引表示转换为原始数据类型。返回的数据必须是最初被索引值的精确、无损副本。
       </para>
 
-      <para>该<acronym>SQL</acronym>声明必须如下所示：<programlisting>
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
 CREATE OR REPLACE FUNCTION my_fetch(internal)
 RETURNS internal
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
-</programlisting>参数是一个指向<structname>GISTENTRY</structname>结构体的指针。进入该函数时，它的<structfield>key</structfield>字段包含一个压缩形式的非 NULL 叶子 datum。返回值是另一个<structname>GISTENTRY</structname>结构体，其中的<structfield>key</structfield>字段以原始、未压缩形式包含同一个 datum。如果该操作符类的 compress 函数对叶子项不做任何处理，<function>fetch</function>方法可以原样返回参数。如果操作符类没有 compress 函数，则<function>fetch</function>方法也可以省略，因为它必然不会执行任何实际操作。</para>
+</programlisting>
+
+        参数是一个指向<structname>GISTENTRY</structname>结构体的指针。进入该函数时，它的<structfield>key</structfield>字段包含一个压缩形式的非 NULL 叶子 datum。返回值是另一个<structname>GISTENTRY</structname>结构体，其<structfield>key</structfield>字段以原始、未压缩形式包含同一个 datum。如果该操作符类的 compress 函数对叶子项不做任何处理，<function>fetch</function>方法可以原样返回该参数。或者，如果该操作符类没有 compress 函数，那么<function>fetch</function>方法也可以省略，因为它必然是空操作。
+       </para>
 
        <para>
         而 C 模块中的对应代码则可以遵循如下框架：
@@ -563,10 +641,10 @@ my_fetch(PG_FUNCTION_ARGS)
     fetched_data = palloc(sizeof(fetched_data_type));
 
     /*
-     * Convert 'fetched_data' into the a Datum of the original datatype.
+     * 将 'fetched_data' 转换为原始数据类型的 Datum。
      */
 
-    /* fill *retval from fetched_data. */
+    /* 根据 fetched_data 填充 *retval。 */
     gistentryinit(*retval, PointerGetDatum(converted_datum),
                   entry->rel, entry->page, entry->offset, FALSE);
 
@@ -589,7 +667,10 @@ my_fetch(PG_FUNCTION_ARGS)
        允许定义用户可见参数，用来控制操作符类的行为。
       </para>
 
-      <para>该<acronym>SQL</acronym>声明必须如下所示：<programlisting>
+      <para>
+        该函数的<acronym>SQL</acronym>声明必须如下所示：
+
+<programlisting>
 CREATE OR REPLACE FUNCTION my_options(internal)
 RETURNS void
 AS 'MODULE_PATHNAME'
@@ -601,7 +682,10 @@ LANGUAGE C STRICT;
        该函数会收到一个指向<replaceable>local_relopts</replaceable>结构体的指针，需要在其中填充一组选项，这些选项是该操作符类特有的。其他支持函数可以使用<literal>PG_HAS_OPCLASS_OPTIONS()</literal>和<literal>PG_GET_OPCLASS_OPTIONS()</literal>宏来访问这些选项。
       </para>
 
-       <para>下面给出了 my_options() 的一个实现示例，以及其他支持函数如何使用这些参数：<programlisting>
+       <para>
+        下面给出了 my_options() 的一个实现示例，以及其他支持函数如何使用这些参数：
+
+<programlisting>
 typedef enum MyEnumType
 {
     MY_ENUM_ON,
@@ -611,26 +695,26 @@ typedef enum MyEnumType
 
 typedef struct
 {
-    int32   vl_len_;    /* varlena header (do not touch directly!) */
-    int     int_param;  /* integer parameter */
-    double  real_param; /* real parameter */
-    MyEnumType enum_param; /* enum parameter */
-    int     str_param;  /* string parameter */
+    int32   vl_len_;    /* varlena 首部（不要直接操作！） */
+    int     int_param;  /* 整数参数 */
+    double  real_param; /* 实数参数 */
+    MyEnumType enum_param; /* 枚举参数 */
+    int     str_param;  /* 字符串参数 */
 } MyOptionsStruct;
 
-/* String representation of enum values */
+/* 枚举值的字符串表示 */
 static relopt_enum_elt_def myEnumValues[] =
 {
     {"on", MY_ENUM_ON},
     {"off", MY_ENUM_OFF},
     {"auto", MY_ENUM_AUTO},
-    {(const char *) NULL}   /* list terminator */
+    {(const char *) NULL}   /* 列表终止项 */
 };
 
 static char *str_param_default = "default";
 
 /*
- * Sample validator: checks that string is not longer than 8 bytes.
+ * 验证器示例：检查字符串长度不超过 8 字节。
  */
 static void 
 validate_my_string_relopt(const char *value)
@@ -642,7 +726,7 @@ validate_my_string_relopt(const char *value)
 }
 
 /*
- * Sample filler: switches characters to lower case.
+ * 填充函数示例：将字符转换为小写。
  */
 static Size 
 fill_my_string_relopt(const char *value, void *ptr)
@@ -695,10 +779,9 @@ my_compress(PG_FUNCTION_ARGS)
     char   *str_param = str_param_default;
 
     /*
-     * Normally, when opclass contains 'options' method, then options are always
-     * passed to support functions.  However, if you add 'options' method to
-     * existing opclass, previously defined indexes have no options, so the
-     * check is required.
+     * 通常，操作符类包含 'options' 方法时，总会把选项传给支持函数。
+     * 但是，如果把 'options' 方法添加到已有操作符类中，
+     * 先前定义的索引没有选项，因此需要进行检查。
      */
     if (PG_HAS_OPCLASS_OPTIONS())
     {
@@ -710,7 +793,7 @@ my_compress(PG_FUNCTION_ARGS)
         str_param = GET_STRING_RELOPTION(options, str_param);
     }
 
-    /* the rest implementation of support function */
+    /* 支持函数的其余实现 */
 }
 
 </programlisting>
@@ -750,7 +833,10 @@ my_compress(PG_FUNCTION_ARGS)
 <sect1 id="gist-examples">
  <title>示例</title>
 
- <para>该<productname>PostgreSQL</productname>源码发行包包含若干使用<acronym>GiST</acronym>实现索引方法的示例。核心系统目前提供文本搜索支持（为<type>tsvector</type>和<type>tsquery</type>建立索引），还为部分内置几何数据类型提供等价于 R 树的功能（参见<filename>src/backend/access/gist/gistproc.c</filename>）。以下<filename>contrib</filename>模块也包含<acronym>GiST</acronym>操作符类：<variablelist>
+ <para>
+  <productname>PostgreSQL</productname>源代码发行包包含了若干使用<acronym>GiST</acronym>实现的索引方法示例。核心系统目前提供了文本搜索支持（为<type>tsvector</type>和<type>tsquery</type>建立索引），并为某些内置几何数据类型提供了与 R 树等价的功能（见<filename>src/backend/access/gist/gistproc.c</filename>）。下列<filename>contrib</filename>模块中也包含<acronym>GiST</acronym>操作符类：
+
+ <variablelist>
   <varlistentry>
    <term><filename>btree_gist</filename></term>
    <listitem>
@@ -768,7 +854,7 @@ my_compress(PG_FUNCTION_ARGS)
   <varlistentry>
    <term><filename>hstore</filename></term>
    <listitem>
-    <para>用于存储 (key, value) 对的模块</para>
+    <para>用于存储（键，值）对的模块</para>
    </listitem>
   </varlistentry>
 
