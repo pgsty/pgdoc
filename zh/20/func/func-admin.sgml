@@ -80,9 +80,10 @@
         <returnvalue>text</returnvalue>
        </para>
        <para>
-        将参数<parameter>setting_name</parameter>设置为<parameter>new_value</parameter>，并返回该值。
-        如果<parameter>is_local</parameter>为<literal>true</literal>，新值将仅在当前事务期间应用。
-        如果您希望新值应用于当前会话的其余部分，请使用<literal>false</literal>代替。这个函数对应于SQL命令<xref linkend="sql-set"/>。
+        将参数<parameter>setting_name</parameter>设置为<parameter>new_value</parameter>，并返回该值。如果<parameter>is_local</parameter>为<literal>true</literal>，新值仅在当前事务期间生效。如果希望新值在当前会话的剩余时间内生效，则使用<literal>false</literal>。此函数对应 SQL 命令<xref linkend="sql-set"/>。
+       </para>
+       <para>
+        <function>set_config</function>接受将 NULL 作为<parameter>new_value</parameter>的值，但由于配置值不能为 null，这会被解释为将该设置重置为默认值的请求。
        </para>
        <para>
         <literal>set_config('log_statement_stats', 'off', false)</literal>
@@ -456,6 +457,21 @@ LOG:  Grand total: 1651920 bytes in 201 blocks; 622360 free (88 chunks); 1029560
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
+         <primary>pg_split_walfile_name</primary>
+        </indexterm>
+        <function>pg_split_walfile_name</function> ( <parameter>file_name</parameter> <type>text</type> )
+        <returnvalue>record</returnvalue>
+        ( <parameter>segment_number</parameter> <type>numeric</type>,
+        <parameter>timeline_id</parameter> <type>bigint</type> )
+       </para>
+       <para>
+        从 WAL 文件名中提取序列号和时间线 ID。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
          <primary>pg_wal_lsn_diff</primary>
         </indexterm>
         <function>pg_wal_lsn_diff</function> ( <parameter>lsn1</parameter> <type>pg_lsn</type>, <parameter>lsn2</parameter> <type>pg_lsn</type> )
@@ -769,6 +785,18 @@ postgres=# SELECT * FROM pg_walfile_name_offset((pg_backup_stop()).lsn);
         一旦事务导出了快照，它就不能用 <xref linkend="sql-prepare-transaction"/>进行准备。
        </para></entry>
       </row>
+     <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>pg_log_standby_snapshot</primary>
+        </indexterm>
+        <function>pg_log_standby_snapshot</function> ()
+        <returnvalue>pg_lsn</returnvalue>
+       </para>
+       <para>
+        为进行中的事务拍摄快照并将其写入 WAL，无须等待后台写入器或检查点进程记录快照。这对备用服务器上的逻辑解码很有用，因为创建逻辑复制槽必须等待此类记录在备用服务器上重放。
+       </para></entry>
+      </row>
      </tbody>
     </tgroup>
    </table>
@@ -864,8 +892,8 @@ postgres=# SELECT * FROM pg_walfile_name_offset((pg_backup_stop()).lsn);
         <parameter>lsn</parameter> <type>pg_lsn</type> )
        </para>
        <para>
-        创建一个名为<parameter>slot_name</parameter>的新逻辑（解码）复制插槽，使用输出插件<parameter>plugin</parameter>。槽名称不能是<literal>pg_conflict_detection</literal>，因为它保留给冲突检测槽。
-        可选的第三个参数<parameter>temporary</parameter>，当设置为true时，指定插槽不应永久存储到磁盘，仅供当前会话使用。临时插槽也会在任何错误发生时释放。可选的第四个参数<parameter>twophase</parameter>，当设置为true时，指定为此插槽启用已准备事务的解码。可选的第五个参数<parameter>failover</parameter>，当设置为true时，指定启用此插槽同步到备库，以便在故障切换后可以恢复逻辑复制。调用此函数的效果与复制协议命令<literal>CREATE_REPLICATION_SLOT ... LOGICAL</literal>相同。
+        创建一个名为<parameter>slot_name</parameter>的新逻辑（解码）复制槽，使用输出插件<parameter>plugin</parameter>。槽名称不能是<literal>pg_conflict_detection</literal>，因为它保留给冲突检测槽。
+        可选的第三个参数<parameter>temporary</parameter>，当设置为真时，指定槽不应永久存储到磁盘，仅供当前会话使用。临时槽也会在任何错误发生时释放。可选的第四个参数<parameter>twophase</parameter>，当设置为真时，指定为此槽启用预备事务的解码。可选的第五个参数<parameter>failover</parameter>，当设置为真时，指定启用此槽同步到备库，以便在故障切换后可以恢复逻辑复制。调用此函数的效果与复制协议命令<literal>CREATE_REPLICATION_SLOT ... LOGICAL</literal>相同。
        </para></entry>
       </row>
 
@@ -986,9 +1014,7 @@ postgres=# SELECT * FROM pg_walfile_name_offset((pg_backup_stop()).lsn);
         <parameter>end_lsn</parameter> <type>pg_lsn</type> )
        </para>
        <para>
-        将复制槽的当前确认的位置提前到名为<parameter>slot_name</parameter>的复制槽的当前确认位置。
-        该槽不会向后移动，也不会移动到当前插入位置之外。返回该槽的名称和它被推进到的真实位置。
-        如果有任何进展，则在下一个检查点中写出更新后的槽位置信息。所以如果发生崩溃，该槽位可能会返回到之前的位置。
+        推进名为 <parameter>slot_name</parameter> 的复制槽当前已确认的位置。该槽不会后退，也不会越过当前插入位置。返回槽名及其实际推进到的位置。如果发生了推进，更新后的槽位置信息会在下一个检查点写出。因此，发生崩溃时，槽可能回到更早的位置。如果指定的槽是逻辑故障切换槽，则只有在 <link linkend="guc-synchronized-standby-slots"><varname>synchronized_standby_slots</varname></link> 中指定的所有物理槽都确认已接收 WAL 后，该函数才会返回。
        </para></entry>
       </row>
 
@@ -1155,19 +1181,15 @@ postgres=# SELECT * FROM pg_walfile_name_offset((pg_backup_stop()).lsn);
         <indexterm>
          <primary>pg_logical_emit_message</primary>
         </indexterm>
-        <function>pg_logical_emit_message</function> ( <parameter>transactional</parameter> <type>boolean</type>, <parameter>prefix</parameter> <type>text</type>, <parameter>content</parameter> <type>text</type> )
+        <function>pg_logical_emit_message</function> ( <parameter>transactional</parameter> <type>boolean</type>, <parameter>prefix</parameter> <type>text</type>, <parameter>content</parameter> <type>text</type> <optional>, <parameter>flush</parameter> <type>boolean</type> <literal>DEFAULT</literal> <literal>false</literal></optional> )
         <returnvalue>pg_lsn</returnvalue>
        </para>
        <para role="func_signature">
-        <function>pg_logical_emit_message</function> ( <parameter>transactional</parameter> <type>boolean</type>, <parameter>prefix</parameter> <type>text</type>, <parameter>content</parameter> <type>bytea</type> )
+        <function>pg_logical_emit_message</function> ( <parameter>transactional</parameter> <type>boolean</type>, <parameter>prefix</parameter> <type>text</type>, <parameter>content</parameter> <type>bytea</type> <optional>, <parameter>flush</parameter> <type>boolean</type> <literal>DEFAULT</literal> <literal>false</literal></optional> )
         <returnvalue>pg_lsn</returnvalue>
        </para>
        <para>
-        发出逻辑解码消息。这可以用于通过WAL将通用消息传递给逻辑解码插件。
-        <parameter>transactional</parameter>参数指定消息是否应该是当前事务的一部分，
-        还是应该立即写入并在逻辑解码器读取记录时立即解码。
-        <parameter>prefix</parameter>参数是一个文本前缀，逻辑解码插件可以使用它轻松识别对它们有趣的消息。
-        <parameter>content</parameter>参数是消息的内容，可以以文本或二进制形式给出。
+        发出逻辑解码消息。这可用于通过 WAL 向逻辑解码插件传递通用消息。<parameter>transactional</parameter> 参数指定消息是作为当前事务的一部分，还是立即写入并在逻辑解码器读到该记录时立即解码。<parameter>prefix</parameter> 参数是一个文本前缀，便于逻辑解码插件识别其关注的消息。<parameter>content</parameter> 参数是消息内容，可以文本或二进制形式给出。 <parameter>flush</parameter> 参数（默认为 <literal>false</literal>）控制是否立即将消息对应的 WAL 记录刷盘。<parameter>transactional</parameter> 为真时，<parameter>flush</parameter> 不起作用，因为消息的 WAL 记录会与其事务一起刷盘。
        </para></entry>
       </row>
 
@@ -1253,6 +1275,19 @@ postgres=# SELECT * FROM pg_walfile_name_offset((pg_backup_stop()).lsn);
        <para>
         显示用于压缩单个变长值的压缩算法。
         如果值没有被压缩，则返回<literal>NULL</literal>。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>pg_column_toast_chunk_id</primary>
+        </indexterm>
+        <function>pg_column_toast_chunk_id</function> ( <type>"any"</type> )
+        <returnvalue>oid</returnvalue>
+       </para>
+       <para>
+        显示磁盘上经过<acronym>TOAST</acronym>处理的值的<structfield>chunk_id</structfield>。如果该值未经过<acronym>TOAST</acronym>处理或不在磁盘上，则返回<literal>NULL</literal>。有关<acronym>TOAST</acronym>的更多信息，请参见<xref linkend="storage-toast"/>。
        </para></entry>
       </row>
 
@@ -1540,13 +1575,13 @@ postgres=# SELECT * FROM pg_walfile_name_offset((pg_backup_stop()).lsn);
         <returnvalue>integer</returnvalue>
        </para>
        <para>
-        基于在操作系统中找到的所有区域环境(locales)，加入排序规则到系统目录<literal>pg_collation</literal>中。
-        这是 <command>initdb</command> 会用到的，更多细节请参考<xref linkend="collation-managing"/>。
-        如果后来在操作系统上安装了额外的区域环境，可以再次运行这个函数加入新区域环境的排序规则。
-        匹配<structname>pg_collation</structname>中现有条目的区域环境将被跳过（但是这个函数不会移除以在操作系统中不再存在的区域环境为基础的排序规则对象）。
-        <parameter>schema</parameter>参数通常是<literal>pg_catalog</literal>，但这并非强制要求，排序规则也可以安装到其他模式中。
-        该函数返回其创建的新排序规则对象的数量。
-        此函数仅限超级用户使用。
+        根据操作系统中找到的所有区域设置，向系统目录<structname>pg_collation</structname>添加排序规则。
+        <command>initdb</command>使用的就是此函数；更多信息见<xref linkend="collation-managing"/>。
+        如果以后在操作系统中安装了其他区域设置，可以再次运行此函数，为新区域设置添加排序规则。
+        与<structname>pg_collation</structname>中现有条目匹配的区域设置会被跳过。
+        （但此函数不会删除基于操作系统中已不存在的区域设置的排序规则对象。）
+        <parameter>schema</parameter>参数通常为<literal>pg_catalog</literal>，但并非必须如此；也可以将排序规则安装到其他模式中。
+        函数返回新建的排序规则对象数量。此函数仅限超级用户使用。
        </para></entry>
       </row>
      </tbody>
@@ -1946,7 +1981,7 @@ SELECT pg_size_pretty(sum(pg_relation_size(relid))) AS total_size
         <returnvalue>integer</returnvalue>
        </para>
        <para>
-        扫描指定的BRIN索引以查找基表中当前尚未生成索引摘要的页面范围;
+        扫描指定的BRIN索引以查找基表中当前尚未生成索引摘要的页面范围；
         对于任何这样的范围，它都通过扫描这些表页来创建一个新的摘要索引元组。
         返回插入到索引中的新页面范围摘要的数量。
        </para></entry>
@@ -1962,7 +1997,7 @@ SELECT pg_size_pretty(sum(pg_relation_size(relid))) AS total_size
        </para>
        <para>
         对覆盖给定块的页面范围执行摘要（如果尚未摘要）。
-        这类似于<function>brin_summarize_new_values</function>，只是它只处理覆盖给定表块数的页范围。
+        这类似于<function>brin_summarize_new_values</function>，区别在于它只处理包含给定表块编号的页面范围。
        </para></entry>
       </row>
 
@@ -2155,6 +2190,25 @@ SELECT pg_size_pretty(sum(pg_relation_size(relid))) AS total_size
        </para>
        <para>
         默认情况下，此函数仅限于超级用户和<literal>pg_monitor</literal>角色的成员，但其他用户可以被授予EXECUTE权限来运行该函数。
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>pg_ls_summariesdir</primary>
+        </indexterm>
+        <function>pg_ls_summariesdir</function> ()
+        <returnvalue>setof record</returnvalue>
+        ( <parameter>name</parameter> <type>text</type>,
+        <parameter>size</parameter> <type>bigint</type>,
+        <parameter>modification</parameter> <type>timestamp with time zone</type> )
+       </para>
+       <para>
+        返回服务器 WAL 摘要目录（<filename>pg_wal/summaries</filename>）中每个普通文件的名称、大小和最后修改时间（mtime）。排除名称以点开头的文件、目录及其他特殊文件。
+       </para>
+       <para>
+        默认情况下，此函数仅限超级用户和<literal>pg_monitor</literal>角色的成员使用，但可以向其他用户授予 EXECUTE 权限以运行此函数。
        </para></entry>
       </row>
 

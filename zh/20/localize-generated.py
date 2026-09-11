@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Apply only PG18.6-to-PG20 changed generated descriptions after regeneration.
+"""Apply reviewed Chinese translations after regenerating the pinned PG20 input.
 
 Keep upstream generators and inputs intact. Each input/output is hash-bound;
-unchanged descriptions retain the inherited generated English. The map is
-reviewed source; generated SGML stays in the isolated build workspace.
+the map is the maintained translation source, including the complete wait-event
+tables. Generated SGML stays in the isolated build workspace.
 """
 import hashlib
 import json
