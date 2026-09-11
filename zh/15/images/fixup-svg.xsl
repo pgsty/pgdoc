@@ -32,6 +32,11 @@ Fix stroke="transparent" attribute, which is invalid SVG.
   <xsl:attribute name="stroke">none</xsl:attribute>
 </xsl:template>
 
+<!-- Quote the CJK family name because its version is not a CSS identifier. -->
+<xsl:template match="@font-family[.='Alibaba PuHuiTi 3.0' or .='Alibaba PuHuiTi 3.0,serif']">
+  <xsl:attribute name="font-family">'Alibaba PuHuiTi 3.0',serif</xsl:attribute>
+</xsl:template>
+
 <!--
 copy everything else
 -->
