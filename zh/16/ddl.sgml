@@ -232,19 +232,17 @@ INSERT INTO people (id, name, address) VALUES (<emphasis>DEFAULT</emphasis>, 'C'
 
   <para>
    生成列是一种特殊列，其值总是根据其他列计算得出。因此，对列而言，它就像视图对表一样。生成列有两种：存储型和虚拟型。存储型生成列在写入时（插入或更新时）计算，并像普通列一样占用存储空间。虚拟生成列不占用存储空间，而是在读取时计算。因此，虚拟生成列类似于视图，存储型生成列类似于物化视图（只是它总会自动更新）。
+   PostgreSQL 目前只实现了存储型生成列。
   </para>
 
-  <para>
-   要创建生成列，可在<command>CREATE TABLE</command>中使用<literal>GENERATED ALWAYS AS</literal>子句，例如：
-<programlisting>
+  <para>要创建生成列，可使用<literal>GENERATED ALWAYS
+   AS</literal>子句，在<command>CREATE TABLE</command>中，例如：<programlisting>
 CREATE TABLE people (
     ...,
     height_cm numeric,
-    height_in numeric <emphasis>GENERATED ALWAYS AS (height_cm / 2.54)</emphasis>
+    height_in numeric <emphasis>GENERATED ALWAYS AS (height_cm / 2.54) STORED</emphasis>
 );
-</programlisting>
-   生成列默认是虚拟型。使用关键字<literal>VIRTUAL</literal>或<literal>STORED</literal>可以显式指定类型。更多细节见<xref linkend="sql-createtable"/>。
-  </para>
+</programlisting>必须指定关键字<literal>STORED</literal>来选择存储型生成列。参见<xref linkend="sql-createtable"/>了解更多细节。</para>
 
   <para>
    生成列不能直接写入。在<command>INSERT</command>或<command>UPDATE</command>命令中，不能为生成列指定值，但可以指定关键字<literal>DEFAULT</literal>。
@@ -273,11 +271,7 @@ CREATE TABLE people (
       生成表达式不能引用系统列，<varname>tableoid</varname> 除外。
      </para>
     </listitem>
-    <listitem>
-     <para>
-      虚拟生成列不能使用用户定义类型，并且其生成表达式不得引用用户定义函数或类型，也就是说，它只能使用内置函数或类型。该限制也包括间接使用的情况，例如操作符或类型转换背后的函数或类型。（这一限制不适用于存储型生成列。）
-     </para>
-    </listitem>
+
     <listitem>
      <para>
       生成列不能具有列默认值或标识定义。
@@ -297,13 +291,9 @@ CREATE TABLE people (
      <para>对于继承和分区：</para>
      <itemizedlist>
       <listitem>
-       <para>
-        如果父列是生成列，其子列也必须是同种类（存储型或虚拟型）的生成列；不过，子列可以使用不同的生成表达式。
-       </para>
+       <para>如果父列是生成列，其子列也必须是生成列；不过，子列可以使用不同的生成表达式。在插入或更新一行时，实际应用的是该行所在物理表关联的生成表达式。（这与列默认值不同：默认值使用的是查询中所指名表关联的默认值。）</para>
 
-       <para>
-        对于存储型生成列，在插入或更新一行时，实际应用的是该行所在物理表关联的生成表达式。（这与列默认值不同：默认值使用的是查询中所指名表关联的默认值。）对于虚拟生成列，在读取表时，应用的是查询中所指名表的生成表达式。
-       </para>
+
       </listitem>
       <listitem>
        <para>
@@ -317,7 +307,7 @@ CREATE TABLE people (
       </listitem>
       <listitem>
        <para>
-        类似地，对于分区表，如果在<command>CREATE TABLE ... PARTITION OF</command>中编写子列定义时未写任何<literal>GENERATED</literal>子句，则会自动从父列复制该子句。<command>ALTER TABLE ... ATTACH PARTITION</command>要求父列和子列在生成状态上已经匹配，但不要求它们的生成表达式相同。
+        类似地，对于分区表，如果在<command>CREATE TABLE ... PARTITION OF</command>中编写子列定义时未写任何<literal>GENERATED</literal>子句，则会自动从父列复制该<literal>GENERATED</literal>子句。<command>ALTER TABLE ... ATTACH PARTITION</command>要求父列和子列在生成状态上已经匹配，但不要求它们的生成表达式相同。
        </para>
       </listitem>
       <listitem>
@@ -338,24 +328,16 @@ CREATE TABLE people (
       生成列与其底层基础列分别维护访问权限。因此，可以安排成某个角色能够读取生成列，但不能读取底层基础列。
      </para>
 
-     <para>
-      对于虚拟生成列，只有在生成表达式只使用防泄漏函数时，这种安排才完全安全（见<xref linkend="sql-createfunction"/>），但系统不会强制检查这一点。
-     </para>
+
     </listitem>
-    <listitem>
-     <para>
-      生成表达式中所用函数的权限，会在表达式实际执行时分别在写入或读取时检查，就像生成表达式是由使用生成列的查询直接调用的一样。生成列的用户必须拥有调用生成表达式中所有函数的权限。生成表达式中的函数是以执行查询的用户的权限还是函数所有者的权限来执行，取决于这些函数被定义为<literal>SECURITY INVOKER</literal>还是<literal>SECURITY DEFINER</literal>。
-     </para>
-    </listitem>
+
     <listitem>
      <para>
       从概念上说，生成列会在<literal>BEFORE</literal>触发器运行之后更新。因此，<literal>BEFORE</literal>触发器中对基础列所做的修改会反映到生成列中。反过来，在<literal>BEFORE</literal>触发器中访问生成列是不允许的。
      </para>
     </listitem>
     <listitem>
-     <para>
-      生成列会在逻辑复制时被跳过，也不能在<command>CREATE PUBLICATION</command>的列列表中指定。
-     </para>
+     <para>逻辑复制会跳过生成列，并且不能在<command>CREATE PUBLICATION</command>的列列表中指定生成列。</para>
     </listitem>
    </itemizedlist>
   </para>
@@ -3436,7 +3418,16 @@ ALTER INDEX measurement_city_id_logdate_key
       <orderedlist spacing="compact">
        <listitem>
         <para>
-         创建<quote>根</quote>表，所有的<quote>子</quote>表都将从它继承。这个表将不包含数据。不要在这个表上定义任何检查约束，除非想让它们应用到所有的子表上。同样，在这个表上定义索引或者唯一约束也没有意义。对于我们的示例来说，根表是最初定义的<structname>measurement</structname>表。
+         创建<quote>根</quote>表，所有的<quote>子</quote>表都将从它继承。这个表将不包含数据。不要在这个表上定义任何检查约束，除非想让它们应用到所有的子表上。同样，在这个表上定义索引或者唯一约束也没有意义。对于我们的示例来说，根表是最初定义的<structname>measurement</structname>表：
+
+<programlisting>
+CREATE TABLE measurement (
+    city_id         int not null,
+    logdate         date not null,
+    peaktemp        int,
+    unitsales       int
+);
+</programlisting>
         </para>
        </listitem>
 
