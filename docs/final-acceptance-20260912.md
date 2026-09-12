@@ -17,6 +17,7 @@
 | F-044 收尾 | jsonb `?|` 行描述补 any-of 限定"文本数组中的**任一**字符串…"（13—18 已先行提交） | zh/19、zh/20 `func/func-json.sgml` |
 | F-050 | amcheck"修复损坏"节首段还原为 EN 11—13 的 false positive 段（原为未来版本"共享缓冲区"段的重复副本；该段在 11—13 的正确位置保留在位） | zh/11、zh/12、zh/13 `amcheck.sgml` |
 | 构建自洽 | zh/14 两处重复 ID 修复：`config-setting-shell` 冗余 `<anchor>`（sect2 已带 id）删除；pg_dump `--no-synchronized-snapshots` 条目误挂 `-78`（与 `--role` 冲突）改分配空闲号 `zh18-auto-pg_dump-varlistentry-81`（en/14.24 该条目无 id，但构建 lint 要求全条目带 id；无外部入站引用） | zh/14 `config.sgml`、`ref/pg_dump.sgml` |
+| SVG 字体 | `temporal-isolation.svg` 中文文本（"会话 1/2""等待……""……继续""重新检查"）的 `font-family` 用中文字体名 `'阿里巴巴普惠体 3.0'`，PDF 管线（Batik）无法解析→字形落入 Times-Roman→严格模式构建失败；统一改为 gin.svg 已验证的拉丁名 `'Alibaba PuHuiTi 3.0',serif` | zh/19、zh/20 `images/temporal-isolation.svg`（各 5 处） |
 
 三项验证证据：
 
@@ -35,13 +36,14 @@
 
 十一版 `make -C zh/<v> html` 全部通过（页数与上轮 FIX-LEDGER 记录一致：PG10 1010、PG11 1048、PG12 1055、PG13 1061、PG14 1082、PG15 1090、PG16 1170、PG17 1143、PG18 1148、PG19 1176、PG20 1157 页）。首轮构建仅 zh/14 报两处重复 ID 有效性错误（此前 id 迁移批次的笔误，见第二节），修复后 zh/14 重建零告警、页数不变；其余十版一贯零告警（上轮记录的 zh/14 sepgsql 悬空 xref 已在此前提交中消除）。PDF 本轮未重建，沿用系列惯例以 HTML 为构建门禁；如需可按 Makefile `zh-pdf-all` 批量产出。
 
-## 五、遗留与边界
+## 五、遗留处置（收尾轮全部关闭）
 
-1. F-001 链接省略余量：随增量翻译逐步补齐（设计内）。
-2. zh/14 `ref/merge.sgml` 为上游死文件（不在构建图内），按现状保留。
-3. 并发会话滚动校准仍可能产生新改动；本验收结论以本次提交时点快照为准。
+1. **F-001 链接省略余量——复测闭合**：以引号无关、大小写不敏感探针（排除 zh/10 旧管线大写 linkend 与 zh/13—20 单引号 linkend 两类假阳性）对全树 11 版重测 EN→zh linkend 集合差，结果为 **0**；原审计范围（ddl/func/glossary）同样为 0。原裁定"随增量翻译逐步做"的挂起项实际已被 `8bac876` 及后续各修复轮闭合，账本从未复测而已。
+2. **zh/14 `ref/merge.sgml` 死文件——已删除**：MERGE 为 PG15 引入的命令，en/14.24 无此文件；该 683 行中文副本经 `git log` 溯源为 `3ca4516`（"bump zh docs to the latest minor version"）批量升版时从 PG15 树误带（zh/15 正本 682 行）。不在构建图内、全树零入站 `sql-merge` 引用，删除为闭环操作（未来内容三件套中仅条目自身）；删除后 zh/14 HTML 重建 1082 页零告警。全树排查确认其为唯一孤儿文件（各版 `pgdoccn-notes.sgml` 为中文文档基础设施，合法）。
+3. **PDF 构建补齐**：11 版 × A4/US 共 22 份 PDF 全部重建，与 11 版 HTML 合计 33 项构建完成，产物位于 `tmp/pdf/zh/`（gitignored）。
+4. 并发会话滚动校准仍可能产生新改动；本验收结论以提交时点快照为准。
 
 ## 六、证据入口
 
-- 运行目录（gitignored）：`outputs/pg10-20-independent-review-20260912-0731/`——`findings.jsonl`、`HORIZONTAL-REVIEW.md`、`FIX-LEDGER.md`、`PROGRESS.md`（十一轮完成报告）、`PROGRESS-pg12-session-report.md`（PG12 轮报告原稿）。
+- 运行目录（gitignored）：`outputs/pg10-20-independent-review-20260912-0731/`——`findings.jsonl`、`HORIZONTAL-REVIEW.md`、`FIX-LEDGER.md`（第六节为收尾轮记录）、`PROGRESS.md`（十一轮完成报告）、`PROGRESS-pg12-session-report.md`（PG12 轮报告原稿）。
 - 阶段检查点：[calibration-20260912-checkpoint.md](calibration-20260912-checkpoint.md)。
