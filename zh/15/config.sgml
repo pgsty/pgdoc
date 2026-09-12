@@ -2327,7 +2327,7 @@ local0.*    /var/log/postgresql
 
             <row>
              <entry><literal>%%</literal></entry>
-             <entry>纯文字 <literal>%</literal></entry>
+             <entry>字面字符 <literal>%</literal></entry>
              <entry>否</entry>
             </row>
            </tbody>
@@ -7398,7 +7398,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
    </para>
 
     <sect2 id="runtime-config-wal-settings">
-  <title>WAL 设置</title>
+  <title>设置</title>
 
   <variablelist>
    <varlistentry id="guc-wal-level" xreflabel="wal_level">
@@ -7426,10 +7426,10 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
          <member><command>REINDEX</command></member>
          <member><command>TRUNCATE</command></member>
         </simplelist>
-        然而，minimal 级别的 WAL 不包含足够的信息用于时点恢复，因此必须使用<literal>replica</literal>或更高级别来启用持续归档
+        然而，minimal 级别的 WAL 不包含足够的信息用于时间点恢复，因此必须使用<literal>replica</literal>或更高级别来启用持续归档
         （<xref linkend="guc-archive-mode"/>）和流式二进制复制。
         实际上，如果<varname>max_wal_senders</varname>不为零，服务器甚至不会以此模式启动。
-        请注意，将<varname>wal_level</varname>更改为<literal>minimal</literal>会使先前的基础备份无法用于时点恢复和备库。
+        请注意，将<varname>wal_level</varname>更改为<literal>minimal</literal>会使先前的基础备份无法用于时间点恢复和备库。
        </para>
 
        <para>
@@ -7445,149 +7445,429 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
      </varlistentry>
 
    <varlistentry id="guc-fsync" xreflabel="fsync">
-    <term><varname>fsync</varname></term>
-    <listitem>
-     <para>
-      指定服务器是否在把 WAL 和数据文件写入磁盘后强制同步。默认值为 <literal>on</literal>。
-      关闭它会显著加快写入，但会带来数据损坏风险。此参数只能在服务器启动时设置。
-     </para>
-    </listitem>
-   </varlistentry>
+
+      <term><varname>fsync</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>fsync</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        如果打开这个参数，<productname>PostgreSQL</productname>服务器将尝试确保更新被物理地写入到磁盘，做法是发出<function>fsync()</function>系统调用或者使用多种等价的方法（见<xref linkend="guc-wal-sync-method"/>）。这保证了数据库集簇在一次操作系统或者硬件崩溃后能恢复到一个一致的状态。
+       </para>
+
+       <para>
+        虽然关闭<varname>fsync</varname>常常可以得到性能上的收益，但当发生断电或系统崩溃时可能造成不可恢复的数据损坏。因此，只有在能很容易地从外部数据中重建整个数据库时才建议关闭<varname>fsync</varname>。
+       </para>
+
+       <para>
+        可以安全关闭<varname>fsync</varname>的情形包括：从备份文件初始装载一个新数据库集簇；用数据库集簇处理一批数据，处理后就丢弃并重建该数据库；或者使用经常重建且不用于故障切换的只读数据库克隆。仅有高质量硬件不足以成为关闭<varname>fsync</varname>的理由。
+       </para>
+
+       <para>
+        为确保将<varname>fsync</varname>从关闭改为打开后能够可靠恢复，必须将内核中所有已修改的缓冲区强制写入持久存储。可以在集簇已关闭或<varname>fsync</varname>已开启时，通过运行<command>initdb --sync-only</command>、运行<command>sync</command>、卸载文件系统或重启服务器来完成。
+       </para>
+
+       <para>
+        在很多情况下，为非关键事务关闭<xref linkend="guc-synchronous-commit"/>，可以获得关闭<varname>fsync</varname>所带来的大部分潜在性能收益，同时避免伴随的数据损坏风险。
+       </para>
+
+       <para>
+        <varname>fsync</varname>只能在<filename>postgresql.conf</filename>文件中或在服务器命令行上设置。如果你关闭这个参数，请也考虑关闭<xref linkend="guc-full-page-writes"/>。
+       </para>
+      </listitem>
+     </varlistentry>
 
    <varlistentry id="guc-synchronous-commit" xreflabel="synchronous_commit">
-    <term><varname>synchronous_commit</varname></term>
-    <listitem>
-     <para>
-      指定事务提交时要等待到什么程度才算完成。默认值通常是 <literal>on</literal>，
-      也可以设为 <literal>remote_write</literal>、<literal>remote_apply</literal>、<literal>local</literal> 或 <literal>off</literal>。
-      更弱的设置可以降低延迟，但也会增加在崩溃时丢失已提交事务的风险。
-     </para>
-    </listitem>
-   </varlistentry>
 
-   <varlistentry id="guc-full-page-writes" xreflabel="full_page_writes">
-    <term><varname>full_page_writes</varname></term>
-    <listitem>
-     <para>
-      控制在检查点之后页面第一次被修改时，是否把整个页面内容写入 WAL。
-      默认值为 <literal>on</literal>。关闭它可以减少 WAL 量，但会增加崩溃后出现不可恢复数据损坏的风险。
-     </para>
-    </listitem>
-   </varlistentry>
+      <term><varname>synchronous_commit</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>synchronous_commit</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
 
-   <varlistentry id="guc-wal-log-hints" xreflabel="wal_log_hints">
-    <term><varname>wal_log_hints</varname></term>
-    <listitem>
-     <para>
-      指定在检查点之后页面第一次被修改时，是否即使只是提示位变化也写入整页镜像到 WAL。
-      如果启用了数据校验和，这一行为总会发生，此设置会被忽略。此参数只能在服务器启动时设置。
-     </para>
-    </listitem>
-   </varlistentry>
+       <para>
+        指定数据库服务器向客户端返回<quote>成功</quote>指示之前，必须完成多少 WAL 处理。有效值为<literal>remote_apply</literal>、<literal>on</literal>（默认值）、<literal>remote_write</literal>、<literal>local</literal>和<literal>off</literal>。
+       </para>
 
-   <varlistentry id="guc-wal-compression" xreflabel="wal_compression">
-    <term><varname>wal_compression</varname></term>
-    <listitem>
-     <para>
-      指定是否以及使用何种压缩方式压缩写入 WAL 的整页镜像。可用值通常包括 <literal>pglz</literal>、
-      <literal>lz4</literal>（如果编译时启用）和 <literal>zstd</literal>（如果编译时启用）。
-      值 <literal>on</literal> 是 <literal>pglz</literal> 的历史拼写。
-      启用后可减少 WAL 体积，但会增加 CPU 开销。
-     </para>
-    </listitem>
-   </varlistentry>
+       <para>
+        如果<varname>synchronous_standby_names</varname>为空，只有<literal>on</literal>和<literal>off</literal>两种设置有意义；<literal>remote_apply</literal>、<literal>remote_write</literal>和<literal>local</literal>提供的本地同步级别都与<literal>on</literal>相同。所有非<literal>off</literal>模式在本地都会等待 WAL 刷写到磁盘。在<literal>off</literal>模式下则无需等待，因此，向客户端报告成功后，可能还要经过一段时间，才能保证事务不会因服务器崩溃而丢失。（最大延迟为<xref linkend="guc-wal-writer-delay"/>的三倍。）与<xref linkend="guc-fsync"/>不同，将此参数设为<literal>off</literal>不会带来数据库不一致的风险：操作系统或数据库崩溃可能会使一些最近报告已提交的事务丢失，但数据库状态会与这些事务已正常中止时完全相同。因此，当性能比完全确保事务持久性更重要时，关闭<varname>synchronous_commit</varname>可以是一种有用的替代方案。更多讨论见<xref linkend="wal-async-commit"/>。
+       </para>
 
-   <varlistentry id="guc-wal-init-zero" xreflabel="wal_init_zero">
-    <term><varname>wal_init_zero</varname></term>
-    <listitem>
-     <para>
-      指定新建 WAL 文件时是否先用零填充。默认值为 <literal>on</literal>，这样可以确保文件空间在需要写入 WAL 记录前就已分配。
-      关闭它可以跳过这一步。此参数只能在服务器启动时设置。
-     </para>
-    </listitem>
-   </varlistentry>
+       <para>
+        如果<xref linkend="guc-synchronous-standby-names"/>非空，<varname>synchronous_commit</varname>还控制事务提交是否等待备库处理其 WAL 记录。
+       </para>
 
-   <varlistentry id="guc-wal-recycle" xreflabel="wal_recycle">
-    <term><varname>wal_recycle</varname></term>
-    <listitem>
-     <para>
-      指定是否通过重命名回收旧 WAL 文件而不是创建新文件。默认值为 <literal>on</literal>。
-      在某些 Copy-On-Write 文件系统上，关闭该选项可能更快。
-     </para>
-    </listitem>
-   </varlistentry>
+       <para>
+        设为<literal>remote_apply</literal>时，提交会等待当前同步备库回复，确认已收到并应用该事务的提交记录，使其对备库上的查询可见，并且已将其写入备库的持久存储。由于需要等待 WAL 重放，这会比之前的设置产生大得多的提交延迟。设为<literal>on</literal>时，提交会等待当前同步备库回复，确认已收到事务的提交记录，并已将其刷写到持久存储。这能保证事务不会丢失，除非主库和所有同步备库的数据库存储都损坏。设为<literal>remote_write</literal>时，提交会等待当前同步备库回复，确认已收到事务的提交记录，并已将其写入各自的文件系统。此设置能保证备库上的<productname>PostgreSQL</productname>实例崩溃时数据不丢失，但不能保证备库发生操作系统级别崩溃时数据不丢失，因为数据未必已写入备库的持久存储。设为<literal>local</literal>时，提交会等待本地刷盘，但不等待复制。使用同步复制时通常不希望采用这种设置，提供它是为了使选项完整。
+       </para>
+
+       <para>
+        此参数可以随时更改；每个事务的行为由提交时生效的设置决定。因此，让一些事务同步提交、另一些事务异步提交是可行且有用的。例如，当默认设置要求同步提交时，可以在一个包含多条语句的事务中执行<command>SET LOCAL synchronous_commit TO OFF</command>，使该事务异步提交。
+       </para>
+
+       <para>
+        <xref linkend="synchronous-commit-matrix"/>汇总了<varname>synchronous_commit</varname>各种设置具备的能力。
+       </para>
+
+       <table id="synchronous-commit-matrix">
+
+        <title>synchronous_commit 模式</title>
+        <tgroup cols="5">
+         <colspec colname="col1" colwidth="1.5*"/>
+         <colspec colname="col2" colwidth="1*"/>
+         <colspec colname="col3" colwidth="1*"/>
+         <colspec colname="col4" colwidth="1*"/>
+         <colspec colname="col5" colwidth="1*"/>
+         <thead>
+
+          <row>
+           <entry>synchronous_commit 设置</entry>
+           <entry>本地提交持久性</entry>
+           <entry>PG 崩溃后备库提交持久性</entry>
+           <entry>OS 崩溃后备库提交持久性</entry>
+           <entry>备库查询一致性</entry>
+          </row>
+         </thead>
+
+         <tbody>
+
+          <row>
+           <entry>remote_apply</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+          </row>
+
+          <row>
+           <entry>on</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center"></entry>
+          </row>
+
+          <row>
+           <entry>remote_write</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+          </row>
+
+          <row>
+           <entry>local</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+          </row>
+
+          <row>
+           <entry>off</entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+          </row>
+
+         </tbody>
+        </tgroup>
+       </table>
+
+      </listitem>
+     </varlistentry>
 
    <varlistentry id="guc-wal-sync-method" xreflabel="wal_sync_method">
-    <term><varname>wal_sync_method</varname></term>
-    <listitem>
-     <para>
-      指定将 WAL 强制刷写到磁盘时使用的方法。若 <varname>fsync</varname> 关闭，则此设置无关紧要。
-      可选值包括 <literal>open_datasync</literal>、<literal>fdatasync</literal>、<literal>fsync</literal>、
-      <literal>fsync_writethrough</literal> 和 <literal>open_sync</literal>。并非所有平台都支持所有值，
-      默认值通常是平台支持的第一个选项。
-     </para>
-    </listitem>
-   </varlistentry>
+
+      <term><varname>wal_sync_method</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>wal_sync_method</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        用于将 WAL 更新强制写入磁盘的方法。如果<varname>fsync</varname>关闭，此设置就没有作用，因为 WAL 文件更新根本不会被强制写入磁盘。可选值为：
+       </para>
+       <itemizedlist>
+        <listitem>
+
+        <para>
+         <literal>open_datasync</literal>（用<function>open()</function>选项<symbol>O_DSYNC</symbol>写 WAL 文件）
+        </para>
+        </listitem>
+        <listitem>
+
+        <para>
+         <literal>fdatasync</literal>（在每次提交时调用<function>fdatasync()</function>）
+        </para>
+        </listitem>
+        <listitem>
+
+        <para>
+         <literal>fsync</literal>（在每次提交时调用<function>fsync()</function>）
+        </para>
+        </listitem>
+        <listitem>
+
+        <para>
+         <literal>fsync_writethrough</literal>（在每次提交时调用<function>fsync()</function>，强制穿透任何磁盘写缓存）
+        </para>
+        </listitem>
+        <listitem>
+
+        <para>
+         <literal>open_sync</literal>（用<function>open()</function>选项<symbol>O_SYNC</symbol>写 WAL 文件）
+        </para>
+        </listitem>
+       </itemizedlist>
+
+       <para>
+        <literal>open_</literal>* 选项还会使用<literal>O_DIRECT</literal>（如果可用）。
+        不是在所有平台上都能使用所有这些选择。
+        默认值是列表中第一个被平台支持的那个， 不过<literal>fdatasync</literal>是 Linux 和 FreeBSD 中的默认值。
+        默认值不一定最合适；可能需要更改此设置或系统配置的其他方面，以确保崩溃时的数据安全或达到最佳性能。
+        这些方面在<xref linkend="wal-reliability"/>中讨论。
+        这个参数只能在<filename>postgresql.conf</filename>文件中或在服务器命令行上设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+   <varlistentry id="guc-full-page-writes" xreflabel="full_page_writes">
+
+      <term><varname>full_page_writes</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>full_page_writes</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        启用此参数时，<productname>PostgreSQL</productname>服务器会在检查点之后首次修改每个磁盘页面时，将该页面的全部内容写入 WAL。这样做是因为，操作系统崩溃时正在进行的页面写入可能只完成了一部分，导致磁盘页面混有新旧数据。通常存储在 WAL 中的行级变更数据不足以在崩溃恢复时完整还原这样的页面。保存整页镜像能保证正确恢复页面，但会增加必须写入 WAL 的数据量。（由于 WAL 重放总是从检查点开始，只需在检查点之后首次修改每个页面时这样做。因此，减少整页写入开销的一种方法是增大检查点间隔参数。）
+       </para>
+
+       <para>
+        关闭此参数可以加快正常操作，但系统故障后可能出现不可恢复的数据损坏或静默数据损坏。风险与关闭<varname>fsync</varname>类似，虽然较小，但也只有在该参数建议的相同情形下才应关闭此参数。
+       </para>
+
+       <para>
+        关闭这个选项并不影响用于时间点恢复（PITR）的 WAL 归档使用（见<xref linkend="continuous-archiving"/>）。
+       </para>
+
+       <para>
+        这个参数只能在<filename>postgresql.conf</filename>文件中或在服务器命令行上设置。默认值是<literal>on</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+   <varlistentry id="guc-wal-log-hints" xreflabel="wal_log_hints">
+
+      <term><varname>wal_log_hints</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>wal_log_hints</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        当这个参数为<literal>on</literal>时，<productname>PostgreSQL</productname>服务器在检查点之后首次修改页面时把该磁盘页面的整个内容都写入 WAL，即使对所谓的提示位做非关键修改也会这样做。
+       </para>
+
+       <para>
+        如果启用了数据校验和，提示位更新总是会被 WAL 记录并且这个设置会被忽略。你可以使用这个
+        设置测试如果你的数据库启用了数据校验和，会有多少额外的 WAL 记录发生。
+       </para>
+
+       <para>
+        这个参数只能在服务器启动时设置。默认值是<literal>off</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+   <varlistentry id="guc-wal-compression" xreflabel="wal_compression">
+
+      <term><varname>wal_compression</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>wal_compression</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        此参数启用使用指定的压缩方法对WAL进行压缩。
+        启用后，<productname>PostgreSQL</productname>服务器会压缩写入 WAL 的整页镜像，例如
+        在启用<xref linkend="guc-full-page-writes"/>时、基础备份期间等。
+        在WAL重放期间，将对压缩的页镜像进行解压缩。
+        支持的方法有<literal>pglz</literal>、
+        <literal>lz4</literal>（如果<productname>PostgreSQL</productname>
+        使用<option>--with-lz4</option>编译）和
+        <literal>zstd</literal>（如果<productname>PostgreSQL</productname>
+        使用<option>--with-zstd</option>编译）。
+        值 <literal>on</literal> 是 <literal>pglz</literal> 的历史拼写。
+        默认值为<literal>off</literal>。
+        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+       </para>
+
+       <para>
+        启用压缩可以减少 WAL 数据量，而且不会增加不可恢复的数据损坏风险；代价是在记录 WAL 时压缩、重放 WAL 时解压会额外消耗一些 CPU。
+       </para>
+      </listitem>
+     </varlistentry>
+
+   <varlistentry id="guc-wal-init-zero" xreflabel="wal_init_zero">
+
+      <term><varname>wal_init_zero</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>wal_init_zero</varname> 配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        如果设置为<literal>on</literal>（默认值），此选项会导致新的 WAL 文件被零填充。
+        在某些文件系统上，这可确保在我们需要写入 WAL 记录之前分配空间。
+        但是，<firstterm>写时复制</firstterm>（COW）文件系统可能不会从此技术中受益，因此可以选择跳过不必要的工作。
+        如果设置为<literal>off</literal>，则在创建文件时只写入最后一个字节，以便其具有预期大小。
+       </para>
+      </listitem>
+     </varlistentry>
+
+   <varlistentry id="guc-wal-recycle" xreflabel="wal_recycle">
+
+      <term><varname>wal_recycle</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>wal_recycle</varname> 配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        如果设置为 <literal>on</literal> （默认值），此选项通过重命名来回收 WAL 文件，从而避免创建新文件。
+        在 COW 文件系统上，创建新文件可能更快，因此提供了禁用此行为的选项。
+       </para>
+      </listitem>
+     </varlistentry>
 
    <varlistentry id="guc-wal-buffers" xreflabel="wal_buffers">
-    <term><varname>wal_buffers</varname></term>
-    <listitem>
-     <para>
-      指定尚未写入磁盘的 WAL 数据可占用多少共享内存。默认值 -1 会自动选择合适大小，
-      约为 <varname>shared_buffers</varname> 的 1/32，但不少于 64kB。此参数只能在服务器启动时设置。
-     </para>
-    </listitem>
-   </varlistentry>
+
+      <term><varname>wal_buffers</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>wal_buffers</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        用于还未写入磁盘的 WAL 数据的共享内存量。默认值 -1 选择等于<xref linkend="guc-shared-buffers"/>的 1/32 的尺寸（大约3%），但是不小于<literal>64kB</literal>也不大于 WAL 段的尺寸（通常为<literal>16MB</literal>）。如果自动的选择太大或太小可以手工设置该值，但是任何小于<literal>32kB</literal>的正值都将被当作<literal>32kB</literal>。
+        如果指定值时没有单位，则以WAL块作为单位，即为 <symbol>XLOG_BLCKSZ</symbol> 字节，通常为8kB。这个参数只能在服务器启动时设置。
+       </para>
+
+       <para>
+        在每次事务提交时，WAL 缓冲区的内容被写出到磁盘，因此极大的值不太可能带来显著收益。不过，把这个值设置为至少几个兆字节可以在一个繁忙的服务器（其中很多客户端会在同一时间提交）上提高写性能。由默认设置 -1 选择的自动调节将在大部分情况下得到合理的结果。
+       </para>
+
+      </listitem>
+     </varlistentry>
 
    <varlistentry id="guc-wal-writer-delay" xreflabel="wal_writer_delay">
-    <term><varname>wal_writer_delay</varname></term>
-    <listitem>
-     <para>
-      指定 WAL 写入进程刷写 WAL 的间隔。默认值为 200ms。若指定值没有单位，则按毫秒计算。
-      此参数只能在 <filename>postgresql.conf</filename> 中或服务器命令行上设置。
-     </para>
-    </listitem>
-   </varlistentry>
+
+      <term><varname>wal_writer_delay</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>wal_writer_delay</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+      <para>
+        指定 WAL 写入器刷写 WAL 的频繁程度，以时间为单位。
+        在刷写WAL之后，写入器将根据<varname>wal_writer_delay</varname>所给出的时间长度进行睡眠，除非被一个异步提交的事务提前唤醒。
+        如果距上次刷盘的时间小于<varname>wal_writer_delay</varname>，并且自那以后产生的 WAL 数据量小于<varname>wal_writer_flush_after</varname>，则只将 WAL 写入操作系统，而不刷写到磁盘。
+        如果指定值时没有单位，则以毫秒作为单位。
+		默认值是 200 毫秒（<literal>200ms</literal>）。注意在很多系统上，有效的睡眠延迟粒度是 10 毫秒，把<varname>wal_writer_delay</varname>设置为一个不是 10 的倍数的值，其效果可能与将其设置为下一个更大的 10 的倍数相同。这个参数只能在<filename>postgresql.conf</filename>文件中或者服务器命令行上设置。
+       </para>
+      </listitem>
+     </varlistentry>
 
    <varlistentry id="guc-wal-writer-flush-after" xreflabel="wal_writer_flush_after">
-    <term><varname>wal_writer_flush_after</varname></term>
-    <listitem>
-     <para>
-      指定 WAL 写入进程在写出多少 WAL 后主动调用刷盘。默认值通常为 1MB。
-      该参数有助于平滑磁盘 I/O，但如果设置过大，可能会增加崩溃时恢复的工作量。
-     </para>
-    </listitem>
-   </varlistentry>
+
+      <term><varname>wal_writer_flush_after</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>wal_writer_flush_after</varname> 配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+      <para>
+        指定 WAL 写入器刷写 WAL 的频繁程度，按数据量衡量。
+        如果距上次刷盘的时间小于<varname>wal_writer_delay</varname>，并且自那以后产生的 WAL 数据量小于<varname>wal_writer_flush_after</varname>，则只将 WAL 写入操作系统，而不刷写到磁盘。
+        如果<varname>wal_writer_flush_after</varname>被设置为<literal>0</literal>，则WAL数据总是会被立即刷写。
+        如果指定值时没有单位，则以WAL块作为单位，即为<symbol>XLOG_BLCKSZ</symbol>字节，通常为8kB。
+        默认是<literal>1MB</literal>。这个参数只能在<filename>postgresql.conf</filename>文件中或者服务器命令行上设置。
+       </para>
+      </listitem>
+     </varlistentry>
 
    <varlistentry id="guc-wal-skip-threshold" xreflabel="wal_skip_threshold">
-    <term><varname>wal_skip_threshold</varname></term>
-    <listitem>
-     <para>
-      指定在某些情况下可以跳过回放旧 WAL 的阈值。该参数用于减少检查点和恢复过程中的无效工作。
-      默认值为 2MB。
-     </para>
-    </listitem>
-   </varlistentry>
+
+      <term><varname>wal_skip_threshold</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>wal_skip_threshold</varname> 配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        当<varname>wal_level</varname>为<literal>minimal</literal>，且事务在创建或重写永久关系后提交时，此设置决定如何持久保存新数据。如果数据量小于此设置，就将其写入 WAL；否则，对受影响的文件执行 fsync。如果这类提交拖慢了并发事务，根据存储的特性，增大或减小此值可能有所帮助。未指定单位时以千字节为单位。默认值为两兆字节（<literal>2MB</literal>）。
+       </para>
+      </listitem>
+     </varlistentry>
 
    <varlistentry id="guc-commit-delay" xreflabel="commit_delay">
-    <term><varname>commit_delay</varname></term>
-    <listitem>
-     <para>
-      指定在刷写 WAL 之前，提交进程可额外等待的时间。默认值为 0。它主要用于较少连接并且提交冲突较多的场景。
-      只有具有相应权限的用户才能更改此设置。
-     </para>
-    </listitem>
-   </varlistentry>
+
+      <term><varname>commit_delay</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>commit_delay</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        设置<varname>commit_delay</varname>会在发起 WAL 刷盘之前添加时间延迟。
+        如果系统负载足够高，使得在给定时间间隔内有更多事务准备提交，
+        这可以通过允许更多事务通过一次 WAL 刷盘来提高组提交吞吐量。
+        不过，每次 WAL 刷盘的延迟也会因此增加，最多增加<varname>commit_delay</varname>。
+        如果没有其他事务准备提交，等待就没有意义，因此仅当即将发起刷盘时至少还有
+        <varname>commit_siblings</varname>个其他活动事务，才会等待。
+        此外，如果禁用了<varname>fsync</varname>，也不会等待。
+        如果未指定单位，则将其视为微秒。
+        默认<varname>commit_delay</varname>为零（无延迟）。
+        只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+       </para>
+
+       <para>
+        在<productname>PostgreSQL</productname>的 9.3 发布之前，<varname>commit_delay</varname>的行为不同并且效果更差：它只影响提交，而不是所有 WAL 刷写，并且即使 WAL 刷盘更早完成，也会等待整个配置的延迟时间。从<productname>PostgreSQL</productname> 9.3 开始，第一个准备好刷写的进程会等待配置的间隔，而后续的进程只等到领先者完成刷写操作。
+       </para>
+      </listitem>
+     </varlistentry>
 
    <varlistentry id="guc-commit-siblings" xreflabel="commit_siblings">
-    <term><varname>commit_siblings</varname></term>
-    <listitem>
-     <para>
-      指定当系统中至少有多少个并发事务时，<varname>commit_delay</varname> 才会生效。
-      默认值为 5。该参数只能与 <varname>commit_delay</varname> 配合使用。
-     </para>
-    </listitem>
-   </varlistentry>
+
+      <term><varname>commit_siblings</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>commit_siblings</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+
+       <para>
+        执行<varname>commit_delay</varname>延迟前要求的并发活动事务的最小数目。大一些的值会导致在延迟间隔期间更可能有至少另外一个事务准备好提交。默认值是五个事务。
+       </para>
+      </listitem>
+     </varlistentry>
   </variablelist>
  </sect2>
      <sect2 id="runtime-config-wal-checkpoints">
@@ -8074,18 +8354,22 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
 
      <varlistentry id="guc-recovery-target-timeline"
                    xreflabel="recovery_target_timeline">
+
       <term><varname>recovery_target_timeline</varname> (<type>string</type>)
       <indexterm>
-        <primary><varname>recovery_target_timeline</varname>配置参数</primary>
+        <primary><varname>recovery_target_timeline</varname> 配置参数</primary>
       </indexterm>
       </term>
       <listitem>
+
        <para>
         指定恢复到一个特定的时间线中。该值可以是数字时间线 ID 或特殊值。
-        值<literal>current</literal>沿着与执行基本备份时相同的时间线恢复。
+        值<literal>current</literal>沿着与执行基础备份时相同的时间线恢复。
         值<literal>latest</literal>将恢复到归档中能找到的最新时间线，这在备库中很有用。
         <literal>latest</literal>是默认值。
        </para>
+
+
 
        <para>
         你通常只需要在复杂的再次恢复场景中设置此参数，也就是当你需要回到某个状态，而该状态本身又是在一次时间点恢复之后达到的。
