@@ -313,6 +313,16 @@ if [[ "${lang}" != "en" ]]; then
     "${work_tree}/doc/src/sgml/Makefile"
 fi
 
+# Pre-PG10 doc makefiles build HTML via DSSSL (jade) by default.  Reroute the
+# html target to the XSL pipeline (xslthtml-stamp, osx -> postgres.xml ->
+# xsltproc chunked HTML) that those makefiles already provide, matching what
+# PG10+ do natively.  The guard is a no-op for PG10 and later.
+if grep -q '^xslthtml-stamp:' "${work_tree}/doc/src/sgml/Makefile"; then
+  sed -i.bak \
+    -e 's/^html: html-stamp$/html: xslthtml-stamp/' \
+    "${work_tree}/doc/src/sgml/Makefile"
+fi
+
 # Incremental generated-text overlays are kept with each Chinese source.
 # Generate from the selected upstream inputs before applying exact-hash edits.
 if [[ "${lang}" == "zh" && -f "${doc_src_root}/localize-generated.py" ]]; then
