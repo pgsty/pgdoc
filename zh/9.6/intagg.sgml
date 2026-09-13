@@ -1,0 +1,82 @@
+<!-- doc/src/sgml/intagg.sgml -->
+
+<sect1 id="intagg" xreflabel="intagg">
+ <title>intagg &mdash; 整数聚合器和枚举器</title>
+
+ <indexterm zone="intagg">
+  <primary>intagg</primary>
+ </indexterm>
+
+ <para>
+  <filename>intagg</filename> 模块提供一个整数聚合器和一个枚举器。
+  由于已经有内置函数提供了其能力的超集，所以 <filename>intagg</filename> 现已过时。
+  不过，该模块仍作为这些内置函数的兼容性包装器提供。
+ </para>
+
+ <sect2>
+  <title>函数</title>
+
+ <indexterm>
+  <primary>int_array_aggregate</primary>
+ </indexterm>
+
+ <indexterm>
+  <primary>array_agg</primary>
+ </indexterm>
+
+ <para>
+  聚合器是聚合函数<function>int_array_aggregate(integer)</function>，
+  它会生成一个整数数组，其中恰好包含输入给它的那些整数。
+  这是对<function>array_agg</function>的包装器，后者对任意数组类型都能做同样的事情。
+ </para>
+
+ <indexterm>
+  <primary>int_array_enum</primary>
+ </indexterm>
+
+ <para>
+  枚举器是函数<function>int_array_enum(integer[])</function>，
+  它返回<type>setof integer</type>。本质上，它是聚合器的逆操作：
+  给定一个整数数组，将其展开为一组行。
+  这是对<function>unnest</function>的包装器，后者对任意数组类型都能做同样的事情。
+ </para>
+
+ </sect2>
+
+ <sect2>
+  <title>使用示例</title>
+
+  <para>许多数据库系统有一对多表的概念。这种表通常位于两个带索引的表之间，例如：<programlisting>
+CREATE TABLE left (id INT PRIMARY KEY, ...);
+CREATE TABLE right (id INT PRIMARY KEY, ...);
+CREATE TABLE one_to_many(left INT REFERENCES left, right INT REFERENCES right);
+</programlisting>它通常按如下方式使用：<programlisting>
+SELECT right.* from right JOIN one_to_many ON (right.id = one_to_many.right)
+  WHERE one_to_many.left = <replaceable>item</>;
+</programlisting>这将返回左侧表中某个条目在右侧表中对应的所有项。这是 SQL 中非常常见的一种构造。</para>
+
+ <para>不过，如果<structname>one_to_many</>表中的条目非常多，这种方法就会变得相当繁琐。通常，对于左侧表中的某个特定条目，右侧表中的每个对应项都要执行一次索引扫描并取回一行。如果你的系统非常动态，那就没有太多办法。不过，如果有一部分数据相当静态，可以借助聚合器创建一个汇总表。<programlisting>
+CREATE TABLE summary AS
+  SELECT left, int_array_aggregate(right) AS right
+  FROM one_to_many
+  GROUP BY left;
+</programlisting>这样会创建一个表，其中左侧每个条目对应一行，并附带一个由右侧各项组成的数组。不过，如果没有某种使用该数组的方法，它就几乎没有用处；这正是数组枚举器存在的原因。你可以这样做：<programlisting>
+SELECT left, int_array_enum(right) FROM summary WHERE left = <replaceable>item</>;
+</programlisting>上面这个使用<function>int_array_enum</function>的查询，产生的结果与下面的查询相同：<programlisting>
+SELECT left, right FROM one_to_many WHERE left = <replaceable>item</>;
+</programlisting>区别在于，针对汇总表的查询只需要从表中取出一行，而直接查询<structname>one_to_many</>则必须对每个对应项都进行索引扫描并取回一行。</para>
+
+ <para>在某个系统上，<command>EXPLAIN</command>显示，某个查询的代价从 8488 降到了 329。原始查询是一个涉及<structname>one_to_many</>表的连接，后来被替换为：<programlisting>
+SELECT right, count(right) FROM
+  ( SELECT left, int_array_enum(right) AS right
+    FROM summary JOIN (SELECT left FROM left_table WHERE left = <replaceable>item</>) AS lefts
+         ON (summary.left = lefts.left)
+  ) AS list
+  GROUP BY right
+  ORDER BY count DESC;
+</programlisting>
+ </para>
+
+ </sect2>
+
+</sect1>
