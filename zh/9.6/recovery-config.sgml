@@ -1,0 +1,243 @@
+<!-- doc/src/sgml/recovery-config.sgml -->
+
+<chapter id="recovery-config">
+  <title>恢复配置</title>
+
+  <indexterm>
+     <primary>配置</primary>
+     <secondary>恢复</secondary>
+     <tertiary>备库</tertiary>
+    </indexterm>
+
+   <para>本章介绍 <filename>recovery.conf</filename><indexterm><primary>recovery.conf</primary></indexterm> 文件中可用的设置。它们只在恢复期间生效。如果之后还要进行恢复，必须重新设置这些参数。恢复开始后，就不能再更改它们。</para>
+
+   <para><filename>recovery.conf</filename> 中的设置使用 <literal>name = 'value'</literal> 格式，每行指定一个参数。井号（<literal>#</literal>）表示该行余下内容为注释。要在参数值中嵌入单引号，请写两个单引号（<literal>''</literal>）。</para>
+
+   <para>安装目录的 <filename>share/</filename> 目录中提供了示例文件 <filename>share/recovery.conf.sample</filename>。</para>
+
+  <sect1 id="archive-recovery-settings">
+
+    <title>归档恢复设置</title>
+     <variablelist>
+
+     <varlistentry id="restore-command" xreflabel="restore_command">
+      <term><varname>restore_command</varname> (<type>string</type>) <indexterm> <primary><varname>restore_command</varname> 恢复参数</primary> </indexterm></term>
+      <listitem>
+       <para>
+        用于获取 WAL 文件系列的一个已归档段的本地 shell 命令。这个参数是归档恢复所必需的，但是对于流复制是可选的。
+        在该字符串中的任何<literal>%f</literal>会被替换为从归档中获得的文件的名字，并且任何<literal>%p</literal>会被在服务器上的复制目标路径名替换（该路径名是相对于当前工作目录的，即集簇的数据目录）。
+        任何<literal>%r</literal>会被包含上一个可用重启点的文件的名字所替换。
+        在那些必须被保留用于使得一次恢复变成可重启的文件中，这个文件是其中最早的一个，因此这个信息可以被用来把归档截断为支持从当前恢复重启所需的最小值。
+        <literal>%r</literal>通常只被温备配置（见<xref linkend="warm-standby">）所使用。要嵌入一个真正的<literal>%</literal>字符，需要写成<literal>%%</literal>。
+       </para>
+
+       <para>
+        很重要的一点是，该命令只有在成功时才返回一个为零的退出状态。
+        该命令<emphasis>将</emphasis>会被询问不存在于归档中的文件名，当这样被询问时它必须返回非零。示例：
+<programlisting>
+restore_command = 'cp /mnt/server/archivedir/%f "%p"'
+restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
+</programlisting>
+        一个例外是如果该命令被一个信号（不是<systemitem>SIGTERM</systemitem>，它是数据库服务器关闭的一部分）或者一个 shell 错误（例如命令未找到）终止，则恢复将会中止并且服务器将不会启动。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="archive-cleanup-command" xreflabel="archive_cleanup_command">
+      <term><varname>archive_cleanup_command</varname> (<type>string</type>) <indexterm> <primary><varname>archive_cleanup_command</varname> 恢复参数</primary> </indexterm></term>
+      <listitem>
+       <para>
+        这个可选参数指定了一个 shell 命令，它将在每一个重启点被执行。
+        <varname>archive_cleanup_command</varname>的目的是提供一种清除不再被备库需要的旧的已归档 WAL 文件的机制。
+        任何<literal>%r</literal>会被替换为包含最后一个可用重启点的文件的名称。
+        那是使一次恢复变成可重启的所必须被<emphasis>保留</emphasis>的最早的文件，并且因此比<literal>%r</literal>更早的所有文件可以被安全地移除。
+        这个信息可以被用来把归档截断为支持从当前恢复重启所需的最小值。
+        对于单一备库配置，<xref linkend="pgarchivecleanup">模块常常被用在<varname>archive_cleanup_command</varname>中，例如：
+<programlisting>archive_cleanup_command = 'pg_archivecleanup /mnt/server/archivedir %r'</programlisting>
+        但是注意，如果多个备库正在从同一个归档目录中恢复，你将需要保证只有当所有服务器都不再需要这些 WAL 文件时才会删除它们。
+        <varname>archive_cleanup_command</varname>通常被用于一种温备配置（见<xref linkend="warm-standby">）中。
+        要在该命令中嵌入一个真正的<literal>%</literal>字符，需要写成<literal>%%</literal>。
+       </para>
+       <para>
+        如果该命令返回一个非零退出状态，则将会写出一个警告日志消息。
+        一个例外是如果该命令被一个信号或者一个 shell 错误（例如命令未找到）终止，则会抛出一个致命错误。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="recovery-end-command" xreflabel="recovery_end_command">
+      <term><varname>recovery_end_command</varname> (<type>string</type>) <indexterm> <primary><varname>recovery_end_command</varname> 恢复参数</primary> </indexterm></term>
+      <listitem>
+       <para>此参数指定一个 shell 命令，在恢复结束时仅执行一次。此参数可选。<varname>recovery_end_command</varname> 用于提供复制或恢复后的清理机制。与 <xref linkend="archive-cleanup-command"> 一样，所有 <literal>%r</literal> 都会被替换为包含最后一个有效重启点的文件的名称。</para>
+       <para>
+        如果该命令返回一个非零退出状态，则一个警告日志消息将被写出并且不管怎样该数据库将继续启动。
+        一个例外是如果该命令被一个信号或者 shell 错误（例如命令未找到）中止，该数据库将不会继续启动。
+       </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>
+
+  </sect1>
+
+  <sect1 id="recovery-target-settings">
+
+    <title>恢复目标设置</title>
+
+     <para>默认情况下，恢复会一直进行到 WAL 日志末尾。可以使用以下参数指定更早的停止点。<varname>recovery_target</varname>、<varname>recovery_target_name</varname>、<varname>recovery_target_time</varname> 或 <varname>recovery_target_xid</varname> 中最多只能使用一个；如果在配置文件中指定了多个，则使用最后一个条目。</para>
+
+     <variablelist>
+     <varlistentry id="recovery-target" xreflabel="recovery_target">
+      <term><varname>recovery_target</varname><literal> = 'immediate'</literal> <indexterm> <primary><varname>recovery_target</varname> 恢复参数</primary> </indexterm></term>
+      <listitem>
+
+       <para>
+        这个参数指定恢复应该在达到一个一致状态后尽快结束，即尽早结束。在从一个在线备份中恢复时，这意味着备份结束的那个点。
+       </para>
+
+       <para>
+        在技术上，这是一个字符串参数，但是<literal>'immediate'</literal>是目前唯一允许的值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="recovery-target-name" xreflabel="recovery_target_name">
+      <term><varname>recovery_target_name</varname> (<type>string</type>) <indexterm> <primary><varname>recovery_target_name</varname> 恢复参数</primary> </indexterm></term>
+      <listitem>
+
+       <para>
+        这个参数指定（<function>pg_create_restore_point()</function>所创建）的已命名的恢复点，恢复将进行到该恢复点。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="recovery-target-time" xreflabel="recovery_target_time">
+      <term><varname>recovery_target_time</varname> (<type>timestamp</type>) <indexterm> <primary><varname>recovery_target_time</varname> 恢复参数</primary> </indexterm></term>
+      <listitem>
+       <para>此参数指定恢复要进行到的时间戳。精确的停止点还受 <xref linkend="recovery-target-inclusive"> 影响。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="recovery-target-xid" xreflabel="recovery_target_xid">
+      <term><varname>recovery_target_xid</varname> (<type>string</type>) <indexterm> <primary><varname>recovery_target_xid</varname> 恢复参数</primary> </indexterm></term>
+      <listitem>
+       <para>此参数指定恢复要进行到的事务 ID。请注意，虽然事务 ID 在事务开始时按顺序分配，但事务完成的顺序可能与 ID 的数值顺序不同。恢复的事务是那些在指定事务之前提交的事务，并可选择包括指定事务本身。精确的停止点还受 <xref linkend="recovery-target-inclusive"> 影响。</para>
+      </listitem>
+     </varlistentry>
+
+     </variablelist>
+
+     <para>
+       下列选项进一步指定恢复目标，并且影响到达目标时会发生什么：
+     </para>
+
+     <variablelist>
+     <varlistentry id="recovery-target-inclusive"
+                   xreflabel="recovery_target_inclusive">
+      <term><varname>recovery_target_inclusive</varname> (<type>boolean</type>) <indexterm> <primary><varname>recovery_target_inclusive</varname> 恢复参数</primary> </indexterm></term>
+      <listitem>
+       <para>指定是在所设恢复目标之后立即停止（<literal>true</literal>），还是在其之前立即停止（<literal>false</literal>）。在指定 <xref linkend="recovery-target-time"> 或 <xref linkend="recovery-target-xid"> 时适用。此设置控制恢复是否包含提交时间或事务 ID 分别恰好等于目标值的事务。默认值为 <literal>true</literal>。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="recovery-target-timeline"
+                   xreflabel="recovery_target_timeline">
+      <term><varname>recovery_target_timeline</varname> (<type>string</type>) <indexterm> <primary><varname>recovery_target_timeline</varname> 恢复参数</primary> </indexterm></term>
+      <listitem>
+       <para>指定恢复到某条特定时间线。默认沿着制作基础备份时的当前时间线恢复。设为 <literal>latest</literal> 时，会恢复到归档中找到的最新时间线，这对备库很有用。除此之外，只有在复杂的再次恢复场景中才需要设置此参数：需要返回的状态本身就是一次时间点恢复之后达到的状态。相关讨论参见 <xref linkend="backup-timelines">。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="recovery-target-action"
+                   xreflabel="recovery_target_action">
+      <term><varname>recovery_target_action</varname> (<type>enum</type>) <indexterm> <primary><varname>recovery_target_action</varname> 恢复参数</primary> </indexterm></term>
+      <listitem>
+       <para>
+        指定在达到恢复目标时服务器应该立刻采取的动作。默认动作是<literal>pause</literal>，这表示恢复将会被暂停。
+        <literal>promote</literal>表示恢复处理将会结束并且服务器将开始接受连接。
+        最后，<literal>shutdown</literal>将在达到恢复目标之后停止服务器。
+       </para>
+       <para>
+        使用<literal>pause</literal>设置的目的是允许对数据库执行查询，以检查这个恢复目标是否为最合适的恢复位置。
+        暂停的状态可以使用<function>pg_xlog_replay_resume()</function>（见<xref linkend="functions-recovery-control-table">）继续，这会让恢复终结。
+        如果这个恢复目标不是想要的停止点，那么关闭服务器，将恢复目标设置改为一个稍后的目标并且重启以继续恢复。
+       </para>
+       <para>
+        要让实例在想要的重放点那里准备好，<literal>shutdown</literal>设置可以派上用场。
+        该实例将仍能重放更多 WAL 记录（并且事实上，下次启动时必须重新回放自上一个检查点以来的 WAL 记录）。
+       </para>
+       <para>注意，将 <varname>recovery_target_action</varname> 设为 <literal>shutdown</literal> 时，<filename>recovery.conf</filename> 不会被重命名，因此除非更改配置或手动删除 <filename>recovery.conf</filename> 文件，否则之后每次启动都会立即关闭。</para>
+       <para>如果未设置恢复目标，此设置不起作用。如果未启用 <xref linkend="guc-hot-standby">，则 <literal>pause</literal> 的行为与 <literal>shutdown</literal> 相同。</para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>
+   </sect1>
+
+  <sect1 id="standby-settings">
+
+    <title>备库设置</title>
+     <variablelist>
+
+       <varlistentry id="standby-mode" xreflabel="standby_mode">
+        <term><varname>standby_mode</varname> (<type>boolean</type>) <indexterm> <primary><varname>standby_mode</varname> 恢复参数</primary> </indexterm></term>
+        <listitem>
+         <para>指定是否将 <productname>PostgreSQL</productname> 服务器作为备库启动。如果此参数为 <literal>on</literal>，服务器到达已归档 WAL 的末尾时不会停止恢复，而会继续尝试使用 <varname>restore_command</varname> 获取新的 WAL 段，和/或按照 <varname>primary_conninfo</varname> 设置连接主库，以继续恢复。</para>
+        </listitem>
+       </varlistentry>
+       <varlistentry id="primary-conninfo" xreflabel="primary_conninfo">
+        <term><varname>primary_conninfo</varname> (<type>string</type>) <indexterm> <primary><varname>primary_conninfo</varname> 恢复参数</primary> </indexterm></term>
+        <listitem>
+         <para>指定备库连接主库所用的连接字符串，格式见 <xref linkend="libpq-connstring">。如果某个选项未在字符串中指定，就会检查相应的环境变量（参见 <xref linkend="libpq-envars">）。如果环境变量也未设置，则使用默认值。</para>
+         <para>连接字符串应指定主库的主机名（或地址）；如果端口号与备库的默认端口不同，也应指定端口号。还应指定一个用户名，对应主库上具有适当权限的角色（参见 <xref linkend="streaming-replication-authentication">）。如果主库要求密码认证，还需要提供密码。密码可以放在 <varname>primary_conninfo</varname> 字符串中，也可以放在备库上单独的 <filename>~/.pgpass</filename> 文件中（使用 <literal>replication</literal> 作为数据库名）。不要在 <varname>primary_conninfo</varname> 字符串中指定数据库名。</para>
+         <para>如果 <varname>standby_mode</varname> 为 <literal>off</literal>，此设置不起作用。</para>
+        </listitem>
+       </varlistentry>
+       <varlistentry id="primary-slot-name" xreflabel="primary_slot_name">
+        <term><varname>primary_slot_name</varname> (<type>string</type>) <indexterm> <primary><varname>primary_slot_name</varname> 恢复参数</primary> </indexterm></term>
+        <listitem>
+         <para>可选地指定一个已存在的复制槽，在通过流复制连接主库时使用，以控制上游节点的资源移除（参见 <xref linkend="streaming-replication-slots">）。如果未设置 <varname>primary_conninfo</varname>，此设置不起作用。</para>
+        </listitem>
+       </varlistentry>
+       <varlistentry id="trigger-file" xreflabel="trigger_file">
+        <term><varname>trigger_file</varname> (<type>string</type>) <indexterm> <primary><varname>trigger_file</varname> 恢复参数</primary> </indexterm></term>
+        <listitem>
+         <para>指定一个触发文件，其出现会使备库结束恢复。即使未设置此值，也仍可以使用 <command>pg_ctl promote</command> 提升备库。如果 <varname>standby_mode</varname> 为 <literal>off</literal>，此设置不起作用。</para>
+        </listitem>
+       </varlistentry>
+
+     <varlistentry id="recovery-min-apply-delay" xreflabel="recovery_min_apply_delay">
+      <term><varname>recovery_min_apply_delay</varname> (<type>integer</type>)
+      <indexterm>
+        <primary><varname>recovery_min_apply_delay</> 恢复参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        默认情况下，备库会尽快恢复来自主库的 WAL 记录。保留一份延迟的数据副本可能很有用，因为它提供了纠正数据丢失错误的机会。此参数允许将恢复延迟一段固定时间；如果没有指定单位，则以毫秒计。例如，将此参数设置为 <literal>5min</literal> 时，只有当备库系统时间比主库报告的提交时间至少晚五分钟，备库才会重放各事务的提交。
+       </para>
+       <para>
+        服务器之间的复制延迟可能超过此参数的值，这种情况下不会增加延迟。注意，延迟根据主库写入的 WAL 时间戳与备库当前时间之差计算。网络延迟或级联复制配置导致的传输延迟，可能显著缩短实际等待时间。如果主库和备库的系统时钟不同步，恢复时可能比预期更早应用记录；但这通常不是主要问题，因为此参数的实用取值远大于服务器间常见的时间偏差。
+       </para>
+       <para>
+        延迟仅发生在事务提交的 WAL 记录上。其他记录会尽快重放；这不会造成问题，因为 MVCC 可见性规则确保在对应提交记录被应用之前，它们的效果不会可见。
+       </para>
+       <para>
+        恢复中的数据库达到一致状态后开始延迟，直到备库被提升或触发。此后，备库会结束恢复，不再等待。
+       </para>
+       <para>
+        此参数旨在用于流复制部署；不过，只要指定了此参数，它就会在所有情况下生效。使用此功能也会延迟 <varname>hot_standby_feedback</varname>，可能导致主库膨胀；同时使用两者时应谨慎。
+        <warning>
+         <para>
+          当 <varname>synchronous_commit</varname> 设置为 <literal>remote_apply</literal> 时，同步复制会受到此设置影响；每个 <literal>COMMIT</literal> 都必须等待提交被应用。
+         </para>
+        </warning>
+
+       </para>
+      </listitem>
+     </varlistentry>
+
+     </variablelist>
+   </sect1>
+
+</chapter>
