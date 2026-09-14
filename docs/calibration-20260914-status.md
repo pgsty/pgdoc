@@ -231,3 +231,7 @@ ECPG 全章已核验提交 `74d86e305d68d39fe4b2868ec5211da5ec28f2ff`（11正文
 2026-09-15：[系统目录与系统视图全章报告](/Users/vonng/pgsty/pgdoc/docs/calibration-catalogs-views-20260915.md)：十一版17文件1092完整节，358组3938格。修复版本串入、依赖方向、NULL与统计语义等；74条既有ID提示逐项核定，零未决零漂移。CREATE TABLE整页与全书余项、33项最终构建继续。
 
 2026-09-15：[CREATE TABLE 完整页与关联章节报告](/Users/vonng/pgsty/pgdoc/docs/calibration-create-table-20260915.md)：十一版66节、769条目、2046叶段及283原样代码/语法位置完成；关联219英文变体、746实际文本横核，105正文文件527处修订和六条术语同步。五版未来分区锁定行为、多事务年龄、清理/扫描及内含列等已校准；110条新快照提示逐项关闭，零未决零漂移。CREATE INDEX及全书余项、33项最终构建继续。
+
+2026-09-15：[CREATE INDEX完整页复核](/Users/vonng/pgsty/pgdoc/docs/calibration-create-index-20260915.md)已关闭：十一版66节297条目915叶段139代码/语法位置，146条原生提示逐项绑定，零未决零漂移。此前内含列等关联修复已提交353db5e，本轮未新增正文修改；全书及33最终构建继续。
+
+2026-09-15：[操作符参考页、xoper 与关联文本报告](/Users/vonng/pgsty/pgdoc/docs/calibration-operator-reference-20260915.md)：十一版132完整文件及216关联文本已闭合，116正文文件273处修订；未来交换器说明、词元/选择率/hash、非null及映像等已按本版英文校准。418条提示逐项核定，零未决零漂移。性能章节及其余hash位置、全书与33最终构建继续。
