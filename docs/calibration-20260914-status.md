@@ -227,3 +227,5 @@ ECPG 全章已核验提交 `74d86e305d68d39fe4b2868ec5211da5ec28f2ff`（11正文
 2026-09-15：[ALTER FOREIGN TABLE 全页报告](/Users/vonng/pgsty/pgdoc/docs/calibration-alter-foreign-table-20260915.md)补齐关联修复：十一版9组99格，修复未来ADD NOT NULL及STORAGE DEFAULT，1条既有ID逐项核定，零范围未决和漂移。前一表定义阶段已提交b6f2bb9（34文件，未推送）；全书、表格余项和33最终构建继续。
 
 2026-09-15：[索引与函数系统目录报告](/Users/vonng/pgsty/pgdoc/docs/calibration-catalog-index-proc-20260915.md)：十一版 pg_index/pg_proc 完整小节已修复并通过新原生快照对账；22节552行44表外段落，29组319格。修复列数量、索引维护、并行工作者缺句、优化消除调用等；范围内 0 条既有ID提示逐项核定，零未决零漂移。其余系统目录/视图、全书与33项最终构建继续。
+
+2026-09-15：[系统目录与系统视图全章报告](/Users/vonng/pgsty/pgdoc/docs/calibration-catalogs-views-20260915.md)：十一版17文件1092完整节，358组3938格。修复版本串入、依赖方向、NULL与统计语义等；74条既有ID提示逐项核定，零未决零漂移。CREATE TABLE整页与全书余项、33项最终构建继续。
