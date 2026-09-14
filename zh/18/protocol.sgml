@@ -1137,63 +1137,75 @@ SELCT 1/0;<!-- this typo is intentional -->
    <title>OAUTHBEARER 认证</title>
 
    <para>
-    <literal>OAUTHBEARER</literal> 是一种基于令牌的联合认证机制，详见
-    <ulink url="https://datatracker.ietf.org/doc/html/rfc7628">RFC 7628</ulink>。
-   </para>
+   <literal>OAUTHBEARER</literal> 是一种基于令牌的联合认证机制。其详细说明见 <ulink url="https://datatracker.ietf.org/doc/html/rfc7628">RFC 7628</ulink>。
+  </para>
 
    <para>
-    典型交互取决于客户端是否已经为当前用户缓存 bearer token。若没有，通常会经历两次连接：第一次“发现连接”用于从服务器获取 OAuth 元数据，第二次连接在客户端拿到 token 后再发送 token。（libpq 当前内置流程尚未实现缓存，因此使用两连接流程。）
-   </para>
+   典型交互取决于客户端是否已为当前用户缓存 Bearer 令牌。如果没有，交互将通过两次连接完成：第一次“发现”连接从服务器获取 OAuth 元数据，第二次连接在客户端取得令牌后发送该令牌。（libpq 的内置流程目前没有实现缓存方法，因此使用两次连接的交互方式。）
+  </para>
 
    <para>
-    该机制与 SCRAM 一样由客户端发起。客户端初始响应由 SCRAM 使用的标准 GS2 头部加上一组 <literal>key=value</literal> 对组成。当前服务器仅支持 <literal>auth</literal> 键（即 bearer token）。<literal>OAUTHBEARER</literal> 还定义了三个可选组成（GS2 头部中的 <literal>authzid</literal>，以及 <structfield>host</structfield>/<structfield>port</structfield>），当前服务器会忽略它们。
-   </para>
+   该机制与 SCRAM 一样由客户端发起。客户端初始响应由 SCRAM 使用的标准“GS2”头部以及随后的一组 <literal>key=value</literal> 对组成。服务器目前唯一支持的键是 <literal>auth</literal>，其中包含 Bearer 令牌。<literal>OAUTHBEARER</literal> 还规定了客户端初始响应的三个可选部分：GS2 头部的 <literal>authzid</literal>，以及 <structfield>host</structfield> 和 <structfield>port</structfield> 键；服务器目前会忽略它们。
+  </para>
 
    <para>
-    <literal>OAUTHBEARER</literal> 不支持通道绑定，因此不存在 “OAUTHBEARER-PLUS”。该机制在成功认证时不使用额外服务器数据，所以不会使用 AuthenticationSASLFinal 消息。
-   </para>
+   <literal>OAUTHBEARER</literal> 不支持通道绑定，也不存在“OAUTHBEARER-PLUS”机制。该机制在成功认证期间不使用服务器数据，因此交互中不使用 AuthenticationSASLFinal 消息。
+  </para>
 
    <procedure>
     <title>示例</title>
     <step>
      <para>
-      第一次交互时，服务器发送 AuthenticationSASL，并在机制列表中声明 <literal>OAUTHBEARER</literal>。
-     </para>
+   第一次交互期间，服务器发送 AuthenticationSASL 消息，并声明支持 <literal>OAUTHBEARER</literal> 机制。
+  </para>
     </step>
+
     <step>
      <para>
-      客户端发送 SASLInitialResponse 并选择 <literal>OAUTHBEARER</literal>。若尚无可用 token，则 <structfield>auth</structfield> 为空，表示这是发现连接。
-     </para>
+   客户端发送 SASLInitialResponse 消息作为响应，在其中指定 <literal>OAUTHBEARER</literal> 机制。假定客户端尚未持有当前用户的有效 Bearer 令牌，则 <structfield>auth</structfield> 字段为空，表示这是发现连接。
+  </para>
     </step>
+
     <step>
      <para>
-      服务器发送 AuthenticationSASLContinue，包含错误 <literal>status</literal>、well-known URI 以及客户端应使用的 scopes。
-     </para>
+   服务器发送 AuthenticationSASLContinue 消息，其中包含错误 <literal>status</literal>、well-known URI，以及客户端执行 OAuth 流程时应使用的授权范围。
+  </para>
     </step>
+
     <step>
      <para>
-      客户端发送 SASLResponse，内容为空集合（单个 <literal>0x01</literal> 字节），结束发现阶段的客户端半程。
-     </para>
+   客户端发送包含空集合（单个 <literal>0x01</literal> 字节）的 SASLResponse 消息，以结束发现交互中由客户端完成的部分。
+  </para>
     </step>
+
     <step>
      <para>
-      服务器发送 ErrorMessage，使第一次交互失败。随后客户端按配置和服务器提供的元数据执行 OAuth 流程以获取 token。（具体获取方式由客户端实现决定，OAUTHBEARER 不强制规定。）
-     </para>
+   服务器发送 ErrorMessage，使第一次交互失败。
+  </para>
+     <para>
+   此时，客户端会执行多种可用 OAuth 流程中的一种，以获取 Bearer 令牌；所使用的元数据包括客户端已配置的元数据，以及服务器提供的元数据。（此处的描述有意保持宽泛；<literal>OAUTHBEARER</literal> 不指定也不强制要求采用任何特定的令牌获取方法。）
+  </para>
+     <para>
+   取得令牌后，客户端会重新连接服务器，进行最后一次交互：
+  </para>
     </step>
+
     <step>
      <para>
-      客户端拿到 token 后重新连接；服务器再次发送 AuthenticationSASL，并声明 <literal>OAUTHBEARER</literal>。
-     </para>
+   服务器再次发送 AuthenticationSASL 消息，并声明支持 <literal>OAUTHBEARER</literal> 机制。
+  </para>
     </step>
+
     <step>
      <para>
-      客户端再次发送 SASLInitialResponse，这次在 <structfield>auth</structfield> 中携带 bearer token。
-     </para>
+   客户端发送 SASLInitialResponse 消息作为响应，但这次消息中的 <structfield>auth</structfield> 字段包含客户端流程取得的 Bearer 令牌。
+  </para>
     </step>
+
     <step>
      <para>
-      服务器按令牌提供方规则校验 token。若客户端被授权连接，服务器发送 AuthenticationOk，认证完成。
-     </para>
+   服务器按照令牌提供者的说明验证令牌。如果客户端获准连接，服务器便发送 AuthenticationOk 消息，结束 SASL 交互。
+  </para>
     </step>
    </procedure>
   </sect2>
