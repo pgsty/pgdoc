@@ -2,7 +2,7 @@ PG10—PG20 校准阶段报告（2026-09-14T14:42:30.720497+08:00）
 
 原清单 F-001—F-026 均已有逐版修复、原已正确或不适用的源码记录及分批核验。后续审校继续发现并修复了配置、函数、psql、pgbench、数据类型及其四个包含文件中的问题。**全书逐句语义校准、最终独立对账和 33 项最终构建仍未完成。** 本报告不将机器扫描、历史通过记录或台账数量当作全文验收。
 
-2026-09-15 最新完成 [EXPLAIN 与 auto_explain 十一版全页校准](/Users/vonng/pgsty/pgdoc/docs/calibration-explain-20260915.md)：13 个正文文件修订，13 类问题／一致性项、143 个逐版格；新快照 98 条范围内提示全部核定，零未决、零漂移。此前 [hash 及关联语义](/Users/vonng/pgsty/pgdoc/docs/calibration-hash-20260915.md)、[性能全章](/Users/vonng/pgsty/pgdoc/docs/calibration-performance-20260915.md)、[操作符参考页及扩展章](/Users/vonng/pgsty/pgdoc/docs/calibration-operator-reference-20260915.md)等已分批校准并提交。关联扫描发现的 PG14—16 bloom、rules 新版示例正在续修；全书语义阅读、历史范围对账及最终 33 项构建仍未完成。
+2026-09-15 最新完成 [bloom 全文及物化视图节十一版校准](/Users/vonng/pgsty/pgdoc/docs/calibration-bloom-materializedviews-20260915.md)：14 个正文文件修订，四项问题、44 个逐版格；新快照 16 条范围内提示全部核准，零未决、零漂移。前批 [EXPLAIN 与 auto_explain 全页](/Users/vonng/pgsty/pgdoc/docs/calibration-explain-20260915.md)、[hash 及关联语义](/Users/vonng/pgsty/pgdoc/docs/calibration-hash-20260915.md)、性能及操作符等已分批校准并提交。关联扫描发现的六处新版示例全部修复；正在继续 rules 其余章节。全书语义阅读、历史范围对账及最终 33 项构建仍未完成。
 
 英文固定为 10.23、11.22、12.22、13.23、14.24、15.19、16.15、17.11、18.6、19beta3 和 PG20 提交 86f7c82cf1023e3599f40f939727791a7090cd44。PG18 优先阅读；其他版本逐一核对完整段落、表格行和版本差异，同义英文共用译文，保留自身功能、签名、默认值、限制、代码和链接。遵守 exclude、glossary 及语境规则、style 的优先顺序。
 
@@ -241,3 +241,5 @@ ECPG 全章已核验提交 `74d86e305d68d39fe4b2868ec5211da5ec28f2ff`（11正文
 2026-09-15：[hash 及关联语义报告](/Users/vonng/pgsty/pgdoc/docs/calibration-hash-20260915.md)：303 SGML + 1 生成映射；302 英文组 3322 格及 16 类问题逐版矩阵。新快照 1857 节点精确配对，18 条范围内提示核定，零未决零漂移；范围外 2970 提示保留。继续 EXPLAIN 全页、全书余项、历史对账与 33 最终构建。
 
 2026-09-15：[EXPLAIN 与 auto_explain 全页报告](/Users/vonng/pgsty/pgdoc/docs/calibration-explain-20260915.md)：22 个完整页面，534 段、157 代码/语法块，13 正文修订；13 类问题143格。新快照2205节点、98提示全部核准，零未决零漂移。bloom和rules物化视图关联示例及限定修复待续，全书与33构建未完成。
+
+2026-09-15：[bloom／物化视图报告](/Users/vonng/pgsty/pgdoc/docs/calibration-bloom-materializedviews-20260915.md)：14 正文、24 示例块恢复及可能性限定修复；四项44格。新快照 935 节点、16 提示，零范围未决零漂移；rules其他节与全书、33最终构建继续。
