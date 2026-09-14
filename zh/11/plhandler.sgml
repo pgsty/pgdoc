@@ -1,7 +1,7 @@
 <!-- doc/src/sgml/plhandler.sgml -->
 
  <chapter id="plhandler">
-   <title>编写过程语言处理器</title>
+   <title>编写过程语言调用处理器</title>
 
    <indexterm zone="plhandler">
     <primary>过程语言</primary>
@@ -16,17 +16,17 @@
     过程语言的调用处理器是一个<quote>普通</quote>函数，必须使用诸如 C 这样的编译型语言、按照版本 1 接口编写，并在 <productname>PostgreSQL</productname> 中注册为不接受参数且返回 <type>language_handler</type> 类型。这个特殊伪类型会将该函数标识为调用处理器，并阻止它在 SQL 命令中被直接调用。有关 C 语言调用约定和动态装载的更多细节，见 <xref linkend="xfunc-c"/>。
    </para>
 
-   <para>调用处理器与其他函数的调用方式相同：它接收一个指向 <structname>FunctionCallInfoData</structname> <type>struct</type> 的指针，其中包含参数值和被调用函数的信息，并应返回一个 <type>Datum</type> 结果（如果要返回 SQL 空值，还可能需要设置 <structname>FunctionCallInfoData</structname> 结构的 <structfield>isnull</structfield> 字段）。调用处理器与普通被调用函数的区别在于，<structname>FunctionCallInfoData</structname> 结构的 <structfield>flinfo-&gt;fn_oid</structfield> 字段包含的是实际要调用的函数的 OID，而不是调用处理器自身的 OID。调用处理器必须使用该字段确定应执行哪个函数。此外，传入的参数列表也是按照目标函数的声明设置的，而不是按照调用处理器的声明。</para>
+   <para>调用处理器与其他函数的调用方式相同：它接收一个指向 <structname>FunctionCallInfoData</structname> <type>struct</type> 的指针，其中包含参数值和被调用函数的信息，并应返回一个 <type>Datum</type> 结果（如果要返回 SQL 空值，还需要设置 <structname>FunctionCallInfoData</structname> 结构体的 <structfield>isnull</structfield> 字段）。调用处理器与普通被调用函数的区别在于，<structname>FunctionCallInfoData</structname> 结构体的 <structfield>flinfo-&gt;fn_oid</structfield> 字段包含的是实际要调用的函数的 OID，而不是调用处理器自身的 OID。调用处理器必须使用该字段确定应执行哪个函数。此外，传入的参数列表也是按照目标函数的声明设置的，而不是按照调用处理器的声明。</para>
 
    <para>
-    调用处理器必须从系统目录 <classname>pg_proc</classname> 中取出该函数的条目，并分析被调用函数的参数类型和返回类型。该函数的 <literal>AS</literal> 子句可在其 <command>CREATE FUNCTION</command> 命令对应的 <literal>prosrc</literal> 列里找到，也就是 <classname>pg_proc</classname> 行中的该列。这里通常是一段过程语言源文本，但理论上也可以是其他内容，例如某个文件的路径名，或者任何能详细告诉调用处理器该做什么的信息。
+    调用处理器必须从系统目录 <classname>pg_proc</classname> 中取出该函数的条目，并分析被调用函数的参数类型和返回类型。该函数的 <command>CREATE FUNCTION</command> 命令中的 <literal>AS</literal> 子句内容，保存在 <classname>pg_proc</classname> 对应行的 <literal>prosrc</literal> 列中。这里通常是一段过程语言源文本，但理论上也可以是其他内容，例如某个文件的路径名，或者任何能详细告诉调用处理器该做什么的信息。
    </para>
 
    <para>
     同一个函数在执行一条 SQL 语句期间往往会被调用很多次。调用处理器可以利用 <structfield>flinfo-&gt;fn_extra</structfield> 字段，避免重复查找被调用函数的信息。该字段起初为 <symbol>NULL</symbol>，但调用处理器可以把它设置为指向与被调用函数有关的信息。在后续调用中，如果 <structfield>flinfo-&gt;fn_extra</structfield> 已经不是 <symbol>NULL</symbol>，就可以直接使用它并跳过信息查找步骤。调用处理器必须确保 <structfield>flinfo-&gt;fn_extra</structfield> 指向的内存至少能存活到当前查询结束，因为 <structname>FmgrInfo</structname> 数据结构可能会保留这么久。一种做法是在 <structfield>flinfo-&gt;fn_mcxt</structfield> 指定的内存上下文中分配这些额外数据；这类数据通常会与 <structname>FmgrInfo</structname> 本身具有相同的生命周期。不过，处理器也可以选择使用生命周期更长的内存上下文，以便跨查询缓存函数定义信息。
    </para>
 
-   <para>过程语言函数作为触发器调用时，不会按通常方式传入参数，但 <structname>FunctionCallInfoData</structname> 的 <structfield>context</structfield> 字段会指向一个 <structname>TriggerData</structname> 结构，而不是像普通函数调用那样为 <symbol>NULL</symbol>。语言处理器应提供让过程语言函数获取触发器信息的机制。</para>
+   <para>过程语言函数作为触发器调用时，不会按通常方式传入参数，但 <structname>FunctionCallInfoData</structname> 的 <structfield>context</structfield> 字段会指向一个 <structname>TriggerData</structname> 结构体，而不是像普通函数调用那样为 <symbol>NULL</symbol>。语言调用处理器应提供让过程语言函数获取触发器信息的机制。</para>
 
    <para>下面是用 C 编写的过程语言处理器模板：<programlisting>
 #include "postgres.h"
@@ -50,7 +50,7 @@ plsample_call_handler(PG_FUNCTION_ARGS)
     if (CALLED_AS_TRIGGER(fcinfo))
     {
         /*
-         * Called as a trigger function
+         * 作为触发器函数调用
          */
         TriggerData    *trigdata = (TriggerData *) fcinfo-&gt;context;
 
@@ -59,7 +59,7 @@ plsample_call_handler(PG_FUNCTION_ARGS)
     else
     {
         /*
-         * Called as a function
+         * 作为函数调用
          */
 
         retval = ...
@@ -88,7 +88,7 @@ CREATE LANGUAGE plsample
 
    <para>
     验证器函数通常应遵循 <xref
-    linkend="guc-check-function-bodies"/> 参数：如果它被关闭，就应跳过任何开销高昂或依赖上下文的检查。如果该语言允许在编译时执行代码，验证器还必须抑制会诱发此类执行的检查。特别是，<application>pg_dump</application> 会关闭这个参数，这样它就可以装载过程语言函数，而不必担心函数体对其他数据库对象的副作用或依赖关系。（正因为有这一要求，调用处理器不应假设验证器已经完整检查了函数。提供验证器的目的，并不是让调用处理器省略检查，而是在 <command>CREATE FUNCTION</command> 命令中存在明显错误时立即通知用户。）虽然究竟检查哪些内容主要由验证器函数自行决定，但要注意，核心 <command>CREATE FUNCTION</command> 代码只会执行附加到函数上的 <literal>SET</literal> 子句，前提是 <varname>check_function_bodies</varname> 打开。因此，当 <varname>check_function_bodies</varname> 关闭时，那些结果可能受 GUC 参数影响的检查肯定都应跳过，以避免在恢复转储时出现虚假的失败。
+    linkend="guc-check-function-bodies"/> 参数：如果它被关闭，就应跳过任何开销高昂或依赖上下文的检查。如果该语言允许在编译时执行代码，验证器还必须抑制会诱发此类执行的检查。特别是，<application>pg_dump</application> 会关闭这个参数，这样它就可以装载过程语言函数，而不必担心副作用或函数体对其他数据库对象的依赖关系。（正因为有这一要求，调用处理器不应假设验证器已经完整检查了函数。提供验证器的目的，并不是让调用处理器省略检查，而是在 <command>CREATE FUNCTION</command> 命令中存在明显错误时立即通知用户。）虽然究竟检查哪些内容主要由验证器函数自行决定，但要注意，只有在 <varname>check_function_bodies</varname> 打开时，核心 <command>CREATE FUNCTION</command> 代码才会执行函数附带的 <literal>SET</literal> 子句。因此，当 <varname>check_function_bodies</varname> 关闭时，那些结果可能受 GUC 参数影响的检查肯定都应跳过，以避免在恢复转储时出现虚假的失败。
    </para>
 
    <para>

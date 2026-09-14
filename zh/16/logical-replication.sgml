@@ -94,6 +94,26 @@
   </para>
 
   <para>
+   已发布的表若要复制 <command>UPDATE</command> 和 <command>DELETE</command>
+   操作，必须配置<firstterm>复制标识</firstterm>，以便在订阅端识别应更新或删除的行。
+   默认情况下，如果存在主键，则主键就是复制标识。也可以将另一个唯一索引
+   （满足某些附加要求）设置为复制标识。如果表没有合适的键，可将复制标识设为
+   <literal>FULL</literal>，表示整行作为键。指定复制标识
+   <literal>FULL</literal> 时，订阅端在查找行时可以使用索引。
+   候选索引必须是 btree、非部分索引，且最左索引字段必须是引用已发布表
+   列的列（而非表达式）。这些非唯一索引属性的限制，遵循了主键的一部分限制规则。
+   如果没有合适索引，订阅端查找会非常低效，因此复制标识
+   <literal>FULL</literal> 仅应在没有其他方案时作为后备选项。如果发布端设置的是非
+   <literal>FULL</literal> 的复制标识，则订阅端也必须设置由相同或更少列组成的
+   复制标识。关于如何设置复制标识，
+   见 <xref linkend="sql-altertable-replica-identity"/>。
+   如果一个没有复制标识的表被加入一个复制 <command>UPDATE</command> 或
+   <command>DELETE</command> 操作的发布，那么后续的 <command>UPDATE</command> 或
+   <command>DELETE</command> 操作将在发布端引发错误。
+   无论复制标识如何，<command>INSERT</command> 操作都可以继续执行。
+  </para>
+
+  <para>
    每个发布都可以有多个订阅者。
   </para>
 
@@ -109,48 +129,6 @@
    动态添加和移除。<literal>ADD TABLE</literal> 与 <literal>DROP TABLE</literal>
    都是事务性的，因此事务提交后，表会在正确的快照点开始或停止复制。
   </para>
-
-  <sect2 id="logical-replication-publication-replica-identity">
-   <title>复制标识</title>
-
-   <para>
-    已发布的表若要复制 <command>UPDATE</command> 和
-    <command>DELETE</command> 操作，必须配置
-    <firstterm>复制标识</firstterm>，以便在订阅端识别应更新或删除的行。
-   </para>
-
-   <para>
-    默认情况下，如果存在主键，则主键就是复制标识。也可以将另一个唯一索引
-    （满足某些附加要求）设置为复制标识。如果表没有合适的键，可将复制标识设为
-    <literal>FULL</literal>，表示整行作为键。指定复制标识
-    <literal>FULL</literal> 时，订阅端在查找行时可以使用索引。
-    候选索引必须是 btree 或 hash、非部分索引，且最左索引字段必须是引用已发布表
-    列的列（而非表达式）。这些非唯一索引属性的限制，遵循了主键的一部分限制规则。
-    如果没有合适索引，订阅端查找会非常低效，因此复制标识
-    <literal>FULL</literal> 仅应在没有其他方案时作为后备选项。
-   </para>
-
-   <para>
-    如果发布端设置的是非 <literal>FULL</literal> 的复制标识，则订阅端也必须设置
-    由相同或更少列组成的复制标识。
-   </para>
-
-   <para>
-    对于复制标识定义为 <literal>NOTHING</literal>、无主键时的
-    <literal>DEFAULT</literal>，或使用已删除索引的 <literal>USING INDEX</literal>
-    的表，如果将其包含在复制 <command>UPDATE</command> 或
-    <command>DELETE</command> 的发布中，则不支持这些操作。尝试执行时会在发布端报错。
-   </para>
-
-   <para>
-    无论复制标识如何，<command>INSERT</command> 操作都可以继续执行。
-   </para>
-
-   <para>
-    关于如何设置复制标识，见
-    <link linkend="sql-altertable-replica-identity"><literal>ALTER TABLE...REPLICA IDENTITY</literal></link>。
-   </para>
-  </sect2>
 
  </sect1>
 
@@ -219,7 +197,7 @@
    <type>bigint</type> 列。目标表还可包含发布表未提供的额外列，这些列会填充为目标
    表定义中的默认值。不过，二进制格式逻辑复制限制更严格。详见
    <command>CREATE SUBSCRIPTION</command> 的
-   <literal>binary</literal>
+   <link linkend="sql-createsubscription-with-binary"><literal>binary</literal></link>
    选项。
   </para>
 
@@ -230,7 +208,7 @@
     如前所述，每个（活动）订阅都从远端（发布侧）的一个复制槽接收变更。
    </para>
    <para>
-    额外的表同步槽通常是临时的，由系统内部创建用于执行初始表同步，在不再需要时
+    额外的表同步槽通常只会短暂存在，由系统内部创建用于执行初始表同步，在不再需要时
     自动删除。这些表同步槽的名称是自动生成的：
     <quote><literal>pg_%u_sync_%u_%llu</literal></quote>
     （参数分别为：订阅 <parameter>oid</parameter>、
@@ -238,9 +216,9 @@
    </para>
    <para>
     通常，远端复制槽会在使用
-    <link linkend="sql-createsubscription"><command>CREATE SUBSCRIPTION</command></link>
+    <command>CREATE SUBSCRIPTION</command>
     创建订阅时自动创建，并在使用
-    <link linkend="sql-dropsubscription"><command>DROP SUBSCRIPTION</command></link>
+    <command>DROP SUBSCRIPTION</command>
     删除订阅时自动删除。但在某些场景下，分别操作订阅与底层复制槽会更有用或更必要。
     常见场景如下：
 
@@ -265,7 +243,7 @@
       <para>
        删除订阅时希望保留复制槽。这在将订阅者数据库迁移到其他主机并从那里激活时
        很有用。此时应在尝试删除订阅前，使用
-       <link linkend="sql-altersubscription"><command>ALTER SUBSCRIPTION</command></link>
+       <command>ALTER SUBSCRIPTION</command>
        将槽与订阅解除关联。
       </para>
      </listitem>
@@ -290,60 +268,76 @@
     <para>
      在发布端创建一些测试表。
 <programlisting>
-/* pub # */ CREATE TABLE t1(a int, b text, PRIMARY KEY(a));
-/* pub # */ CREATE TABLE t2(c int, d text, PRIMARY KEY(c));
-/* pub # */ CREATE TABLE t3(e int, f text, PRIMARY KEY(e));
+test_pub=# CREATE TABLE t1(a int, b text, PRIMARY KEY(a));
+CREATE TABLE
+test_pub=# CREATE TABLE t2(c int, d text, PRIMARY KEY(c));
+CREATE TABLE
+test_pub=# CREATE TABLE t3(e int, f text, PRIMARY KEY(e));
+CREATE TABLE
 </programlisting></para>
 
     <para>
      在订阅端创建同样的表。
 <programlisting>
-/* sub # */ CREATE TABLE t1(a int, b text, PRIMARY KEY(a));
-/* sub # */ CREATE TABLE t2(c int, d text, PRIMARY KEY(c));
-/* sub # */ CREATE TABLE t3(e int, f text, PRIMARY KEY(e));
+test_sub=# CREATE TABLE t1(a int, b text, PRIMARY KEY(a));
+CREATE TABLE
+test_sub=# CREATE TABLE t2(c int, d text, PRIMARY KEY(c));
+CREATE TABLE
+test_sub=# CREATE TABLE t3(e int, f text, PRIMARY KEY(e));
+CREATE TABLE
 </programlisting></para>
 
     <para>
      在发布端向表中插入数据。
 <programlisting>
-/* pub # */ INSERT INTO t1 VALUES (1, 'one'), (2, 'two'), (3, 'three');
-/* pub # */ INSERT INTO t2 VALUES (1, 'A'), (2, 'B'), (3, 'C');
-/* pub # */ INSERT INTO t3 VALUES (1, 'i'), (2, 'ii'), (3, 'iii');
+test_pub=# INSERT INTO t1 VALUES (1, 'one'), (2, 'two'), (3, 'three');
+INSERT 0 3
+test_pub=# INSERT INTO t2 VALUES (1, 'A'), (2, 'B'), (3, 'C');
+INSERT 0 3
+test_pub=# INSERT INTO t3 VALUES (1, 'i'), (2, 'ii'), (3, 'iii');
+INSERT 0 3
 </programlisting></para>
 
     <para>
      为这些表创建发布。发布 <literal>pub2</literal> 和 <literal>pub3a</literal>
      禁用了部分
-     <literal>publish</literal>
+     <link linkend="sql-createpublication-with-publish"><literal>publish</literal></link>
      操作。发布 <literal>pub3b</literal> 使用了行过滤器（见
      <xref linkend="logical-replication-row-filter"/>）。
-<programlisting><![CDATA[
-/* pub # */ CREATE PUBLICATION pub1 FOR TABLE t1;
-/* pub # */ CREATE PUBLICATION pub2 FOR TABLE t2 WITH (publish = 'truncate');
-/* pub # */ CREATE PUBLICATION pub3a FOR TABLE t3 WITH (publish = 'truncate');
-/* pub # */ CREATE PUBLICATION pub3b FOR TABLE t3 WHERE (e > 5);
-]]></programlisting></para>
+<programlisting>
+test_pub=# CREATE PUBLICATION pub1 FOR TABLE t1;
+CREATE PUBLICATION
+test_pub=# CREATE PUBLICATION pub2 FOR TABLE t2 WITH (publish = 'truncate');
+CREATE PUBLICATION
+test_pub=# CREATE PUBLICATION pub3a FOR TABLE t3 WITH (publish = 'truncate');
+CREATE PUBLICATION
+test_pub=# CREATE PUBLICATION pub3b FOR TABLE t3 WHERE (e > 5);
+CREATE PUBLICATION
+</programlisting></para>
 
     <para>
      为这些发布创建订阅。订阅 <literal>sub3</literal> 同时订阅
      <literal>pub3a</literal> 和 <literal>pub3b</literal>。默认情况下所有订阅都会复制
      初始数据。
 <programlisting>
-/* sub # */ CREATE SUBSCRIPTION sub1
-/* sub - */ CONNECTION 'host=localhost dbname=test_pub application_name=sub1'
-/* sub - */ PUBLICATION pub1;
-/* sub # */ CREATE SUBSCRIPTION sub2
-/* sub - */ CONNECTION 'host=localhost dbname=test_pub application_name=sub2'
-/* sub - */ PUBLICATION pub2;
-/* sub # */ CREATE SUBSCRIPTION sub3
-/* sub - */ CONNECTION 'host=localhost dbname=test_pub application_name=sub3'
-/* sub - */ PUBLICATION pub3a, pub3b;
+test_sub=# CREATE SUBSCRIPTION sub1
+test_sub-# CONNECTION 'host=localhost dbname=test_pub application_name=sub1'
+test_sub-# PUBLICATION pub1;
+CREATE SUBSCRIPTION
+test_sub=# CREATE SUBSCRIPTION sub2
+test_sub-# CONNECTION 'host=localhost dbname=test_pub application_name=sub2'
+test_sub-# PUBLICATION pub2;
+CREATE SUBSCRIPTION
+test_sub=# CREATE SUBSCRIPTION sub3
+test_sub-# CONNECTION 'host=localhost dbname=test_pub application_name=sub3'
+test_sub-# PUBLICATION pub3a, pub3b;
+CREATE SUBSCRIPTION
 </programlisting></para>
 
     <para>
      注意，无论发布的 <literal>publish</literal> 操作如何，初始表数据都会被复制。
 <programlisting>
-/* sub # */ SELECT * FROM t1;
+test_sub=# SELECT * FROM t1;
  a |   b
 ---+-------
  1 | one
@@ -351,7 +345,7 @@
  3 | three
 (3 rows)
 
-/* sub # */ SELECT * FROM t2;
+test_sub=# SELECT * FROM t2;
  c | d
 ---+---
  1 | A
@@ -365,7 +359,7 @@
      <literal>pub3a</literal> 没有行过滤器，所以复制后的表 <literal>t3</literal>
      会包含所有行，即使它们不匹配发布 <literal>pub3b</literal> 的行过滤器。
 <programlisting>
-/* sub # */ SELECT * FROM t3;
+test_sub=# SELECT * FROM t3;
  e |  f
 ---+-----
  1 | i
@@ -377,15 +371,18 @@
    <para>
     在发布端向表继续插入数据。
 <programlisting>
-/* pub # */ INSERT INTO t1 VALUES (4, 'four'), (5, 'five'), (6, 'six');
-/* pub # */ INSERT INTO t2 VALUES (4, 'D'), (5, 'E'), (6, 'F');
-/* pub # */ INSERT INTO t3 VALUES (4, 'iv'), (5, 'v'), (6, 'vi');
+test_pub=# INSERT INTO t1 VALUES (4, 'four'), (5, 'five'), (6, 'six');
+INSERT 0 3
+test_pub=# INSERT INTO t2 VALUES (4, 'D'), (5, 'E'), (6, 'F');
+INSERT 0 3
+test_pub=# INSERT INTO t3 VALUES (4, 'iv'), (5, 'v'), (6, 'vi');
+INSERT 0 3
 </programlisting></para>
 
    <para>
     现在发布端数据如下：
 <programlisting>
-/* pub # */ SELECT * FROM t1;
+test_pub=# SELECT * FROM t1;
  a |   b
 ---+-------
  1 | one
@@ -396,7 +393,7 @@
  6 | six
 (6 rows)
 
-/* pub # */ SELECT * FROM t2;
+test_pub=# SELECT * FROM t2;
  c | d
 ---+---
  1 | A
@@ -407,7 +404,7 @@
  6 | F
 (6 rows)
 
-/* pub # */ SELECT * FROM t3;
+test_pub=# SELECT * FROM t3;
  e |  f
 ---+-----
  1 | i
@@ -422,10 +419,10 @@
    <para>
     注意在常规复制阶段会使用相应的 <literal>publish</literal> 操作。
     这意味着发布 <literal>pub2</literal> 与 <literal>pub3a</literal> 不会复制
-    <literal>INSERT</literal>。另外，发布 <literal>pub3b</literal> 只会复制与其
+    <literal>INSERT</literal>。另外，发布 <literal>pub3b</literal> 只会复制与 <literal>pub3b</literal> 的
     行过滤器匹配的数据。现在订阅端数据如下：
 <programlisting>
-/* sub # */ SELECT * FROM t1;
+test_sub=# SELECT * FROM t1;
  a |   b
 ---+-------
  1 | one
@@ -436,7 +433,7 @@
  6 | six
 (6 rows)
 
-/* sub # */ SELECT * FROM t2;
+test_sub=# SELECT * FROM t2;
  c | d
 ---+---
  1 | A
@@ -444,7 +441,7 @@
  3 | C
 (3 rows)
 
-/* sub # */ SELECT * FROM t3;
+test_sub=# SELECT * FROM t3;
  e |  f
 ---+-----
  1 | i
@@ -468,7 +465,8 @@
    <para>
     首先，创建示例所需的发布。
 <programlisting>
-/* pub # */ CREATE PUBLICATION pub1 FOR ALL TABLES;
+test_pub=# CREATE PUBLICATION pub1 FOR ALL TABLES;
+CREATE PUBLICATION
 </programlisting></para>
    <para>
     示例 1：订阅指定 <literal>connect = false</literal>
@@ -479,12 +477,13 @@
       <para>
        创建订阅。
 <programlisting>
-/* sub # */ CREATE SUBSCRIPTION sub1
-/* sub - */ CONNECTION 'host=localhost dbname=test_pub'
-/* sub - */ PUBLICATION pub1
-/* sub - */ WITH (connect=false);
+test_sub=# CREATE SUBSCRIPTION sub1
+test_sub-# CONNECTION 'host=localhost dbname=test_pub'
+test_sub-# PUBLICATION pub1
+test_sub-# WITH (connect=false);
 WARNING:  subscription was created, but is not connected
 HINT:  To initiate replication, you must manually create the replication slot, enable the subscription, and refresh the subscription.
+CREATE SUBSCRIPTION
 </programlisting></para>
      </listitem>
      <listitem>
@@ -492,7 +491,7 @@ HINT:  To initiate replication, you must manually create the replication slot, e
        在发布端手工创建槽。由于 <literal>CREATE SUBSCRIPTION</literal> 时未指定名称，
        要创建的槽名与订阅名相同，例如 "sub1"。
 <programlisting>
-/* pub # */ SELECT * FROM pg_create_logical_replication_slot('sub1', 'pgoutput');
+test_pub=# SELECT * FROM pg_create_logical_replication_slot('sub1', 'pgoutput');
  slot_name |    lsn
 -----------+-----------
  sub1      | 0/19404D0
@@ -503,8 +502,10 @@ HINT:  To initiate replication, you must manually create the replication slot, e
       <para>
        在订阅端完成订阅激活。之后 <literal>pub1</literal> 的表将开始复制。
 <programlisting>
-/* sub # */ ALTER SUBSCRIPTION sub1 ENABLE;
-/* sub # */ ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
+test_sub=# ALTER SUBSCRIPTION sub1 ENABLE;
+ALTER SUBSCRIPTION
+test_sub=# ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
+ALTER SUBSCRIPTION
 </programlisting></para>
      </listitem>
     </itemizedlist>
@@ -512,19 +513,20 @@ HINT:  To initiate replication, you must manually create the replication slot, e
 
    <para>
     示例 2：订阅指定 <literal>connect = false</literal>，并同时指定
-    <literal>slot_name</literal>
+    <link linkend="sql-createsubscription-with-slot-name"><literal>slot_name</literal></link>
     选项。
     <itemizedlist>
      <listitem>
       <para>
        创建订阅。
 <programlisting>
-/* sub # */ CREATE SUBSCRIPTION sub1
-/* sub - */ CONNECTION 'host=localhost dbname=test_pub'
-/* sub - */ PUBLICATION pub1
-/* sub - */ WITH (connect=false, slot_name='myslot');
+test_sub=# CREATE SUBSCRIPTION sub1
+test_sub-# CONNECTION 'host=localhost dbname=test_pub'
+test_sub-# PUBLICATION pub1
+test_sub-# WITH (connect=false, slot_name='myslot');
 WARNING:  subscription was created, but is not connected
 HINT:  To initiate replication, you must manually create the replication slot, enable the subscription, and refresh the subscription.
+CREATE SUBSCRIPTION
 </programlisting></para>
      </listitem>
      <listitem>
@@ -532,7 +534,7 @@ HINT:  To initiate replication, you must manually create the replication slot, e
        在发布端使用与 <literal>CREATE SUBSCRIPTION</literal> 指定一致的名称手工创建槽，
        例如 "myslot"。
 <programlisting>
-/* pub # */ SELECT * FROM pg_create_logical_replication_slot('myslot', 'pgoutput');
+test_pub=# SELECT * FROM pg_create_logical_replication_slot('myslot', 'pgoutput');
  slot_name |    lsn
 -----------+-----------
  myslot    | 0/19059A0
@@ -543,8 +545,10 @@ HINT:  To initiate replication, you must manually create the replication slot, e
       <para>
        在订阅端，剩余激活步骤与前例相同。
 <programlisting>
-/* sub # */ ALTER SUBSCRIPTION sub1 ENABLE;
-/* sub # */ ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
+test_sub=# ALTER SUBSCRIPTION sub1 ENABLE;
+ALTER SUBSCRIPTION
+test_sub=# ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
+ALTER SUBSCRIPTION
 </programlisting></para>
      </listitem>
     </itemizedlist>
@@ -558,17 +562,18 @@ HINT:  To initiate replication, you must manually create the replication slot, e
        创建订阅。设置 <literal>slot_name = NONE</literal> 时，还需要设置
        <literal>enabled = false</literal> 和 <literal>create_slot = false</literal>。
 <programlisting>
-/* sub # */ CREATE SUBSCRIPTION sub1
-/* sub - */ CONNECTION 'host=localhost dbname=test_pub'
-/* sub - */ PUBLICATION pub1
-/* sub - */ WITH (slot_name=NONE, enabled=false, create_slot=false);
+test_sub=# CREATE SUBSCRIPTION sub1
+test_sub-# CONNECTION 'host=localhost dbname=test_pub'
+test_sub-# PUBLICATION pub1
+test_sub-# WITH (slot_name=NONE, enabled=false, create_slot=false);
+CREATE SUBSCRIPTION
 </programlisting></para>
      </listitem>
      <listitem>
       <para>
        在发布端使用任意名称手工创建槽，例如 "myslot"。
 <programlisting>
-/* pub # */ SELECT * FROM pg_create_logical_replication_slot('myslot', 'pgoutput');
+test_pub=# SELECT * FROM pg_create_logical_replication_slot('myslot', 'pgoutput');
  slot_name |    lsn
 -----------+-----------
  myslot    | 0/1905930
@@ -579,15 +584,18 @@ HINT:  To initiate replication, you must manually create the replication slot, e
       <para>
        在订阅端，将订阅关联到刚创建的槽名。
 <programlisting>
-/* sub # */ ALTER SUBSCRIPTION sub1 SET (slot_name='myslot');
+test_sub=# ALTER SUBSCRIPTION sub1 SET (slot_name='myslot');
+ALTER SUBSCRIPTION
 </programlisting></para>
      </listitem>
      <listitem>
       <para>
        剩余的订阅激活步骤与前例相同。
 <programlisting>
-/* sub # */ ALTER SUBSCRIPTION sub1 ENABLE;
-/* sub # */ ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
+test_sub=# ALTER SUBSCRIPTION sub1 ENABLE;
+ALTER SUBSCRIPTION
+test_sub=# ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
+ALTER SUBSCRIPTION
 </programlisting></para>
      </listitem>
     </itemizedlist>
@@ -614,7 +622,7 @@ HINT:  To initiate replication, you must manually create the replication slot, e
    <para>
     行过滤器会在发布更改<emphasis>之前</emphasis>应用。如果行过滤器求值为<literal>false</literal>或<literal>NULL</literal>，
     则该行不会被复制。<literal>WHERE</literal>子句表达式会使用复制连接所用的同一角色来求值（即在
-    <xref linkend="sql-createsubscription"/>的<literal>CONNECTION</literal>
+    <xref linkend="sql-createsubscription"/>的<link linkend="sql-createsubscription-connection"><literal>CONNECTION</literal></link>
     子句中指定的角色）。行过滤器对<command>TRUNCATE</command>命令没有影响。
 </para>
 
@@ -703,7 +711,7 @@ HINT:  To initiate replication, you must manually create the replication slot, e
    <title>分区表</title>
 
    <para>
-    如果发布包含分区表，则发布参数<literal>publish_via_partition_root</literal>确定使用哪个行过滤器。
+    如果发布包含分区表，则发布参数<link linkend="sql-createpublication-with-publish-via-partition-root"><literal>publish_via_partition_root</literal></link>确定使用哪个行过滤器。
     如果<literal>publish_via_partition_root</literal>为<literal>true</literal>，则使用<emphasis>根分区表</emphasis>的行过滤器。
     否则，如果<literal>publish_via_partition_root</literal>为<literal>false</literal>（默认值），则使用各个<emphasis>分区</emphasis>的行过滤器。
 </para>
@@ -728,7 +736,7 @@ HINT:  To initiate replication, you must manually create the replication slot, e
    <warning>
 
     <para>
-     由于初始数据同步在复制现有表数据时不会考虑<literal>publish</literal>参数，
+     由于初始数据同步在复制现有表数据时不会考虑<link linkend="sql-createpublication-with-publish"><literal>publish</literal></link>参数，
      因此有些使用 DML 时本不会复制的行，也可能在此阶段被复制。参见
      <xref linkend="logical-replication-snapshot"/>，并查看
      <xref linkend="logical-replication-subscription-examples"/>中的示例。
@@ -750,7 +758,7 @@ HINT:  To initiate replication, you must manually create the replication slot, e
    <title>组合多个行过滤器</title>
 
    <para>
-    如果某个订阅包含多个发布，而其中同一张表针对相同的<literal>publish</literal>操作使用了不同的行过滤器，
+    如果某个订阅包含多个发布，而其中同一张表针对相同的<link linkend="sql-createpublication-with-publish"><literal>publish</literal></link>操作使用了不同的行过滤器，
     那么这些表达式会按 OR 组合，因此满足<emphasis>任意一个</emphasis>表达式的行都会被复制。这意味着，如果出现以下任一情况，那么同一张表上的其他所有行过滤器都会变得多余：
     <itemizedlist>
      <listitem>
@@ -760,12 +768,12 @@ HINT:  To initiate replication, you must manually create the replication slot, e
      </listitem>
      <listitem>
       <para>
-       其中某个发布是使用<literal>FOR ALL TABLES</literal>创建的。该子句不允许行过滤器。
+       其中某个发布是使用<link linkend="sql-createpublication-for-all-tables"><literal>FOR ALL TABLES</literal></link>创建的。该子句不允许行过滤器。
       </para>
      </listitem>
      <listitem>
       <para>
-       其中某个发布是使用<literal>FOR TABLES IN SCHEMA</literal>创建的，并且该表属于所引用的模式。该子句不允许行过滤器。
+       其中某个发布是使用<link linkend="sql-createpublication-for-tables-in-schema"><literal>FOR TABLES IN SCHEMA</literal></link>创建的，并且该表属于所引用的模式。该子句不允许行过滤器。
       </para>
      </listitem>
     </itemizedlist>
@@ -780,54 +788,60 @@ HINT:  To initiate replication, you must manually create the replication slot, e
    <para>
     创建一些表，供下面的示例使用。
 <programlisting>
-/* pub # */ CREATE TABLE t1(a int, b int, c text, PRIMARY KEY(a,c));
-/* pub # */ CREATE TABLE t2(d int, e int, f int, PRIMARY KEY(d));
-/* pub # */ CREATE TABLE t3(g int, h int, i int, PRIMARY KEY(g));
+test_pub=# CREATE TABLE t1(a int, b int, c text, PRIMARY KEY(a,c));
+CREATE TABLE
+test_pub=# CREATE TABLE t2(d int, e int, f int, PRIMARY KEY(d));
+CREATE TABLE
+test_pub=# CREATE TABLE t3(g int, h int, i int, PRIMARY KEY(g));
+CREATE TABLE
 </programlisting></para>
 
    <para>
     创建一些发布。发布<literal>p1</literal>包含一个表（<literal>t1</literal>），该表带有行过滤器。
     发布<literal>p2</literal>包含两个表，其中<literal>t1</literal>没有行过滤器，而<literal>t2</literal>带有行过滤器。
     发布<literal>p3</literal>包含两个表，并且这两个表都带有行过滤器。
-<programlisting><![CDATA[
-/* pub # */ CREATE PUBLICATION p1 FOR TABLE t1 WHERE (a > 5 AND c = 'NSW');
-/* pub # */ CREATE PUBLICATION p2 FOR TABLE t1, t2 WHERE (e = 99);
-/* pub # */ CREATE PUBLICATION p3 FOR TABLE t2 WHERE (d = 10), t3 WHERE (g = 10);
-]]></programlisting></para>
+<programlisting>
+test_pub=# CREATE PUBLICATION p1 FOR TABLE t1 WHERE (a > 5 AND c = 'NSW');
+CREATE PUBLICATION
+test_pub=# CREATE PUBLICATION p2 FOR TABLE t1, t2 WHERE (e = 99);
+CREATE PUBLICATION
+test_pub=# CREATE PUBLICATION p3 FOR TABLE t2 WHERE (d = 10), t3 WHERE (g = 10);
+CREATE PUBLICATION
+</programlisting></para>
 
    <para>
     <command>psql</command>可用于显示每个发布的行过滤表达式（如果已定义）。
-<programlisting><![CDATA[
-/* pub # */ \dRp+
-                                         Publication p1
-  Owner   | All tables | Inserts | Updates | Deletes | Truncates | Generated columns | Via root
-----------+------------+---------+---------+---------+-----------+-------------------+----------
- postgres | f          | t       | t       | t       | t         | none              | f
+<programlisting>
+test_pub=# \dRp+
+                               Publication p1
+  Owner   | All tables | Inserts | Updates | Deletes | Truncates | Via root
+----------+------------+---------+---------+---------+-----------+----------
+ postgres | f          | t       | t       | t       | t         | f
 Tables:
     "public.t1" WHERE ((a > 5) AND (c = 'NSW'::text))
 
-                                         Publication p2
-  Owner   | All tables | Inserts | Updates | Deletes | Truncates | Generated columns | Via root
-----------+------------+---------+---------+---------+-----------+-------------------+----------
- postgres | f          | t       | t       | t       | t         | none              | f
+                               Publication p2
+  Owner   | All tables | Inserts | Updates | Deletes | Truncates | Via root
+----------+------------+---------+---------+---------+-----------+----------
+ postgres | f          | t       | t       | t       | t         | f
 Tables:
     "public.t1"
     "public.t2" WHERE (e = 99)
 
-                                         Publication p3
-  Owner   | All tables | Inserts | Updates | Deletes | Truncates | Generated columns | Via root
-----------+------------+---------+---------+---------+-----------+-------------------+----------
- postgres | f          | t       | t       | t       | t         | none              | f
+                               Publication p3
+  Owner   | All tables | Inserts | Updates | Deletes | Truncates | Via root
+----------+------------+---------+---------+---------+-----------+----------
+ postgres | f          | t       | t       | t       | t         | f
 Tables:
     "public.t2" WHERE (d = 10)
     "public.t3" WHERE (g = 10)
-]]></programlisting></para>
+</programlisting></para>
 
    <para>
     <command>psql</command>可用于显示每个表的行过滤表达式（如果已定义）。可以看到，表<literal>t1</literal>属于两个发布，但只有在<literal>p1</literal>中带有行过滤器；
     表<literal>t2</literal>也属于两个发布，并且在这两个发布中具有不同的行过滤器。
-<programlisting><![CDATA[
-/* pub # */ \d t1
+<programlisting>
+test_pub=# \d t1
                  Table "public.t1"
  Column |  Type   | Collation | Nullable | Default
 --------+---------+-----------+----------+---------
@@ -840,7 +854,7 @@ Publications:
     "p1" WHERE ((a > 5) AND (c = 'NSW'::text))
     "p2"
 
-/* pub # */ \d t2
+test_pub=# \d t2
                  Table "public.t2"
  Column |  Type   | Collation | Nullable | Default
 --------+---------+-----------+----------+---------
@@ -853,7 +867,7 @@ Publications:
     "p2" WHERE (e = 99)
     "p3" WHERE (d = 10)
 
-/* pub # */ \d t3
+test_pub=# \d t3
                  Table "public.t3"
  Column |  Type   | Collation | Nullable | Default
 --------+---------+-----------+----------+---------
@@ -864,31 +878,41 @@ Indexes:
     "t3_pkey" PRIMARY KEY, btree (g)
 Publications:
     "p3" WHERE (g = 10)
-]]></programlisting></para>
+</programlisting></para>
 
    <para>
     在订阅端节点上，创建一个与发布端定义相同的表<literal>t1</literal>，
     然后创建订阅<literal>s1</literal>来订阅发布<literal>p1</literal>。
 <programlisting>
-/* sub # */ CREATE TABLE t1(a int, b int, c text, PRIMARY KEY(a,c));
-/* sub # */ CREATE SUBSCRIPTION s1
-/* sub - */ CONNECTION 'host=localhost dbname=test_pub application_name=s1'
-/* sub - */ PUBLICATION p1;
+test_sub=# CREATE TABLE t1(a int, b int, c text, PRIMARY KEY(a,c));
+CREATE TABLE
+test_sub=# CREATE SUBSCRIPTION s1
+test_sub-# CONNECTION 'host=localhost dbname=test_pub application_name=s1'
+test_sub-# PUBLICATION p1;
+CREATE SUBSCRIPTION
 </programlisting></para>
 
    <para>
     插入一些行。只有满足发布<literal>p1</literal>中<literal>t1 WHERE</literal>子句的那些行会被复制。
 <programlisting>
-/* pub # */ INSERT INTO t1 VALUES (2, 102, 'NSW');
-/* pub # */ INSERT INTO t1 VALUES (3, 103, 'QLD');
-/* pub # */ INSERT INTO t1 VALUES (4, 104, 'VIC');
-/* pub # */ INSERT INTO t1 VALUES (5, 105, 'ACT');
-/* pub # */ INSERT INTO t1 VALUES (6, 106, 'NSW');
-/* pub # */ INSERT INTO t1 VALUES (7, 107, 'NT');
-/* pub # */ INSERT INTO t1 VALUES (8, 108, 'QLD');
-/* pub # */ INSERT INTO t1 VALUES (9, 109, 'NSW');
+test_pub=# INSERT INTO t1 VALUES (2, 102, 'NSW');
+INSERT 0 1
+test_pub=# INSERT INTO t1 VALUES (3, 103, 'QLD');
+INSERT 0 1
+test_pub=# INSERT INTO t1 VALUES (4, 104, 'VIC');
+INSERT 0 1
+test_pub=# INSERT INTO t1 VALUES (5, 105, 'ACT');
+INSERT 0 1
+test_pub=# INSERT INTO t1 VALUES (6, 106, 'NSW');
+INSERT 0 1
+test_pub=# INSERT INTO t1 VALUES (7, 107, 'NT');
+INSERT 0 1
+test_pub=# INSERT INTO t1 VALUES (8, 108, 'QLD');
+INSERT 0 1
+test_pub=# INSERT INTO t1 VALUES (9, 109, 'NSW');
+INSERT 0 1
 
-/* pub # */ SELECT * FROM t1;
+test_pub=# SELECT * FROM t1;
  a |  b  |  c
 ---+-----+-----
  2 | 102 | NSW
@@ -902,7 +926,7 @@ Publications:
 (8 rows)
 </programlisting>
 <programlisting>
-/* sub # */ SELECT * FROM t1;
+test_sub=# SELECT * FROM t1;
  a |  b  |  c
 ---+-----+-----
  6 | 106 | NSW
@@ -913,9 +937,10 @@ Publications:
    <para>
     更新一些数据，此时旧行和新行的值都满足发布<literal>p1</literal>中<literal>t1 WHERE</literal>子句。该<command>UPDATE</command>会像平常一样复制该更改。
 <programlisting>
-/* pub # */ UPDATE t1 SET b = 999 WHERE a = 6;
+test_pub=# UPDATE t1 SET b = 999 WHERE a = 6;
+UPDATE 1
 
-/* pub # */ SELECT * FROM t1;
+test_pub=# SELECT * FROM t1;
  a |  b  |  c
 ---+-----+-----
  2 | 102 | NSW
@@ -929,7 +954,7 @@ Publications:
 (8 rows)
 </programlisting>
 <programlisting>
-/* sub # */ SELECT * FROM t1;
+test_sub=# SELECT * FROM t1;
  a |  b  |  c
 ---+-----+-----
  9 | 109 | NSW
@@ -941,9 +966,10 @@ Publications:
     更新一些数据，此时旧行的值不满足发布<literal>p1</literal>中<literal>t1 WHERE</literal>子句，而新行的值满足该子句。
     <command>UPDATE</command>会被转换为<command>INSERT</command>，并且该更改会被复制。可以在订阅端看到新行。
 <programlisting>
-/* pub # */ UPDATE t1 SET a = 555 WHERE a = 2;
+test_pub=# UPDATE t1 SET a = 555 WHERE a = 2;
+UPDATE 1
 
-/* pub # */ SELECT * FROM t1;
+test_pub=# SELECT * FROM t1;
   a  |  b  |  c
 -----+-----+-----
    3 | 103 | QLD
@@ -957,7 +983,7 @@ Publications:
 (8 rows)
 </programlisting>
 <programlisting>
-/* sub # */ SELECT * FROM t1;
+test_sub=# SELECT * FROM t1;
   a  |  b  |  c
 -----+-----+-----
    9 | 109 | NSW
@@ -970,9 +996,10 @@ Publications:
     更新一些数据，此时旧行的值满足发布<literal>p1</literal>中<literal>t1 WHERE</literal>子句，而新行的值不再满足该子句。
     <command>UPDATE</command>会被转换为<command>DELETE</command>，并且该更改会被复制。可以看到该行已从订阅端移除。
 <programlisting>
-/* pub # */ UPDATE t1 SET c = 'VIC' WHERE a = 9;
+test_pub=# UPDATE t1 SET c = 'VIC' WHERE a = 9;
+UPDATE 1
 
-/* pub # */ SELECT * FROM t1;
+test_pub=# SELECT * FROM t1;
   a  |  b  |  c
 -----+-----+-----
    3 | 103 | QLD
@@ -986,7 +1013,7 @@ Publications:
 (8 rows)
 </programlisting>
 <programlisting>
-/* sub # */ SELECT * FROM t1;
+test_sub=# SELECT * FROM t1;
   a  |  b  |  c
 -----+-----+-----
    6 | 999 | NSW
@@ -995,42 +1022,50 @@ Publications:
 </programlisting></para>
 
    <para>
-    下面的示例展示了发布参数<literal>publish_via_partition_root</literal>
+    下面的示例展示了发布参数<link linkend="sql-createpublication-with-publish-via-partition-root"><literal>publish_via_partition_root</literal></link>
     在分区表场景下如何决定使用父表还是子表的行过滤器。
    </para>
 
    <para>
     在发布端创建一个分区表。
 <programlisting>
-/* pub # */ CREATE TABLE parent(a int PRIMARY KEY) PARTITION BY RANGE(a);
-/* pub # */ CREATE TABLE child PARTITION OF parent DEFAULT;
+test_pub=# CREATE TABLE parent(a int PRIMARY KEY) PARTITION BY RANGE(a);
+CREATE TABLE
+test_pub=# CREATE TABLE child PARTITION OF parent DEFAULT;
+CREATE TABLE
 </programlisting>
    在订阅端创建相同的表。
 <programlisting>
-/* sub # */ CREATE TABLE parent(a int PRIMARY KEY) PARTITION BY RANGE(a);
-/* sub # */ CREATE TABLE child PARTITION OF parent DEFAULT;
+test_sub=# CREATE TABLE parent(a int PRIMARY KEY) PARTITION BY RANGE(a);
+CREATE TABLE
+test_sub=# CREATE TABLE child PARTITION OF parent DEFAULT;
+CREATE TABLE
 </programlisting></para>
 
    <para>
     创建一个发布<literal>p4</literal>，然后订阅它。发布参数<literal>publish_via_partition_root</literal>设置为 true。
     分区表（<literal>parent</literal>）和分区（<literal>child</literal>）上都定义了行过滤器。
-<programlisting><![CDATA[
-/* pub # */ CREATE PUBLICATION p4 FOR TABLE parent WHERE (a < 5), child WHERE (a >= 5)
-/* pub - */ WITH (publish_via_partition_root=true);
-]]></programlisting>
 <programlisting>
-/* sub # */ CREATE SUBSCRIPTION s4
-/* sub - */ CONNECTION 'host=localhost dbname=test_pub application_name=s4'
-/* sub - */ PUBLICATION p4;
+test_pub=# CREATE PUBLICATION p4 FOR TABLE parent WHERE (a &lt; 5), child WHERE (a >= 5)
+test_pub-# WITH (publish_via_partition_root=true);
+CREATE PUBLICATION
+</programlisting>
+<programlisting>
+test_sub=# CREATE SUBSCRIPTION s4
+test_sub-# CONNECTION 'host=localhost dbname=test_pub application_name=s4'
+test_sub-# PUBLICATION p4;
+CREATE SUBSCRIPTION
 </programlisting></para>
 
    <para>
     直接向<literal>parent</literal>和<literal>child</literal>表插入一些值。它们会使用<literal>parent</literal>的行过滤器进行复制（因为<literal>publish_via_partition_root</literal>为 true）。
 <programlisting>
-/* pub # */ INSERT INTO parent VALUES (2), (4), (6);
-/* pub # */ INSERT INTO child VALUES (3), (5), (7);
+test_pub=# INSERT INTO parent VALUES (2), (4), (6);
+INSERT 0 3
+test_pub=# INSERT INTO child VALUES (3), (5), (7);
+INSERT 0 3
 
-/* pub # */ SELECT * FROM parent ORDER BY a;
+test_pub=# SELECT * FROM parent ORDER BY a;
  a
 ---
  2
@@ -1042,7 +1077,7 @@ Publications:
 (6 rows)
 </programlisting>
 <programlisting>
-/* sub # */ SELECT * FROM parent ORDER BY a;
+test_sub=# SELECT * FROM parent ORDER BY a;
  a
 ---
  2
@@ -1054,23 +1089,29 @@ Publications:
    <para>
     重复相同的测试，但将<literal>publish_via_partition_root</literal>设为不同的值。
     这里发布参数<literal>publish_via_partition_root</literal>设置为 false，并且在分区（<literal>child</literal>）上定义了行过滤器。
-<programlisting><![CDATA[
-/* pub # */ DROP PUBLICATION p4;
-/* pub # */ CREATE PUBLICATION p4 FOR TABLE parent, child WHERE (a >= 5)
-/* pub - */ WITH (publish_via_partition_root=false);
-]]></programlisting>
 <programlisting>
-/* sub # */ ALTER SUBSCRIPTION s4 REFRESH PUBLICATION;
+test_pub=# DROP PUBLICATION p4;
+DROP PUBLICATION
+test_pub=# CREATE PUBLICATION p4 FOR TABLE parent, child WHERE (a >= 5)
+test_pub-# WITH (publish_via_partition_root=false);
+CREATE PUBLICATION
+</programlisting>
+<programlisting>
+test_sub=# ALTER SUBSCRIPTION s4 REFRESH PUBLICATION;
+ALTER SUBSCRIPTION
 </programlisting></para>
 
    <para>
     像前面一样在发布端执行插入。它们会使用<literal>child</literal>的行过滤器进行复制（因为<literal>publish_via_partition_root</literal>为 false）。
 <programlisting>
-/* pub # */ TRUNCATE parent;
-/* pub # */ INSERT INTO parent VALUES (2), (4), (6);
-/* pub # */ INSERT INTO child VALUES (3), (5), (7);
+test_pub=# TRUNCATE parent;
+TRUNCATE TABLE
+test_pub=# INSERT INTO parent VALUES (2), (4), (6);
+INSERT 0 3
+test_pub=# INSERT INTO child VALUES (3), (5), (7);
+INSERT 0 3
 
-/* pub # */ SELECT * FROM parent ORDER BY a;
+test_pub=# SELECT * FROM parent ORDER BY a;
  a
 ---
  2
@@ -1082,7 +1123,7 @@ Publications:
 (6 rows)
 </programlisting>
 <programlisting>
-/* sub # */ SELECT * FROM child ORDER BY a;
+test_sub=# SELECT * FROM child ORDER BY a;
  a
 ---
  5
@@ -1119,12 +1160,12 @@ Publications:
 
   <para>
    当发布还发布
-   <literal>FOR TABLES IN SCHEMA</literal>
+   <link linkend="sql-createpublication-for-tables-in-schema"><literal>FOR TABLES IN SCHEMA</literal></link>
    时，不支持指定列列表。
 </para>
 
   <para>
-   对于分区表，发布参数<literal>publish_via_partition_root</literal>
+   对于分区表，发布参数<link linkend="sql-createpublication-with-publish-via-partition-root"><literal>publish_via_partition_root</literal></link>
    决定使用哪个列列表。如果<literal>publish_via_partition_root</literal>为<literal>true</literal>，则使用根分区表的列列表。
    否则，如果<literal>publish_via_partition_root</literal>为<literal>false</literal>（默认值），则使用各个分区的列列表。
 </para>
@@ -1172,23 +1213,25 @@ Publications:
    <para>
     创建一个表<literal>t1</literal>，供下面的示例使用。
 <programlisting>
-/* pub # */ CREATE TABLE t1(id int, a text, b text, c text, d text, e text, PRIMARY KEY(id));
+test_pub=# CREATE TABLE t1(id int, a text, b text, c text, d text, e text, PRIMARY KEY(id));
+CREATE TABLE
 </programlisting></para>
 
    <para>
     创建一个发布<literal>p1</literal>。为表<literal>t1</literal>定义一个列列表，以减少将被复制的列数。请注意，列列表中列名的顺序并不重要。
 <programlisting>
-/* pub # */ CREATE PUBLICATION p1 FOR TABLE t1 (id, b, a, d);
+test_pub=# CREATE PUBLICATION p1 FOR TABLE t1 (id, b, a, d);
+CREATE PUBLICATION
 </programlisting></para>
 
     <para>
      <literal>psql</literal>可用于显示每个发布的列列表（如果已定义）。
 <programlisting>
-/* pub # */ \dRp+
-                                         Publication p1
-  Owner   | All tables | Inserts | Updates | Deletes | Truncates | Generated columns | Via root
-----------+------------+---------+---------+---------+-----------+-------------------+----------
- postgres | f          | t       | t       | t       | t         | none              | f
+test_pub=# \dRp+
+                               Publication p1
+  Owner   | All tables | Inserts | Updates | Deletes | Truncates | Via root
+----------+------------+---------+---------+---------+-----------+----------
+ postgres | f          | t       | t       | t       | t         | f
 Tables:
     "public.t1" (id, a, b, d)
 </programlisting></para>
@@ -1196,7 +1239,7 @@ Tables:
     <para>
      <literal>psql</literal>可用于显示每个表的列列表（如果已定义）。
 <programlisting>
-/* pub # */ \d t1
+test_pub=# \d t1
                  Table "public.t1"
  Column |  Type   | Collation | Nullable | Default
 --------+---------+-----------+----------+---------
@@ -1215,19 +1258,24 @@ Publications:
     <para>
      在订阅端节点上，创建一个名为<literal>t1</literal>的表，它现在只需要发布端表<literal>t1</literal>中的部分列，然后创建订阅<literal>s1</literal>来订阅发布<literal>p1</literal>。
 <programlisting>
-/* sub # */ CREATE TABLE t1(id int, b text, a text, d text, PRIMARY KEY(id));
-/* sub # */ CREATE SUBSCRIPTION s1
-/* sub - */ CONNECTION 'host=localhost dbname=test_pub application_name=s1'
-/* sub - */ PUBLICATION p1;
+test_sub=# CREATE TABLE t1(id int, b text, a text, d text, PRIMARY KEY(id));
+CREATE TABLE
+test_sub=# CREATE SUBSCRIPTION s1
+test_sub-# CONNECTION 'host=localhost dbname=test_pub application_name=s1'
+test_sub-# PUBLICATION p1;
+CREATE SUBSCRIPTION
 </programlisting></para>
 
     <para>
      在发布端节点上，向表<literal>t1</literal>插入一些行。
 <programlisting>
-/* pub # */ INSERT INTO t1 VALUES(1, 'a-1', 'b-1', 'c-1', 'd-1', 'e-1');
-/* pub # */ INSERT INTO t1 VALUES(2, 'a-2', 'b-2', 'c-2', 'd-2', 'e-2');
-/* pub # */ INSERT INTO t1 VALUES(3, 'a-3', 'b-3', 'c-3', 'd-3', 'e-3');
-/* pub # */ SELECT * FROM t1 ORDER BY id;
+test_pub=# INSERT INTO t1 VALUES(1, 'a-1', 'b-1', 'c-1', 'd-1', 'e-1');
+INSERT 0 1
+test_pub=# INSERT INTO t1 VALUES(2, 'a-2', 'b-2', 'c-2', 'd-2', 'e-2');
+INSERT 0 1
+test_pub=# INSERT INTO t1 VALUES(3, 'a-3', 'b-3', 'c-3', 'd-3', 'e-3');
+INSERT 0 1
+test_pub=# SELECT * FROM t1 ORDER BY id;
  id |  a  |  b  |  c  |  d  |  e
 ----+-----+-----+-----+-----+-----
   1 | a-1 | b-1 | c-1 | d-1 | e-1
@@ -1239,7 +1287,7 @@ Publications:
     <para>
      只有发布<literal>p1</literal>的列列表中包含的数据会被复制。
 <programlisting>
-/* sub # */ SELECT * FROM t1 ORDER BY id;
+test_sub=# SELECT * FROM t1 ORDER BY id;
  id |  b  |  a  |  d
 ----+-----+-----+-----
   1 | b-1 | a-1 | d-1
@@ -1256,62 +1304,61 @@ Publications:
   <title>冲突</title>
 
   <para>
-   逻辑复制的行为类似于普通 DML 操作：即使订阅节点上的数据已在本地被修改，
-   传入的数据仍会更新它。如果传入数据违反任何约束，复制就会停止。这称为
-   <firstterm>冲突</firstterm>。在复制 <command>UPDATE</command> 或
-   <command>DELETE</command> 操作时，找不到数据不会产生冲突，这类操作会被直接跳过。
+   逻辑复制的行为类似于普通的 DML 操作，即使数据在订阅端本地已被更改，仍会更新数据。如果传入的数据违反了任何约束，复制将停止。这称为<firstterm>冲突</firstterm>。当复制<command>UPDATE</command>或<command>DELETE</command>操作时，缺失的数据不会产生冲突，这类操作只会被简单跳过。
   </para>
 
   <para>
-   逻辑复制操作会以订阅所有者角色的权限执行。目标表上的权限失败会导致复制冲突，
-   目标表上启用的行级安全也会导致复制冲突，只要订阅所有者受其约束，而不管任何策略
-   是否通常会拒绝正在复制的 <command>INSERT</command>、<command>UPDATE</command>、
-   <command>DELETE</command> 或 <command>TRUNCATE</command>。这一行级安全限制
-   可能会在 PostgreSQL 的未来版本中取消。
+   逻辑复制操作会以订阅所有者角色的权限执行。目标表上的权限失败会导致复制冲突；
+   目标表上启用的、且订阅所有者受其约束的
+   <link linkend="ddl-rowsecurity">行级安全</link> 也会导致复制冲突，而不考虑任何
+   策略通常是否会拒绝当前复制的 <command>INSERT</command>、
+   <command>UPDATE</command>、<command>DELETE</command> 或
+   <command>TRUNCATE</command>。未来版本的 <productname>PostgreSQL</productname>
+   可能会取消这一行级安全限制。
   </para>
 
   <para>
-   冲突会产生错误并停止复制；必须由用户手工解决。冲突的详细信息可以在订阅端的
-   服务器日志中找到。
+   冲突将产生一个错误并停止复制；它必须由用户手动解决。冲突的详细信息可在订阅端的服务器日志中找到。
   </para>
 
   <para>
-   解决方法可以是在订阅端更改数据或权限，使其不再与传入变更冲突；也可以跳过与现有
-   数据冲突的事务。当冲突导致错误时，复制不会继续，逻辑复制工作者会向订阅端的
-   服务器日志输出如下消息：
+   解决方法可以是修改订阅端上的数据或权限，使其不再与传入变更冲突；也可以跳过与
+   现有数据冲突的事务。当冲突导致错误时，复制不会继续，逻辑复制工作进程会向订阅端
+   的服务器日志输出如下消息：
 <screen>
 ERROR:  duplicate key value violates unique constraint "test_pkey"
 DETAIL:  Key (c)=(1) already exists.
 CONTEXT:  processing remote data for replication origin "pg_16395" during "INSERT" for replication target relation "public.test" in transaction 725 finished at 0/14C0378
 </screen>
-   事务的 LSN 和复制源名称可以从服务器日志中找到（上述示例中的 LSN 为
-   0/14C0378，复制源为 <literal>pg_16395</literal>）。可以使用
-   <command>ALTER SUBSCRIPTION ... SKIP</command> 并提供 finish LSN
-   （即 LSN 0/14C0378）来跳过导致冲突的事务。finish LSN 可以是事务在发布端提交
-   或准备完成时的 LSN。或者，也可以通过调用
+   可以从服务器日志中找到包含违规变更的事务的 LSN 以及复制源名称
+   （在上述示例中分别是 LSN 0/14C0378 和复制源 <literal>pg_16395</literal>）。
+   可以使用
+   <command>ALTER SUBSCRIPTION ... SKIP</command>
+   并提供 完成 LSN（即 LSN 0/14C0378）来跳过产生冲突的事务。这个 完成 LSN
+   可以是该事务在发布端提交或预备时的 LSN。或者，也可以调用
    <link linkend="pg-replication-origin-advance">
    <function>pg_replication_origin_advance()</function></link> 函数来跳过该事务。
-   在使用该函数之前，需要先临时禁用订阅，可以使用
-   <command>ALTER SUBSCRIPTION ... DISABLE</command>，或者将订阅与
-   <literal>disable_on_error</literal> 选项一起使用。然后，可以使用
-   <function>pg_replication_origin_advance()</function>，传入
-   <parameter>node_name</parameter>（即 <literal>pg_16395</literal>）以及 finish
-   LSN 的下一个 LSN（即 0/14C0379）。当前各个复制源的位置可以在
+   在使用此函数之前，需要暂时禁用订阅，可以使用
+
+   <command>ALTER SUBSCRIPTION ... DISABLE</command>，或者让订阅使用
+   <link linkend="sql-createsubscription-with-disable-on-error"><literal>disable_on_error</literal></link>
+   选项。然后，可以使用 <function>pg_replication_origin_advance()</function> 函数，
+   传入 <parameter>node_name</parameter>（即 <literal>pg_16395</literal>）
+   以及 完成 LSN 的下一个 LSN（即 0/14C0379）。当前各复制源的位置可以在
    <link linkend="view-pg-replication-origin-status">
    <structname>pg_replication_origin_status</structname></link> 系统视图中查看。
-   请注意，跳过整个事务也会跳过那些本来不会违反任何约束的变更，这很容易使订阅端
-   变得不一致。
+   请注意，跳过整个事务也会跳过那些本来可能不违反任何约束的变更，这很容易导致
+   订阅端不一致。
   </para>
 
   <para>
    当
-   <literal>streaming</literal>
-   模式为 <literal>parallel</literal> 时，失败事务的 finish LSN 可能不会被记录。
-   在这种情况下，可能需要把 streaming 模式改为 <literal>on</literal> 或
-   <literal>off</literal>，并再次制造相同冲突，以便把失败事务的 finish LSN 写入
-   服务器日志。关于 finish LSN 的用法，请参见
-   <link linkend="sql-altersubscription"><command>ALTER SUBSCRIPTION ...
-   SKIP</command></link>。
+   <link linkend="sql-createsubscription-with-streaming"><literal>streaming</literal></link>
+   模式为 <literal>parallel</literal> 时，失败事务的 完成 LSN 可能不会被记录。
+   这种情况下，可能需要把 streaming 模式改为 <literal>on</literal> 或
+   <literal>off</literal>，并再次触发相同的冲突，以便将失败事务的 完成 LSN
+   写入服务器日志。关于 完成 LSN 的用法，请参见
+   <link linkend="sql-altersubscription"><command>ALTER SUBSCRIPTION ... SKIP</command></link>。
   </para>
  </sect1>
 
@@ -1328,9 +1375,9 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
      数据库模式和 DDL 命令不会被复制。初始模式可以手工使用
      <literal>pg_dump --schema-only</literal> 复制。之后的模式更改需要手工保持同步。
      （不过请注意，两端的模式其实不需要绝对一致。）当活动数据库中的模式定义发生变化时，
-     逻辑复制仍然具有一定鲁棒性：如果发布端修改了模式，而复制数据开始到达订阅端时
+     逻辑复制仍然能够稳健运行：如果发布端修改了模式，而复制数据开始到达订阅端时
      与表模式不匹配，复制就会报错，直到模式被更新。在很多情况下，可以通过先在订阅端
-     应用增量式的模式变更来避免间歇性错误。
+     应用仅添加内容的模式变更来避免间歇性错误。
     </para>
    </listitem>
 
@@ -1376,26 +1423,23 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
      也可以进一步再分区，甚至可以是独立表。）发布还可以指定，复制变更时改用分区根表
      的标识和模式，而不是使用实际产生变更的各个叶子分区的标识和模式（见
      <command>CREATE PUBLICATION</command> 的
-     <literal>publish_via_partition_root</literal>
+     <link linkend="sql-createpublication-with-publish-via-partition-root"><literal>publish_via_partition_root</literal></link>
      参数）。
     </para>
    </listitem>
 
-   <listitem>
-    <para>
-     对已发布表使用
-     <link linkend="sql-altertable-replica-identity-full"><literal>REPLICA IDENTITY FULL</literal></link>
-     时，需要注意：如果表中包含某些数据类型的属性（例如 point 或 box），而这些类型
-     没有 B-tree 或 Hash 的默认操作符类，那么 <literal>UPDATE</literal> 和
-     <literal>DELETE</literal> 操作就无法在订阅端应用。不过，可以通过确保该表具有
-     主键或已定义复制标识来规避这一限制。
-    </para>
-   </listitem>
+
   </itemizedlist>
  </sect1>
 
  <sect1 id="logical-replication-architecture">
   <title>架构</title>
+
+  <para>
+   逻辑复制首先复制发布者数据库上的数据快照。完成后，发布者上的变更会在发生时
+   实时发送给订阅者。订阅者会按照发布者上提交的顺序应用数据，因此对于单个订阅
+   中的任何发布，可以保证事务一致性。
+  </para>
 
   <para>
    逻辑复制采用了与物理流复制类似的架构（见
@@ -1427,10 +1471,9 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
   <sect2 id="logical-replication-snapshot">
     <title>初始快照</title>
     <para>
-     对现有订阅表中的初始数据，会取快照并由一种特殊应用进程的并行实例来复制。
-     这些特殊的应用进程是为每张待同步表启动的专用表同步工作者。每个表同步进程
-     都会创建自己的复制槽，并复制现有数据。复制一完成，该表内容就会对其他后端可见。
-     现有数据复制完成后，工作者会进入同步模式，通过标准逻辑复制流式发送在初始数据
+     对现有订阅表中的初始数据，会取快照并由一种特殊应用进程的一个并行实例来复制。
+     该进程会创建自己的复制槽，并复制现有数据。复制一完成，该表内容就会对其他后端可见。
+     现有数据复制完成后，工作进程会进入同步模式，通过标准逻辑复制流式发送在初始数据
      复制期间发生的任何变更，使该表与主应用进程达到同步状态。在这一同步阶段，
      变更会按照它们在发布端发生的顺序被应用和提交。同步完成后，该表的复制控制权
      会交还给主应用进程，之后复制将照常继续。
@@ -1438,15 +1481,8 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
     <note>
      <para>
       发布的
-      <literal>publish</literal>
+      <link linkend="sql-createpublication-with-publish"><literal>publish</literal></link>
       参数只影响哪些 DML 操作会被复制。初始数据同步在复制现有表数据时不会考虑该参数。
-     </para>
-    </note>
-    <note>
-     <para>
-      如果表同步工作者在复制期间失败，应用工作者会检测到这一失败，并重新启动表同步
-      工作者以继续同步过程。这种行为确保了瞬时错误不会永久破坏复制配置。另见
-      <link linkend="guc-wal-retrieve-retry-interval"><varname>wal_retrieve_retry_interval</varname></link>。
      </para>
     </note>
   </sect2>
@@ -1465,15 +1501,15 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
   <para>
    与订阅相关的监控信息可在
    <link linkend="monitoring-pg-stat-subscription"><structname>pg_stat_subscription</structname></link>
-   中查看。这个视图为每个订阅工作者包含一行。一个订阅根据其状态，可能有零个或多个
-   活跃的订阅工作者。
+   中查看。这个视图为每个订阅工作进程包含一行。一个订阅根据其状态，可能有零个或多个
+   活跃的订阅工作进程。
   </para>
 
   <para>
    通常，一个已启用的订阅会有一个应用进程在运行。被禁用的订阅或已崩溃的订阅在这个
    视图中将没有任何行。如果某张表的初始数据同步正在进行，则还会有针对这些正在同步
-   的表的额外工作者。并且，如果使用
-   <literal>streaming</literal>
+   的表的额外工作进程。并且，如果使用
+   <link linkend="sql-createsubscription-with-streaming"><literal>streaming</literal></link>
    并以并行方式应用事务，则还可能出现额外的并行应用工作进程。
   </para>
  </sect1>
@@ -1486,7 +1522,7 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
    （或为超级用户）。如果该角色既没有 <literal>SUPERUSER</literal>，也没有
    <literal>BYPASSRLS</literal>，则发布端的行安全性策略可能会生效。如果该角色
    不信任所有表所有者，请在连接字符串中包含
-   <literal>options=-row_security=off</literal>；这样一来，如果某个表所有者随后
+   <literal>options=-crow_security=off</literal>；这样一来，如果某个表所有者随后
    添加了行安全性策略，复制将停止，而不是执行该策略。该角色的访问权限必须在
    <filename>pg_hba.conf</filename> 中配置，并且它还必须具有
    <literal>LOGIN</literal> 属性。
@@ -1551,14 +1587,14 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
   </para>
 
   <para>
-   在订阅端，订阅所有者的权限会在每个事务应用时重新检查。如果某个工作者正在应用
+   在订阅端，订阅所有者的权限会在每个事务应用时重新检查。如果某个工作进程正在应用
    事务时，订阅的所有权被并发事务更改，那么当前事务的应用仍会继续使用旧所有者的
    权限。
   </para>
  </sect1>
 
  <sect1 id="logical-replication-config">
-  <title>配置参数</title>
+  <title>配置设置</title>
 
   <para>
    逻辑复制需要设置若干配置选项。大多数选项只在复制的一侧相关。不过，
@@ -1602,7 +1638,7 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
 
    <para>
     <link linkend="guc-max-logical-replication-workers"><varname>max_logical_replication_workers</varname></link>
-    必须至少设置为订阅数量（用于主应用工作进程），再加上用于表同步工作进程
+    必须至少设置为订阅数量（用于领导者应用工作进程），再加上用于表同步工作进程
     和并行应用工作进程的预留量。
    </para>
 

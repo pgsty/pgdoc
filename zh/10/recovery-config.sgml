@@ -54,7 +54,7 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
         这个信息可以被用来把归档截断为支持从当前恢复重启所需的最小值。
         对于单一备库配置，<xref linkend="pgarchivecleanup">模块常常被用在<varname>archive_cleanup_command</varname>中，例如：
 <programlisting>archive_cleanup_command = 'pg_archivecleanup /mnt/server/archivedir %r'</programlisting>
-        但是注意，如果多个备库正在从同一个归档目录中恢复，你将需要保证只有当任意服务器都不再需要 WAL 文件时才会删除它们。
+        但是注意，如果多个备库正在从同一个归档目录中恢复，你将需要保证只有当所有服务器都不再需要这些 WAL 文件时才会删除它们。
         <varname>archive_cleanup_command</varname>通常被用于一种温备配置（见<xref linkend="warm-standby">）中。
         要在该命令中嵌入一个真正的<literal>%</literal>字符，需要写成<literal>%%</literal>。
        </para>
@@ -106,7 +106,7 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
       <listitem>
 
        <para>
-        这个参数指定（<function>pg_create_restore_point()</function>所创建）的已命名的恢复点，恢复将进入该恢复点。
+        这个参数指定（<function>pg_create_restore_point()</function>所创建）的已命名的恢复点，恢复将进行到该恢复点。
        </para>
       </listitem>
      </varlistentry>
@@ -128,7 +128,7 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
      <varlistentry id="recovery-target-lsn" xreflabel="recovery_target_lsn">
       <term><varname>recovery_target_lsn</varname> (<type>pg_lsn</type>) <indexterm> <primary><varname>recovery_target_lsn</varname> 恢复参数</primary> </indexterm></term>
       <listitem>
-       <para>此参数指定恢复要进行到的预写式日志位置的 LSN。精确的停止点还受 <xref linkend="recovery-target-inclusive"> 影响。此参数使用系统数据类型 <link linkend="datatype-pg-lsn"><type>pg_lsn</type></link> 解析。</para>
+       <para>此参数指定恢复要进行到的预写日志位置的 LSN。精确的停止点还受 <xref linkend="recovery-target-inclusive"> 影响。此参数使用系统数据类型 <link linkend="datatype-pg-lsn"><type>pg_lsn</type></link> 解析。</para>
       </listitem>
      </varlistentry>
      </variablelist>
@@ -164,13 +164,13 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
         最后，<literal>shutdown</literal>将在达到恢复目标之后停止服务器。
        </para>
        <para>
-        使用<literal>pause</literal>设置的目的是：如果这个恢复目标就是恢复最想要的位置，就允许对数据库执行查询。
+        使用<literal>pause</literal>设置的目的是允许对数据库执行查询，以检查这个恢复目标是否为最合适的恢复位置。
         暂停的状态可以使用<function>pg_wal_replay_resume()</function>（见<xref linkend="functions-recovery-control-table">）继续，这会让恢复终结。
         如果这个恢复目标不是想要的停止点，那么关闭服务器，将恢复目标设置改为一个稍后的目标并且重启以继续恢复。
        </para>
        <para>
         要让实例在想要的重放点那里准备好，<literal>shutdown</literal>设置可以派上用场。
-        该实例将仍能重放更多 WAL 记录（并且事实上将不得不重放从下一次它被启动后最后一个检查点以来的 WAL 记录）。
+        该实例将仍能重放更多 WAL 记录（并且事实上，下次启动时必须重新回放自上一个检查点以来的 WAL 记录）。
        </para>
        <para>注意，将 <varname>recovery_target_action</varname> 设为 <literal>shutdown</literal> 时，<filename>recovery.conf</filename> 不会被重命名，因此除非更改配置或手动删除 <filename>recovery.conf</filename> 文件，否则之后每次启动都会立即关闭。</para>
        <para>如果未设置恢复目标，此设置不起作用。如果未启用 <xref linkend="guc-hot-standby">，则 <literal>pause</literal> 的行为与 <literal>shutdown</literal> 相同。</para>
@@ -213,13 +213,33 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
        </varlistentry>
 
      <varlistentry id="recovery-min-apply-delay" xreflabel="recovery_min_apply_delay">
-      <term><varname>recovery_min_apply_delay</varname> (<type>integer</type>) <indexterm> <primary><varname>recovery_min_apply_delay</varname> 恢复参数</primary> </indexterm></term>
+      <term><varname>recovery_min_apply_delay</varname> (<type>integer</type>)
+      <indexterm>
+        <primary><varname>recovery_min_apply_delay</> 恢复参数</primary>
+      </indexterm>
+      </term>
       <listitem>
-       <para>默认情况下，备库会尽快恢复来自主库的 WAL 记录。保留一份有时间延迟的数据副本可能很有用，可以为纠正导致数据丢失的错误提供机会。此参数允许将恢复延迟固定的一段时间，未指定单位时以毫秒计。例如，设为 <literal>5min</literal> 时，只有备库系统时间比主库报告的提交时间至少晚五分钟，备库才会重放该事务的提交。</para>
-       <para>服务器之间的复制延迟可能超过此参数的值，此时不会增加额外延迟。注意，延迟是根据主库写入的 WAL 时间戳与备库当前时间之间的差值计算的。网络滞后或级联复制配置造成的传输延迟，可能显著减少实际等待时间。如果主库和备库的系统时钟不同步，可能导致恢复比预期更早地应用记录；但这不是主要问题，因为此参数的实用设置值远大于服务器之间通常的时间偏差。</para>
-       <para>延迟只作用于事务提交的 WAL 记录。其他记录会尽快重放，这不会造成问题，因为 MVCC 可见性规则确保在相应提交记录应用之前，它们的影响不可见。</para>
-       <para>正在恢复的数据库达到一致状态后，延迟就会生效，直到备库被提升或触发。此后，备库将不再继续等待，而是结束恢复。</para>
-       <para>此参数面向流复制部署设计；但只要指定了它，在所有情况下都会生效。使用此功能会延迟 <varname>hot_standby_feedback</varname>，可能导致主库膨胀；同时使用二者时应谨慎。<warning> <para> 当 <varname>synchronous_commit</varname> 设为 <literal>remote_apply</literal> 时，同步复制会受此设置影响；每次 <literal>COMMIT</literal> 都必须等待提交被应用。 </para> </warning></para>
+       <para>
+        默认情况下，备库会尽快恢复来自主库的 WAL 记录。保留一份延迟的数据副本可能很有用，因为它提供了纠正数据丢失错误的机会。此参数允许将恢复延迟一段固定时间；如果没有指定单位，则以毫秒计。例如，将此参数设置为 <literal>5min</literal> 时，只有当备库系统时间比主库报告的提交时间至少晚五分钟，备库才会重放各事务的提交。
+       </para>
+       <para>
+        服务器之间的复制延迟可能超过此参数的值，这种情况下不会增加延迟。注意，延迟根据主库写入的 WAL 时间戳与备库当前时间之差计算。网络延迟或级联复制配置导致的传输延迟，可能显著缩短实际等待时间。如果主库和备库的系统时钟不同步，恢复时可能比预期更早应用记录；但这通常不是主要问题，因为此参数的实用取值远大于服务器间常见的时间偏差。
+       </para>
+       <para>
+        延迟仅发生在事务提交的 WAL 记录上。其他记录会尽快重放；这不会造成问题，因为 MVCC 可见性规则确保在对应提交记录被应用之前，它们的效果不会可见。
+       </para>
+       <para>
+        恢复中的数据库达到一致状态后开始延迟，直到备库被提升或触发。此后，备库会结束恢复，不再等待。
+       </para>
+       <para>
+        此参数旨在用于流复制部署；不过，只要指定了此参数，它就会在所有情况下生效。使用此功能也会延迟 <varname>hot_standby_feedback</varname>，可能导致主库膨胀；同时使用两者时应谨慎。
+        <warning>
+         <para>
+          当 <varname>synchronous_commit</varname> 设置为 <literal>remote_apply</literal> 时，同步复制会受到此设置影响；每个 <literal>COMMIT</literal> 都必须等待提交被应用。
+         </para>
+        </warning>
+
+       </para>
       </listitem>
      </varlistentry>
 
