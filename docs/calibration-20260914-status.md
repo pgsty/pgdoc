@@ -2,7 +2,7 @@ PG10—PG20 校准阶段报告（2026-09-14T14:42:30.720497+08:00）
 
 原清单 F-001—F-026 均已有逐版修复、原已正确或不适用的源码记录及分批核验。后续审校继续发现并修复了配置、函数、psql、pgbench、数据类型及其四个包含文件中的问题。**全书逐句语义校准、最终独立对账和 33 项最终构建仍未完成。** 本报告不将机器扫描、历史通过记录或台账数量当作全文验收。
 
-2026-09-15 最新完成 [CREATE VIEW／CREATE RULE 全文校准](/Users/vonng/pgsty/pgdoc/docs/calibration-view-rule-reference-20260915.md)：22 个完整文件核对、16 个正文修订；八组问题／一致性检查和一组源文疑点共 99 个逐版格。新快照 2,141 个节点、132 条范围内提示全部核准，零未决、零漂移。此前 [规则系统全章](/Users/vonng/pgsty/pgdoc/docs/calibration-rules-20260915.md)及其他批次已提交。继续视图管理关联参考页、全书语义阅读、历史范围对账及 33 项最终构建。
+2026-09-15 最新完成 [视图管理八类参考页全文校准](/Users/vonng/pgsty/pgdoc/docs/calibration-view-management-20260915.md)：十一版 88 个文件完整核对、64 个正文修订，十一组问题／一致性检查共 121 格。新快照 4,505 个节点、236 条范围内提示全部核准，零未决、零漂移。此前 [CREATE VIEW／CREATE RULE](/Users/vonng/pgsty/pgdoc/docs/calibration-view-rule-reference-20260915.md)及其他批次已提交。横向关联发现的维护权限、默认权限和行安全性参考页正在全文核对；全书语义阅读、历史范围对账及 33 项最终构建继续。
 
 英文固定为 10.23、11.22、12.22、13.23、14.24、15.19、16.15、17.11、18.6、19beta3 和 PG20 提交 86f7c82cf1023e3599f40f939727791a7090cd44。PG18 优先阅读；其他版本逐一核对完整段落、表格行和版本差异，同义英文共用译文，保留自身功能、签名、默认值、限制、代码和链接。遵守 exclude、glossary 及语境规则、style 的优先顺序。
 
@@ -247,3 +247,5 @@ ECPG 全章已核验提交 `74d86e305d68d39fe4b2868ec5211da5ec28f2ff`（11正文
 2026-09-15：[规则系统报告](/Users/vonng/pgsty/pgdoc/docs/calibration-rules-20260915.md)：十一版全章、15 组165格；1,309叶段落、55外层段落、946代码/计划块，新快照3718节点、79提示全部核准。规则章零未决零漂移，关联参考页和全书、33最终构建继续。
 
 2026-09-15：[CREATE VIEW／CREATE RULE 报告](/Users/vonng/pgsty/pgdoc/docs/calibration-view-rule-reference-20260915.md)：十一版 22 文件完整核对、16 修订；99 格，新快照 2141 节点、132 提示全部核准，零未决零漂移。视图管理参考页、全书和 33 最终构建继续。
+
+2026-09-15：[视图管理报告](/Users/vonng/pgsty/pgdoc/docs/calibration-view-management-20260915.md)：十一版八类 88 文件全文核对、64 修订；121 格，新快照 4505 节点、236 提示全部核准，零未决零漂移。新发现权限关联问题已记录，五类 55 文件阅读清单维护在 maintenance-permissions-full-human-progress.json；全书和 33 最终构建继续。
