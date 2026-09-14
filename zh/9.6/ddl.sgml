@@ -2057,20 +2057,14 @@ VALUES ('Albany', NULL, NULL, 'NY');
         为各个分区表添加表约束，定义每个分区中允许的键值。
        </para>
 
-       <para>
-        典型示例如下：
-<programlisting>
+       <para>典型示例如下：<programlisting>
 CHECK ( x = 1 )
 CHECK ( county IN ( 'Oxfordshire', 'Buckinghamshire', 'Warwickshire' ))
 CHECK ( outletID &gt;= 100 AND outletID &lt; 200 )
-</programlisting>
-        确保约束保证不同分区所允许的键值互不重叠。常见错误是设置如下范围约束：
-<programlisting>
+</programlisting>确保约束保证不同分区所允许的键值互不重叠。常见错误是设置如下范围约束：<programlisting>
 CHECK ( outletID BETWEEN 100 AND 200 )
 CHECK ( outletID BETWEEN 200 AND 300 )
-</programlisting>
-        这是错误的，因为无法明确键值 200 属于哪个分区。
-       </para>
+</programlisting>这是错误的，因为无法明确键值 200 属于哪个分区。</para>
 
        <para>
         注意，范围分区和列表分区在语法上没有区别；这些术语只是描述性的。
@@ -2208,8 +2202,7 @@ CREATE TRIGGER insert_measurement_trigger
     FOR EACH ROW EXECUTE PROCEDURE measurement_insert_trigger();
 </programlisting>必须每月重新定义触发器函数，使其始终指向当前分区。不过，触发器定义无需更新。</para>
 
-       <para>
-        我们可能希望插入数据时，由服务器自动定位应添加该行的分区。这可以通过更复杂的触发器函数实现，例如：<programlisting>
+       <para>我们可能希望插入数据时，由服务器自动定位应添加该行的分区。这可以通过更复杂的触发器函数实现，例如：<programlisting>
 CREATE OR REPLACE FUNCTION measurement_insert_trigger()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -2230,7 +2223,7 @@ BEGIN
 END;
 $$
 LANGUAGE plpgsql;
-</programlisting>触发器定义与之前相同。注意，每个<literal>IF</literal>测试必须与其分区的<literal>CHECK</literal>约束完全一致。</para>
+</programlisting>触发器定义与之前相同。注意，每个<literal>IF</literal>测试必须与其子表的<literal>CHECK</literal>约束完全一致。</para>
 
        <para>
         当该函数比单月形式更加复杂时，并不需要频繁地更新它，因为可以在需要的时候提前加入分支。
@@ -2342,12 +2335,10 @@ EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
 </programlisting>
    </para>
 
-   <para>
-    注意，约束排除只由<literal>CHECK</literal>约束驱动，与是否存在索引无关。因此，不必在键列上定义索引。是否需要为某个分区创建索引，取决于预期查询扫描该分区时通常会扫描其中的大部分，还是仅扫描一小部分。后一种情况下索引会有帮助，前一种情况下则不会。
-   </para>
+   <para>注意，约束排除只由<literal>CHECK</literal>约束驱动，与是否存在索引无关。因此，不必在键列上定义索引。是否需要为某个分区创建索引，取决于预期查询扫描该分区时通常会扫描其中的大部分，还是仅扫描一小部分。后一种情况下索引会有帮助，前一种情况下则不会。</para>
 
    <para>
-    <xref linkend="guc-constraint-exclusion">的默认（也是推荐的）设置实际上既不是<literal>on</literal>也不是<literal>off</literal>，而是一种被称为<literal>partition</literal>的中间设置，这会导致该技术仅被应用于可能访问分区表的查询。<literal>on</literal>设置导致规划器检查所有查询中的<literal>CHECK</literal>约束，甚至是那些不太可能受益的简单查询。
+    <xref linkend="guc-constraint-exclusion">的默认（也是推荐的）设置不是<literal>on</literal>也不是<literal>off</literal>，而是一种被称为<literal>partition</literal>的中间设置，这会导致该技术仅被应用于可能访问分区表的查询。<literal>on</literal>设置导致规划器检查所有查询中的<literal>CHECK</literal>约束，甚至是那些不太可能受益的简单查询。
    </para>
 
    </sect2>
@@ -2355,10 +2346,7 @@ EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
    <sect2 id="ddl-partitioning-alternatives">
    <title>备选分区方法</title>
 
-    <para>
-     将插入重定向到适当分区表的另一种方法，是在主表上设置规则来代替触发器。例如：
-
-<programlisting>
+    <para>将插入重定向到适当分区表的另一种方法，是在根表上设置规则来代替触发器。例如：<programlisting>
 CREATE RULE measurement_insert_y2006m02 AS
 ON INSERT TO measurement WHERE
     ( logdate &gt;= DATE '2006-02-01' AND logdate &lt; DATE '2006-03-01' )
@@ -2370,18 +2358,15 @@ ON INSERT TO measurement WHERE
     ( logdate &gt;= DATE '2008-01-01' AND logdate &lt; DATE '2008-02-01' )
 DO INSTEAD
     INSERT INTO measurement_y2008m01 VALUES (NEW.*);
-</programlisting>
-
-     规则的开销明显高于触发器，但这种开销每个查询只支付一次，而不是每行一次，因此在批量插入时，这种方法可能有优势。不过，在大多数情况下，触发器方法的性能更好。
-    </para>
+</programlisting>规则的开销明显高于触发器，但这种开销每个查询只支付一次，而不是每行一次，因此在批量插入时，这种方法可能有优势。不过，在大多数情况下，触发器方法的性能更好。</para>
 
     <para>
-     注意<command>COPY</command>会忽略规则。如果想要使用<command>COPY</command>插入数据，则需要拷贝到正确的分区表而不是主表中。<command>COPY</command>会引发触发器，因此在使用触发器方法时可以正常使用它。
-    </para>
+         注意<command>COPY</command>会忽略规则。如果想要使用<command>COPY</command>插入数据，则需要拷贝到正确的分区表而不是根表中。<command>COPY</command>会引发触发器，因此在使用触发器方法时可以正常使用它。
+        </para>
 
     <para>
-     规则方法的另一个缺点是，如果规则集合无法覆盖插入日期，则没有简单的方法能够强制产生错误，数据将会无声无息地进入到主表中。
-    </para>
+         规则方法的另一个缺点是，如果规则集合无法覆盖插入日期，则没有简单的方法能够强制产生错误，数据将会无声无息地进入到根表中。
+        </para>
 
     <para>
      也可以使用<literal>UNION ALL</literal>视图来安排分区，而不是使用表继承。例如：
@@ -2420,17 +2405,15 @@ UNION ALL SELECT * FROM measurement_y2008m01;
     </listitem>
 
     <listitem>
-     <para>
-      如果手动执行<command>VACUUM</command>或<command>ANALYZE</command>命令，不要忘记需要在每个分区上分别运行。例如，以下命令：<programlisting>
+     <para>如果手动执行<command>VACUUM</command>或<command>ANALYZE</command>命令，不要忘记需要在每个分区上分别运行。例如，以下命令：<programlisting>
 ANALYZE measurement;
-</programlisting>只会处理主表。
-     </para>
+</programlisting>只会处理根表。</para>
     </listitem>
 
     <listitem>
      <para>
-      带有<literal>ON CONFLICT</literal>子句的<command>INSERT</command>语句不太可能按照预期工作，因为只有在指定的目标关系上发生唯一违背时才会采取<literal>ON CONFLICT</literal>动作，而不是在其子关系上。
-     </para>
+        带有<literal>ON CONFLICT</literal>子句的<command>INSERT</command>语句不太可能按照预期工作，因为只有在指定的目标关系而不是其子关系上发生唯一违背时才会采取<literal>ON CONFLICT</literal>动作。
+       </para>
     </listitem>
 
    </itemizedlist>
@@ -2453,7 +2436,7 @@ ANALYZE measurement;
     </listitem>
 
     <listitem>
-     <para>约束排除期间会检查主表的所有分区上的全部约束，因此大量分区很可能显著增加查询规划时间。使用这些技术进行分区，大概在不超过一百个分区时效果较好；不要尝试使用成千上万个分区。</para>
+     <para>约束排除期间会检查根表的所有分区上的全部约束，因此大量分区很可能显著增加查询规划时间。使用这些技术进行分区，大概在不超过一百个分区时效果较好；不要尝试使用成千上万个分区。</para>
     </listitem>
 
    </itemizedlist>
