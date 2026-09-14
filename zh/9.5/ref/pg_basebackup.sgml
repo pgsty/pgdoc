@@ -11,128 +11,82 @@ PostgreSQL documentation
  <refmeta>
   <refentrytitle>pg_basebackup</refentrytitle>
   <manvolnum>1</manvolnum>
-  <refmiscinfo>Application</refmiscinfo>
+  <refmiscinfo>应用程序</refmiscinfo>
  </refmeta>
 
  <refnamediv>
   <refname>pg_basebackup</refname>
-  <refpurpose>take a base backup of a <productname>PostgreSQL</productname> cluster</refpurpose>
+  <refpurpose>获取<productname>PostgreSQL</productname>集簇的基础备份</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
   <cmdsynopsis>
    <command>pg_basebackup</command>
-   <arg rep="repeat"><replaceable>option</></arg>
+   <arg rep="repeat"><replaceable>option</replaceable></arg>
   </cmdsynopsis>
  </refsynopsisdiv>
 
  <refsect1>
-  <title>
-   Description
-  </title>
+  <title>描述</title>
   <para>
-   <application>pg_basebackup</application> is used to take base backups of
-   a running <productname>PostgreSQL</productname> database cluster. These
-   are taken without affecting other clients to the database, and can be used
-   both for point-in-time recovery (see <xref linkend="continuous-archiving">)
-   and as the starting point for a log shipping or streaming replication standby
-   servers (see <xref linkend="warm-standby">).
+   <application>pg_basebackup</application>用于获取正在运行的<productname>PostgreSQL</productname>数据库集簇的基础备份。备份过程不会影响数据库的其他客户端，并且该备份既可用于时间点恢复（见<xref linkend="continuous-archiving">），也可用作日志传送或流复制备库的起点（见<xref linkend="warm-standby">）。
+  </para>
+
+  <para><application>pg_basebackup</application>创建数据库集簇文件的二进制副本，同时确保系统自动进入和退出备份模式。备份始终针对整个数据库集簇；无法只备份单个数据库或数据库对象。要备份单个数据库，必须使用<xref linkend="APP-PGDUMP">之类的工具。</para>
+
+  <para>备份通过使用复制协议的普通<productname>PostgreSQL</productname>连接进行。建立连接时必须使用超级用户或具有<literal>REPLICATION</literal>权限（参见<xref linkend="role-attributes">）的用户，并且<filename>pg_hba.conf</filename>必须明确允许复制连接。服务器还必须将<xref linkend="guc-max-wal-senders">设置得足够高，以便至少为备份保留一个可用会话。</para>
+
+  <para>
+   可以同时运行多个<command>pg_basebackup</command>，但从性能角度来看，最好只执行一次备份，然后复制其结果。
   </para>
 
   <para>
-   <application>pg_basebackup</application> makes a binary copy of the database
-   cluster files, while making sure the system is put in and
-   out of backup mode automatically. Backups are always taken of the entire
-   database cluster; it is not possible to back up individual databases or
-   database objects. For individual database backups, a tool such as
-   <xref linkend="APP-PGDUMP"> must be used.
+   <application>pg_basebackup</application>不仅可以从主库获取基础备份，也可以从备库获取。要从备库获取备份，需要将备库配置为能够接受复制连接（即设置<varname>max_wal_senders</varname>和<xref linkend="guc-hot-standby">，并配置<link linkend="auth-pg-hba-conf">基于主机的认证</link>）。还需要在主库上启用<xref linkend="guc-full-page-writes">。
   </para>
 
-  <para>
-   The backup is made over a regular <productname>PostgreSQL</productname>
-   connection, and uses the replication protocol. The connection must be made
-   with a superuser or a user having <literal>REPLICATION</literal>
-   permissions (see <xref linkend="role-attributes">),
-   and <filename>pg_hba.conf</filename> must explicitly permit the replication
-   connection. The server must also be configured
-   with <xref linkend="guc-max-wal-senders"> set high enough to leave at least
-   one session available for the backup.
-  </para>
-
-  <para>
-   There can be multiple <command>pg_basebackup</command>s running at the same time, but it is
-   better from a performance point of view to take only one backup, and copy
-   the result.
-  </para>
-
-  <para>
-   <application>pg_basebackup</application> can make a base backup from
-   not only the master but also the standby. To take a backup from the standby,
-   set up the standby so that it can accept replication connections (that is, set
-   <varname>max_wal_senders</> and <xref linkend="guc-hot-standby">,
-   and configure <link linkend="auth-pg-hba-conf">host-based authentication</link>).
-   You will also need to enable <xref linkend="guc-full-page-writes"> on the master.
-  </para>
-
-  <para>
-   Note that there are some limitations in an online backup from the standby:
-
-   <itemizedlist>
+  <para>注意，从备库获取在线备份时有一些限制：<itemizedlist>
     <listitem>
      <para>
-      The backup history file is not created in the database cluster backed up.
+      备份历史文件不会在被备份的数据库集簇中创建。
      </para>
     </listitem>
     <listitem>
      <para>
-      There is no guarantee that all WAL files required for the backup are archived
-      at the end of backup. If you are planning to use the backup for an archive
-      recovery and want to ensure that all required files are available at that moment,
-      you need to include them into the backup by using the <literal>-x</> option.
+      无法保证备份所需的所有 WAL 文件都会在备份结束时被归档。如果你打算将该备份
+      用于归档恢复，并希望确保届时所有必需文件都可用，就需要使用<literal>-x</literal>
+      选项将它们包含在备份中。
      </para>
     </listitem>
     <listitem>
      <para>
-      If the standby is promoted to the master during online backup, the backup fails.
+      如果备库在在线备份过程中被提升为主库，则备份会失败。
      </para>
     </listitem>
     <listitem>
-     <para>
-      All WAL records required for the backup must contain sufficient full-page writes,
-      which requires you to enable <varname>full_page_writes</> on the master and
-      not to use a tool like <application>pg_compresslog</> as
-      <varname>archive_command</> to remove full-page writes from WAL files.
-     </para>
+     <para>备份所需的所有 WAL 记录都必须包含足够的整页写入，因此必须在主库上启用<varname>full_page_writes</varname>，并且不能把<application>pg_compresslog</application>之类的工具用作<varname>archive_command</varname>，从 WAL 文件中移除整页写入。</para>
     </listitem>
    </itemizedlist>
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Options</title>
+  <title>选项</title>
 
-   <para>
-    The following command-line options control the location and format of the
-    output.
-
-    <variablelist>
+   <para>以下命令行选项控制输出的位置和格式。<variablelist>
      <varlistentry>
       <term><option>-D <replaceable class="parameter">directory</replaceable></option></term>
       <term><option>--pgdata=<replaceable class="parameter">directory</replaceable></option></term>
       <listitem>
        <para>
-        Directory to write the output to.
-        <application>pg_basebackup</application> will create the directory and
-        any parent directories if necessary.  The directory may already exist,
-        but it is an error if the directory already exists and is not empty.
+        设置写入输出的目标目录。如果该目录不存在，
+        <application>pg_basebackup</application>会创建它（以及所有缺失的父目录）。
+        如果该目录已经存在，则必须为空。
        </para>
        <para>
-        When the backup is in tar mode, and the directory is specified as
-        <literal>-</literal> (dash), the tar file will be written to
-        <literal>stdout</literal>.
+        当备份采用 tar 格式时，目标目录可以指定为<literal>-</literal>（短横线），从而将 tar 文件写到<literal>stdout</literal>。
        </para>
        <para>
-        This option is required.
+        此选项是必需的。
        </para>
       </listitem>
      </varlistentry>
@@ -141,26 +95,16 @@ PostgreSQL documentation
       <term><option>-F <replaceable class="parameter">format</replaceable></option></term>
       <term><option>--format=<replaceable class="parameter">format</replaceable></option></term>
       <listitem>
-       <para>
-        Selects the format for the output. <replaceable>format</replaceable>
-        can be one of the following:
-
-        <variablelist>
+       <para>选择输出格式。<replaceable>format</replaceable>可以是以下值之一：<variablelist>
          <varlistentry>
           <term><literal>p</literal></term>
           <term><literal>plain</literal></term>
           <listitem>
            <para>
-            Write the output as plain files, with the same layout as the
-            current data directory and tablespaces. When the cluster has
-            no additional tablespaces, the whole database will be placed in
-            the target directory. If the cluster contains additional
-            tablespaces, the main data directory will be placed in the
-            target directory, but all other tablespaces will be placed
-            in the same absolute path as they have on the server.
+            将输出写为普通文件，其布局与源服务器的数据目录和表空间相同。当集簇没有额外表空间时，整个数据库都会放在目标目录中。如果集簇包含额外表空间，则主数据目录会放在目标目录中，而其他所有表空间都会放在与服务器上相同的绝对路径中。
            </para>
            <para>
-            This is the default format.
+            这是默认格式。
            </para>
           </listitem>
          </varlistentry>
@@ -170,17 +114,10 @@ PostgreSQL documentation
           <term><literal>tar</literal></term>
           <listitem>
            <para>
-            Write the output as tar files in the target directory. The main
-            data directory will be written to a file named
-            <filename>base.tar</filename>, and all other tablespaces will
-            be named after the tablespace OID.
-            </para>
+            将输出写为目标目录中的 tar 文件。主数据目录的内容会写入名为<filename>base.tar</filename>的文件中，而每个其他表空间都会写入一个以该表空间 OID 命名的独立 tar 文件中。
+           </para>
            <para>
-            If the value <literal>-</literal> (dash) is specified as
-            target directory, the tar contents will be written to
-            standard output, suitable for piping to for example
-            <productname>gzip</productname>. This is only possible if
-            the cluster has no additional tablespaces.
+            如果目标目录指定为<literal>-</literal>（短横线），tar 内容将写入标准输出，适合通过管道传给例如<productname>gzip</productname>。只有当集簇没有额外表空间时，才允许这样做。
            </para>
            </listitem>
          </varlistentry>
@@ -192,19 +129,10 @@ PostgreSQL documentation
       <term><option>-r <replaceable class="parameter">rate</replaceable></option></term>
       <term><option>--max-rate=<replaceable class="parameter">rate</replaceable></option></term>
       <listitem>
+       <para>从服务器传输数据的最大速率。单位为每秒千字节。使用后缀<literal>M</literal>表示每秒兆字节。也接受后缀<literal>k</literal>，但它没有效果。有效值介于每秒 32 千字节和每秒 1024 兆字节之间。</para>
+       <para>目的是限制<application>pg_basebackup</application>对运行中的服务器的影响。</para>
        <para>
-        The maximum transfer rate of data transferred from the server.  Values are
-        in kilobytes per second.  Use a suffix of <literal>M</> to indicate megabytes
-        per second.  A suffix of <literal>k</> is also accepted, and has no effect.
-        Valid values are between 32 kilobytes per second and 1024 megabytes per second.
-       </para>
-       <para>
-        The purpose is to limit the impact of <application>pg_basebackup</application>
-        on the running server.
-       </para>
-       <para>
-        This option always affects transfer of the data directory. Transfer of
-        WAL files is only affected if the collection method is <literal>fetch</literal>.
+        此选项始终影响数据目录的传输。只有当收集方法为<literal>fetch</literal>时，WAL 文件的传输才会受到影响。
        </para>
       </listitem>
      </varlistentry>
@@ -214,11 +142,7 @@ PostgreSQL documentation
       <term><option>--write-recovery-conf</option></term>
       <listitem>
 
-       <para>
-        Write a minimal <filename>recovery.conf</filename> in the output directory (or into
-        the base archive file when using tar format) to ease setting
-        up a standby server.
-       </para>
+       <para>在输出目录中（使用 tar 格式时则在基础归档文件中）写入一个最小的<filename>recovery.conf</filename>，以便于设置备库。</para>
 
       </listitem>
      </varlistentry>
@@ -227,38 +151,18 @@ PostgreSQL documentation
       <term><option>-T <replaceable class="parameter">olddir</replaceable>=<replaceable class="parameter">newdir</replaceable></option></term>
       <term><option>--tablespace-mapping=<replaceable class="parameter">olddir</replaceable>=<replaceable class="parameter">newdir</replaceable></option></term>
       <listitem>
-       <para>
-        Relocate the tablespace in directory <replaceable>olddir</replaceable>
-        to <replaceable>newdir</replaceable> during the backup.  To be
-        effective, <replaceable>olddir</replaceable> must exactly match the
-        path specification of the tablespace as it is currently defined.  (But
-        it is not an error if there is no tablespace
-        in <replaceable>olddir</replaceable> contained in the backup.)
-        Both <replaceable>olddir</replaceable>
-        and <replaceable>newdir</replaceable> must be absolute paths.  If a
-        path happens to contain a <literal>=</literal> sign, escape it with a
-        backslash.  This option can be specified multiple times for multiple
-        tablespaces.  See examples below.
-       </para>
+       <para>在备份期间，将目录<replaceable>olddir</replaceable>中的表空间重定位到<replaceable>newdir</replaceable>。要使此选项生效，<replaceable>olddir</replaceable>必须与该表空间当前定义的路径完全一致。（但如果备份中没有位于<replaceable>olddir</replaceable>中的表空间，也不算错误。）<replaceable>olddir</replaceable>和<replaceable>newdir</replaceable>都必须是绝对路径。如果路径中包含<literal>=</literal>符号，请用反斜线转义。可以多次指定此选项，以处理多个表空间。参见下文示例。</para>
 
        <para>
-        If a tablespace is relocated in this way, the symbolic links inside
-        the main data directory are updated to point to the new location.  So
-        the new data directory is ready to be used for a new server instance
-        with all tablespaces in the updated locations.
-        </para>
+        如果以这种方式重定位表空间，主数据目录中的符号链接将被更新为指向新位置。因此，新数据目录已可直接用于启动一个所有表空间都位于更新后位置的新服务器实例。
+       </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
       <term><option>--xlogdir=<replaceable class="parameter">xlogdir</replaceable></option></term>
       <listitem>
-       <para>
-        Specifies the location for the transaction log directory.
-        <replaceable>xlogdir</replaceable> must be an absolute path.
-        The transaction log directory can only be specified when
-        the backup is in plain mode.
-       </para>
+       <para>指定事务日志目录的位置。<replaceable>xlogdir</replaceable>必须是绝对路径。只有在备份采用 普通文件 模式时，才能指定事务日志目录。</para>
       </listitem>
      </varlistentry>
 
@@ -267,8 +171,7 @@ PostgreSQL documentation
       <term><option>--xlog</option></term>
       <listitem>
        <para>
-        Using this option is equivalent of using <literal>-X</literal> with
-        method <literal>fetch</literal>.
+        使用此选项等价于使用方法为<literal>fetch</literal>的<literal>-X</literal>。
        </para>
       </listitem>
      </varlistentry>
@@ -278,29 +181,15 @@ PostgreSQL documentation
       <term><option>--xlog-method=<replaceable class="parameter">method</replaceable></option></term>
       <listitem>
        <para>
-        Includes the required transaction log files (WAL files) in the
-        backup. This will include all transaction logs generated during
-        the backup. If this option is specified, it is possible to start
-        a postmaster directly in the extracted directory without the need
-        to consult the log archive, thus making this a completely standalone
-        backup.
+        在备份中包含所需的事务日志（WAL）文件。这将包括备份期间生成的所有事务日志。如果指定了此选项，就可以在解包后的目录中直接启动 postmaster，而无需查阅日志归档，从而使输出成为一个完全独立的备份。
        </para>
-       <para>
-        The following methods for collecting the transaction logs are
-        supported:
-
-        <variablelist>
+       <para>支持以下收集事务日志的方法：<variablelist>
          <varlistentry>
           <term><literal>f</literal></term>
           <term><literal>fetch</literal></term>
           <listitem>
            <para>
-            The transaction log files are collected at the end of the backup.
-            Therefore, it is necessary for the
-            <xref linkend="guc-wal-keep-segments"> parameter to be set high
-             enough that the log is not removed before the end of the backup.
-             If the log has been rotated when it's time to transfer it, the
-             backup will fail and be unusable.
+            在备份结束时收集事务日志文件。因此，<xref linkend="guc-wal-keep-segments">参数必须设置得足够高，以确保在备份结束前不会移除所需的日志数据。如果在传输这些数据之前它们已经被回收，则备份会失败并且无法使用。
            </para>
           </listitem>
          </varlistentry>
@@ -309,15 +198,7 @@ PostgreSQL documentation
           <term><literal>s</literal></term>
           <term><literal>stream</literal></term>
           <listitem>
-           <para>
-            Stream the transaction log while the backup is created. This will
-            open a second connection to the server and start streaming the
-            transaction log in parallel while running the backup. Therefore,
-            it will use up two connections configured by the
-            <xref linkend="guc-max-wal-senders"> parameter. As long as the
-             client can keep up with transaction log received, using this mode
-             requires no extra transaction logs to be saved on the master.
-           </para>
+           <para>在创建备份的同时流式传输事务日志。这会打开与服务器的第二个连接，并在执行备份时并行开始流式传输事务日志。因此，它会占用由<xref linkend="guc-max-wal-senders">参数配置的两个连接。只要客户端能够跟上接收到的事务日志，使用此模式就不需要在主库上额外保留事务日志。</para>
           </listitem>
          </varlistentry>
         </variablelist>
@@ -329,10 +210,9 @@ PostgreSQL documentation
       <term><option>-z</option></term>
       <term><option>--gzip</option></term>
       <listitem>
+
        <para>
-        Enables gzip compression of tar file output, with the default
-        compression level. Compression is only available when using
-        the tar format.
+        启用 tar 文件输出的 gzip 压缩，使用默认压缩级别。压缩仅在使用 tar 格式时可用。
        </para>
       </listitem>
      </varlistentry>
@@ -341,27 +221,22 @@ PostgreSQL documentation
       <term><option>-Z <replaceable class="parameter">level</replaceable></option></term>
       <term><option>--compress=<replaceable class="parameter">level</replaceable></option></term>
       <listitem>
+
        <para>
-        Enables gzip compression of tar file output, and specifies the
-        compression level (0 through 9, 0 being no compression and 9 being best
-        compression). Compression is only available when using the tar
-        format.
+        启用 tar 文件输出的 gzip 压缩，并指定压缩级别（0 到 9，其中 0 表示不压缩，9 表示最佳压缩）。压缩仅在使用 tar 格式时可用。
        </para>
       </listitem>
      </varlistentry>
     </variablelist>
    </para>
-   <para>
-    The following command-line options control the generation of the
-    backup and the running of the program.
-
-    <variablelist>
+   <para>以下命令行选项控制备份的生成和程序的运行。<variablelist>
      <varlistentry>
       <term><option>-c <replaceable class="parameter">fast|spread</replaceable></option></term>
       <term><option>--checkpoint=<replaceable class="parameter">fast|spread</replaceable></option></term>
       <listitem>
        <para>
-        Sets checkpoint mode to fast (immediate) or spread (default) (see <xref linkend="backup-lowlevel-base-backup">).
+        将检查点模式设置为 fast（立即）或 spread（默认）
+        （见<xref linkend="backup-lowlevel-base-backup">）。
        </para>
       </listitem>
      </varlistentry>
@@ -370,9 +245,9 @@ PostgreSQL documentation
       <term><option>-l <replaceable class="parameter">label</replaceable></option></term>
       <term><option>--label=<replaceable class="parameter">label</replaceable></option></term>
       <listitem>
+
        <para>
-        Sets the label for the backup. If none is specified, a default value of
-        <quote><literal>pg_basebackup base backup</literal></quote> will be used.
+        设置备份标签。如果未指定，则使用默认值<quote><literal>pg_basebackup base backup</literal></quote>。
        </para>
       </listitem>
      </varlistentry>
@@ -382,20 +257,9 @@ PostgreSQL documentation
       <term><option>--progress</option></term>
       <listitem>
        <para>
-        Enables progress reporting. Turning this on will deliver an approximate
-        progress report during the backup. Since the database may change during
-        the backup, this is only an approximation and may not end at exactly
-        <literal>100%</literal>. In particular, when WAL log is included in the
-        backup, the total amount of data cannot be estimated in advance, and
-        in this case the estimated target size will increase once it passes the
-        total estimate without WAL.
+        启用进度报告。打开此选项后，会在备份过程中给出一个近似的进度报告。由于数据库在备份过程中可能发生变化，因此这只是近似值，最终未必恰好结束在<literal>100%</literal>。特别是当备份中包含 WAL 时，总数据量无法预先估计；在这种情况下，一旦进度超过不含 WAL 时的总估计值，估计目标大小就会继续增加。
        </para>
-       <para>
-        When this is enabled, the backup will start by enumerating the size of
-        the entire database, and then go back and send the actual contents.
-        This may make the backup take slightly longer, and in particular it
-        will take longer before the first data is sent.
-       </para>
+       <para>启用此选项后，备份会先遍历整个数据库以统计其大小，然后再返回发送实际内容。这可能使备份稍微耗时更长，尤其会使首次发送数据之前的等待时间更长。</para>
       </listitem>
      </varlistentry>
 
@@ -403,10 +267,9 @@ PostgreSQL documentation
       <term><option>-v</option></term>
       <term><option>--verbose</option></term>
       <listitem>
+
        <para>
-        Enables verbose mode. Will output some extra steps during startup and
-        shutdown, as well as show the exact file name that is currently being
-        processed if progress reporting is also enabled.
+        启用详细模式。它会在启动和关闭过程中输出一些额外步骤；如果同时启用了进度报告，还会显示当前正在处理的确切文件名。
        </para>
       </listitem>
      </varlistentry>
@@ -414,25 +277,15 @@ PostgreSQL documentation
     </variablelist>
    </para>
 
-   <para>
-    The following command-line options control the database connection parameters.
-
-    <variablelist>
+   <para>以下命令行选项控制数据库连接参数。<variablelist>
      <varlistentry>
       <term><option>-d <replaceable class="parameter">connstr</replaceable></option></term>
       <term><option>--dbname=<replaceable class="parameter">connstr</replaceable></option></term>
       <listitem>
        <para>
-        Specifies parameters used to connect to the server, as a <link
-        linkend="libpq-connstring">connection string</link>;  these
-        will override any conflicting command line options.
+        以<link linkend="libpq-connstring">连接字符串</link>的形式指定用于连接服务器的参数；这些参数会覆盖任何相互冲突的命令行选项。
        </para>
-       <para>
-        The option is called <literal>--dbname</> for consistency with other
-        client applications, but because <application>pg_basebackup</application>
-        doesn't connect to any particular database in the cluster, database
-        name in the connection string will be ignored.
-       </para>
+       <para>出于与其他客户端应用保持一致的考虑，此选项名为<literal>--dbname</literal>；但由于<application>pg_basebackup</application>并不连接到集簇中的某个特定数据库，连接字符串中的数据库名会被忽略。</para>
       </listitem>
      </varlistentry>
 
@@ -441,11 +294,7 @@ PostgreSQL documentation
       <term><option>--host=<replaceable class="parameter">host</replaceable></option></term>
       <listitem>
        <para>
-        Specifies the host name of the machine on which the server is
-        running.  If the value begins with a slash, it is used as the
-        directory for the Unix domain socket. The default is taken
-        from the <envar>PGHOST</envar> environment variable, if set,
-        else a Unix domain socket connection is attempted.
+        指定服务器运行所在机器的主机名。如果该值以斜线开头，则它会被用作 Unix 域套接字的目录。默认值取自<envar>PGHOST</envar>环境变量（如果已设置）；否则会尝试使用 Unix 域套接字连接。
        </para>
       </listitem>
      </varlistentry>
@@ -455,10 +304,7 @@ PostgreSQL documentation
       <term><option>--port=<replaceable class="parameter">port</replaceable></option></term>
       <listitem>
        <para>
-        Specifies the TCP port or local Unix domain socket file
-        extension on which the server is listening for connections.
-        Defaults to the <envar>PGPORT</envar> environment variable, if
-        set, or a compiled-in default.
+        指定服务器监听连接所使用的 TCP 端口，或本地 Unix 域套接字文件扩展名。默认使用<envar>PGPORT</envar>环境变量中的值（如果已设置），否则使用编译时确定的默认值。
        </para>
       </listitem>
      </varlistentry>
@@ -467,12 +313,9 @@ PostgreSQL documentation
       <term><option>-s <replaceable class="parameter">interval</replaceable></option></term>
       <term><option>--status-interval=<replaceable class="parameter">interval</replaceable></option></term>
       <listitem>
+
        <para>
-        Specifies the number of seconds between status packets sent back to the
-        server. This allows for easier monitoring of the progress from server.
-        A value of zero disables the periodic status updates completely,
-        although an update will still be sent when requested by the server, to
-        avoid timeout disconnect. The default value is 10 seconds.
+        指定向服务器回送状态包的时间间隔（秒）。这样更便于从服务器端监视进度。值为零将完全禁用周期性状态更新，不过在服务器请求时仍会发送更新，以避免因超时而断开连接。默认值是 10 秒。
        </para>
       </listitem>
      </varlistentry>
@@ -482,22 +325,17 @@ PostgreSQL documentation
       <term><option>--username=<replaceable class="parameter">username</replaceable></option></term>
       <listitem>
        <para>
-        User name to connect as.
+        指定连接时使用的用户名。
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><option>-w</></term>
-      <term><option>--no-password</></term>
+      <term><option>-w</option></term>
+      <term><option>--no-password</option></term>
       <listitem>
        <para>
-        Never issue a password prompt.  If the server requires
-        password authentication and a password is not available by
-        other means such as a <filename>.pgpass</filename> file, the
-        connection attempt will fail.  This option can be useful in
-        batch jobs and scripts where no user is present to enter a
-        password.
+        禁止发出密码提示。如果服务器要求密码认证，而又无法通过其他方式（例如<filename>.pgpass</filename>文件）获得密码，则连接尝试将失败。此选项对于批处理作业和脚本很有用，因为那种场景下通常没有用户在场输入密码。
        </para>
       </listitem>
      </varlistentry>
@@ -507,18 +345,11 @@ PostgreSQL documentation
       <term><option>--password</option></term>
       <listitem>
        <para>
-        Force <application>pg_basebackup</application> to prompt for a
-        password before connecting to a database.
+        强制<application>pg_basebackup</application>在连接数据库之前提示输入密码。
        </para>
 
        <para>
-        This option is never essential, since
-        <application>pg_basebackup</application> will automatically prompt
-        for a password if the server demands password authentication.
-        However, <application>pg_basebackup</application> will waste a
-        connection attempt finding out that the server wants a password.
-        In some cases it is worth typing <option>-W</> to avoid the extra
-        connection attempt.
+        此选项绝非必需，因为如果服务器要求密码认证，<application>pg_basebackup</application>会自动提示输入密码。不过，<application>pg_basebackup</application>会浪费一次连接尝试来发现服务器需要密码。在某些情况下，输入<option>-W</option>以避免额外的连接尝试是值得的。
        </para>
       </listitem>
      </varlistentry>
@@ -526,26 +357,25 @@ PostgreSQL documentation
    </para>
 
    <para>
-    Other options are also available:
+    其他选项也可用：
 
-    <variablelist>
+   <variablelist>
      <varlistentry>
-       <term><option>-V</></term>
-       <term><option>--version</></term>
+       <term><option>-V</option></term>
+       <term><option>--version</option></term>
        <listitem>
        <para>
-       Print the <application>pg_basebackup</application> version and exit.
+       输出<application>pg_basebackup</application>的版本并退出。
        </para>
        </listitem>
      </varlistentry>
 
      <varlistentry>
-       <term><option>-?</></term>
-       <term><option>--help</></term>
+       <term><option>-?</option></term>
+       <term><option>--help</option></term>
        <listitem>
        <para>
-       Show help about <application>pg_basebackup</application> command line
-       arguments, and exit.
+       显示<application>pg_basebackup</application>命令行参数的帮助并退出。
        </para>
        </listitem>
      </varlistentry>
@@ -556,100 +386,61 @@ PostgreSQL documentation
  </refsect1>
 
  <refsect1>
-  <title>Environment</title>
+  <title>环境</title>
 
   <para>
-   This utility, like most other <productname>PostgreSQL</> utilities,
-   uses the environment variables supported by <application>libpq</>
-   (see <xref linkend="libpq-envars">).
+   与大多数其他<productname>PostgreSQL</productname>工具一样，此工具也使用<application>libpq</application>支持的环境变量（见<xref linkend="libpq-envars">）。
   </para>
 
  </refsect1>
 
  <refsect1>
-  <title>Notes</title>
+  <title>注解</title>
 
   <para>
-   At the beginning of the backup, a checkpoint needs to be written on the
-   server the backup is taken from.  Especially if the option
-   <literal>--checkpoint=fast</literal> is not used, this can take some time
-   during which <application>pg_basebackup</application> will be appear
-   to be idle.
+   在备份开始时，需要在源服务器上执行一次检查点。这可能需要一些时间（尤其是在未使用<literal>--checkpoint=fast</literal>选项时）；在此期间，<application>pg_basebackup</application>看起来会处于空闲状态。
   </para>
 
   <para>
-   The backup will include all files in the data directory and tablespaces,
-   including the configuration files and any additional files placed in the
-   directory by third parties. But only regular files and directories are
-   copied.  Symbolic links (other than those used for tablespaces) and special
-   device files are skipped.  (See <xref linkend="protocol-replication"> for
-   the precise details.)
-  </para>
+   备份将包括数据目录和表空间中的所有文件，包括配置文件以及第三方放在这些目录中的任何额外文件。不过，只有普通文件和目录会被复制。除用于表空间的符号链接外，其他符号链接和特殊设备文件都会被跳过。（具体细节见<xref linkend="protocol-replication">。）
+</para>
 
   <para>
-   Tablespaces will in plain format by default be backed up to the same path
-   they have on the server, unless the
-   option <literal>--tablespace-mapping</literal> is used.  Without
-   this option, running a plain format base backup on the same host as the
-   server will not work if tablespaces are in use, because the backup would
-   have to be written to the same directory locations as the original
-   tablespaces.
+   在 普通文件 格式中，除非使用了<literal>--tablespace-mapping</literal>选项，否则表空间会备份到其在源服务器上的相同路径。如果不使用此选项，那么当表空间正在使用时，就无法在与服务器相同的主机上执行 普通文件 格式的基础备份，因为备份将不得不写入与原始表空间相同的目录位置。
   </para>
 
-  <para>
-   When tar format mode is used, it is the user's responsibility to unpack each
-   tar file before starting the PostgreSQL server. If there are additional tablespaces, the
-   tar files for them need to be unpacked in the correct locations. In this
-   case the symbolic links for those tablespaces will be created by the server
-   according to the contents of the <filename>tablespace_map</> file that is
-   included in the <filename>base.tar</> file.
-  </para>
+  <para>使用 tar 格式时，用户有责任在启动 PostgreSQL 服务器之前解包每个 tar 文件。如果存在额外表空间，则其 tar 文件必须解包到正确的位置。在这种情况下，服务器会根据<filename>tablespace_map</filename>文件的内容，为这些表空间创建符号链接，该文件包含在<filename>base.tar</filename>文件中。</para>
 
-  <para>
-   <application>pg_basebackup</application> works with servers of the same
-   or an older major version, down to 9.1. However, WAL streaming mode (<literal>-X
-   stream</literal>) only works with server version 9.3 and later, and tar format mode
-   (<literal>--format=tar</literal>) of the current version only works with server version 9.5
-   or later.
-  </para>
+  <para><application>pg_basebackup</application>可以与相同主版本或更低主版本的服务器配合工作，最低支持到 9.1。不过，WAL 流式传输模式（<literal>-X stream</literal>）仅适用于 9.3 及以上版本服务器，当前版本的 tar 格式（<literal>--format=tar</literal>）仅适用于 9.5 及以上版本服务器。</para>
 
  </refsect1>
 
  <refsect1>
-  <title>Examples</title>
+  <title>示例</title>
 
   <para>
-   To create a base backup of the server at <literal>mydbserver</literal>
-   and store it in the local directory
-   <filename>/usr/local/pgsql/data</filename>:
+   要为服务器<literal>mydbserver</literal>创建一个基础备份，并将其存储到本地目录<filename>/usr/local/pgsql/data</filename>中：
 <screen>
 <prompt>$</prompt> <userinput>pg_basebackup -h mydbserver -D /usr/local/pgsql/data</userinput>
 </screen>
   </para>
 
   <para>
-   To create a backup of the local server with one compressed
-   tar file for each tablespace, and store it in the directory
-   <filename>backup</filename>, showing a progress report while running:
+   要为本地服务器创建一个备份，为每个表空间各生成一个压缩的 tar 文件，并将其存储在目录<filename>backup</filename>中，同时在运行期间显示进度报告：
 <screen>
 <prompt>$</prompt> <userinput>pg_basebackup -D backup -Ft -z -P</userinput>
 </screen>
   </para>
 
   <para>
-   To create a backup of a single-tablespace local database and compress
-   this with <productname>bzip2</productname>:
+   要为一个仅包含单个表空间的本地数据库创建备份，并使用<productname>bzip2</productname>进行压缩：
 <screen>
 <prompt>$</prompt> <userinput>pg_basebackup -D - -Ft | bzip2 &gt; backup.tar.bz2</userinput>
 </screen>
-   (This command will fail if there are multiple tablespaces in the
-   database.)
+   （如果该数据库中有多个表空间，此命令将失败。）
   </para>
 
-  <para>
-   To create a backup of a local database where the tablespace in
-   <filename>/opt/ts</filename> is relocated
-   to <filename>./backup/ts</filename>:
+  <para>要为本地数据库创建备份，并把位于 <filename>/opt/ts</filename> 的表空间重定位到 <filename>./backup/ts</filename>：
 <screen>
 <prompt>$</prompt> <userinput>pg_basebackup -D backup/data -T /opt/ts=$(pwd)/backup/ts</userinput>
 </screen>
@@ -657,7 +448,7 @@ PostgreSQL documentation
  </refsect1>
 
  <refsect1>
-  <title>See Also</title>
+  <title>另见</title>
 
   <simplelist type="inline">
    <member><xref linkend="APP-PGDUMP"></member>
