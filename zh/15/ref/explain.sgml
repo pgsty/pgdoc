@@ -32,6 +32,7 @@ PostgreSQL documentation
  <refsynopsisdiv>
 <synopsis>
 EXPLAIN [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] <replaceable class="parameter">statement</replaceable>
+EXPLAIN [ ANALYZE ] [ VERBOSE ] <replaceable class="parameter">statement</replaceable>
 
 <phrase>其中 <replaceable class="parameter">option</replaceable> 可以是以下之一：</phrase>
 
@@ -39,13 +40,10 @@ EXPLAIN [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] <rep
     VERBOSE [ <replaceable class="parameter">boolean</replaceable> ]
     COSTS [ <replaceable class="parameter">boolean</replaceable> ]
     SETTINGS [ <replaceable class="parameter">boolean</replaceable> ]
-    GENERIC_PLAN [ <replaceable class="parameter">boolean</replaceable> ]
     BUFFERS [ <replaceable class="parameter">boolean</replaceable> ]
-    SERIALIZE [ { NONE | TEXT | BINARY } ]
     WAL [ <replaceable class="parameter">boolean</replaceable> ]
     TIMING [ <replaceable class="parameter">boolean</replaceable> ]
     SUMMARY [ <replaceable class="parameter">boolean</replaceable> ]
-    MEMORY [ <replaceable class="parameter">boolean</replaceable> ]
     FORMAT { TEXT | XML | JSON | YAML }
 </synopsis>
  </refsynopsisdiv>
@@ -75,6 +73,10 @@ ROLLBACK;
 </programlisting>
    </para>
   </important>
+
+  <para>
+   不使用括号包围选项列表时，只能指定<literal>ANALYZE</literal>和<literal>VERBOSE</literal>选项，而且只能按这个顺序指定。在<productname>PostgreSQL</productname> 9.0 之前，只支持这种不带括号的语法。预计所有新选项都将仅在带括号的语法中得到支持。
+  </para>
  </refsect1>
 
  <refsect1>
@@ -117,15 +119,6 @@ ROLLBACK;
     </listitem>
    </varlistentry>
 
-   <varlistentry id="zh18-auto-explain-varlistentry-5">
-    <term><literal>GENERIC_PLAN</literal></term>
-    <listitem>
-     <para>
-      允许语句包含形如<literal>$1</literal>的参数占位符，并生成一个不依赖这些参数值的通用计划。关于通用计划以及哪些语句类型支持参数的细节，详见<link linkend="sql-prepare"><command>PREPARE</command></link>。此参数不能与<literal>ANALYZE</literal>一起使用。此参数默认为<literal>FALSE</literal>。
-     </para>
-    </listitem>
-   </varlistentry>
-
    <varlistentry id="zh18-auto-explain-varlistentry-6">
     <term><literal>BUFFERS</literal></term>
     <listitem>
@@ -135,20 +128,11 @@ ROLLBACK;
     </listitem>
    </varlistentry>
 
-   <varlistentry id="zh18-auto-explain-varlistentry-7">
-    <term><literal>SERIALIZE</literal></term>
-    <listitem>
-     <para>
-      包含对查询输出数据进行<firstterm>序列化</firstterm>的代价信息，也就是把它转换成要发送给客户端的文本或二进制格式。如果数据类型的输出函数开销很大，或者必须从行外存储中取回<acronym>TOAST</acronym>化的值，这部分时间可能会占常规查询执行时间的很大一部分。<command>EXPLAIN</command>的默认行为<literal>SERIALIZE NONE</literal>不会执行这些转换。如果指定<literal>SERIALIZE TEXT</literal>或<literal>SERIALIZE BINARY</literal>，则会执行相应的转换，并测量所耗时间（除非指定了<literal>TIMING OFF</literal>）。如果还指定了<literal>BUFFERS</literal>选项，则转换过程中涉及的缓冲区访问也会被计入。不过，无论如何<command>EXPLAIN</command>都不会真的把结果数据发送给客户端，因此无法用这种方式研究网络传输代价。只有在同时启用<literal>ANALYZE</literal>时才能启用序列化。如果写出<literal>SERIALIZE</literal>而不带参数，则假定为<literal>TEXT</literal>。
-     </para>
-    </listitem>
-   </varlistentry>
-
    <varlistentry id="zh18-auto-explain-varlistentry-8">
     <term><literal>WAL</literal></term>
     <listitem>
      <para>
-      包含 WAL 记录生成的信息。具体来说，会包括记录数、整页镜像（fpi）数量、以字节计的 WAL 生成量，以及 WAL 缓冲区变满的次数。在文本格式中，只打印非零值。此参数只能在同时启用<literal>ANALYZE</literal>时使用。此参数默认为<literal>FALSE</literal>。
+      包含 WAL 记录生成的信息。具体来说，会包括记录数、整页镜像（fpi）数量、以字节计的 WAL 生成量。在文本格式中，只打印非零值。此参数只能在同时启用<literal>ANALYZE</literal>时使用。此参数默认为<literal>FALSE</literal>。
      </para>
     </listitem>
    </varlistentry>
@@ -167,15 +151,6 @@ ROLLBACK;
     <listitem>
      <para>
       在查询计划之后包含摘要信息（例如汇总后的时间信息）。使用<literal>ANALYZE</literal>时默认包含摘要信息；否则默认不包含，但可以使用此选项启用。在<command>EXPLAIN EXECUTE</command>中，规划时间包括从缓存中取出计划所需的时间，以及在必要时重新规划所需的时间。
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry id="zh18-auto-explain-varlistentry-11">
-    <term><literal>MEMORY</literal></term>
-    <listitem>
-     <para>
-      包含查询规划阶段的内存消耗信息。具体来说，会包括规划器内存结构实际使用的精确存储量，以及把分配开销计算在内后的总内存量。此参数默认为<literal>FALSE</literal>。
      </para>
     </listitem>
    </varlistentry>
@@ -221,7 +196,7 @@ ROLLBACK;
   <title>注解</title>
 
   <para>
-   为了让<productname>PostgreSQL</productname>查询规划器在优化查询时能够做出相当有根据的决策，查询中用到的所有表的<link linkend="catalog-pg-statistic"><structname>pg_statistic</structname></link>数据都应保持最新。通常<link linkend="autovacuum">autovacuum 守护进程</link>会自动处理这一点。但如果某个表最近内容发生了大量变化，你可能需要手工执行一次<link linkend="sql-analyze"><command>ANALYZE</command></link>，而不是等待 autovacuum 跟上这些变化。
+   为了让<productname>PostgreSQL</productname>查询规划器在优化查询时能够做出相当有根据的决策，查询中用到的所有表的<link linkend="catalog-pg-statistic"><structname>pg_statistic</structname></link>数据都应保持最新。通常<link linkend="autovacuum">自动清理守护进程</link>会自动处理这一点。但如果某个表最近内容发生了大量变化，你可能需要手工执行一次<link linkend="sql-analyze"><command>ANALYZE</command></link>，而不是等待自动清理跟上这些变化。
   </para>
 
   <para>
@@ -344,18 +319,14 @@ PREPARE query(int, int) AS SELECT sum(bar) FROM test
 EXPLAIN ANALYZE EXECUTE query(100, 200);
 
                                                        QUERY PLAN
--------------------------------------------------------------------&zwsp;------------------------------------------------------
- HashAggregate  (cost=10.77..10.87 rows=10 width=12) (actual time=0.043..0.044 rows=10.00 loops=1)
+-------------------------------------------------------------------&zwsp;-----------------------------------------------------
+ HashAggregate  (cost=9.54..9.54 rows=1 width=8) (actual time=0.156..0.161 rows=11 loops=1)
    Group Key: foo
-   Batches: 1  Memory Usage: 24kB
-   Buffers: shared hit=4
-   -&gt;  Index Scan using test_pkey on test  (cost=0.29..10.27 rows=99 width=8) (actual time=0.009..0.025 rows=99.00 loops=1)
-         Index Cond: ((id &gt; 100) AND (id &lt; 200))
-         Index Searches: 1
-         Buffers: shared hit=4
- Planning Time: 0.244 ms
- Execution Time: 0.073 ms
-(10 rows)
+   -&gt;  Index Scan using test_pkey on test  (cost=0.29..9.29 rows=50 width=8) (actual time=0.039..0.091 rows=99 loops=1)
+         Index Cond: ((id &gt; $1) AND (id &lt; $2))
+ Planning time: 0.197 ms
+ Execution time: 0.225 ms
+(6 rows)
 </programlisting>
   </para>
 
@@ -363,33 +334,6 @@ EXPLAIN ANALYZE EXECUTE query(100, 200);
    当然，这里显示的具体数字取决于所涉及表的实际内容。还要注意，由于规划器的改进，这些数字甚至所选查询策略在<productname>PostgreSQL</productname>的不同版本之间都可能发生变化。此外，<command>ANALYZE</command>命令使用随机采样来估计数据统计信息；因此，即使表中数据的实际分布没有变化，在重新运行一次<command>ANALYZE</command>之后，代价估计也可能发生变化。
   </para>
 
-  <para>
-   请注意，前一个示例展示了一个<quote>自定义</quote>计划，它针对的是<command>EXECUTE</command>中给定的特定参数值。我们也可能想查看参数化查询的通用计划，这可以用<literal>GENERIC_PLAN</literal>来完成：
-
-<programlisting>
-EXPLAIN (GENERIC_PLAN)
-  SELECT sum(bar) FROM test
-    WHERE id &gt; $1 AND id &lt; $2
-    GROUP BY foo;
-
-                                  QUERY PLAN
--------------------------------------------------------------------&zwsp;------------
- HashAggregate  (cost=26.79..26.89 rows=10 width=12)
-   Group Key: foo
-   -&gt;  Index Scan using test_pkey on test  (cost=0.29..24.29 rows=500 width=8)
-         Index Cond: ((id &gt; $1) AND (id &lt; $2))
-(4 rows)
-</programlisting>
-
-   在这个例子中，解析器正确地推断出<literal>$1</literal>和<literal>$2</literal>应与<literal>id</literal>具有相同的数据类型，因此缺少来自<command>PREPARE</command>的参数类型信息并不是问题。在其他情况下，可能需要显式指定参数符号的类型，这可以通过对它们进行类型转换来做到，例如：
-
-<programlisting>
-EXPLAIN (GENERIC_PLAN)
-  SELECT sum(bar) FROM test
-    WHERE id &gt; $1::integer AND id &lt; $2::integer
-    GROUP BY foo;
-</programlisting>
-  </para>
  </refsect1>
 
  <refsect1>
@@ -399,13 +343,6 @@ EXPLAIN (GENERIC_PLAN)
    SQL 标准中没有定义<command>EXPLAIN</command>语句。
   </para>
 
-  <para>
-   以下语法在<productname>PostgreSQL</productname> 9.0 之前使用，并且仍然受支持：
-<synopsis>
-EXPLAIN [ ANALYZE ] [ VERBOSE ] <replaceable class="parameter">statement</replaceable>
-</synopsis>
-   注意，在这种语法中，选项必须严格按显示的顺序指定。
-  </para>
  </refsect1>
 
  <refsect1>

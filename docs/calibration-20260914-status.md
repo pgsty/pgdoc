@@ -2,7 +2,7 @@ PG10—PG20 校准阶段报告（2026-09-14T14:42:30.720497+08:00）
 
 原清单 F-001—F-026 均已有逐版修复、原已正确或不适用的源码记录及分批核验。后续审校继续发现并修复了配置、函数、psql、pgbench、数据类型及其四个包含文件中的问题。**全书逐句语义校准、最终独立对账和 33 项最终构建仍未完成。** 本报告不将机器扫描、历史通过记录或台账数量当作全文验收。
 
-2026-09-15 最新完成 [hash 及关联语义的十一版校准](/Users/vonng/pgsty/pgdoc/docs/calibration-hash-20260915.md)：303 个正文文件及 PG20 生成映射修订，16 类问题／一致性项逐版核对；新快照 18 条范围内提示全部核定，零未决、零漂移。此前 [性能全章](/Users/vonng/pgsty/pgdoc/docs/calibration-performance-20260915.md)、[操作符参考页及扩展章](/Users/vonng/pgsty/pgdoc/docs/calibration-operator-reference-20260915.md)、表定义、系统目录、信息模式、ECPG、libpq、大对象及协议等已分批校准并提交。正在继续 EXPLAIN 参考页与其他未读范围；全书语义阅读、历史范围对账及最终 33 项构建仍未完成。
+2026-09-15 最新完成 [EXPLAIN 与 auto_explain 十一版全页校准](/Users/vonng/pgsty/pgdoc/docs/calibration-explain-20260915.md)：13 个正文文件修订，13 类问题／一致性项、143 个逐版格；新快照 98 条范围内提示全部核定，零未决、零漂移。此前 [hash 及关联语义](/Users/vonng/pgsty/pgdoc/docs/calibration-hash-20260915.md)、[性能全章](/Users/vonng/pgsty/pgdoc/docs/calibration-performance-20260915.md)、[操作符参考页及扩展章](/Users/vonng/pgsty/pgdoc/docs/calibration-operator-reference-20260915.md)等已分批校准并提交。关联扫描发现的 PG14—16 bloom、rules 新版示例正在续修；全书语义阅读、历史范围对账及最终 33 项构建仍未完成。
 
 英文固定为 10.23、11.22、12.22、13.23、14.24、15.19、16.15、17.11、18.6、19beta3 和 PG20 提交 86f7c82cf1023e3599f40f939727791a7090cd44。PG18 优先阅读；其他版本逐一核对完整段落、表格行和版本差异，同义英文共用译文，保留自身功能、签名、默认值、限制、代码和链接。遵守 exclude、glossary 及语境规则、style 的优先顺序。
 
@@ -239,3 +239,5 @@ ECPG 全章已核验提交 `74d86e305d68d39fe4b2868ec5211da5ec28f2ff`（11正文
 2026-09-15：[性能章节与关联文本报告](/Users/vonng/pgsty/pgdoc/docs/calibration-performance-20260915.md)：十一版完整性能章及235关联文本已核，56正文+3规范修订；54英文组594格及18类逐版矩阵保存。44条原生提示逐项绑定，零范围未决、零漂移。未来EXPLAIN、代价数字、归并方向、列数限定、五分之一等已修复；更广hash、全书余项、历史对账和33最终构建继续。
 
 2026-09-15：[hash 及关联语义报告](/Users/vonng/pgsty/pgdoc/docs/calibration-hash-20260915.md)：303 SGML + 1 生成映射；302 英文组 3322 格及 16 类问题逐版矩阵。新快照 1857 节点精确配对，18 条范围内提示核定，零未决零漂移；范围外 2970 提示保留。继续 EXPLAIN 全页、全书余项、历史对账与 33 最终构建。
+
+2026-09-15：[EXPLAIN 与 auto_explain 全页报告](/Users/vonng/pgsty/pgdoc/docs/calibration-explain-20260915.md)：22 个完整页面，534 段、157 代码/语法块，13 正文修订；13 类问题143格。新快照2205节点、98提示全部核准，零未决零漂移。bloom和rules物化视图关联示例及限定修复待续，全书与33构建未完成。
