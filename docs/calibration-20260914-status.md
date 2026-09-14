@@ -213,3 +213,5 @@ psql 已完整核对命令、变量、正文、框架和示例，修复 AUTOCOMM
 [ECPG SQL 命令参考](/Users/vonng/pgsty/pgdoc/docs/calibration-ecpg-sqlrefs-20260914.md)已完成十一版修复及新快照核验：39组429格，183完整命令页与477个条目核定，94条提示逐项关闭。ALLOCATE 释放义务、SQL 常量、DECLARE 源代码顺序和 Notes 漏译等已修复；全书和33构建仍未完。
 
 [ECPG 全章](/Users/vonng/pgsty/pgdoc/docs/calibration-ecpg-whole-20260914.md)已完成完整阅读和当前快照核验：209组2299格，844节、183命令页、2929代码块；539条提示逐项绑定673节点，0未决0漂移。七批修改精确重放到当前十一版正文，正在复查阶段提交；全书余项和33最终构建继续。
+
+ECPG 全章已核验提交 `74d86e305d68d39fe4b2868ec5211da5ec28f2ff`（11正文+9报告，未推送）。[关联 ecpg 命令行参考](/Users/vonng/pgsty/pgdoc/docs/calibration-ecpg-cli-20260914.md)也已完成十一版全文及新快照核验：11组121格、165条目、22代码／语法块，105条锚点逐项核定。当前继续信息模式全章；全书与33项最终构建未完成。
