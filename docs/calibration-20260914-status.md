@@ -2,7 +2,7 @@ PG10—PG20 校准阶段报告（2026-09-14T14:42:30.720497+08:00）
 
 原清单 F-001—F-026 均已有逐版修复、原已正确或不适用的源码记录及分批核验。后续审校继续发现并修复了配置、函数、psql、pgbench、数据类型及其四个包含文件中的问题。**全书逐句语义校准、最终独立对账和 33 项最终构建仍未完成。** 本报告不将机器扫描、历史通过记录或台账数量当作全文验收。
 
-2026-09-15 最新完成范围为 [ALTER TABLE 全页及 CREATE TABLE 两个关联条款](/Users/vonng/pgsty/pgdoc/docs/calibration-alter-table-20260915.md)，另有 [CREATE FOREIGN TABLE 全页](/Users/vonng/pgsty/pgdoc/docs/calibration-create-foreign-table-20260915.md)。各自均完成十一版英中对照与新快照核验；本批合计 58 个问题／回归组、638 个逐版格，210 条既有 ID 提示逐项核定，零范围未决、零漂移。新发现的 ALTER FOREIGN TABLE 同类未来内容也已完成十一版全文修复和新快照核验，见文末的关联报告。此前信息模式、CREATE DOMAIN、ECPG、libpq、大对象和协议已完成分批校准与提交；全书剩余范围及最终 33 构建仍未完成。
+2026-09-15 最新完成 [hash 及关联语义的十一版校准](/Users/vonng/pgsty/pgdoc/docs/calibration-hash-20260915.md)：303 个正文文件及 PG20 生成映射修订，16 类问题／一致性项逐版核对；新快照 18 条范围内提示全部核定，零未决、零漂移。此前 [性能全章](/Users/vonng/pgsty/pgdoc/docs/calibration-performance-20260915.md)、[操作符参考页及扩展章](/Users/vonng/pgsty/pgdoc/docs/calibration-operator-reference-20260915.md)、表定义、系统目录、信息模式、ECPG、libpq、大对象及协议等已分批校准并提交。正在继续 EXPLAIN 参考页与其他未读范围；全书语义阅读、历史范围对账及最终 33 项构建仍未完成。
 
 英文固定为 10.23、11.22、12.22、13.23、14.24、15.19、16.15、17.11、18.6、19beta3 和 PG20 提交 86f7c82cf1023e3599f40f939727791a7090cd44。PG18 优先阅读；其他版本逐一核对完整段落、表格行和版本差异，同义英文共用译文，保留自身功能、签名、默认值、限制、代码和链接。遵守 exclude、glossary 及语境规则、style 的优先顺序。
 
@@ -237,3 +237,5 @@ ECPG 全章已核验提交 `74d86e305d68d39fe4b2868ec5211da5ec28f2ff`（11正文
 2026-09-15：[操作符参考页、xoper 与关联文本报告](/Users/vonng/pgsty/pgdoc/docs/calibration-operator-reference-20260915.md)：十一版132完整文件及216关联文本已闭合，116正文文件273处修订；未来交换器说明、词元/选择率/hash、非null及映像等已按本版英文校准。418条提示逐项核定，零未决零漂移。性能章节及其余hash位置、全书与33最终构建继续。
 
 2026-09-15：[性能章节与关联文本报告](/Users/vonng/pgsty/pgdoc/docs/calibration-performance-20260915.md)：十一版完整性能章及235关联文本已核，56正文+3规范修订；54英文组594格及18类逐版矩阵保存。44条原生提示逐项绑定，零范围未决、零漂移。未来EXPLAIN、代价数字、归并方向、列数限定、五分之一等已修复；更广hash、全书余项、历史对账和33最终构建继续。
+
+2026-09-15：[hash 及关联语义报告](/Users/vonng/pgsty/pgdoc/docs/calibration-hash-20260915.md)：303 SGML + 1 生成映射；302 英文组 3322 格及 16 类问题逐版矩阵。新快照 1857 节点精确配对，18 条范围内提示核定，零未决零漂移；范围外 2970 提示保留。继续 EXPLAIN 全页、全书余项、历史对账与 33 最终构建。
