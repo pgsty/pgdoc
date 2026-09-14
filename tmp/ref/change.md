@@ -50,3 +50,8 @@ PG14—19 中文源文完成 1,895 个定点原子修改、321 个文件：1,626
 根据十一版各自英文和性能章节完整阅读，新增原序号 638：initplan → 初始计划，配套说明实际 InitPlan 计划标签、输出和内部名称的保留边界。PG17—20 性能正文及 PG11—15 相关发行说明同步使用中文概念；其余版本只核对自身实际位置，不添加新版说明。词表与逐条规则各 638 条，九项既定回退和其余规范不变。选择率、代价、非重复值、B-树及 hash 继续按现行词条及例外执行。
 
 本轮证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/performance-full-*。全书对账和最终十一版 HTML/A4/US PDF 共 33 项构建继续；范围内修复不代表整书或最终构建通过。
+
+
+## 2026-09-15 PG10—PG20 维护与权限参考页校准
+
+根据十一版自身英文和关联说明，新增第 639 条：buffer access strategy → 缓冲区访问策略，沿用表采样和术语表章节已有译法。普通说明中的单复数及 literal 标签内的概念均使用此译名；首次括注英文和实际 BufferAccessStrategy 类型、参数、代码、配置值保持。横向核对覆盖 PG10—20 表采样说明和 PG16—20 配置、术语表、ANALYZE、VACUUM、vacuumdb，保留 PG16 的 256 kB 默认值及 PG17 起的 2MB。词表与规则各 639 条，不改动既定九项回退。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/maintenance-permissions-reviewed-*；全书校准及 33 项最终构建继续。
