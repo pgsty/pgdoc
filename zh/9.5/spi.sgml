@@ -1,65 +1,53 @@
 <!-- doc/src/sgml/spi.sgml -->
 
 <chapter id="spi">
- <title>Server Programming Interface</title>
+ <title>服务器编程接口</title>
 
  <indexterm zone="spi">
   <primary>SPI</primary>
  </indexterm>
 
  <para>
-  The <firstterm>Server Programming Interface</firstterm>
-  (<acronym>SPI</acronym>) gives writers of user-defined
-  <acronym>C</acronym> functions the ability to run
-  <acronym>SQL</acronym> commands inside their functions.
-  <acronym>SPI</acronym> is a set of
-  interface functions to simplify access to the parser, planner,
-  and executor. <acronym>SPI</acronym> also does some
-  memory management.
+  <firstterm>服务器编程接口</firstterm>（<acronym>SPI</acronym>）使用户定义
+  <acronym>C</acronym> 函数的编写者能够在其函数中运行
+  <acronym>SQL</acronym> 命令。<acronym>SPI</acronym> 是一组接口函数，
+  用于简化对解析器、规划器和执行器的访问。<acronym>SPI</acronym>
+  还负责一部分内存管理工作。
  </para>
 
  <note>
   <para>
-   The available procedural languages provide various means to
-   execute SQL commands from procedures.  Most of these facilities are
-   based on SPI, so this documentation might be of use for users
-   of those languages as well.
+   可用的过程语言提供了多种从过程中执行 SQL 命令的方法。这些设施大多基于
+   SPI，因此本文档对这些语言的用户也会有帮助。
   </para>
  </note>
 
  <para>
-  To avoid misunderstanding we'll use the term <quote>function</quote>
-  when we speak of <acronym>SPI</acronym> interface functions and
-  <quote>procedure</quote> for a user-defined C-function that is
-  using <acronym>SPI</acronym>.
+  为避免误解，本文用<quote>函数</quote>指<acronym>SPI</acronym>接口函数，而用<quote>过程</quote>指使用<acronym>SPI</acronym>的用户定义 C 函数。
+</para>
+
+ <para>
+  注意，如果通过 SPI 调用的某条命令失败，控制不会返回到你的过程。相反，
+  执行该过程的事务或子事务会被回滚。（考虑到 SPI 函数大多记录了错误返回
+  约定，这一点可能看起来有些意外。不过，这些约定只适用于在 SPI 函数自身内
+  部检测到的错误。）如果在可能失败的 SPI 调用外围建立自己的子事务，则可以
+  在出错后重新取得控制权。
  </para>
 
  <para>
-  Note that if a command invoked via SPI fails, then control will not be
-  returned to your procedure.  Rather, the
-  transaction or subtransaction in which your procedure executes will be
-  rolled back.  (This might seem surprising given that the SPI functions mostly
-  have documented error-return conventions.  Those conventions only apply
-  for errors detected within the SPI functions themselves, however.)
-  It is possible to recover control after an error by establishing your own
-  subtransaction surrounding SPI calls that might fail.
+  <acronym>SPI</acronym> 函数在成功时返回非负结果（要么直接作为整数返回值，
+  要么如后文所述存放在全局变量 <varname>SPI_result</varname> 中）。发生错
+  误时，则返回负值或 <symbol>NULL</symbol>。
  </para>
 
  <para>
-  <acronym>SPI</acronym> functions return a nonnegative result on
-  success (either via a returned integer value or in the global
-  variable <varname>SPI_result</varname>, as described below).  On
-  error, a negative result or <symbol>NULL</symbol> will be returned.
- </para>
-
- <para>
-  Source code files that use SPI must include the header file
-  <filename>executor/spi.h</filename>.
+  使用 SPI 的源代码文件必须包含头文件
+  <filename>executor/spi.h</filename>。
  </para>
 
 
 <sect1 id="spi-interface">
- <title>Interface Functions</title>
+ <title>接口函数</title>
 
  <refentry id="spi-spi-connect">
   <indexterm><primary>SPI_connect</primary></indexterm>
@@ -71,7 +59,7 @@
 
   <refnamediv>
    <refname>SPI_connect</refname>
-   <refpurpose>connect a procedure to the SPI manager</refpurpose>
+   <refpurpose>将一个过程连接到 SPI 管理器</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -81,40 +69,28 @@ int SPI_connect(void)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_connect</function> opens a connection from a
-   procedure invocation to the SPI manager.  You must call this
-   function if you want to execute commands through SPI.  Some utility
-   SPI functions can be called from unconnected procedures.
+   <function>SPI_connect</function> 会为某次过程调用打开到 SPI 管理器
+   的连接。如果要通过 SPI 执行命令，就必须调用此函数。不过，有些 SPI
+   辅助函数可以在未连接的过程中调用。
   </para>
 
   <para>
-   If your procedure is already connected,
-   <function>SPI_connect</function> will return the error code
-   <returnvalue>SPI_ERROR_CONNECT</returnvalue>.  This could happen if
-   a procedure that has called <function>SPI_connect</function>
-   directly calls another procedure that calls
-   <function>SPI_connect</function>.  While recursive calls to the
-   <acronym>SPI</acronym> manager are permitted when an SQL command
-   called through SPI invokes another function that uses
-   <acronym>SPI</acronym>, directly nested calls to
-   <function>SPI_connect</function> and
-   <function>SPI_finish</function> are forbidden.
-   (But see <function>SPI_push</function> and <function>SPI_pop</function>.)
+   如果你的过程已经处于连接状态，<function>SPI_connect</function>将返回错误代码<returnvalue>SPI_ERROR_CONNECT</returnvalue>。当某个直接调用了<function>SPI_connect</function>的过程又直接调用另一个调用<function>SPI_connect</function>的过程时，就会发生这种情况。虽然当通过 SPI 调用的 SQL 命令调用另一个使用 <acronym>SPI</acronym> 的函数时，允许对 <acronym>SPI</acronym> 管理器的递归调用，但直接嵌套调用<function>SPI_connect</function>和<function>SPI_finish</function>是被禁止的。（但请参见<function>SPI_push</function>和<function>SPI_pop</function>。）
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <variablelist>
    <varlistentry>
     <term><symbol>SPI_OK_CONNECT</symbol></term>
     <listitem>
      <para>
-      on success
+      成功时
      </para>
     </listitem>
    </varlistentry>
@@ -123,7 +99,7 @@ int SPI_connect(void)
     <term><symbol>SPI_ERROR_CONNECT</symbol></term>
     <listitem>
      <para>
-      on error
+      发生错误时
      </para>
     </listitem>
    </varlistentry>
@@ -143,7 +119,7 @@ int SPI_connect(void)
 
  <refnamediv>
   <refname>SPI_finish</refname>
-  <refpurpose>disconnect a procedure from the SPI manager</refpurpose>
+  <refpurpose>将一个过程与 SPI 管理器断开</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -153,34 +129,29 @@ int SPI_finish(void)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_finish</function> closes an existing connection to
-   the SPI manager.  You must call this function after completing the
-   SPI operations needed during your procedure's current invocation.
-   You do not need to worry about making this happen, however, if you
-   abort the transaction via <literal>elog(ERROR)</literal>.  In that
-   case SPI will clean itself up automatically.
+   <function>SPI_finish</function> 关闭到 SPI 管理器的现有连接。在完成当前
+   这次过程调用所需的 SPI 操作后，必须调用此函数。不过，如果通过
+   <literal>elog(ERROR)</literal> 中止了事务，就不必担心是否显式调用它；
+   这种情况下 SPI 会自行清理。
   </para>
 
   <para>
-   If <function>SPI_finish</function> is called without having a valid
-   connection, it will return <symbol>SPI_ERROR_UNCONNECTED</symbol>.
-   There is no fundamental problem with this; it means that the SPI
-   manager has nothing to do.
+   如果在没有有效连接的情况下调用<function>SPI_finish</function>，它将返回<symbol>SPI_ERROR_UNCONNECTED</symbol>。这并不会带来根本性问题；它只表示 SPI 管理器无事可做。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <variablelist>
    <varlistentry>
     <term><symbol>SPI_OK_FINISH</symbol></term>
     <listitem>
      <para>
-      if properly disconnected
+      如果正确地断开连接
      </para>
     </listitem>
    </varlistentry>
@@ -189,13 +160,15 @@ int SPI_finish(void)
     <term><symbol>SPI_ERROR_UNCONNECTED</symbol></term>
     <listitem>
      <para>
-      if called from an unconnected procedure
-     </para>
+       如果从未连接的过程中调用
+      </para>
     </listitem>
    </varlistentry>
   </variablelist>
  </refsect1>
 </refentry>
+
+<!-- *********************************************** -->
 
 <!-- *********************************************** -->
 
@@ -209,7 +182,7 @@ int SPI_finish(void)
 
  <refnamediv>
   <refname>SPI_push</refname>
-  <refpurpose>push SPI stack to allow recursive SPI usage</refpurpose>
+  <refpurpose>压入 SPI 栈以允许递归使用 SPI</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -219,27 +192,15 @@ void SPI_push(void)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_push</function> should be called before executing another
-   procedure that might itself wish to use SPI.
-   After <function>SPI_push</function>, SPI is no longer in a
-   <quote>connected</> state, and SPI function calls will be rejected unless
-   a fresh <function>SPI_connect</function> is done.  This ensures a clean
-   separation between your procedure's SPI state and that of another procedure
-   you call.  After the other procedure returns, call
-   <function>SPI_pop</function> to restore access to your own SPI state.
+   <function>SPI_push</function>应当在执行另一个自身可能希望使用 SPI 的过程之前调用。
+   在<function>SPI_push</function>之后，SPI 不再处于<quote>连接</quote>状态，除非重新执行<function>SPI_connect</function>，否则 SPI 函数调用将被拒绝。这确保了你的过程的 SPI 状态与你所调用的另一个过程的状态之间的清晰分离。在另一个过程返回之后，调用<function>SPI_pop</function>恢复对你自己 SPI 状态的访问。
   </para>
 
   <para>
-   Note that <function>SPI_execute</function> and related functions
-   automatically do the equivalent of <function>SPI_push</function> before
-   passing control back to the SQL execution engine, so it is not necessary
-   for you to worry about this when using those functions.
-   Only when you are directly calling arbitrary code that might contain
-   <function>SPI_connect</function> calls do you need to issue
-   <function>SPI_push</function> and <function>SPI_pop</function>.
+   注意，<function>SPI_execute</function>及相关函数在把控制交还给 SQL 执行引擎之前，会自动完成相当于<function>SPI_push</function>的操作，因此在使用这些函数时无需为此操心。只有当你直接调用可能包含<function>SPI_connect</function>调用的任意代码时，才需要发出<function>SPI_push</function>和<function>SPI_pop</function>。
   </para>
  </refsect1>
 
@@ -257,7 +218,7 @@ void SPI_push(void)
 
  <refnamediv>
   <refname>SPI_pop</refname>
-  <refpurpose>pop SPI stack to return from recursive SPI usage</refpurpose>
+  <refpurpose>弹出 SPI 栈以从递归 SPI 使用中返回</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -267,11 +228,10 @@ void SPI_pop(void)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_pop</function> pops the previous environment from the
-   SPI call stack.  See <function>SPI_push</function>.
+   <function>SPI_pop</function>从 SPI 调用栈中弹出先前的环境。参见<function>SPI_push</function>。
   </para>
  </refsect1>
 
@@ -289,7 +249,7 @@ void SPI_pop(void)
 
  <refnamediv>
   <refname>SPI_execute</refname>
-  <refpurpose>execute a command</refpurpose>
+  <refpurpose>执行一个命令</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -299,137 +259,119 @@ int SPI_execute(const char * <parameter>command</parameter>, bool <parameter>rea
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_execute</function> executes the specified SQL command
-   for <parameter>count</parameter> rows.  If <parameter>read_only</parameter>
-   is <literal>true</>, the command must be read-only, and execution overhead
-   is somewhat reduced.
+   <function>SPI_execute</function> 执行指定的 SQL 命令，并最多检索
+   <parameter>count</parameter> 行。如果 <parameter>read_only</parameter>
+   为 <literal>true</literal>，该命令必须是只读的，且执行开销会略有降低。
   </para>
 
   <para>
-   This function can only be called from a connected procedure.
+   此函数只能从已连接的过程中调用。
   </para>
 
   <para>
-   If <parameter>count</parameter> is zero then the command is executed
-   for all rows that it applies to.  If <parameter>count</parameter>
-   is greater than zero, then no more than <parameter>count</parameter> rows
-   will be retrieved; execution stops when the count is reached, much like
-   adding a <literal>LIMIT</literal> clause to the query. For example,
+   如果 <parameter>count</parameter> 为零，则该命令会针对其适用的所有行执
+   行。如果 <parameter>count</parameter> 大于零，则最多检索
+   <parameter>count</parameter> 行；达到该计数时就会停止执行，这很像给查
+   询增加了一个 <literal>LIMIT</literal> 子句。例如：
 <programlisting>
 SPI_execute("SELECT * FROM foo", true, 5);
 </programlisting>
-   will retrieve at most 5 rows from the table.  Note that such a limit
-   is only effective when the command actually returns rows.  For example,
+   最多会从该表中检索 5 行。注意，这种限制只有在命令实际返回行时才有效。
+   例如：
 <programlisting>
 SPI_execute("INSERT INTO foo SELECT * FROM bar", false, 5);
 </programlisting>
-   inserts all rows from <structname>bar</>, ignoring the
-   <parameter>count</parameter> parameter.  However, with
+   会忽略 <parameter>count</parameter> 参数，把
+   <structname>bar</structname> 中的所有行都插入进去。不过：
 <programlisting>
 SPI_execute("INSERT INTO foo SELECT * FROM bar RETURNING *", false, 5);
 </programlisting>
-   at most 5 rows would be inserted, since execution would stop after the
-   fifth <literal>RETURNING</> result row is retrieved.
+   最多只会插入 5 行，因为取到第 5 行 <literal>RETURNING</literal> 结果后
+   就会停止执行。
   </para>
 
   <para>
-   You can pass multiple commands in one string;
-   <function>SPI_execute</function> returns the
-   result for the command executed last.  The <parameter>count</parameter>
-   limit applies to each command separately (even though only the last
-   result will actually be returned).  The limit is not applied to any
-   hidden commands generated by rules.
+   你可以在一个字符串中传递多条命令；<function>SPI_execute</function>
+   返回最后执行的那条命令的结果。<parameter>count</parameter> 限制会分别
+   作用于每条命令（尽管实际返回的只有最后一条命令的结果）。该限制不适用于
+   规则生成的任何隐藏命令。
   </para>
 
   <para>
-   When <parameter>read_only</parameter> is <literal>false</>,
-   <function>SPI_execute</function> increments the command
-   counter and computes a new <firstterm>snapshot</> before executing each
-   command in the string.  The snapshot does not actually change if the
-   current transaction isolation level is <literal>SERIALIZABLE</> or <literal>REPEATABLE READ</>, but in
-   <literal>READ COMMITTED</> mode the snapshot update allows each command to
-   see the results of newly committed transactions from other sessions.
-   This is essential for consistent behavior when the commands are modifying
-   the database.
+   当 <parameter>read_only</parameter> 为 <literal>false</literal> 时，
+   <function>SPI_execute</function> 会递增命令计数器，并在执行字符串中的每
+   条命令前计算新的<firstterm>快照</firstterm>。如果当前事务隔离级别是
+   <literal>SERIALIZABLE</literal> 或 <literal>REPEATABLE READ</literal>，
+   这个快照实际上不会变化；但在 <literal>READ COMMITTED</literal> 模式下，
+   更新快照会让每条命令都能看到其他会话中新近提交事务的结果。这对于修改数
+   据库的命令获得一致行为至关重要。
   </para>
 
   <para>
-   When <parameter>read_only</parameter> is <literal>true</>,
-   <function>SPI_execute</function> does not update either the snapshot
-   or the command counter, and it allows only plain <command>SELECT</>
-   commands to appear in the command string.  The commands are executed
-   using the snapshot previously established for the surrounding query.
-   This execution mode is somewhat faster than the read/write mode due
-   to eliminating per-command overhead.  It also allows genuinely
-   <firstterm>stable</> functions to be built: since successive executions
-   will all use the same snapshot, there will be no change in the results.
+   当 <parameter>read_only</parameter> 为 <literal>true</literal> 时，
+   <function>SPI_execute</function> 不会更新快照和命令计数器，并且只允许命
+   令字符串中出现普通的 <command>SELECT</command> 命令。这些命令会使用外
+   围查询先前建立的快照来执行。由于消除了每条命令的额外开销，这种执行模式
+   比读写模式略快。它还允许构造真正<firstterm>稳定</firstterm>的函数：由
+   于连续执行都会使用同一个快照，结果也就不会发生变化。
   </para>
 
   <para>
-   It is generally unwise to mix read-only and read-write commands within
-   a single function using SPI; that could result in very confusing behavior,
-   since the read-only queries would not see the results of any database
-   updates done by the read-write queries.
+   在同一个使用 SPI 的函数中混合只读命令和读写命令通常并不明智，因为只读
+   查询看不到读写查询所做的数据库更新，这可能导致非常令人困惑的行为。
   </para>
 
   <para>
-   The actual number of rows for which the (last) command was executed
-   is returned in the global variable <varname>SPI_processed</varname>.
-   If the return value of the function is <symbol>SPI_OK_SELECT</symbol>,
-   <symbol>SPI_OK_INSERT_RETURNING</symbol>,
-   <symbol>SPI_OK_DELETE_RETURNING</symbol>, or
-   <symbol>SPI_OK_UPDATE_RETURNING</symbol>,
-   then you can use the
-   global pointer <literal>SPITupleTable *SPI_tuptable</literal> to
-   access the result rows.  Some utility commands (such as
-   <command>EXPLAIN</>) also return row sets, and <literal>SPI_tuptable</>
-   will contain the result in these cases too. Some utility commands
-   (<command>COPY</>, <command>CREATE TABLE AS</>) don't return a row set, so
-   <literal>SPI_tuptable</> is NULL, but they still return the number of
-   rows processed in <varname>SPI_processed</>.
+   （最后一条）命令实际执行所处理的行数，会通过全局变量
+   <varname>SPI_processed</varname> 返回。如果函数返回值是
+   <symbol>SPI_OK_SELECT</symbol>、
+   <symbol>SPI_OK_INSERT_RETURNING</symbol>、
+   <symbol>SPI_OK_DELETE_RETURNING</symbol>、
+   <symbol>SPI_OK_UPDATE_RETURNING</symbol>，则可以通过全局指针
+   <literal>SPITupleTable *SPI_tuptable</literal> 访问结果行。有些工具命令
+   （如 <command>EXPLAIN</command>）也会返回结果行集，此时
+   <literal>SPI_tuptable</literal> 同样会保存结果。另一些工具命令
+   （<command>COPY</command>、<command>CREATE TABLE AS</command>）不返
+   回行集，因此 <literal>SPI_tuptable</literal> 为 NULL，但它们依然会在
+   <varname>SPI_processed</varname> 中返回处理的行数。
   </para>
 
   <para>
-   The structure <structname>SPITupleTable</structname> is defined
-   thus:
+   结构 <structname>SPITupleTable</structname> 定义如下：
 <programlisting>
 typedef struct
 {
-    MemoryContext tuptabcxt;    /* memory context of result table */
-    uint32      alloced;        /* number of alloced vals */
-    uint32      free;           /* number of free vals */
-    TupleDesc   tupdesc;        /* row descriptor */
-    HeapTuple  *vals;           /* rows */
+    MemoryContext tuptabcxt;    /* 结果表的内存上下文 */
+    uint32      alloced;        /* 已分配的 vals 数量 */
+    uint32      free;           /* 空闲的 vals 数量 */
+    TupleDesc   tupdesc;        /* 行描述符 */
+    HeapTuple  *vals;           /* 行 */
 } SPITupleTable;
 </programlisting>
-   <structfield>vals</> is an array of pointers to rows.  (The number
-   of valid entries is given by <varname>SPI_processed</varname>.)
-   <structfield>tupdesc</> is a row descriptor which you can pass to
-   SPI functions dealing with rows.  <structfield>tuptabcxt</>,
-   <structfield>alloced</>, and <structfield>free</> are internal
-   fields not intended for use by SPI callers.
+   <structfield>vals</structfield> 是一个指向行的指针数组。（有效项数为 <varname>SPI_processed</varname>。）
+   <structfield>tupdesc</structfield> 是一个行描述符，可以传给处理行的 SPI 函数。<structfield>tuptabcxt</>，
+   <structfield>alloced</> 和 <structfield>free</> 是内部字段，不供 SPI 调用者使用。
   </para>
 
   <para>
-   <function>SPI_finish</function> frees all
-   <structname>SPITupleTable</>s allocated during the current
-   procedure.  You can free a particular result table earlier, if you
-   are done with it, by calling <function>SPI_freetuptable</function>.
+   <function>SPI_finish</function> 会释放当前过程调用期间分配的全部
+   <structname>SPITupleTable</structname>。如果某个结果表已经不再需要，也
+   可以提前调用 <function>SPI_freetuptable</function> 释放它。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>const char * <parameter>command</parameter></literal></term>
     <listitem>
      <para>
-      string containing command to execute
+      包含待执行命令的字符串
      </para>
     </listitem>
    </varlistentry>
@@ -437,7 +379,7 @@ typedef struct
    <varlistentry>
     <term><literal>bool <parameter>read_only</parameter></literal></term>
     <listitem>
-     <para><literal>true</> for read-only execution</para>
+     <para><literal>true</literal> 表示只读执行</para>
     </listitem>
    </varlistentry>
 
@@ -445,8 +387,7 @@ typedef struct
     <term><literal>long <parameter>count</parameter></literal></term>
     <listitem>
      <para>
-      maximum number of rows to return,
-      or <literal>0</> for no limit
+      要返回的最大行数，或者用 <literal>0</literal> 表示不限制
      </para>
     </listitem>
    </varlistentry>
@@ -454,19 +395,18 @@ typedef struct
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   If the execution of the command was successful then one of the
-   following (nonnegative) values will be returned:
+   如果命令执行成功，则返回下列（非负）值之一：
 
    <variablelist>
     <varlistentry>
      <term><symbol>SPI_OK_SELECT</symbol></term>
      <listitem>
       <para>
-       if a <command>SELECT</command> (but not <command>SELECT
-       INTO</>) was executed
+       执行了 <command>SELECT</command>（但不是
+       <command>SELECT INTO</command>）
       </para>
      </listitem>
     </varlistentry>
@@ -475,7 +415,7 @@ typedef struct
      <term><symbol>SPI_OK_SELINTO</symbol></term>
      <listitem>
       <para>
-       if a <command>SELECT INTO</command> was executed
+       执行了 <command>SELECT INTO</command>
       </para>
      </listitem>
     </varlistentry>
@@ -484,7 +424,7 @@ typedef struct
      <term><symbol>SPI_OK_INSERT</symbol></term>
      <listitem>
       <para>
-       if an <command>INSERT</command> was executed
+       执行了 <command>INSERT</command>
       </para>
      </listitem>
     </varlistentry>
@@ -493,7 +433,7 @@ typedef struct
      <term><symbol>SPI_OK_DELETE</symbol></term>
      <listitem>
       <para>
-       if a <command>DELETE</command> was executed
+       执行了 <command>DELETE</command>
       </para>
      </listitem>
     </varlistentry>
@@ -502,7 +442,7 @@ typedef struct
      <term><symbol>SPI_OK_UPDATE</symbol></term>
      <listitem>
       <para>
-       if an <command>UPDATE</command> was executed
+       执行了 <command>UPDATE</command>
       </para>
      </listitem>
     </varlistentry>
@@ -511,7 +451,7 @@ typedef struct
      <term><symbol>SPI_OK_INSERT_RETURNING</symbol></term>
      <listitem>
       <para>
-       if an <command>INSERT RETURNING</command> was executed
+       执行了 <command>INSERT RETURNING</command>
       </para>
      </listitem>
     </varlistentry>
@@ -520,7 +460,7 @@ typedef struct
      <term><symbol>SPI_OK_DELETE_RETURNING</symbol></term>
      <listitem>
       <para>
-       if a <command>DELETE RETURNING</command> was executed
+       执行了 <command>DELETE RETURNING</command>
       </para>
      </listitem>
     </varlistentry>
@@ -529,7 +469,7 @@ typedef struct
      <term><symbol>SPI_OK_UPDATE_RETURNING</symbol></term>
      <listitem>
       <para>
-       if an <command>UPDATE RETURNING</command> was executed
+       执行了 <command>UPDATE RETURNING</command>
       </para>
      </listitem>
     </varlistentry>
@@ -538,8 +478,7 @@ typedef struct
      <term><symbol>SPI_OK_UTILITY</symbol></term>
      <listitem>
       <para>
-       if a utility command (e.g., <command>CREATE TABLE</command>)
-       was executed
+       执行了工具命令（例如 <command>CREATE TABLE</command>）
       </para>
      </listitem>
     </varlistentry>
@@ -548,8 +487,9 @@ typedef struct
      <term><symbol>SPI_OK_REWRITTEN</symbol></term>
      <listitem>
       <para>
-       if the command was rewritten into another kind of command (e.g.,
-       <command>UPDATE</command> became an <command>INSERT</command>) by a <link linkend="rules">rule</link>.
+       命令被 <link linkend="rules">规则</link> 重写成了另一类命令
+       （例如 <command>UPDATE</command> 变成了
+       <command>INSERT</command>）
       </para>
      </listitem>
     </varlistentry>
@@ -557,15 +497,15 @@ typedef struct
   </para>
 
   <para>
-   On error, one of the following negative values is returned:
+   出错时，返回以下负值之一：
 
    <variablelist>
     <varlistentry>
      <term><symbol>SPI_ERROR_ARGUMENT</symbol></term>
      <listitem>
       <para>
-       if <parameter>command</parameter> is <symbol>NULL</symbol> or
-       <parameter>count</parameter> is less than 0
+       <parameter>command</parameter> 为 <symbol>NULL</symbol>，或者
+       <parameter>count</parameter> 小于 0
       </para>
      </listitem>
     </varlistentry>
@@ -574,8 +514,8 @@ typedef struct
      <term><symbol>SPI_ERROR_COPY</symbol></term>
      <listitem>
       <para>
-       if <command>COPY TO stdout</> or <command>COPY FROM stdin</>
-       was attempted
+       尝试执行了 <command>COPY TO stdout</command> 或
+       <command>COPY FROM stdin</command>
       </para>
      </listitem>
     </varlistentry>
@@ -584,15 +524,12 @@ typedef struct
      <term><symbol>SPI_ERROR_TRANSACTION</symbol></term>
      <listitem>
       <para>
-       if a transaction manipulation command was attempted
-       (<command>BEGIN</>,
-       <command>COMMIT</>,
-       <command>ROLLBACK</>,
-       <command>SAVEPOINT</>,
-       <command>PREPARE TRANSACTION</>,
-       <command>COMMIT PREPARED</>,
-       <command>ROLLBACK PREPARED</>,
-       or any variant thereof)
+       尝试执行了事务控制命令（<command>BEGIN</command>、
+       <command>COMMIT</command>、<command>ROLLBACK</command>、
+       <command>SAVEPOINT</command>、
+       <command>PREPARE TRANSACTION</command>、
+       <command>COMMIT PREPARED</command>、
+       <command>ROLLBACK PREPARED</command> 及其各种变体）
       </para>
      </listitem>
     </varlistentry>
@@ -601,7 +538,7 @@ typedef struct
      <term><symbol>SPI_ERROR_OPUNKNOWN</symbol></term>
      <listitem>
       <para>
-       if the command type is unknown (shouldn't happen)
+       命令类型未知（理论上不应发生）
       </para>
      </listitem>
     </varlistentry>
@@ -610,7 +547,7 @@ typedef struct
      <term><symbol>SPI_ERROR_UNCONNECTED</symbol></term>
      <listitem>
       <para>
-       if called from an unconnected procedure
+       如果从未连接的过程中调用
       </para>
      </listitem>
     </varlistentry>
@@ -619,16 +556,13 @@ typedef struct
  </refsect1>
 
  <refsect1>
-  <title>Notes</title>
+  <title>注解</title>
 
   <para>
-   All SPI query-execution functions set both
-   <varname>SPI_processed</varname> and
-   <varname>SPI_tuptable</varname> (just the pointer, not the contents
-   of the structure).  Save these two global variables into local
-   procedure variables if you need to access the result table of
-   <function>SPI_execute</function> or another query-execution function
-   across later calls.
+   所有 SPI 查询执行函数都会设置 <varname>SPI_processed</varname> 和
+   <varname>SPI_tuptable</varname>（只设置指针，而不更改结构体内容）。如果
+   需要在后续调用之后继续访问 <function>SPI_execute</function> 或其他查询
+   执行函数的结果表，请把这两个全局变量保存到过程局部变量中。
   </para>
  </refsect1>
 </refentry>
@@ -645,7 +579,7 @@ typedef struct
 
  <refnamediv>
   <refname>SPI_exec</refname>
-  <refpurpose>execute a read/write command</refpurpose>
+  <refpurpose>执行一个读/写命令</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -655,25 +589,25 @@ int SPI_exec(const char * <parameter>command</parameter>, long <parameter>count<
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_exec</function> is the same as
-   <function>SPI_execute</function>, with the latter's
-   <parameter>read_only</parameter> parameter always taken as
-   <literal>false</>.
+   <function>SPI_exec</function>和
+   <function>SPI_execute</function>相同，但后者的
+   <parameter>read_only</parameter>参数的值总是取
+   <literal>false</literal>。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>const char * <parameter>command</parameter></literal></term>
     <listitem>
      <para>
-      string containing command to execute
+      包含待执行命令的字符串
      </para>
     </listitem>
    </varlistentry>
@@ -682,8 +616,7 @@ int SPI_exec(const char * <parameter>command</parameter>, long <parameter>count<
     <term><literal>long <parameter>count</parameter></literal></term>
     <listitem>
      <para>
-      maximum number of rows to return,
-      or <literal>0</> for no limit
+      要返回的最大行数，或者用 <literal>0</literal> 表示不限制
      </para>
     </listitem>
    </varlistentry>
@@ -691,10 +624,10 @@ int SPI_exec(const char * <parameter>command</parameter>, long <parameter>count<
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   See <function>SPI_execute</function>.
+   见<function>SPI_execute</function>。
   </para>
  </refsect1>
 </refentry>
@@ -711,7 +644,7 @@ int SPI_exec(const char * <parameter>command</parameter>, long <parameter>count<
 
  <refnamediv>
   <refname>SPI_execute_with_args</refname>
-  <refpurpose>execute a command with out-of-line parameters</refpurpose>
+  <refpurpose>执行使用外部参数的命令</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -724,45 +657,40 @@ int SPI_execute_with_args(const char *<parameter>command</parameter>,
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_execute_with_args</function> executes a command that might
-   include references to externally supplied parameters.  The command text
-   refers to a parameter as <literal>$<replaceable>n</></literal>, and
-   the call specifies data types and values for each such symbol.
-   <parameter>read_only</parameter> and <parameter>count</parameter> have
-   the same interpretation as in <function>SPI_execute</function>.
+   <function>SPI_execute_with_args</function> 执行一条可能包含外部提供参数引
+   用的命令。命令文本中的参数引用写作
+   <literal>$<replaceable>n</replaceable></literal>，而该调用会为每个这
+   类符号指定数据类型和值。<parameter>read_only</parameter> 和
+   <parameter>count</parameter> 的含义与
+   <function>SPI_execute</function> 中相同。
   </para>
 
   <para>
-   The main advantage of this routine compared to
-   <function>SPI_execute</function> is that data values can be inserted
-   into the command without tedious quoting/escaping, and thus with much
-   less risk of SQL-injection attacks.
+   相比 <function>SPI_execute</function>，这个例程的主要优点在于可将数据
+   值插入命令而无需繁琐的引用和转义，因此能够显著降低 SQL 注入攻击的风险。
   </para>
 
   <para>
-   Similar results can be achieved with <function>SPI_prepare</> followed by
-   <function>SPI_execute_plan</function>; however, when using this function
-   the query plan is always customized to the specific parameter values
-   provided.
-   For one-time query execution, this function should be preferred.
-   If the same command is to be executed with many different parameters,
-   either method might be faster, depending on the cost of re-planning
-   versus the benefit of custom plans.
+   也可以通过先调用 <function>SPI_prepare</function>，再调用
+   <function>SPI_execute_plan</function> 达到类似效果。不过，使用本函数
+   时，查询计划总会针对所提供的具体参数值进行定制。对于一次性查询执行，应
+   优先选择本函数。如果同一条命令要用许多不同参数重复执行，则两种方式孰快
+   取决于重新规划的代价与定制计划收益之间的权衡。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>const char * <parameter>command</parameter></literal></term>
     <listitem>
      <para>
-      command string
+      命令字符串
      </para>
     </listitem>
    </varlistentry>
@@ -771,7 +699,7 @@ int SPI_execute_with_args(const char *<parameter>command</parameter>,
     <term><literal>int <parameter>nargs</parameter></literal></term>
     <listitem>
      <para>
-      number of input parameters (<literal>$1</>, <literal>$2</>, etc.)
+      输入参数的数量（<literal>$1</literal>、<literal>$2</literal> 等）
      </para>
     </listitem>
    </varlistentry>
@@ -780,8 +708,8 @@ int SPI_execute_with_args(const char *<parameter>command</parameter>,
     <term><literal>Oid * <parameter>argtypes</parameter></literal></term>
     <listitem>
      <para>
-      an array of length <parameter>nargs</parameter>, containing the
-      <acronym>OID</acronym>s of the data types of the parameters
+      一个长度为 <parameter>nargs</parameter> 的数组，包含参数数据类型的
+      <acronym>OID</acronym>
      </para>
     </listitem>
    </varlistentry>
@@ -790,8 +718,7 @@ int SPI_execute_with_args(const char *<parameter>command</parameter>,
     <term><literal>Datum * <parameter>values</parameter></literal></term>
     <listitem>
      <para>
-      an array of length <parameter>nargs</parameter>, containing the actual
-      parameter values
+      一个长度为 <parameter>nargs</parameter> 的数组，包含实际参数值
      </para>
     </listitem>
    </varlistentry>
@@ -800,20 +727,19 @@ int SPI_execute_with_args(const char *<parameter>command</parameter>,
     <term><literal>const char * <parameter>nulls</parameter></literal></term>
     <listitem>
      <para>
-      an array of length <parameter>nargs</parameter>, describing which
-      parameters are null
+      一个长度为 <parameter>nargs</parameter> 的数组，用于描述哪些参数为
+      空值
      </para>
 
      <para>
-      If <parameter>nulls</parameter> is <symbol>NULL</symbol> then
-      <function>SPI_execute_with_args</function> assumes that no parameters
-      are null.  Otherwise, each entry of the <parameter>nulls</parameter>
-      array should be <literal>'&nbsp;'</> if the corresponding parameter
-      value is non-null, or <literal>'n'</> if the corresponding parameter
-      value is null.  (In the latter case, the actual value in the
-      corresponding <parameter>values</parameter> entry doesn't matter.)  Note
-      that <parameter>nulls</parameter> is not a text string, just an array:
-      it does not need a <literal>'\0'</> terminator.
+      如果 <parameter>nulls</parameter> 为 <symbol>NULL</symbol>，则
+      <function>SPI_execute_with_args</function> 会假定没有参数为空值。
+      否则，如果对应参数值非空值，则 <parameter>nulls</parameter> 数组中
+      的对应项应为 <literal>'&nbsp;'</literal>；如果对应参数值为空值，则
+      对应项应为 <literal>'n'</literal>。（后一种情况下，对应
+      <parameter>values</parameter> 项中的实际值无关紧要。）注意，
+      <parameter>nulls</parameter> 不是文本字符串，而只是一个数组，因此不
+      需要 <literal>'\0'</literal> 终止符。
      </para>
     </listitem>
    </varlistentry>
@@ -821,7 +747,7 @@ int SPI_execute_with_args(const char *<parameter>command</parameter>,
    <varlistentry>
     <term><literal>bool <parameter>read_only</parameter></literal></term>
     <listitem>
-     <para><literal>true</> for read-only execution</para>
+     <para><literal>true</literal> 表示只读执行</para>
     </listitem>
    </varlistentry>
 
@@ -829,8 +755,7 @@ int SPI_execute_with_args(const char *<parameter>command</parameter>,
     <term><literal>long <parameter>count</parameter></literal></term>
     <listitem>
      <para>
-      maximum number of rows to return,
-      or <literal>0</> for no limit
+      要返回的最大行数，或者用 <literal>0</literal> 表示不限制
      </para>
     </listitem>
    </varlistentry>
@@ -838,16 +763,16 @@ int SPI_execute_with_args(const char *<parameter>command</parameter>,
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   The return value is the same as for <function>SPI_execute</function>.
+   返回值与 <function>SPI_execute</function> 相同。
   </para>
 
   <para>
-   <varname>SPI_processed</varname> and
-   <varname>SPI_tuptable</varname> are set as in
-   <function>SPI_execute</function> if successful.
+   成功时，<varname>SPI_processed</varname> 和
+   <varname>SPI_tuptable</varname> 的设置方式与
+   <function>SPI_execute</function> 相同。
   </para>
  </refsect1>
 </refentry>
@@ -864,7 +789,7 @@ int SPI_execute_with_args(const char *<parameter>command</parameter>,
 
  <refnamediv>
   <refname>SPI_prepare</refname>
-  <refpurpose>prepare a statement, without executing it yet</refpurpose>
+  <refpurpose>准备一个语句，但暂不执行</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -874,54 +799,46 @@ SPIPlanPtr SPI_prepare(const char * <parameter>command</parameter>, int <paramet
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_prepare</function> creates and returns a prepared
-   statement for the specified command, but doesn't execute the command.
-   The prepared statement can later be executed repeatedly using
-   <function>SPI_execute_plan</function>.
+   <function>SPI_prepare</function> 为指定命令创建并返回一个预备语句，但并
+   不执行该命令。该预备语句之后可以通过
+   <function>SPI_execute_plan</function> 重复执行。
   </para>
 
   <para>
-   When the same or a similar command is to be executed repeatedly, it
-   is generally advantageous to perform parse analysis only once, and
-   might furthermore be advantageous to re-use an execution plan for the
-   command.
-   <function>SPI_prepare</function> converts a command string into a
-   prepared statement that encapsulates the results of parse analysis.
-   The prepared statement also provides a place for caching an execution plan
-   if it is found that generating a custom plan for each execution is not
-   helpful.
+   当同一条或相似命令需要反复执行时，通常只做一次解析分析是有利的，而重用
+   该命令的执行计划也可能进一步带来收益。
+   <function>SPI_prepare</function> 会把命令字符串转换成一个封装了解析分
+   析结果的预备语句。如果发现为每次执行都生成定制计划并无益处，该预备语句
+   还可用来缓存执行计划。
   </para>
 
   <para>
-   A prepared command can be generalized by writing parameters
-   (<literal>$1</>, <literal>$2</>, etc.) in place of what would be
-   constants in a normal command.  The actual values of the parameters
-   are then specified when <function>SPI_execute_plan</function> is called.
-   This allows the prepared command to be used over a wider range of
-   situations than would be possible without parameters.
+   预备命令可以通过在普通命令原本应写常量的位置写入参数
+   （<literal>$1</literal>、<literal>$2</literal> 等）而得到泛化。这些参数
+   的实际值会在调用 <function>SPI_execute_plan</function> 时指定。这样，
+   预备语句就能适用于比无参形式更广泛的场景。
   </para>
 
   <para>
-   The statement returned by <function>SPI_prepare</function> can be used
-   only in the current invocation of the procedure, since
-   <function>SPI_finish</function> frees memory allocated for such a
-   statement.  But the statement can be saved for longer using the functions
-   <function>SPI_keepplan</function> or <function>SPI_saveplan</function>.
+   <function>SPI_prepare</function> 返回的语句只能在当前这次过程调用中使
+   用，因为 <function>SPI_finish</function> 会释放为此类语句分配的内存。
+   不过，也可以使用 <function>SPI_keepplan</function> 或
+   <function>SPI_saveplan</function> 将该语句保存得更久。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>const char * <parameter>command</parameter></literal></term>
     <listitem>
      <para>
-      command string
+      命令字符串
      </para>
     </listitem>
    </varlistentry>
@@ -930,7 +847,7 @@ SPIPlanPtr SPI_prepare(const char * <parameter>command</parameter>, int <paramet
     <term><literal>int <parameter>nargs</parameter></literal></term>
     <listitem>
      <para>
-      number of input parameters (<literal>$1</>, <literal>$2</>, etc.)
+      输入参数的数量（<literal>$1</literal>、<literal>$2</literal> 等）
      </para>
     </listitem>
    </varlistentry>
@@ -939,8 +856,8 @@ SPIPlanPtr SPI_prepare(const char * <parameter>command</parameter>, int <paramet
     <term><literal>Oid * <parameter>argtypes</parameter></literal></term>
     <listitem>
      <para>
-      pointer to an array containing the <acronym>OID</acronym>s of
-      the data types of the parameters
+      一个数组指针，它指向的数组包含参数的数据类型的
+      <acronym>OID</acronym>
      </para>
     </listitem>
    </varlistentry>
@@ -948,68 +865,57 @@ SPIPlanPtr SPI_prepare(const char * <parameter>command</parameter>, int <paramet
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   <function>SPI_prepare</function> returns a non-null pointer to an
-   <type>SPIPlan</>, which is an opaque struct representing a prepared
-   statement.  On error, <symbol>NULL</symbol> will be returned,
-   and <varname>SPI_result</varname> will be set to one of the same
-   error codes used by <function>SPI_execute</function>, except that
-   it is set to <symbol>SPI_ERROR_ARGUMENT</symbol> if
-   <parameter>command</parameter> is <symbol>NULL</symbol>, or if
-   <parameter>nargs</> is less than 0, or if <parameter>nargs</> is
-   greater than 0 and <parameter>argtypes</> is <symbol>NULL</symbol>.
+   <function>SPI_prepare</function> 返回一个非空指针，指向表示预备语句的不透明结构体 <type>SPIPlan</type>。发生错误时会返回
+   <symbol>NULL</symbol>，并将 <varname>SPI_result</varname> 设为
+   <function>SPI_execute</function> 所使用的那些错误码之一；但如果
+   <parameter>command</parameter> 为 <symbol>NULL</symbol>，或者
+   <parameter>nargs</parameter> 小于 0，或者 <parameter>nargs</parameter>
+   大于 0 且 <parameter>argtypes</parameter> 为 <symbol>NULL</symbol>，
+   则会将其设置为 <symbol>SPI_ERROR_ARGUMENT</symbol>。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Notes</title>
+  <title>注解</title>
 
   <para>
-   If no parameters are defined, a generic plan will be created at the
-   first use of <function>SPI_execute_plan</function>, and used for all
-   subsequent executions as well.  If there are parameters, the first few uses
-   of <function>SPI_execute_plan</function> will generate custom plans
-   that are specific to the supplied parameter values.  After enough uses
-   of the same prepared statement, <function>SPI_execute_plan</function> will
-   build a generic plan, and if that is not too much more expensive than the
-   custom plans, it will start using the generic plan instead of re-planning
-   each time.  If this default behavior is unsuitable, you can alter it by
-   passing the <literal>CURSOR_OPT_GENERIC_PLAN</> or
-   <literal>CURSOR_OPT_CUSTOM_PLAN</> flag to
-   <function>SPI_prepare_cursor</function>, to force use of generic or custom
-   plans respectively.
+   如果没有定义参数，则在第一次使用 <function>SPI_execute_plan</function>
+   时会创建一个通用计划，并在之后的所有执行中继续使用它。如果存在参数，
+   <function>SPI_execute_plan</function> 在最初几次使用时会根据提供的参数
+   值生成定制计划。当同一个预备语句被使用足够多次之后，
+   <function>SPI_execute_plan</function> 会构建一个通用计划；如果它的代价
+   没有比定制计划高出太多，就会开始改用通用计划，而不是每次都重新规划。如
+   果这种默认行为不合适，可以把 <literal>CURSOR_OPT_GENERIC_PLAN</literal>
+   或 <literal>CURSOR_OPT_CUSTOM_PLAN</literal> 标志传给
+   <function>SPI_prepare_cursor</function>，分别强制使用通用计划或定制计划。
   </para>
 
   <para>
-   Although the main point of a prepared statement is to avoid repeated parse
-   analysis and planning of the statement, <productname>PostgreSQL</> will
-   force re-analysis and re-planning of the statement before using it
-   whenever database objects used in the statement have undergone
-   definitional (DDL) changes since the previous use of the prepared
-   statement.  Also, if the value of <xref linkend="guc-search-path"> changes
-   from one use to the next, the statement will be re-parsed using the new
-   <varname>search_path</>.  (This latter behavior is new as of
-   <productname>PostgreSQL</productname> 9.3.)  See <xref
-   linkend="sql-prepare"> for more information about the behavior of prepared
-   statements.
+   尽管预备语句的主要目的在于避免重复进行解析分析和规划，但只要语句中使用
+   的数据库对象自上次使用该预备语句以来发生了定义性（DDL）变更，
+   <productname>PostgreSQL</productname> 就会在再次使用前强制重新分析并重新规划该语句。此外，如果 <xref linkend="guc-search-path"> 的值在两次
+   使用之间发生变化，该语句也会基于新的 <varname>search_path</varname> 重
+   新解析。（后一种行为是从 <productname>PostgreSQL</productname> 9.3 开
+   始引入的。）有关预备语句行为的更多信息，请参见
+   <xref linkend="sql-prepare">。
   </para>
 
   <para>
-   This function should only be called from a connected procedure.
+   此函数只能从已连接的过程中调用。
   </para>
 
   <para>
-   <type>SPIPlanPtr</> is declared as a pointer to an opaque struct type in
-   <filename>spi.h</>.  It is unwise to try to access its contents
-   directly, as that makes your code much more likely to break in
-   future revisions of <productname>PostgreSQL</productname>.
+   <type>SPIPlanPtr</type> 在 <filename>spi.h</filename> 中被声明为指向不
+   透明结构体类型的指针。尝试直接访问其内容并不明智，因为这会让你的代码在
+   <productname>PostgreSQL</productname> 后续版本中更容易失效。
   </para>
 
   <para>
-   The name <type>SPIPlanPtr</> is somewhat historical, since the data
-   structure no longer necessarily contains an execution plan.
+   <type>SPIPlanPtr</type> 这个名字多少带有历史色彩，因为该数据结构已不再
+   必然包含执行计划。
   </para>
  </refsect1>
 </refentry>
@@ -1026,7 +932,7 @@ SPIPlanPtr SPI_prepare(const char * <parameter>command</parameter>, int <paramet
 
  <refnamediv>
   <refname>SPI_prepare_cursor</refname>
-  <refpurpose>prepare a statement, without executing it yet</refpurpose>
+  <refpurpose>准备一个语句，但暂不执行</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -1037,27 +943,28 @@ SPIPlanPtr SPI_prepare_cursor(const char * <parameter>command</parameter>, int <
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_prepare_cursor</function> is identical to
-   <function>SPI_prepare</function>, except that it also allows specification
-   of the planner's <quote>cursor options</> parameter.  This is a bit mask
-   having the values shown in <filename>nodes/parsenodes.h</filename>
-   for the <structfield>options</> field of <structname>DeclareCursorStmt</>.
-   <function>SPI_prepare</function> always takes the cursor options as zero.
+   <function>SPI_prepare_cursor</function> 与
+   <function>SPI_prepare</function> 相同，但额外允许指定规划器的
+   <quote>游标选项</quote>参数。该参数是一个位掩码，其可取值对应于
+   <filename>nodes/parsenodes.h</filename> 中
+   <structname>DeclareCursorStmt</structname> 的
+   <structfield>options</structfield> 字段。<function>SPI_prepare</function>
+   总是把游标选项设为零。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>const char * <parameter>command</parameter></literal></term>
     <listitem>
      <para>
-      command string
+      命令字符串
      </para>
     </listitem>
    </varlistentry>
@@ -1066,7 +973,7 @@ SPIPlanPtr SPI_prepare_cursor(const char * <parameter>command</parameter>, int <
     <term><literal>int <parameter>nargs</parameter></literal></term>
     <listitem>
      <para>
-      number of input parameters (<literal>$1</>, <literal>$2</>, etc.)
+      输入参数的数量（<literal>$1</literal>、<literal>$2</literal> 等）
      </para>
     </listitem>
    </varlistentry>
@@ -1075,8 +982,8 @@ SPIPlanPtr SPI_prepare_cursor(const char * <parameter>command</parameter>, int <
     <term><literal>Oid * <parameter>argtypes</parameter></literal></term>
     <listitem>
      <para>
-      pointer to an array containing the <acronym>OID</acronym>s of
-      the data types of the parameters
+      一个数组指针，它指向的数组包含参数的数据类型的
+      <acronym>OID</acronym>
      </para>
     </listitem>
    </varlistentry>
@@ -1085,7 +992,7 @@ SPIPlanPtr SPI_prepare_cursor(const char * <parameter>command</parameter>, int <
     <term><literal>int <parameter>cursorOptions</parameter></literal></term>
     <listitem>
      <para>
-      integer bit mask of cursor options; zero produces default behavior
+      整数形式的游标选项位掩码，零会导致默认行为
      </para>
     </listitem>
    </varlistentry>
@@ -1093,25 +1000,25 @@ SPIPlanPtr SPI_prepare_cursor(const char * <parameter>command</parameter>, int <
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   <function>SPI_prepare_cursor</function> has the same return conventions as
-   <function>SPI_prepare</function>.
+   <function>SPI_prepare_cursor</function> 的返回约定与
+   <function>SPI_prepare</function> 相同。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Notes</title>
+  <title>注解</title>
 
   <para>
-   Useful bits to set in <parameter>cursorOptions</> include
-   <symbol>CURSOR_OPT_SCROLL</symbol>,
-   <symbol>CURSOR_OPT_NO_SCROLL</symbol>,
-   <symbol>CURSOR_OPT_FAST_PLAN</symbol>,
-   <symbol>CURSOR_OPT_GENERIC_PLAN</symbol>, and
-   <symbol>CURSOR_OPT_CUSTOM_PLAN</symbol>.  Note in particular that
-   <symbol>CURSOR_OPT_HOLD</symbol> is ignored.
+   适合在 <parameter>cursorOptions</parameter> 中设置的位包括
+   <symbol>CURSOR_OPT_SCROLL</symbol>、
+   <symbol>CURSOR_OPT_NO_SCROLL</symbol>、
+   <symbol>CURSOR_OPT_FAST_PLAN</symbol>、
+   <symbol>CURSOR_OPT_GENERIC_PLAN</symbol> 和
+   <symbol>CURSOR_OPT_CUSTOM_PLAN</symbol>。需要特别注意的是，
+   <symbol>CURSOR_OPT_HOLD</symbol> 会被忽略。
   </para>
  </refsect1>
 </refentry>
@@ -1128,7 +1035,7 @@ SPIPlanPtr SPI_prepare_cursor(const char * <parameter>command</parameter>, int <
 
  <refnamediv>
   <refname>SPI_prepare_params</refname>
-  <refpurpose>prepare a statement, without executing it yet</refpurpose>
+  <refpurpose>准备一个语句，但暂不执行</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -1141,26 +1048,24 @@ SPIPlanPtr SPI_prepare_params(const char * <parameter>command</parameter>,
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_prepare_params</function> creates and returns a prepared
-   statement for the specified command, but doesn't execute the command.
-   This function is equivalent to <function>SPI_prepare_cursor</function>,
-   with the addition that the caller can specify parser hook functions
-   to control the parsing of external parameter references.
+   <function>SPI_prepare_params</function> 为指定命令创建并返回一个预备语
+   句，但不执行该命令。它相当于 <function>SPI_prepare_cursor</function>，
+   只是额外允许调用者指定解析器钩子函数，以控制外部参数引用的解析。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>const char * <parameter>command</parameter></literal></term>
     <listitem>
      <para>
-      command string
+      命令字符串
      </para>
     </listitem>
    </varlistentry>
@@ -1169,7 +1074,7 @@ SPIPlanPtr SPI_prepare_params(const char * <parameter>command</parameter>,
     <term><literal>ParserSetupHook <parameter>parserSetup</parameter></literal></term>
     <listitem>
      <para>
-      Parser hook setup function
+      解析器钩子设置函数
      </para>
     </listitem>
    </varlistentry>
@@ -1178,7 +1083,7 @@ SPIPlanPtr SPI_prepare_params(const char * <parameter>command</parameter>,
     <term><literal>void * <parameter>parserSetupArg</parameter></literal></term>
     <listitem>
      <para>
-      pass-through argument for <parameter>parserSetup</parameter>
+      传递给 <parameter>parserSetup</parameter> 的透传参数
      </para>
     </listitem>
    </varlistentry>
@@ -1187,7 +1092,7 @@ SPIPlanPtr SPI_prepare_params(const char * <parameter>command</parameter>,
     <term><literal>int <parameter>cursorOptions</parameter></literal></term>
     <listitem>
      <para>
-      integer bit mask of cursor options; zero produces default behavior
+      整数形式的游标选项位掩码，零会导致默认行为
      </para>
     </listitem>
    </varlistentry>
@@ -1195,11 +1100,11 @@ SPIPlanPtr SPI_prepare_params(const char * <parameter>command</parameter>,
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   <function>SPI_prepare_params</function> has the same return conventions as
-   <function>SPI_prepare</function>.
+   <function>SPI_prepare_params</function> 的返回约定与
+   <function>SPI_prepare</function> 相同。
   </para>
  </refsect1>
 </refentry>
@@ -1216,8 +1121,7 @@ SPIPlanPtr SPI_prepare_params(const char * <parameter>command</parameter>,
 
  <refnamediv>
   <refname>SPI_getargcount</refname>
-  <refpurpose>return the number of arguments needed by a statement
-  prepared by <function>SPI_prepare</function></refpurpose>
+  <refpurpose>返回由 <function>SPI_prepare</function> 准备的语句所需参数个数</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -1227,23 +1131,23 @@ int SPI_getargcount(SPIPlanPtr <parameter>plan</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_getargcount</function> returns the number of arguments needed
-   to execute a statement prepared by <function>SPI_prepare</function>.
+   <function>SPI_getargcount</function> 返回执行由
+   <function>SPI_prepare</function> 准备的语句所需的参数个数。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
-      prepared statement (returned by <function>SPI_prepare</function>)
+      预备语句（由<function>SPI_prepare</function>返回）
      </para>
     </listitem>
    </varlistentry>
@@ -1251,12 +1155,12 @@ int SPI_getargcount(SPIPlanPtr <parameter>plan</parameter>)
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
   <para>
-    The count of expected arguments for the <parameter>plan</parameter>.
-    If the <parameter>plan</parameter> is <symbol>NULL</symbol> or invalid,
-    <varname>SPI_result</varname> is set to <symbol>SPI_ERROR_ARGUMENT</symbol>
-    and -1 is returned.
+    <parameter>plan</parameter> 所需的参数个数。如果
+    <parameter>plan</parameter> 为 <symbol>NULL</symbol> 或无效，则
+    <varname>SPI_result</varname> 会被设置为
+    <symbol>SPI_ERROR_ARGUMENT</symbol>，并返回 -1。
   </para>
  </refsect1>
 </refentry>
@@ -1273,8 +1177,7 @@ int SPI_getargcount(SPIPlanPtr <parameter>plan</parameter>)
 
  <refnamediv>
   <refname>SPI_getargtypeid</refname>
-  <refpurpose>return the data type OID for an argument of
-  a statement prepared by <function>SPI_prepare</function></refpurpose>
+  <refpurpose>返回由 <function>SPI_prepare</function> 准备的语句中某个参数的数据类型 OID</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -1284,24 +1187,25 @@ Oid SPI_getargtypeid(SPIPlanPtr <parameter>plan</parameter>, int <parameter>argI
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_getargtypeid</function> returns the OID representing the type
-   for the <parameter>argIndex</parameter>'th argument of a statement prepared by
-   <function>SPI_prepare</function>. First argument is at index zero.
+   <function>SPI_getargtypeid</function> 返回由
+   <function>SPI_prepare</function> 准备的语句中第
+   <parameter>argIndex</parameter> 个参数类型的 OID。第一个参数的索引为
+   零。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
-      prepared statement (returned by <function>SPI_prepare</function>)
+      预备语句（由<function>SPI_prepare</function>返回）
      </para>
     </listitem>
    </varlistentry>
@@ -1310,7 +1214,7 @@ Oid SPI_getargtypeid(SPIPlanPtr <parameter>plan</parameter>, int <parameter>argI
     <term><literal>int <parameter>argIndex</parameter></literal></term>
     <listitem>
      <para>
-      zero based index of the argument
+      参数的索引，从零开始
      </para>
     </listitem>
    </varlistentry>
@@ -1318,15 +1222,14 @@ Oid SPI_getargtypeid(SPIPlanPtr <parameter>plan</parameter>, int <parameter>argI
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
   <para>
-    The type OID of the argument at the given index.
-    If the <parameter>plan</parameter> is <symbol>NULL</symbol> or invalid,
-    or <parameter>argIndex</parameter> is less than 0 or
-    not less than the number of arguments declared for the
-    <parameter>plan</parameter>,
-    <varname>SPI_result</varname> is set to <symbol>SPI_ERROR_ARGUMENT</symbol>
-    and <symbol>InvalidOid</symbol> is returned.
+    给定索引处参数的类型 OID。如果 <parameter>plan</parameter> 为
+    <symbol>NULL</symbol> 或无效，或者 <parameter>argIndex</parameter>
+    小于 0，或者不小于为 <parameter>plan</parameter> 声明的参数个数，则
+    <varname>SPI_result</varname> 会被设置为
+    <symbol>SPI_ERROR_ARGUMENT</symbol>，并返回
+    <symbol>InvalidOid</symbol>。
   </para>
  </refsect1>
 </refentry>
@@ -1343,9 +1246,8 @@ Oid SPI_getargtypeid(SPIPlanPtr <parameter>plan</parameter>, int <parameter>argI
 
  <refnamediv>
   <refname>SPI_is_cursor_plan</refname>
-  <refpurpose>return <symbol>true</symbol> if a statement
-  prepared by <function>SPI_prepare</function> can be used with
-  <function>SPI_cursor_open</function></refpurpose>
+  <refpurpose>如果由 <function>SPI_prepare</function> 准备的语句可用于 <function>SPI_cursor_open</function> 则返回
+  <symbol>true</symbol></refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -1355,30 +1257,29 @@ bool SPI_is_cursor_plan(SPIPlanPtr <parameter>plan</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_is_cursor_plan</function> returns <symbol>true</symbol>
-   if a statement prepared by <function>SPI_prepare</function> can be passed
-   as an argument to <function>SPI_cursor_open</function>, or
-   <symbol>false</symbol> if that is not the case. The criteria are that the
-   <parameter>plan</parameter> represents one single command and that this
-   command returns tuples to the caller; for example, <command>SELECT</>
-   is allowed unless it contains an <literal>INTO</> clause, and
-   <command>UPDATE</> is allowed only if it contains a <literal>RETURNING</>
-   clause.
+   如果由 <function>SPI_prepare</function> 准备的语句可以作为参数传给
+   <function>SPI_cursor_open</function>，则
+   <function>SPI_is_cursor_plan</function> 返回 <symbol>true</symbol>；
+   否则返回 <symbol>false</symbol>。判定标准是
+   <parameter>plan</parameter> 必须表示单条命令，并且该命令会向调用者返
+   回元组。例如，不包含 <literal>INTO</literal> 子句的
+   <command>SELECT</command> 是允许的，而 <command>UPDATE</command> 只
+   有包含 <literal>RETURNING</literal> 子句时才允许。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
-      prepared statement (returned by <function>SPI_prepare</function>)
+      预备语句（由<function>SPI_prepare</function>返回）
      </para>
     </listitem>
    </varlistentry>
@@ -1386,16 +1287,14 @@ bool SPI_is_cursor_plan(SPIPlanPtr <parameter>plan</parameter>)
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
   <para>
-    <symbol>true</symbol> or <symbol>false</symbol> to indicate if the
-    <parameter>plan</parameter> can produce a cursor or not, with
-    <varname>SPI_result</varname> set to zero.
-    If it is not possible to determine the answer (for example,
-    if the <parameter>plan</parameter> is <symbol>NULL</symbol> or invalid,
-    or if called when not connected to SPI), then
-    <varname>SPI_result</varname> is set to a suitable error code
-    and <symbol>false</symbol> is returned.
+   返回 <symbol>true</symbol> 或 <symbol>false</symbol>，表示
+   <parameter>plan</parameter> 能否产生游标，同时将
+    <varname>SPI_result</varname> 设为零。如果无法确定答案（例如
+    <parameter>plan</parameter> 为 <symbol>NULL</symbol> 或无效，或者在
+    未连接到 SPI 时调用），则会将 <varname>SPI_result</varname> 设为合适
+    的错误码，并返回 <symbol>false</symbol>。
   </para>
  </refsect1>
 </refentry>
@@ -1412,7 +1311,7 @@ bool SPI_is_cursor_plan(SPIPlanPtr <parameter>plan</parameter>)
 
  <refnamediv>
   <refname>SPI_execute_plan</refname>
-  <refpurpose>execute a statement prepared by <function>SPI_prepare</function></refpurpose>
+  <refpurpose>执行由 <function>SPI_prepare</function> 准备好的语句</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -1423,26 +1322,25 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_execute_plan</function> executes a statement prepared by
-   <function>SPI_prepare</function> or one of its siblings.
-   <parameter>read_only</parameter> and
-   <parameter>count</parameter> have the same interpretation as in
-   <function>SPI_execute</function>.
+   <function>SPI_execute_plan</function> 执行由 <function>SPI_prepare</function>
+   或其同类函数准备好的语句。<parameter>read_only</parameter> 和
+   <parameter>count</parameter> 的含义与
+   <function>SPI_execute</function> 中相同。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
-      prepared statement (returned by <function>SPI_prepare</function>)
+      预备语句（由<function>SPI_prepare</function>返回）
      </para>
     </listitem>
    </varlistentry>
@@ -1451,8 +1349,7 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
     <term><literal>Datum * <parameter>values</parameter></literal></term>
     <listitem>
      <para>
-      An array of actual parameter values.  Must have same length as the
-      statement's number of arguments.
+      一个实际参数值的数组。必须和语句的参数数量等长。
      </para>
     </listitem>
    </varlistentry>
@@ -1461,20 +1358,18 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
     <term><literal>const char * <parameter>nulls</parameter></literal></term>
     <listitem>
      <para>
-      An array describing which parameters are null.  Must have same length as
-      the statement's number of arguments.
+      一个描述哪些参数为空值的数组。必须和语句的参数数量等长。
      </para>
 
      <para>
-      If <parameter>nulls</parameter> is <symbol>NULL</symbol> then
-      <function>SPI_execute_plan</function> assumes that no parameters
-      are null.  Otherwise, each entry of the <parameter>nulls</parameter>
-      array should be <literal>'&nbsp;'</> if the corresponding parameter
-      value is non-null, or <literal>'n'</> if the corresponding parameter
-      value is null.  (In the latter case, the actual value in the
-      corresponding <parameter>values</parameter> entry doesn't matter.)  Note
-      that <parameter>nulls</parameter> is not a text string, just an array:
-      it does not need a <literal>'\0'</> terminator.
+      如果 <parameter>nulls</parameter> 为 <symbol>NULL</symbol>，则
+      <function>SPI_execute_plan</function> 会假定没有参数为空值。
+      否则，如果对应参数值非空值，则 <parameter>nulls</parameter> 数组中
+      的对应项应为 <literal>'&nbsp;'</literal>；如果对应参数值为空值，则
+      对应项应为 <literal>'n'</literal>。（后一种情况下，对应
+      <parameter>values</parameter> 项中的实际值无关紧要。）注意，
+      <parameter>nulls</parameter> 不是文本字符串，而只是一个数组，因此不
+      需要 <literal>'\0'</literal> 终止符。
      </para>
     </listitem>
    </varlistentry>
@@ -1482,7 +1377,7 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
    <varlistentry>
     <term><literal>bool <parameter>read_only</parameter></literal></term>
     <listitem>
-     <para><literal>true</> for read-only execution</para>
+     <para><literal>true</literal> 表示只读执行</para>
     </listitem>
    </varlistentry>
 
@@ -1490,8 +1385,7 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
     <term><literal>long <parameter>count</parameter></literal></term>
     <listitem>
      <para>
-      maximum number of rows to return,
-      or <literal>0</> for no limit
+      要返回的最大行数，或者用 <literal>0</literal> 表示不限制
      </para>
     </listitem>
    </varlistentry>
@@ -1499,19 +1393,19 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   The return value is the same as for <function>SPI_execute</function>,
-   with the following additional possible error (negative) results:
+   返回值和<function>SPI_execute</function>相同，
+   还有下列额外可能的错误（负值）结果：
 
    <variablelist>
     <varlistentry>
      <term><symbol>SPI_ERROR_ARGUMENT</symbol></term>
      <listitem>
       <para>
-       if <parameter>plan</parameter> is <symbol>NULL</symbol> or invalid,
-       or <parameter>count</parameter> is less than 0
+       如果<parameter>plan</parameter>为<symbol>NULL</symbol>
+       或者非法，或者<parameter>count</parameter>小于 0
       </para>
      </listitem>
     </varlistentry>
@@ -1520,8 +1414,8 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
      <term><symbol>SPI_ERROR_PARAM</symbol></term>
      <listitem>
       <para>
-       if <parameter>values</parameter> is <symbol>NULL</symbol> and
-       <parameter>plan</parameter> was prepared with some parameters
+      如果<parameter>values</parameter>为<symbol>NULL</symbol>，但
+      <parameter>plan</parameter>在准备时带有参数
       </para>
      </listitem>
     </varlistentry>
@@ -1529,9 +1423,9 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
   </para>
 
   <para>
-   <varname>SPI_processed</varname> and
-   <varname>SPI_tuptable</varname> are set as in
-   <function>SPI_execute</function> if successful.
+   成功时，<varname>SPI_processed</varname> 和
+   <varname>SPI_tuptable</varname> 的设置方式与
+   <function>SPI_execute</function> 相同。
   </para>
  </refsect1>
 </refentry>
@@ -1548,7 +1442,7 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
 
  <refnamediv>
   <refname>SPI_execute_plan_with_paramlist</refname>
-  <refpurpose>execute a statement prepared by <function>SPI_prepare</function></refpurpose>
+  <refpurpose>执行由 <function>SPI_prepare</function> 准备好的语句</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -1561,29 +1455,27 @@ int SPI_execute_plan_with_paramlist(SPIPlanPtr <parameter>plan</parameter>,
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_execute_plan_with_paramlist</function> executes a statement
-   prepared by <function>SPI_prepare</function>.
-   This function is equivalent to <function>SPI_execute_plan</function>
-   except that information about the parameter values to be passed to the
-   query is presented differently.  The <literal>ParamListInfo</>
-   representation can be convenient for passing down values that are
-   already available in that format.  It also supports use of dynamic
-   parameter sets via hook functions specified in <literal>ParamListInfo</>.
+   <function>SPI_execute_plan_with_paramlist</function> 执行由
+   <function>SPI_prepare</function> 准备好的语句。它相当于
+   <function>SPI_execute_plan</function>，只是向查询传递参数值的方式不同。
+   <literal>ParamListInfo</literal> 表示形式便于传递已经按这种格式存在的值，
+   也支持通过 <literal>ParamListInfo</literal> 中指定的钩子函数使用动态参数
+   集。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
-      prepared statement (returned by <function>SPI_prepare</function>)
+      预备语句（由<function>SPI_prepare</function>返回）
      </para>
     </listitem>
    </varlistentry>
@@ -1592,7 +1484,7 @@ int SPI_execute_plan_with_paramlist(SPIPlanPtr <parameter>plan</parameter>,
     <term><literal>ParamListInfo <parameter>params</parameter></literal></term>
     <listitem>
      <para>
-      data structure containing parameter types and values; NULL if none
+      包含参数类型和值的数据结构；没有参数时为 NULL
      </para>
     </listitem>
    </varlistentry>
@@ -1600,7 +1492,7 @@ int SPI_execute_plan_with_paramlist(SPIPlanPtr <parameter>plan</parameter>,
    <varlistentry>
     <term><literal>bool <parameter>read_only</parameter></literal></term>
     <listitem>
-     <para><literal>true</> for read-only execution</para>
+     <para><literal>true</literal> 表示只读执行</para>
     </listitem>
    </varlistentry>
 
@@ -1608,8 +1500,7 @@ int SPI_execute_plan_with_paramlist(SPIPlanPtr <parameter>plan</parameter>,
     <term><literal>long <parameter>count</parameter></literal></term>
     <listitem>
      <para>
-      maximum number of rows to return,
-      or <literal>0</> for no limit
+      要返回的最大行数，或者用 <literal>0</literal> 表示不限制
      </para>
     </listitem>
    </varlistentry>
@@ -1617,16 +1508,16 @@ int SPI_execute_plan_with_paramlist(SPIPlanPtr <parameter>plan</parameter>,
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   The return value is the same as for <function>SPI_execute_plan</function>.
+   返回值与 <function>SPI_execute_plan</function> 相同。
   </para>
 
   <para>
-   <varname>SPI_processed</varname> and
-   <varname>SPI_tuptable</varname> are set as in
-   <function>SPI_execute_plan</function> if successful.
+   成功时，<varname>SPI_processed</varname> 和
+   <varname>SPI_tuptable</varname> 的设置方式与
+   <function>SPI_execute_plan</function> 相同。
   </para>
  </refsect1>
 </refentry>
@@ -1643,7 +1534,7 @@ int SPI_execute_plan_with_paramlist(SPIPlanPtr <parameter>plan</parameter>,
 
  <refnamediv>
   <refname>SPI_execp</refname>
-  <refpurpose>execute a statement in read/write mode</refpurpose>
+  <refpurpose>以读/写模式执行一个语句</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -1653,25 +1544,25 @@ int SPI_execp(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>values<
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_execp</function> is the same as
-   <function>SPI_execute_plan</function>, with the latter's
-   <parameter>read_only</parameter> parameter always taken as
-   <literal>false</>.
+   <function>SPI_execp</function> 与
+   <function>SPI_execute_plan</function> 相同，只不过后者的
+   <parameter>read_only</parameter> 参数固定为
+   <literal>false</literal>。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
-      prepared statement (returned by <function>SPI_prepare</function>)
+      预备语句（由<function>SPI_prepare</function>返回）
      </para>
     </listitem>
    </varlistentry>
@@ -1680,8 +1571,7 @@ int SPI_execp(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>values<
     <term><literal>Datum * <parameter>values</parameter></literal></term>
     <listitem>
      <para>
-      An array of actual parameter values.  Must have same length as the
-      statement's number of arguments.
+      一个实际参数值的数组。必须和语句的参数数量等长。
      </para>
     </listitem>
    </varlistentry>
@@ -1690,20 +1580,18 @@ int SPI_execp(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>values<
     <term><literal>const char * <parameter>nulls</parameter></literal></term>
     <listitem>
      <para>
-      An array describing which parameters are null.  Must have same length as
-      the statement's number of arguments.
+      一个描述哪些参数为空值的数组。必须和语句的参数数量等长。
      </para>
 
      <para>
-      If <parameter>nulls</parameter> is <symbol>NULL</symbol> then
-      <function>SPI_execp</function> assumes that no parameters
-      are null.  Otherwise, each entry of the <parameter>nulls</parameter>
-      array should be <literal>'&nbsp;'</> if the corresponding parameter
-      value is non-null, or <literal>'n'</> if the corresponding parameter
-      value is null.  (In the latter case, the actual value in the
-      corresponding <parameter>values</parameter> entry doesn't matter.)  Note
-      that <parameter>nulls</parameter> is not a text string, just an array:
-      it does not need a <literal>'\0'</> terminator.
+      如果 <parameter>nulls</parameter> 为 <symbol>NULL</symbol>，则
+      <function>SPI_execp</function> 会假定没有参数为空值。
+      否则，如果对应参数值非空值，则 <parameter>nulls</parameter> 数组中
+      的对应项应为 <literal>'&nbsp;'</literal>；如果对应参数值为空值，则
+      对应项应为 <literal>'n'</literal>。（后一种情况下，对应
+      <parameter>values</parameter> 项中的实际值无关紧要。）注意，
+      <parameter>nulls</parameter> 不是文本字符串，而只是一个数组，因此不
+      需要 <literal>'\0'</literal> 终止符。
      </para>
     </listitem>
    </varlistentry>
@@ -1712,8 +1600,7 @@ int SPI_execp(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>values<
     <term><literal>long <parameter>count</parameter></literal></term>
     <listitem>
      <para>
-      maximum number of rows to return,
-      or <literal>0</> for no limit
+      要返回的最大行数，或者用 <literal>0</literal> 表示不限制
      </para>
     </listitem>
    </varlistentry>
@@ -1721,16 +1608,16 @@ int SPI_execp(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>values<
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   See <function>SPI_execute_plan</function>.
+   见 <function>SPI_execute_plan</function>。
   </para>
 
   <para>
-   <varname>SPI_processed</varname> and
-   <varname>SPI_tuptable</varname> are set as in
-   <function>SPI_execute</function> if successful.
+   成功时，<varname>SPI_processed</varname> 和
+   <varname>SPI_tuptable</varname> 的设置方式与
+   <function>SPI_execute</function> 相同。
   </para>
  </refsect1>
 </refentry>
@@ -1747,7 +1634,8 @@ int SPI_execp(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>values<
 
  <refnamediv>
   <refname>SPI_cursor_open</refname>
-  <refpurpose>set up a cursor using a statement created with <function>SPI_prepare</function></refpurpose>
+  <refpurpose>使用由<function>SPI_prepare</function>创建的
+  语句建立一个游标</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -1759,42 +1647,37 @@ Portal SPI_cursor_open(const char * <parameter>name</parameter>, SPIPlanPtr <par
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_cursor_open</function> sets up a cursor (internally,
-   a portal) that will execute a statement prepared by
-   <function>SPI_prepare</function>.  The parameters have the same
-   meanings as the corresponding parameters to
-   <function>SPI_execute_plan</function>.
+   <function>SPI_cursor_open</function>建立一个游标（在内部是一个
+   portal），该游标将执行由<function>SPI_prepare</function>准备好
+   的一个语句。参数具有和<function>SPI_execute_plan</function>的
+   相应参数相同的含义。
   </para>
 
   <para>
-   Using a cursor instead of executing the statement directly has two
-   benefits.  First, the result rows can be retrieved a few at a time,
-   avoiding memory overrun for queries that return many rows.  Second,
-   a portal can outlive the current procedure (it can, in fact, live
-   to the end of the current transaction).  Returning the portal name
-   to the procedure's caller provides a way of returning a row set as
-   result.
+   使用游标而不是直接执行该语句有两个好处。首先，可以一次只取出少量结果
+   行，从而避免对返回大量行的查询耗尽内存。其次，一个 portal 可以比当前
+   的过程存活更久（实际上，它可以一直存活到当前事务结束）。把 portal
+   的名称返回给该过程的调用者，就提供了一种把行集作为结果返回的方法。
   </para>
 
   <para>
-   The passed-in parameter data will be copied into the cursor's portal, so it
-   can be freed while the cursor still exists.
+   传入的参数数据会被复制到该游标的 portal 中，因此即使该游标仍然存在，
+   也可以释放这些参数数据。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>const char * <parameter>name</parameter></literal></term>
     <listitem>
      <para>
-      name for portal, or <symbol>NULL</symbol> to let the system
-      select a name
+      portal 的名称，或为<symbol>NULL</symbol>以让系统选择名称
      </para>
     </listitem>
    </varlistentry>
@@ -1803,7 +1686,7 @@ Portal SPI_cursor_open(const char * <parameter>name</parameter>, SPIPlanPtr <par
     <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
-      prepared statement (returned by <function>SPI_prepare</function>)
+      预备语句（由<function>SPI_prepare</function>返回）
      </para>
     </listitem>
    </varlistentry>
@@ -1812,8 +1695,7 @@ Portal SPI_cursor_open(const char * <parameter>name</parameter>, SPIPlanPtr <par
     <term><literal>Datum * <parameter>values</parameter></literal></term>
     <listitem>
      <para>
-      An array of actual parameter values.  Must have same length as the
-      statement's number of arguments.
+      一个实际参数值的数组。必须和语句的参数数量等长。
      </para>
     </listitem>
    </varlistentry>
@@ -1822,20 +1704,18 @@ Portal SPI_cursor_open(const char * <parameter>name</parameter>, SPIPlanPtr <par
     <term><literal>const char * <parameter>nulls</parameter></literal></term>
     <listitem>
      <para>
-      An array describing which parameters are null.  Must have same length as
-      the statement's number of arguments.
+      一个描述哪些参数为空值的数组。必须和语句的参数数量等长。
      </para>
 
      <para>
-      If <parameter>nulls</parameter> is <symbol>NULL</symbol> then
-      <function>SPI_cursor_open</function> assumes that no parameters
-      are null.  Otherwise, each entry of the <parameter>nulls</parameter>
-      array should be <literal>'&nbsp;'</> if the corresponding parameter
-      value is non-null, or <literal>'n'</> if the corresponding parameter
-      value is null.  (In the latter case, the actual value in the
-      corresponding <parameter>values</parameter> entry doesn't matter.)  Note
-      that <parameter>nulls</parameter> is not a text string, just an array:
-      it does not need a <literal>'\0'</> terminator.
+      如果 <parameter>nulls</parameter> 为 <symbol>NULL</symbol>，则
+      <function>SPI_cursor_open</function> 会假定没有参数为空值。
+      否则，如果对应参数值非空值，则 <parameter>nulls</parameter> 数组中
+      的对应项应为 <literal>'&nbsp;'</literal>；如果对应参数值为空值，则
+      对应项应为 <literal>'n'</literal>。（后一种情况下，对应
+      <parameter>values</parameter> 项中的实际值无关紧要。）注意，
+      <parameter>nulls</parameter> 不是文本字符串，而只是一个数组，因此不
+      需要 <literal>'\0'</literal> 终止符。
      </para>
     </listitem>
    </varlistentry>
@@ -1843,18 +1723,18 @@ Portal SPI_cursor_open(const char * <parameter>name</parameter>, SPIPlanPtr <par
    <varlistentry>
     <term><literal>bool <parameter>read_only</parameter></literal></term>
     <listitem>
-     <para><literal>true</> for read-only execution</para>
+     <para><literal>true</literal> 表示只读执行</para>
     </listitem>
    </varlistentry>
   </variablelist>
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   Pointer to portal containing the cursor.  Note there is no error
-   return convention; any error will be reported via <function>elog</>.
+   指向包含该游标的 portal 的指针。注意这里没有错误返回约定，
+   任何错误都将通过<function>elog</function>报告。
   </para>
  </refsect1>
 </refentry>
@@ -1871,7 +1751,7 @@ Portal SPI_cursor_open(const char * <parameter>name</parameter>, SPIPlanPtr <par
 
  <refnamediv>
   <refname>SPI_cursor_open_with_args</refname>
-  <refpurpose>set up a cursor using a query and parameters</refpurpose>
+  <refpurpose>使用一个查询和参数建立一个游标</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -1885,41 +1765,38 @@ Portal SPI_cursor_open_with_args(const char *<parameter>name</parameter>,
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_cursor_open_with_args</function> sets up a cursor
-   (internally, a portal) that will execute the specified query.
-   Most of the parameters have the same meanings as the corresponding
-   parameters to <function>SPI_prepare_cursor</function>
-   and <function>SPI_cursor_open</function>.
+   <function>SPI_cursor_open_with_args</function>建立一个将
+   执行指定查询的游标（在内部是一个 portal）。大部分参数具有和
+   <function>SPI_prepare_cursor</function>
+   和<function>SPI_cursor_open</function>中相应参数相同的含
+   义。
   </para>
 
   <para>
-   For one-time query execution, this function should be preferred
-   over <function>SPI_prepare_cursor</function> followed by
-   <function>SPI_cursor_open</function>.
-   If the same command is to be executed with many different parameters,
-   either method might be faster, depending on the cost of re-planning
-   versus the benefit of custom plans.
+   对于一次性查询执行，应优先使用此函数，而不是先调用
+   <function>SPI_prepare_cursor</function> 再调用
+   <function>SPI_cursor_open</function>。如果同一条命令要用许多不同参数执行，
+   哪种方法更快取决于重新规划的代价与定制计划收益之间的权衡。
   </para>
 
   <para>
-   The passed-in parameter data will be copied into the cursor's portal, so it
-   can be freed while the cursor still exists.
+   传入的参数数据会被复制到该游标的 portal 中，因此即使该游标仍然存在，
+   也可以释放这些参数数据。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>const char * <parameter>name</parameter></literal></term>
     <listitem>
      <para>
-      name for portal, or <symbol>NULL</symbol> to let the system
-      select a name
+      portal 的名称，或为<symbol>NULL</symbol>以让系统选择名称
      </para>
     </listitem>
    </varlistentry>
@@ -1928,7 +1805,7 @@ Portal SPI_cursor_open_with_args(const char *<parameter>name</parameter>,
     <term><literal>const char * <parameter>command</parameter></literal></term>
     <listitem>
      <para>
-      command string
+      命令字符串
      </para>
     </listitem>
    </varlistentry>
@@ -1937,7 +1814,7 @@ Portal SPI_cursor_open_with_args(const char *<parameter>name</parameter>,
     <term><literal>int <parameter>nargs</parameter></literal></term>
     <listitem>
      <para>
-      number of input parameters (<literal>$1</>, <literal>$2</>, etc.)
+      输入参数的数量（<literal>$1</literal>、<literal>$2</literal> 等）
      </para>
     </listitem>
    </varlistentry>
@@ -1946,8 +1823,8 @@ Portal SPI_cursor_open_with_args(const char *<parameter>name</parameter>,
     <term><literal>Oid * <parameter>argtypes</parameter></literal></term>
     <listitem>
      <para>
-      an array of length <parameter>nargs</parameter>, containing the
-      <acronym>OID</acronym>s of the data types of the parameters
+      一个长度为 <parameter>nargs</parameter> 的数组，包含参数数据类型的
+      <acronym>OID</acronym>
      </para>
     </listitem>
    </varlistentry>
@@ -1956,8 +1833,7 @@ Portal SPI_cursor_open_with_args(const char *<parameter>name</parameter>,
     <term><literal>Datum * <parameter>values</parameter></literal></term>
     <listitem>
      <para>
-      an array of length <parameter>nargs</parameter>, containing the actual
-      parameter values
+      一个长度为 <parameter>nargs</parameter> 的数组，包含实际参数值
      </para>
     </listitem>
    </varlistentry>
@@ -1966,20 +1842,19 @@ Portal SPI_cursor_open_with_args(const char *<parameter>name</parameter>,
     <term><literal>const char * <parameter>nulls</parameter></literal></term>
     <listitem>
      <para>
-      an array of length <parameter>nargs</parameter>, describing which
-      parameters are null
+      一个长度为 <parameter>nargs</parameter> 的数组，用于描述哪些参数为
+      空值
      </para>
 
      <para>
-      If <parameter>nulls</parameter> is <symbol>NULL</symbol> then
-      <function>SPI_cursor_open_with_args</function> assumes that no parameters
-      are null.  Otherwise, each entry of the <parameter>nulls</parameter>
-      array should be <literal>'&nbsp;'</> if the corresponding parameter
-      value is non-null, or <literal>'n'</> if the corresponding parameter
-      value is null.  (In the latter case, the actual value in the
-      corresponding <parameter>values</parameter> entry doesn't matter.)  Note
-      that <parameter>nulls</parameter> is not a text string, just an array:
-      it does not need a <literal>'\0'</> terminator.
+      如果 <parameter>nulls</parameter> 为 <symbol>NULL</symbol>，则
+      <function>SPI_cursor_open_with_args</function> 会假定没有参数为空值。
+      否则，如果对应参数值非空值，则 <parameter>nulls</parameter> 数组中
+      的对应项应为 <literal>'&nbsp;'</literal>；如果对应参数值为空值，则
+      对应项应为 <literal>'n'</literal>。（后一种情况下，对应
+      <parameter>values</parameter> 项中的实际值无关紧要。）注意，
+      <parameter>nulls</parameter> 不是文本字符串，而只是一个数组，因此不
+      需要 <literal>'\0'</literal> 终止符。
      </para>
     </listitem>
    </varlistentry>
@@ -1987,7 +1862,7 @@ Portal SPI_cursor_open_with_args(const char *<parameter>name</parameter>,
    <varlistentry>
     <term><literal>bool <parameter>read_only</parameter></literal></term>
     <listitem>
-     <para><literal>true</> for read-only execution</para>
+     <para><literal>true</literal> 表示只读执行</para>
     </listitem>
    </varlistentry>
 
@@ -1995,7 +1870,7 @@ Portal SPI_cursor_open_with_args(const char *<parameter>name</parameter>,
     <term><literal>int <parameter>cursorOptions</parameter></literal></term>
     <listitem>
      <para>
-      integer bit mask of cursor options; zero produces default behavior
+      整数形式的游标选项位掩码，零会导致默认行为
      </para>
     </listitem>
    </varlistentry>
@@ -2003,11 +1878,11 @@ Portal SPI_cursor_open_with_args(const char *<parameter>name</parameter>,
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   Pointer to portal containing the cursor.  Note there is no error
-   return convention; any error will be reported via <function>elog</>.
+   指向包含该游标的 portal 的指针。注意这里没有错误返回约定，
+   任何错误都将通过<function>elog</function>报告。
   </para>
  </refsect1>
 </refentry>
@@ -2024,7 +1899,7 @@ Portal SPI_cursor_open_with_args(const char *<parameter>name</parameter>,
 
  <refnamediv>
   <refname>SPI_cursor_open_with_paramlist</refname>
-  <refpurpose>set up a cursor using parameters</refpurpose>
+  <refpurpose>使用参数建立一个游标</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -2037,36 +1912,32 @@ Portal SPI_cursor_open_with_paramlist(const char *<parameter>name</parameter>,
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_cursor_open_with_paramlist</function> sets up a cursor
-   (internally, a portal) that will execute a statement prepared by
-   <function>SPI_prepare</function>.
-   This function is equivalent to <function>SPI_cursor_open</function>
-   except that information about the parameter values to be passed to the
-   query is presented differently.  The <literal>ParamListInfo</>
-   representation can be convenient for passing down values that are
-   already available in that format.  It also supports use of dynamic
-   parameter sets via hook functions specified in <literal>ParamListInfo</>.
+   <function>SPI_cursor_open_with_paramlist</function> 建立一个游标
+   （内部即一个 portal），用来执行由 <function>SPI_prepare</function>
+   准备好的语句。它相当于 <function>SPI_cursor_open</function>，只是向查
+   询传递参数值的方式不同。<literal>ParamListInfo</literal> 表示形式便于传
+   递已经按这种格式存在的值，也支持通过
+   <literal>ParamListInfo</literal> 中指定的钩子函数使用动态参数集。
   </para>
 
   <para>
-   The passed-in parameter data will be copied into the cursor's portal, so it
-   can be freed while the cursor still exists.
+   传入的参数数据会被复制到该游标的 portal 中，因此即使该游标仍然存在，
+   也可以释放这些参数数据。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>const char * <parameter>name</parameter></literal></term>
     <listitem>
      <para>
-      name for portal, or <symbol>NULL</symbol> to let the system
-      select a name
+      portal 的名称，或为<symbol>NULL</symbol>以让系统选择名称
      </para>
     </listitem>
    </varlistentry>
@@ -2075,7 +1946,7 @@ Portal SPI_cursor_open_with_paramlist(const char *<parameter>name</parameter>,
     <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
-      prepared statement (returned by <function>SPI_prepare</function>)
+      预备语句（由<function>SPI_prepare</function>返回）
      </para>
     </listitem>
    </varlistentry>
@@ -2084,7 +1955,7 @@ Portal SPI_cursor_open_with_paramlist(const char *<parameter>name</parameter>,
     <term><literal>ParamListInfo <parameter>params</parameter></literal></term>
     <listitem>
      <para>
-      data structure containing parameter types and values; NULL if none
+      包含参数类型和值的数据结构；没有参数时为 NULL
      </para>
     </listitem>
    </varlistentry>
@@ -2092,18 +1963,18 @@ Portal SPI_cursor_open_with_paramlist(const char *<parameter>name</parameter>,
    <varlistentry>
     <term><literal>bool <parameter>read_only</parameter></literal></term>
     <listitem>
-     <para><literal>true</> for read-only execution</para>
+     <para><literal>true</literal> 表示只读执行</para>
     </listitem>
    </varlistentry>
   </variablelist>
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   Pointer to portal containing the cursor.  Note there is no error
-   return convention; any error will be reported via <function>elog</>.
+   指向包含该游标的 portal 的指针。注意这里没有错误返回约定，
+   任何错误都将通过<function>elog</function>报告。
   </para>
  </refsect1>
 </refentry>
@@ -2120,7 +1991,7 @@ Portal SPI_cursor_open_with_paramlist(const char *<parameter>name</parameter>,
 
  <refnamediv>
   <refname>SPI_cursor_find</refname>
-  <refpurpose>find an existing cursor by name</refpurpose>
+  <refpurpose>用名称查找一个现有的游标</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -2130,24 +2001,23 @@ Portal SPI_cursor_find(const char * <parameter>name</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_cursor_find</function> finds an existing portal by
-   name.  This is primarily useful to resolve a cursor name returned
-   as text by some other function.
+   <function>SPI_cursor_find</function> 按名称查找现有的 portal。这主要用
+   于解析由其他函数以文本形式返回的游标名。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>const char * <parameter>name</parameter></literal></term>
     <listitem>
      <para>
-      name of the portal
+      该 portal 的名称
      </para>
     </listitem>
    </varlistentry>
@@ -2155,11 +2025,11 @@ Portal SPI_cursor_find(const char * <parameter>name</parameter>)
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   pointer to the portal with the specified name, or
-   <symbol>NULL</symbol> if none was found
+   带有指定名称的 portal 的指针，如果没有找到就是
+   <symbol>NULL</symbol>
   </para>
  </refsect1>
 </refentry>
@@ -2176,7 +2046,7 @@ Portal SPI_cursor_find(const char * <parameter>name</parameter>)
 
  <refnamediv>
   <refname>SPI_cursor_fetch</refname>
-  <refpurpose>fetch some rows from a cursor</refpurpose>
+  <refpurpose>从一个游标取出一些行</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -2186,25 +2056,24 @@ void SPI_cursor_fetch(Portal <parameter>portal</parameter>, bool <parameter>forw
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_cursor_fetch</function> fetches some rows from a
-   cursor.  This is equivalent to a subset of the SQL command
-   <command>FETCH</> (see <function>SPI_scroll_cursor_fetch</function>
-   for more functionality).
+   <function>SPI_cursor_fetch</function>从一个游标取得一些行。
+   这等效于 SQL 命令<command>FETCH</command>的一个子集（更多功能
+   见<function>SPI_scroll_cursor_fetch</function>）。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>Portal <parameter>portal</parameter></literal></term>
     <listitem>
      <para>
-      portal containing the cursor
+      包含该游标的 portal
      </para>
     </listitem>
    </varlistentry>
@@ -2213,7 +2082,7 @@ void SPI_cursor_fetch(Portal <parameter>portal</parameter>, bool <parameter>forw
     <term><literal>bool <parameter>forward</parameter></literal></term>
     <listitem>
      <para>
-      true for fetch forward, false for fetch backward
+      为真表示向前获取，为假表示向后获取
      </para>
     </listitem>
    </varlistentry>
@@ -2222,7 +2091,7 @@ void SPI_cursor_fetch(Portal <parameter>portal</parameter>, bool <parameter>forw
     <term><literal>long <parameter>count</parameter></literal></term>
     <listitem>
      <para>
-      maximum number of rows to fetch
+      要取得的最大行数
      </para>
     </listitem>
    </varlistentry>
@@ -2230,21 +2099,21 @@ void SPI_cursor_fetch(Portal <parameter>portal</parameter>, bool <parameter>forw
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   <varname>SPI_processed</varname> and
-   <varname>SPI_tuptable</varname> are set as in
-   <function>SPI_execute</function> if successful.
+   成功时，<varname>SPI_processed</varname> 和
+   <varname>SPI_tuptable</varname> 的设置方式与
+   <function>SPI_execute</function> 相同。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Notes</title>
+  <title>注解</title>
 
   <para>
-   Fetching backward may fail if the cursor's plan was not created
-   with the <symbol>CURSOR_OPT_SCROLL</symbol> option.
+   如果该游标的计划不是用<symbol>CURSOR_OPT_SCROLL</symbol>
+   选项创建的，向后获取可能失败。
   </para>
  </refsect1>
 </refentry>
@@ -2261,7 +2130,7 @@ void SPI_cursor_fetch(Portal <parameter>portal</parameter>, bool <parameter>forw
 
  <refnamediv>
   <refname>SPI_cursor_move</refname>
-  <refpurpose>move a cursor</refpurpose>
+  <refpurpose>移动一个游标</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -2271,25 +2140,24 @@ void SPI_cursor_move(Portal <parameter>portal</parameter>, bool <parameter>forwa
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_cursor_move</function> skips over some number of rows
-   in a cursor.  This is equivalent to a subset of the SQL command
-   <command>MOVE</> (see <function>SPI_scroll_cursor_move</function>
-   for more functionality).
+   <function>SPI_cursor_move</function>跳过一个游标中的一些行。
+   这等效于 SQL 命令<command>MOVE</command>的一个子集（更多的功能
+   请见<function>SPI_scroll_cursor_move</function>）。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>Portal <parameter>portal</parameter></literal></term>
     <listitem>
      <para>
-      portal containing the cursor
+      包含该游标的 portal
      </para>
     </listitem>
    </varlistentry>
@@ -2298,7 +2166,7 @@ void SPI_cursor_move(Portal <parameter>portal</parameter>, bool <parameter>forwa
     <term><literal>bool <parameter>forward</parameter></literal></term>
     <listitem>
      <para>
-      true for move forward, false for move backward
+      为真表示前移，为假表示后移
      </para>
     </listitem>
    </varlistentry>
@@ -2307,7 +2175,7 @@ void SPI_cursor_move(Portal <parameter>portal</parameter>, bool <parameter>forwa
     <term><literal>long <parameter>count</parameter></literal></term>
     <listitem>
      <para>
-      maximum number of rows to move
+      要移动的最大行数
      </para>
     </listitem>
    </varlistentry>
@@ -2315,11 +2183,11 @@ void SPI_cursor_move(Portal <parameter>portal</parameter>, bool <parameter>forwa
  </refsect1>
 
  <refsect1>
-  <title>Notes</title>
+  <title>注解</title>
 
   <para>
-   Moving backward may fail if the cursor's plan was not created
-   with the <symbol>CURSOR_OPT_SCROLL</symbol> option.
+   如果该游标的计划不是用<symbol>CURSOR_OPT_SCROLL</symbol>
+   选项创建的，向后移动可能失败。
   </para>
  </refsect1>
 </refentry>
@@ -2336,7 +2204,7 @@ void SPI_cursor_move(Portal <parameter>portal</parameter>, bool <parameter>forwa
 
  <refnamediv>
   <refname>SPI_scroll_cursor_fetch</refname>
-  <refpurpose>fetch some rows from a cursor</refpurpose>
+  <refpurpose>从一个游标取出一些行</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -2347,23 +2215,23 @@ void SPI_scroll_cursor_fetch(Portal <parameter>portal</parameter>, FetchDirectio
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_scroll_cursor_fetch</function> fetches some rows from a
-   cursor.  This is equivalent to the SQL command <command>FETCH</>.
+   <function>SPI_scroll_cursor_fetch</function>从一个游标中取出一些行。
+   这等效于 SQL 命令<command>FETCH</command>。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>Portal <parameter>portal</parameter></literal></term>
     <listitem>
      <para>
-      portal containing the cursor
+      包含该游标的 portal
      </para>
     </listitem>
    </varlistentry>
@@ -2372,10 +2240,10 @@ void SPI_scroll_cursor_fetch(Portal <parameter>portal</parameter>, FetchDirectio
     <term><literal>FetchDirection <parameter>direction</parameter></literal></term>
     <listitem>
      <para>
-      one of <symbol>FETCH_FORWARD</symbol>,
-      <symbol>FETCH_BACKWARD</symbol>,
-      <symbol>FETCH_ABSOLUTE</symbol> or
-      <symbol>FETCH_RELATIVE</symbol>
+      <symbol>FETCH_FORWARD</symbol>、
+      <symbol>FETCH_BACKWARD</symbol>、
+      <symbol>FETCH_ABSOLUTE</symbol>或者
+      <symbol>FETCH_RELATIVE</symbol>之一
      </para>
     </listitem>
    </varlistentry>
@@ -2384,11 +2252,10 @@ void SPI_scroll_cursor_fetch(Portal <parameter>portal</parameter>, FetchDirectio
     <term><literal>long <parameter>count</parameter></literal></term>
     <listitem>
      <para>
-      number of rows to fetch for
-      <symbol>FETCH_FORWARD</symbol> or
-      <symbol>FETCH_BACKWARD</symbol>; absolute row number to fetch for
-      <symbol>FETCH_ABSOLUTE</symbol>; or relative row number to fetch for
-      <symbol>FETCH_RELATIVE</symbol>
+      <symbol>FETCH_FORWARD</symbol>或
+      <symbol>FETCH_BACKWARD</symbol>方式中要取出的行数；
+      <symbol>FETCH_ABSOLUTE</symbol>方式中要取出的绝对行号；
+      <symbol>FETCH_RELATIVE</symbol>方式中要取出的相对行号
      </para>
     </listitem>
    </varlistentry>
@@ -2396,29 +2263,27 @@ void SPI_scroll_cursor_fetch(Portal <parameter>portal</parameter>, FetchDirectio
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   <varname>SPI_processed</varname> and
-   <varname>SPI_tuptable</varname> are set as in
-   <function>SPI_execute</function> if successful.
+   成功时，<varname>SPI_processed</varname> 和
+   <varname>SPI_tuptable</varname> 的设置方式与
+   <function>SPI_execute</function> 相同。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Notes</title>
+  <title>注解</title>
 
   <para>
-   See the SQL <xref linkend="sql-fetch"> command
-   for details of the interpretation of the
-   <parameter>direction</parameter> and
-   <parameter>count</parameter> parameters.
+   参数<parameter>direction</parameter>和
+   <parameter>count</parameter>的详细解释请见
+   SQL <xref linkend="sql-fetch">命令。
   </para>
 
   <para>
-   Direction values other than <symbol>FETCH_FORWARD</symbol>
-   may fail if the cursor's plan was not created
-   with the <symbol>CURSOR_OPT_SCROLL</symbol> option.
+   如果该游标的计划不是用<symbol>CURSOR_OPT_SCROLL</symbol>
+   选项创建的，除<symbol>FETCH_FORWARD</symbol>之外的方向值可能失败。
   </para>
  </refsect1>
 </refentry>
@@ -2435,7 +2300,7 @@ void SPI_scroll_cursor_fetch(Portal <parameter>portal</parameter>, FetchDirectio
 
  <refnamediv>
   <refname>SPI_scroll_cursor_move</refname>
-  <refpurpose>move a cursor</refpurpose>
+  <refpurpose>移动一个游标</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -2446,24 +2311,23 @@ void SPI_scroll_cursor_move(Portal <parameter>portal</parameter>, FetchDirection
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_scroll_cursor_move</function> skips over some number of rows
-   in a cursor.  This is equivalent to the SQL command
-   <command>MOVE</>.
+   <function>SPI_scroll_cursor_move</function>在一个游标中跳过
+   一定数量的行。这等效于 SQL 命令<command>MOVE</command>。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>Portal <parameter>portal</parameter></literal></term>
     <listitem>
      <para>
-      portal containing the cursor
+      包含该游标的 portal
      </para>
     </listitem>
    </varlistentry>
@@ -2472,10 +2336,10 @@ void SPI_scroll_cursor_move(Portal <parameter>portal</parameter>, FetchDirection
     <term><literal>FetchDirection <parameter>direction</parameter></literal></term>
     <listitem>
      <para>
-      one of <symbol>FETCH_FORWARD</symbol>,
-      <symbol>FETCH_BACKWARD</symbol>,
-      <symbol>FETCH_ABSOLUTE</symbol> or
-      <symbol>FETCH_RELATIVE</symbol>
+      <symbol>FETCH_FORWARD</symbol>、
+      <symbol>FETCH_BACKWARD</symbol>、
+      <symbol>FETCH_ABSOLUTE</symbol>或者
+      <symbol>FETCH_RELATIVE</symbol>之一
      </para>
     </listitem>
    </varlistentry>
@@ -2484,11 +2348,10 @@ void SPI_scroll_cursor_move(Portal <parameter>portal</parameter>, FetchDirection
     <term><literal>long <parameter>count</parameter></literal></term>
     <listitem>
      <para>
-      number of rows to move for
-      <symbol>FETCH_FORWARD</symbol> or
-      <symbol>FETCH_BACKWARD</symbol>; absolute row number to move to for
-      <symbol>FETCH_ABSOLUTE</symbol>; or relative row number to move to for
-      <symbol>FETCH_RELATIVE</symbol>
+      <symbol>FETCH_FORWARD</symbol>或者
+      <symbol>FETCH_BACKWARD</symbol>方式中要移动的行数；
+      <symbol>FETCH_ABSOLUTE</symbol>方式中要移动到的绝对行号；
+      <symbol>FETCH_RELATIVE</symbol>方式中要移动到的相对行号
      </para>
     </listitem>
    </varlistentry>
@@ -2496,30 +2359,28 @@ void SPI_scroll_cursor_move(Portal <parameter>portal</parameter>, FetchDirection
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   <varname>SPI_processed</varname> is set as in
-   <function>SPI_execute</function> if successful.
-   <varname>SPI_tuptable</varname> is set to <symbol>NULL</>, since
-   no rows are returned by this function.
+   成功时，<varname>SPI_processed</varname> 的设置方式与
+   <function>SPI_execute</function> 相同。
+   <varname>SPI_tuptable</varname> 会被设置为 <symbol>NULL</symbol>，
+   因为本函数不会返回任何行。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Notes</title>
+  <title>注解</title>
 
   <para>
-   See the SQL <xref linkend="sql-fetch"> command
-   for details of the interpretation of the
-   <parameter>direction</parameter> and
-   <parameter>count</parameter> parameters.
+   参数<parameter>direction</parameter>和
+   <parameter>count</parameter>的详细解释请见
+   SQL <xref linkend="sql-fetch">命令。
   </para>
 
   <para>
-   Direction values other than <symbol>FETCH_FORWARD</symbol>
-   may fail if the cursor's plan was not created
-   with the <symbol>CURSOR_OPT_SCROLL</symbol> option.
+   如果该游标的计划不是用<symbol>CURSOR_OPT_SCROLL</symbol>
+   选项创建的，除<symbol>FETCH_FORWARD</symbol>之外的方向值可能失败。
   </para>
  </refsect1>
 </refentry>
@@ -2536,7 +2397,7 @@ void SPI_scroll_cursor_move(Portal <parameter>portal</parameter>, FetchDirection
 
  <refnamediv>
   <refname>SPI_cursor_close</refname>
-  <refpurpose>close a cursor</refpurpose>
+  <refpurpose>关闭一个游标</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -2546,29 +2407,29 @@ void SPI_cursor_close(Portal <parameter>portal</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_cursor_close</function> closes a previously created
-   cursor and releases its portal storage.
+   <function>SPI_cursor_close</function>关闭一个之前创建的游标
+   并且释放它的 portal 存储。
   </para>
 
   <para>
-   All open cursors are closed automatically at the end of a
-   transaction.  <function>SPI_cursor_close</function> need only be
-   invoked if it is desirable to release resources sooner.
+   所有打开的游标会在事务结束时自动被关闭。
+   只有在希望尽快释放资源时，才需要调用
+   <function>SPI_cursor_close</function>。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>Portal <parameter>portal</parameter></literal></term>
     <listitem>
      <para>
-      portal containing the cursor
+      包含该游标的 portal
      </para>
     </listitem>
    </varlistentry>
@@ -2588,7 +2449,7 @@ void SPI_cursor_close(Portal <parameter>portal</parameter>)
 
  <refnamediv>
   <refname>SPI_keepplan</refname>
-  <refpurpose>save a prepared statement</refpurpose>
+  <refpurpose>保存一个预备语句</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -2598,26 +2459,25 @@ int SPI_keepplan(SPIPlanPtr <parameter>plan</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_keepplan</function> saves a passed statement (prepared by
-   <function>SPI_prepare</function>) so that it will not be freed
-   by <function>SPI_finish</function> nor by the transaction manager.
-   This gives you the ability to reuse prepared statements in the subsequent
-   invocations of your procedure in the current session.
+   <function>SPI_keepplan</function> 保存传入的预备语句（由
+   <function>SPI_prepare</function> 准备），使其不会被
+   <function>SPI_finish</function> 或事务管理器释放。这让你能够在当前会
+   话后续的过程调用中重用该预备语句。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
-      the prepared statement to be saved
+      要保存的预备语句
      </para>
     </listitem>
    </varlistentry>
@@ -2625,22 +2485,21 @@ int SPI_keepplan(SPIPlanPtr <parameter>plan</parameter>)
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   0 on success;
-   <symbol>SPI_ERROR_ARGUMENT</symbol> if <parameter>plan</parameter>
-   is <symbol>NULL</symbol> or invalid
+   成功返回 0；如果<parameter>plan</parameter>为<symbol>NULL</symbol>
+   或者无效则返回<symbol>SPI_ERROR_ARGUMENT</symbol>
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Notes</title>
+  <title>注解</title>
 
   <para>
-   The passed-in statement is relocated to permanent storage by means
-   of pointer adjustment (no data copying is required).  If you later
-   wish to delete it, use <function>SPI_freeplan</function> on it.
+   这个函数通过调整指针（无需复制数据）的方式，将传入的预备语句重定位到
+   永久存储中。如果之后需要删除它，可以对其使用
+   <function>SPI_freeplan</function>。
   </para>
  </refsect1>
 </refentry>
@@ -2657,7 +2516,7 @@ int SPI_keepplan(SPIPlanPtr <parameter>plan</parameter>)
 
  <refnamediv>
   <refname>SPI_saveplan</refname>
-  <refpurpose>save a prepared statement</refpurpose>
+  <refpurpose>保存一个预备语句</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -2667,27 +2526,25 @@ SPIPlanPtr SPI_saveplan(SPIPlanPtr <parameter>plan</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_saveplan</function> copies a passed statement (prepared by
-   <function>SPI_prepare</function>) into memory that will not be freed
-   by <function>SPI_finish</function> nor by the transaction manager,
-   and returns a pointer to the copied statement.  This gives you the
-   ability to reuse prepared statements in the subsequent invocations of
-   your procedure in the current session.
+   <function>SPI_saveplan</function> 会把传入的预备语句（由
+   <function>SPI_prepare</function> 准备）复制到不会被
+   <function>SPI_finish</function> 或事务管理器释放的内存中，并返回该副
+   本的指针。这让你能够在当前会话后续的过程调用中重用预备语句。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
-      the prepared statement to be saved
+      要保存的预备语句
      </para>
     </listitem>
    </varlistentry>
@@ -2695,18 +2552,18 @@ SPIPlanPtr SPI_saveplan(SPIPlanPtr <parameter>plan</parameter>)
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   Pointer to the copied statement; or <symbol>NULL</symbol> if unsuccessful.
-   On error, <varname>SPI_result</varname> is set thus:
+   复制后语句的指针；如果未成功则返回<symbol>NULL</symbol>。
+   错误时，<varname>SPI_result</varname>会被这样设置：
 
    <variablelist>
     <varlistentry>
      <term><symbol>SPI_ERROR_ARGUMENT</symbol></term>
      <listitem>
       <para>
-       if <parameter>plan</parameter> is <symbol>NULL</symbol> or invalid
+       如果<parameter>plan</parameter>为<symbol>NULL</symbol>或无效
       </para>
      </listitem>
     </varlistentry>
@@ -2715,7 +2572,7 @@ SPIPlanPtr SPI_saveplan(SPIPlanPtr <parameter>plan</parameter>)
      <term><symbol>SPI_ERROR_UNCONNECTED</symbol></term>
      <listitem>
       <para>
-       if called from an unconnected procedure
+       如果从未连接的过程中调用
       </para>
      </listitem>
     </varlistentry>
@@ -2724,36 +2581,38 @@ SPIPlanPtr SPI_saveplan(SPIPlanPtr <parameter>plan</parameter>)
  </refsect1>
 
  <refsect1>
-  <title>Notes</title>
+  <title>注解</title>
 
   <para>
-   The originally passed-in statement is not freed, so you might wish to do
-   <function>SPI_freeplan</function> on it to avoid leaking memory
-   until <function>SPI_finish</>.
+   原始传入的预备语句不会被释放，因此你可能需要对其调用
+   <function>SPI_freeplan</function>，以避免在
+   <function>SPI_finish</function>之前发生内存泄露。
   </para>
 
   <para>
-   In most cases, <function>SPI_keepplan</function> is preferred to this
-   function, since it accomplishes largely the same result without needing
-   to physically copy the prepared statement's data structures.
+   在大多数情况下，<function>SPI_keepplan</function> 比此函数更合适，因
+   为它基本能达到相同效果，同时无需实际复制该预备语句的数据结构。
   </para>
  </refsect1>
 </refentry>
 
+
+
+
+<!-- *********************************************** -->
+
 </sect1>
 
 <sect1 id="spi-interface-support">
- <title>Interface Support Functions</title>
+ <title>接口支持函数</title>
 
  <para>
-  The functions described here provide an interface for extracting
-  information from result sets returned by <function>SPI_execute</> and
-  other SPI functions.
+  这里介绍的函数提供了一个接口，用于从 <function>SPI_execute</function>
+  及其他 SPI 函数返回的结果集中提取信息。
  </para>
 
  <para>
-  All functions described in this section can be used by both
-  connected and unconnected procedures.
+  本节介绍的所有函数都可以在已连接和未连接的过程中使用。
  </para>
 
 <!-- *********************************************** -->
@@ -2768,7 +2627,7 @@ SPIPlanPtr SPI_saveplan(SPIPlanPtr <parameter>plan</parameter>)
 
  <refnamediv>
   <refname>SPI_fname</refname>
-  <refpurpose>determine the column name for the specified column number</refpurpose>
+  <refpurpose>为指定的列号确定列名</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -2778,24 +2637,23 @@ char * SPI_fname(TupleDesc <parameter>rowdesc</parameter>, int <parameter>colnum
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_fname</function> returns a copy of the column name of the
-   specified column.  (You can use <function>pfree</function> to
-   release the copy of the name when you don't need it anymore.)
+   <function>SPI_fname</function> 返回指定列列名的一个副本。（不再需要时，
+   可以用 <function>pfree</function> 释放它。）
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>TupleDesc <parameter>rowdesc</parameter></literal></term>
     <listitem>
      <para>
-      input row description
+      输入行描述
      </para>
     </listitem>
    </varlistentry>
@@ -2804,7 +2662,7 @@ char * SPI_fname(TupleDesc <parameter>rowdesc</parameter>, int <parameter>colnum
     <term><literal>int <parameter>colnumber</parameter></literal></term>
     <listitem>
      <para>
-      column number (count starts at 1)
+      列号（从 1 开始计）
      </para>
     </listitem>
    </varlistentry>
@@ -2812,13 +2670,13 @@ char * SPI_fname(TupleDesc <parameter>rowdesc</parameter>, int <parameter>colnum
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   The column name; <symbol>NULL</symbol> if
-   <parameter>colnumber</parameter> is out of range.
-   <varname>SPI_result</varname> set to
-   <symbol>SPI_ERROR_NOATTRIBUTE</symbol> on error.
+   列名；如果 <parameter>colnumber</parameter> 超出范围则返回
+   <symbol>NULL</symbol>。出错时，
+   <varname>SPI_result</varname> 会被设置为
+   <symbol>SPI_ERROR_NOATTRIBUTE</symbol>。
   </para>
  </refsect1>
 </refentry>
@@ -2835,7 +2693,7 @@ char * SPI_fname(TupleDesc <parameter>rowdesc</parameter>, int <parameter>colnum
 
  <refnamediv>
   <refname>SPI_fnumber</refname>
-  <refpurpose>determine the column number for the specified column name</refpurpose>
+  <refpurpose>根据指定列名确定列号</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -2845,32 +2703,29 @@ int SPI_fnumber(TupleDesc <parameter>rowdesc</parameter>, const char * <paramete
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_fnumber</function> returns the column number for the
-   column with the specified name.
+   <function>SPI_fnumber</function> 返回指定列名对应的列号。
   </para>
 
   <para>
-   If <parameter>colname</parameter> refers to a system column (e.g.,
-   <literal>oid</>) then the appropriate negative column number will
-   be returned.  The caller should be careful to test the return value
-   for exact equality to <symbol>SPI_ERROR_NOATTRIBUTE</symbol> to
-   detect an error; testing the result for less than or equal to 0 is
-   not correct unless system columns should be rejected.
+   如果 <parameter>colname</parameter> 指向的是系统列（例如
+   <literal>oid</literal>），则会返回相应的负列号。调用者应当通过检查返
+   回值是否恰好等于 <symbol>SPI_ERROR_NOATTRIBUTE</symbol> 来判断错误；
+   除非本就要拒绝系统列，否则测试结果是否小于等于 0 并不正确。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>TupleDesc <parameter>rowdesc</parameter></literal></term>
     <listitem>
      <para>
-      input row description
+      输入行描述
      </para>
     </listitem>
    </varlistentry>
@@ -2879,7 +2734,7 @@ int SPI_fnumber(TupleDesc <parameter>rowdesc</parameter>, const char * <paramete
     <term><literal>const char * <parameter>colname</parameter></literal></term>
     <listitem>
      <para>
-      column name
+      列名
      </para>
     </listitem>
    </varlistentry>
@@ -2887,12 +2742,11 @@ int SPI_fnumber(TupleDesc <parameter>rowdesc</parameter>, const char * <paramete
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   Column number (count starts at 1), or
-   <symbol>SPI_ERROR_NOATTRIBUTE</symbol> if the named column was not
-   found.
+   列号（从 1 开始计），如果没有找到所提到的列名则返回
+   <symbol>SPI_ERROR_NOATTRIBUTE</symbol>。
   </para>
  </refsect1>
 </refentry>
@@ -2909,7 +2763,7 @@ int SPI_fnumber(TupleDesc <parameter>rowdesc</parameter>, const char * <paramete
 
  <refnamediv>
   <refname>SPI_getvalue</refname>
-  <refpurpose>return the string value of the specified column</refpurpose>
+  <refpurpose>返回指定列的字符串值</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -2919,30 +2773,27 @@ char * SPI_getvalue(HeapTuple <parameter>row</parameter>, TupleDesc <parameter>r
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_getvalue</function> returns the string representation
-   of the value of the specified column.
+   <function>SPI_getvalue</function>返回指定列的值的字符串表示。
   </para>
 
   <para>
-   The result is returned in memory allocated using
-   <function>palloc</function>.  (You can use
-   <function>pfree</function> to release the memory when you don't
-   need it anymore.)
+   结果保存在由 <function>palloc</function> 分配的内存中返回。（不再需要
+   时，可以用 <function>pfree</function> 释放该内存。）
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>HeapTuple <parameter>row</parameter></literal></term>
     <listitem>
      <para>
-      input row to be examined
+      要检查的输入行
      </para>
     </listitem>
    </varlistentry>
@@ -2951,7 +2802,7 @@ char * SPI_getvalue(HeapTuple <parameter>row</parameter>, TupleDesc <parameter>r
     <term><literal>TupleDesc <parameter>rowdesc</parameter></literal></term>
     <listitem>
      <para>
-      input row description
+      输入行描述
      </para>
     </listitem>
    </varlistentry>
@@ -2960,7 +2811,7 @@ char * SPI_getvalue(HeapTuple <parameter>row</parameter>, TupleDesc <parameter>r
     <term><literal>int <parameter>colnumber</parameter></literal></term>
     <listitem>
      <para>
-      column number (count starts at 1)
+      列号（从 1 开始计）
      </para>
     </listitem>
    </varlistentry>
@@ -2968,15 +2819,15 @@ char * SPI_getvalue(HeapTuple <parameter>row</parameter>, TupleDesc <parameter>r
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   Column value, or <symbol>NULL</symbol> if the column is null,
-   <parameter>colnumber</parameter> is out of range
-   (<varname>SPI_result</varname> is set to
-   <symbol>SPI_ERROR_NOATTRIBUTE</symbol>), or no output function is
-   available (<varname>SPI_result</varname> is set to
-   <symbol>SPI_ERROR_NOOUTFUNC</symbol>).
+   列值；如果该列为空值、<parameter>colnumber</parameter> 超出范围
+   （<varname>SPI_result</varname> 被设置为
+   <symbol>SPI_ERROR_NOATTRIBUTE</symbol>）或者没有输出函数
+   可用（<varname>SPI_result</varname> 被设置为
+   <symbol>SPI_ERROR_NOOUTFUNC</symbol>）则返回
+   <symbol>NULL</symbol>。
   </para>
  </refsect1>
 </refentry>
@@ -2993,7 +2844,7 @@ char * SPI_getvalue(HeapTuple <parameter>row</parameter>, TupleDesc <parameter>r
 
  <refnamediv>
   <refname>SPI_getbinval</refname>
-  <refpurpose>return the binary value of the specified column</refpurpose>
+  <refpurpose>返回指定列的二进制值</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3004,29 +2855,28 @@ Datum SPI_getbinval(HeapTuple <parameter>row</parameter>, TupleDesc <parameter>r
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_getbinval</function> returns the value of the
-   specified column in the internal form (as type <type>Datum</type>).
+   <function>SPI_getbinval</function> 以内部形式（即 <type>Datum</type>
+   类型）返回指定列的值。
   </para>
 
   <para>
-   This function does not allocate new space for the datum.  In the
-   case of a pass-by-reference data type, the return value will be a
-   pointer into the passed row.
+   此函数不会为该 datum 分配新空间。对于传引用的数据类型，返回值将是指向
+   传入行内部数据的指针。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>HeapTuple <parameter>row</parameter></literal></term>
     <listitem>
      <para>
-      input row to be examined
+      要检查的输入行
      </para>
     </listitem>
    </varlistentry>
@@ -3035,7 +2885,7 @@ Datum SPI_getbinval(HeapTuple <parameter>row</parameter>, TupleDesc <parameter>r
     <term><literal>TupleDesc <parameter>rowdesc</parameter></literal></term>
     <listitem>
      <para>
-      input row description
+      输入行描述
      </para>
     </listitem>
    </varlistentry>
@@ -3044,7 +2894,7 @@ Datum SPI_getbinval(HeapTuple <parameter>row</parameter>, TupleDesc <parameter>r
     <term><literal>int <parameter>colnumber</parameter></literal></term>
     <listitem>
      <para>
-      column number (count starts at 1)
+      列号（从 1 开始计）
      </para>
     </listitem>
    </varlistentry>
@@ -3053,7 +2903,7 @@ Datum SPI_getbinval(HeapTuple <parameter>row</parameter>, TupleDesc <parameter>r
     <term><literal>bool * <parameter>isnull</parameter></literal></term>
     <listitem>
      <para>
-      flag for a null value in the column
+      列中是否为空值的标志
      </para>
     </listitem>
    </varlistentry>
@@ -3061,17 +2911,16 @@ Datum SPI_getbinval(HeapTuple <parameter>row</parameter>, TupleDesc <parameter>r
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   The binary value of the column is returned.  The variable pointed
-   to by <parameter>isnull</parameter> is set to true if the column is
-   null, else to false.
+   返回该列的二进制值。如果该列为空值，则
+   <parameter>isnull</parameter> 指向的变量会被设为真，否则设为假。
   </para>
 
   <para>
-   <varname>SPI_result</varname> is set to
-   <symbol>SPI_ERROR_NOATTRIBUTE</symbol> on error.
+   出错时，<varname>SPI_result</varname> 会被设置为
+   <symbol>SPI_ERROR_NOATTRIBUTE</symbol>。
   </para>
  </refsect1>
 </refentry>
@@ -3088,7 +2937,7 @@ Datum SPI_getbinval(HeapTuple <parameter>row</parameter>, TupleDesc <parameter>r
 
  <refnamediv>
   <refname>SPI_gettype</refname>
-  <refpurpose>return the data type name of the specified column</refpurpose>
+  <refpurpose>返回指定列的数据类型名称</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3098,24 +2947,24 @@ char * SPI_gettype(TupleDesc <parameter>rowdesc</parameter>, int <parameter>coln
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_gettype</function> returns a copy of the data type name of the
-   specified column.  (You can use <function>pfree</function> to
-   release the copy of the name when you don't need it anymore.)
+   <function>SPI_gettype</function>返回该指定列的数据类型名称
+   的副本（当你不再需要该副本后，可以使用<function>pfree</function>
+   释放它）。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>TupleDesc <parameter>rowdesc</parameter></literal></term>
     <listitem>
      <para>
-      input row description
+      输入行描述
      </para>
     </listitem>
    </varlistentry>
@@ -3124,7 +2973,7 @@ char * SPI_gettype(TupleDesc <parameter>rowdesc</parameter>, int <parameter>coln
     <term><literal>int <parameter>colnumber</parameter></literal></term>
     <listitem>
      <para>
-      column number (count starts at 1)
+      列号（从 1 开始计）
      </para>
     </listitem>
    </varlistentry>
@@ -3132,12 +2981,12 @@ char * SPI_gettype(TupleDesc <parameter>rowdesc</parameter>, int <parameter>coln
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   The data type name of the specified column, or
-   <symbol>NULL</symbol> on error.  <varname>SPI_result</varname> is
-   set to <symbol>SPI_ERROR_NOATTRIBUTE</symbol> on error.
+   指定列的数据类型名称；出错时返回 <symbol>NULL</symbol>。
+   出错时，<varname>SPI_result</varname> 会被设置为
+   <symbol>SPI_ERROR_NOATTRIBUTE</symbol>。
   </para>
  </refsect1>
 </refentry>
@@ -3154,7 +3003,7 @@ char * SPI_gettype(TupleDesc <parameter>rowdesc</parameter>, int <parameter>coln
 
  <refnamediv>
   <refname>SPI_gettypeid</refname>
-  <refpurpose>return the data type <acronym>OID</acronym> of the specified column</refpurpose>
+  <refpurpose>返回指定列的数据类型的<acronym>OID</acronym></refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3164,23 +3013,23 @@ Oid SPI_gettypeid(TupleDesc <parameter>rowdesc</parameter>, int <parameter>colnu
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_gettypeid</function> returns the
-   <acronym>OID</acronym> of the data type of the specified column.
+   <function>SPI_gettypeid</function>返回该指定列的数据类型的
+   <acronym>OID</acronym>。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>TupleDesc <parameter>rowdesc</parameter></literal></term>
     <listitem>
      <para>
-      input row description
+      输入行描述
      </para>
     </listitem>
    </varlistentry>
@@ -3189,7 +3038,7 @@ Oid SPI_gettypeid(TupleDesc <parameter>rowdesc</parameter>, int <parameter>colnu
     <term><literal>int <parameter>colnumber</parameter></literal></term>
     <listitem>
      <para>
-      column number (count starts at 1)
+      列号（从 1 开始计）
      </para>
     </listitem>
    </varlistentry>
@@ -3197,13 +3046,13 @@ Oid SPI_gettypeid(TupleDesc <parameter>rowdesc</parameter>, int <parameter>colnu
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   The <acronym>OID</acronym> of the data type of the specified column
-   or <symbol>InvalidOid</symbol> on error.  On error,
-   <varname>SPI_result</varname> is set to
-   <symbol>SPI_ERROR_NOATTRIBUTE</symbol>.
+   指定列数据类型的 <acronym>OID</acronym>；出错时返回
+   <symbol>InvalidOid</symbol>。出错时，
+   <varname>SPI_result</varname> 会被设置为
+   <symbol>SPI_ERROR_NOATTRIBUTE</symbol>。
   </para>
  </refsect1>
 </refentry>
@@ -3220,7 +3069,7 @@ Oid SPI_gettypeid(TupleDesc <parameter>rowdesc</parameter>, int <parameter>colnu
 
  <refnamediv>
   <refname>SPI_getrelname</refname>
-  <refpurpose>return the name of the specified relation</refpurpose>
+  <refpurpose>返回指定关系的名称</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3230,24 +3079,24 @@ char * SPI_getrelname(Relation <parameter>rel</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_getrelname</function> returns a copy of the name of the
-   specified relation.  (You can use <function>pfree</function> to
-   release the copy of the name when you don't need it anymore.)
+   <function>SPI_getrelname</function>返回该指定关系的名称
+   的副本（当你不再需要该副本后，可以使用<function>pfree</function>
+   释放它）。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>Relation <parameter>rel</parameter></literal></term>
     <listitem>
      <para>
-      input relation
+      输入关系
      </para>
     </listitem>
    </varlistentry>
@@ -3255,10 +3104,10 @@ char * SPI_getrelname(Relation <parameter>rel</parameter>)
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   The name of the specified relation.
+   指定关系的名称。
   </para>
  </refsect1>
 </refentry>
@@ -3273,7 +3122,7 @@ char * SPI_getrelname(Relation <parameter>rel</parameter>)
 
  <refnamediv>
   <refname>SPI_getnspname</refname>
-  <refpurpose>return the namespace of the specified relation</refpurpose>
+  <refpurpose>返回指定关系所属的名字空间</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3283,26 +3132,25 @@ char * SPI_getnspname(Relation <parameter>rel</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_getnspname</function> returns a copy of the name of
-   the namespace that the specified <structname>Relation</structname>
-   belongs to. This is equivalent to the relation's schema. You should
-   <function>pfree</function> the return value of this function when
-   you are finished with it.
+   <function>SPI_getnspname</function> 返回指定
+   <structname>Relation</structname> 所属名字空间名称的一个副本。这等价于
+   该关系的模式名。用完该返回值后，应调用 <function>pfree</function> 释
+   放它。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>Relation <parameter>rel</parameter></literal></term>
     <listitem>
      <para>
-      input relation
+      输入关系
      </para>
     </listitem>
    </varlistentry>
@@ -3310,10 +3158,10 @@ char * SPI_getnspname(Relation <parameter>rel</parameter>)
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   The name of the specified relation's namespace.
+   指定关系的名字空间的名称。
   </para>
  </refsect1>
 </refentry>
@@ -3321,79 +3169,56 @@ char * SPI_getnspname(Relation <parameter>rel</parameter>)
  </sect1>
 
  <sect1 id="spi-memory">
-  <title>Memory Management</title>
+  <title>内存管理</title>
 
   <para>
     <indexterm>
-     <primary>memory context</primary>
-     <secondary>in SPI</secondary>
+     <primary>内存上下文</primary>
+     <secondary>在 SPI 中</secondary>
     </indexterm>
-   <productname>PostgreSQL</productname> allocates memory within
-   <firstterm>memory contexts</firstterm>, which provide a convenient method of
-   managing allocations made in many different places that need to
-   live for differing amounts of time.  Destroying a context releases
-   all the memory that was allocated in it.  Thus, it is not necessary
-   to keep track of individual objects to avoid memory leaks; instead
-   only a relatively small number of contexts have to be managed.
-   <function>palloc</function> and related functions allocate memory
-   from the <quote>current</> context.
+   <productname>PostgreSQL</productname> 在<firstterm>内存上下文</firstterm>
+   中分配内存。内存上下文为管理那些在许多不同位置创建、且生命周期各不相同
+   的内存分配提供了便捷手段。销毁某个上下文时，会释放其中分配的全部内存。
+   因此，不必为了避免内存泄漏而跟踪每个单独对象；只需管理数量相对较少的上
+   下文即可。<function>palloc</function> 及相关函数都从<quote>当前</quote>
+   上下文中分配内存。
   </para>
 
   <para>
-   <function>SPI_connect</function> creates a new memory context and
-   makes it current.  <function>SPI_finish</function> restores the
-   previous current memory context and destroys the context created by
-   <function>SPI_connect</function>.  These actions ensure that
-   transient memory allocations made inside your procedure are
-   reclaimed at procedure exit, avoiding memory leakage.
+   <function>SPI_connect</function> 创建新的内存上下文并将其设为当前上下
+   文。<function>SPI_finish</function> 则恢复先前的当前上下文，并销毁由
+   <function>SPI_connect</function> 创建的上下文。这些操作可以确保在过程内部所做的临时内存分配会在过程退出时被回收，从而避免内存泄漏。
   </para>
 
   <para>
-   However, if your procedure needs to return an object in allocated
-   memory (such as a value of a pass-by-reference data type), you
-   cannot allocate that memory using <function>palloc</function>, at
-   least not while you are connected to SPI.  If you try, the object
-   will be deallocated by <function>SPI_finish</function>, and your
-   procedure will not work reliably.  To solve this problem, use
-   <function>SPI_palloc</function> to allocate memory for your return
-   object.  <function>SPI_palloc</function> allocates memory in the
-   <quote>upper executor context</quote>, that is, the memory context
-   that was current when <function>SPI_connect</function> was called,
-   which is precisely the right context for a value returned from your
-   procedure.
+   不过，如果过程需要返回位于已分配内存中的对象（例如传引用数据类型的
+   值），就不能使用 <function>palloc</function> 来分配这块内存，至少在连
+   接到 SPI 的期间不能这么做。否则，该对象会在
+   <function>SPI_finish</function> 时被释放，过程也就无法可靠工作。解决
+   办法是用 <function>SPI_palloc</function> 为返回对象分配内存。
+   <function>SPI_palloc</function> 在<quote>上层执行器上下文</quote>中分配
+   内存，也就是调用 <function>SPI_connect</function> 时的当前内存上下文；
+   这正是从过程返回值最合适的上下文。
   </para>
 
   <para>
-   If <function>SPI_palloc</function> is called while the procedure is
-   not connected to SPI, then it acts the same as a normal
-   <function>palloc</function>.  Before a procedure connects to the
-   SPI manager, the current memory context is the upper executor
-   context, so all allocations made by the procedure via
-   <function>palloc</function> or by SPI utility functions are made in
-   this context.
+   如果在过程尚未连接到 SPI 时调用<function>SPI_palloc</function>，它的行为与普通的<function>palloc</function>相同。在过程连接到 SPI 管理器之前，当前内存上下文就是上层执行器上下文，因此过程通过<function>palloc</function>或 SPI 辅助函数所做的所有分配都位于这个上下文中。
   </para>
 
   <para>
-   When <function>SPI_connect</function> is called, the private
-   context of the procedure, which is created by
-   <function>SPI_connect</function>, is made the current context.  All
-   allocations made by <function>palloc</function>,
-   <function>repalloc</function>, or SPI utility functions (except for
-   <function>SPI_copytuple</function>,
-   <function>SPI_returntuple</function>,
-   <function>SPI_modifytuple</function>, and
-   <function>SPI_palloc</function>) are made in this context.  When a
-   procedure disconnects from the SPI manager (via
-   <function>SPI_finish</function>) the current context is restored to
-   the upper executor context, and all allocations made in the
-   procedure memory context are freed and cannot be used any more.
+   调用 <function>SPI_connect</function> 时，会把该过程的私有上下文
+   （由 <function>SPI_connect</function> 创建）设为当前上下文。所有通过
+   <function>palloc</function>、<function>repalloc</function> 或 SPI
+   辅助函数分配的内存（但<function>SPI_copytuple</function>、
+   <function>SPI_returntuple</function>、<function>SPI_modifytuple</function>
+   和<function>SPI_palloc</function>除外）都位于这个上下文中。当过程通
+   过 <function>SPI_finish</function> 与 SPI 管理器断开连接时，当前上下文
+   会恢复为上层执行器上下文，而在该过程内存上下文中分配的所有内存都会被
+   释放，之后就不能再使用。
   </para>
 
   <para>
-   All functions described in this section can be used by both
-   connected and unconnected procedures.  In an unconnected procedure,
-   they act the same as the underlying ordinary server functions
-   (<function>palloc</>, etc.).
+   本节介绍的所有函数既可由已连接的过程使用，也可由未连接的过程使用。在未连接的过程中，它们的行为与底层普通服务器函数（<function>palloc</function>等）相同。
   </para>
 
 <!-- *********************************************** -->
@@ -3408,7 +3233,7 @@ char * SPI_getnspname(Relation <parameter>rel</parameter>)
 
  <refnamediv>
   <refname>SPI_palloc</refname>
-  <refpurpose>allocate memory in the upper executor context</refpurpose>
+  <refpurpose>在上层执行器上下文中分配内存</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3418,23 +3243,23 @@ void * SPI_palloc(Size <parameter>size</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_palloc</function> allocates memory in the upper
-   executor context.
+   <function>SPI_palloc</function> 在上层执行器上下文中分配内存。
   </para>
+
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>Size <parameter>size</parameter></literal></term>
     <listitem>
      <para>
-      size in bytes of storage to allocate
+      要分配的存储空间大小（以字节计）
      </para>
     </listitem>
    </varlistentry>
@@ -3442,10 +3267,10 @@ void * SPI_palloc(Size <parameter>size</parameter>)
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   pointer to new storage space of the specified size
+   指向具有指定大小的新存储空间的指针
   </para>
  </refsect1>
 </refentry>
@@ -3462,7 +3287,7 @@ void * SPI_palloc(Size <parameter>size</parameter>)
 
  <refnamediv>
   <refname>SPI_repalloc</refname>
-  <refpurpose>reallocate memory in the upper executor context</refpurpose>
+  <refpurpose>在上层执行器上下文中重分配内存</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3472,29 +3297,28 @@ void * SPI_repalloc(void * <parameter>pointer</parameter>, Size <parameter>size<
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_repalloc</function> changes the size of a memory
-   segment previously allocated using <function>SPI_palloc</function>.
+   <function>SPI_repalloc</function>改变之前用<function>SPI_palloc</function>
+   分配的内存段的大小。
   </para>
 
   <para>
-   This function is no longer different from plain
-   <function>repalloc</function>.  It's kept just for backward
-   compatibility of existing code.
+   这个函数如今与普通的<function>repalloc</function>已无区别。
+   保留它只是为了与现有代码保持向后兼容。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>void * <parameter>pointer</parameter></literal></term>
     <listitem>
      <para>
-      pointer to existing storage to change
+      指向要改变的现有存储空间的指针
      </para>
     </listitem>
    </varlistentry>
@@ -3503,7 +3327,7 @@ void * SPI_repalloc(void * <parameter>pointer</parameter>, Size <parameter>size<
     <term><literal>Size <parameter>size</parameter></literal></term>
     <listitem>
      <para>
-      size in bytes of storage to allocate
+      要分配的存储空间大小（以字节计）
      </para>
     </listitem>
    </varlistentry>
@@ -3511,11 +3335,10 @@ void * SPI_repalloc(void * <parameter>pointer</parameter>, Size <parameter>size<
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   pointer to new storage space of specified size with the contents
-   copied from the existing area
+   指向具有指定大小的新存储空间的指针，现有区域的内容会被复制到其中
   </para>
  </refsect1>
 </refentry>
@@ -3532,7 +3355,7 @@ void * SPI_repalloc(void * <parameter>pointer</parameter>, Size <parameter>size<
 
  <refnamediv>
   <refname>SPI_pfree</refname>
-  <refpurpose>free memory in the upper executor context</refpurpose>
+  <refpurpose>在上层执行器上下文中释放内存</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3542,30 +3365,29 @@ void SPI_pfree(void * <parameter>pointer</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_pfree</function> frees memory previously allocated
-   using <function>SPI_palloc</function> or
-   <function>SPI_repalloc</function>.
+   <function>SPI_pfree</function>释放之前使用
+   <function>SPI_palloc</function>或者
+   <function>SPI_repalloc</function>分配的内存。
   </para>
 
   <para>
-   This function is no longer different from plain
-   <function>pfree</function>.  It's kept just for backward
-   compatibility of existing code.
+   这个函数如今与普通的<function>pfree</function>已无区别。
+   保留它只是为了与现有代码保持向后兼容。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>void * <parameter>pointer</parameter></literal></term>
     <listitem>
      <para>
-      pointer to existing storage to free
+      指向要释放的现有存储空间的指针
      </para>
     </listitem>
    </varlistentry>
@@ -3585,7 +3407,7 @@ void SPI_pfree(void * <parameter>pointer</parameter>)
 
  <refnamediv>
   <refname>SPI_copytuple</refname>
-  <refpurpose>make a copy of a row in the upper executor context</refpurpose>
+  <refpurpose>在上层执行器上下文中创建一行的副本</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3595,25 +3417,25 @@ HeapTuple SPI_copytuple(HeapTuple <parameter>row</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_copytuple</function> makes a copy of a row in the
-   upper executor context.  This is normally used to return a modified
-   row from a trigger.  In a function declared to return a composite
-   type, use <function>SPI_returntuple</function> instead.
+   <function>SPI_copytuple</function> 在上层执行器上下文中创建一行的副本。
+   它通常用于从触发器中返回修改后的行。对于声明为返回复合类型的函数，应改
+   用 <function>SPI_returntuple</function>。
   </para>
+
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>HeapTuple <parameter>row</parameter></literal></term>
     <listitem>
      <para>
-      row to be copied
+      要复制的行
      </para>
     </listitem>
    </varlistentry>
@@ -3621,11 +3443,11 @@ HeapTuple SPI_copytuple(HeapTuple <parameter>row</parameter>)
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   the copied row; <symbol>NULL</symbol> only if
-   <parameter>tuple</parameter> is <symbol>NULL</symbol>
+   复制后的行；仅当<parameter>tuple</parameter>为 <symbol>NULL</symbol> 时
+   才返回 <symbol>NULL</symbol>
   </para>
  </refsect1>
 </refentry>
@@ -3642,7 +3464,7 @@ HeapTuple SPI_copytuple(HeapTuple <parameter>row</parameter>)
 
  <refnamediv>
   <refname>SPI_returntuple</refname>
-  <refpurpose>prepare to return a tuple as a Datum</refpurpose>
+  <refpurpose>准备把一个元组返回为一个 Datum</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3652,31 +3474,30 @@ HeapTupleHeader SPI_returntuple(HeapTuple <parameter>row</parameter>, TupleDesc 
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_returntuple</function> makes a copy of a row in
-   the upper executor context, returning it in the form of a row type <type>Datum</type>.
-   The returned pointer need only be converted to <type>Datum</type> via <function>PointerGetDatum</function>
-   before returning.
+   <function>SPI_returntuple</function> 在上层执行器上下文中创建一行的副
+   本，并以行类型 <type>Datum</type> 的形式返回。返回的指针只需在返回前用
+   <function>PointerGetDatum</function> 转换为 <type>Datum</type> 即可。
   </para>
 
+
   <para>
-   Note that this should be used for functions that are declared to return
-   composite types.  It is not used for triggers; use
-   <function>SPI_copytuple</> for returning a modified row in a trigger.
+   请注意，它应用于声明为返回复合类型的函数，而不用于触发器；触发器中返回
+   修改后的行应使用 <function>SPI_copytuple</function>。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>HeapTuple <parameter>row</parameter></literal></term>
     <listitem>
      <para>
-      row to be copied
+      要复制的行
      </para>
     </listitem>
    </varlistentry>
@@ -3685,8 +3506,7 @@ HeapTupleHeader SPI_returntuple(HeapTuple <parameter>row</parameter>, TupleDesc 
     <term><literal>TupleDesc <parameter>rowdesc</parameter></literal></term>
     <listitem>
      <para>
-      descriptor for row (pass the same descriptor each time for most
-      effective caching)
+      行描述符（若要获得最佳缓存效果，每次都传入同一个描述符）
      </para>
     </listitem>
    </varlistentry>
@@ -3694,12 +3514,11 @@ HeapTupleHeader SPI_returntuple(HeapTuple <parameter>row</parameter>, TupleDesc 
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   <type>HeapTupleHeader</type> pointing to copied row;
-   <symbol>NULL</symbol> only if
-   <parameter>row</parameter> or <parameter>rowdesc</parameter> is
+   指向复制后行的 <type>HeapTupleHeader</type>；仅当<parameter>row</parameter>
+   或 <parameter>rowdesc</parameter>为 <symbol>NULL</symbol> 时才返回
    <symbol>NULL</symbol>
   </para>
  </refsect1>
@@ -3717,7 +3536,7 @@ HeapTupleHeader SPI_returntuple(HeapTuple <parameter>row</parameter>, TupleDesc 
 
  <refnamediv>
   <refname>SPI_modifytuple</refname>
-  <refpurpose>create a row by replacing selected fields of a given row</refpurpose>
+  <refpurpose>通过替换给定行的选定字段来创建新行</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3728,26 +3547,25 @@ HeapTuple SPI_modifytuple(Relation <parameter>rel</parameter>, HeapTuple <parame
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_modifytuple</function> creates a new row by
-   substituting new values for selected columns, copying the original
-   row's columns at other positions.  The input row is not modified.
+   <function>SPI_modifytuple</function> 通过为选定列替换新值、并在其他位
+   置复制原行的列来创建一行新记录。输入行本身不会被修改。新行会在上层执行
+   器上下文中返回。
   </para>
+
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>Relation <parameter>rel</parameter></literal></term>
     <listitem>
      <para>
-      Used only as the source of the row descriptor for the row.
-      (Passing a relation rather than a row descriptor is a
-      misfeature.)
+      仅用作该行的行描述符来源。（传递关系而不是行描述符是个设计缺陷。）
      </para>
     </listitem>
    </varlistentry>
@@ -3756,7 +3574,7 @@ HeapTuple SPI_modifytuple(Relation <parameter>rel</parameter>, HeapTuple <parame
     <term><literal>HeapTuple <parameter>row</parameter></literal></term>
     <listitem>
      <para>
-      row to be modified
+      要被修改的行
      </para>
     </listitem>
    </varlistentry>
@@ -3765,7 +3583,7 @@ HeapTuple SPI_modifytuple(Relation <parameter>rel</parameter>, HeapTuple <parame
     <term><literal>int <parameter>ncols</parameter></literal></term>
     <listitem>
      <para>
-      number of columns to be changed
+      要被修改的列数
      </para>
     </listitem>
    </varlistentry>
@@ -3774,8 +3592,8 @@ HeapTuple SPI_modifytuple(Relation <parameter>rel</parameter>, HeapTuple <parame
     <term><literal>int * <parameter>colnum</parameter></literal></term>
     <listitem>
      <para>
-      an array of length <parameter>ncols</parameter>, containing the numbers
-      of the columns that are to be changed (column numbers start at 1)
+      一个长度为<parameter>ncols</parameter>的数组，包含了要被修改的列号
+      （列号从 1 开始）
      </para>
     </listitem>
    </varlistentry>
@@ -3784,8 +3602,7 @@ HeapTuple SPI_modifytuple(Relation <parameter>rel</parameter>, HeapTuple <parame
     <term><literal>Datum * <parameter>values</parameter></literal></term>
     <listitem>
      <para>
-      an array of length <parameter>ncols</parameter>, containing the
-      new values for the specified columns
+      一个长度为<parameter>ncols</parameter>的数组，包含了指定列的新值
      </para>
     </listitem>
    </varlistentry>
@@ -3794,20 +3611,18 @@ HeapTuple SPI_modifytuple(Relation <parameter>rel</parameter>, HeapTuple <parame
     <term><literal>const char * <parameter>nulls</parameter></literal></term>
     <listitem>
      <para>
-      an array of length <parameter>ncols</parameter>, describing which
-      new values are null
+      一个长度为<parameter>ncols</parameter>的数组，描述哪些新值为空值
      </para>
 
      <para>
-      If <parameter>nulls</parameter> is <symbol>NULL</symbol> then
-      <function>SPI_modifytuple</function> assumes that no new values
-      are null.  Otherwise, each entry of the <parameter>nulls</parameter>
-      array should be <literal>'&nbsp;'</> if the corresponding new value is
-      non-null, or <literal>'n'</> if the corresponding new value is
-      null.  (In the latter case, the actual value in the corresponding
-      <parameter>values</parameter> entry doesn't matter.)  Note that
-      <parameter>nulls</parameter> is not a text string, just an array: it
-      does not need a <literal>'\0'</> terminator.
+      如果 <parameter>nulls</parameter> 为 <symbol>NULL</symbol>，则
+      <function>SPI_modifytuple</function> 会假定没有新值为空值。
+      否则，如果对应新值非空值，则 <parameter>nulls</parameter> 数组中
+      的对应项应为 <literal>'&nbsp;'</literal>；如果对应新值为空值，则
+      对应项应为 <literal>'n'</literal>。（后一种情况下，对应
+      <parameter>values</parameter> 项中的实际值无关紧要。）注意，
+      <parameter>nulls</parameter> 不是文本字符串，而只是一个数组，因此不
+      需要 <literal>'\0'</literal> 终止符。
      </para>
     </listitem>
    </varlistentry>
@@ -3815,25 +3630,24 @@ HeapTuple SPI_modifytuple(Relation <parameter>rel</parameter>, HeapTuple <parame
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   new row with modifications, allocated in the upper executor
-   context; <symbol>NULL</symbol> only if <parameter>row</parameter>
-   is <symbol>NULL</symbol>
+   修改后的新行，分配在上层执行器上下文中；仅当<parameter>row</parameter>
+   为 <symbol>NULL</symbol> 时才返回 <symbol>NULL</symbol>
   </para>
 
   <para>
-   On error, <varname>SPI_result</varname> is set as follows:
+   出错时，<varname>SPI_result</varname>被设置如下：
    <variablelist>
     <varlistentry>
      <term><symbol>SPI_ERROR_ARGUMENT</symbol></term>
      <listitem>
       <para>
-       if <parameter>rel</> is <symbol>NULL</>, or if
-       <parameter>row</> is <symbol>NULL</>, or if <parameter>ncols</>
-       is less than or equal to 0, or if <parameter>colnum</> is
-       <symbol>NULL</>, or if <parameter>values</> is <symbol>NULL</>.
+       如果<parameter>rel</parameter>为<symbol>NULL</symbol>，或者
+       <parameter>row</parameter>为<symbol>NULL</symbol>，或者<parameter>ncols</parameter>
+       小于等于 0，或者<parameter>colnum</parameter>为<symbol>NULL</symbol>，
+       或者<parameter>values</parameter>为<symbol>NULL</symbol>。
       </para>
      </listitem>
     </varlistentry>
@@ -3842,9 +3656,8 @@ HeapTuple SPI_modifytuple(Relation <parameter>rel</parameter>, HeapTuple <parame
      <term><symbol>SPI_ERROR_NOATTRIBUTE</symbol></term>
      <listitem>
       <para>
-       if <parameter>colnum</> contains an invalid column number (less
-       than or equal to 0 or greater than the number of column in
-       <parameter>row</>)
+       如果<parameter>colnum</parameter>包含一个无效的列号（小于等于 0 或者大于
+       <parameter>row</parameter>中的列数）。
       </para>
      </listitem>
     </varlistentry>
@@ -3865,7 +3678,7 @@ HeapTuple SPI_modifytuple(Relation <parameter>rel</parameter>, HeapTuple <parame
 
  <refnamediv>
   <refname>SPI_freetuple</refname>
-  <refpurpose>free a row allocated in the upper executor context</refpurpose>
+  <refpurpose>释放一个在上层执行器上下文中分配的行</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3875,29 +3688,28 @@ void SPI_freetuple(HeapTuple <parameter>row</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_freetuple</function> frees a row previously allocated
-   in the upper executor context.
+   <function>SPI_freetuple</function>释放之前在上层执行器上下文中
+   分配的一行。
   </para>
 
   <para>
-   This function is no longer different from plain
-   <function>heap_freetuple</function>.  It's kept just for backward
-   compatibility of existing code.
+   这个函数如今与普通的<function>heap_freetuple</function>已无区别。
+   保留它只是为了与现有代码保持向后兼容。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>HeapTuple <parameter>row</parameter></literal></term>
     <listitem>
      <para>
-      row to free
+      要释放的行
      </para>
     </listitem>
    </varlistentry>
@@ -3917,8 +3729,7 @@ void SPI_freetuple(HeapTuple <parameter>row</parameter>)
 
  <refnamediv>
   <refname>SPI_freetuptable</refname>
-  <refpurpose>free a row set created by <function>SPI_execute</> or a similar
-  function</refpurpose>
+  <refpurpose>释放由 <function>SPI_execute</function> 或类似函数创建的结果行集</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3928,43 +3739,37 @@ void SPI_freetuptable(SPITupleTable * <parameter>tuptable</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_freetuptable</function> frees a row set created by a
-   prior SPI command execution function, such as
-   <function>SPI_execute</>.  Therefore, this function is often called
-   with the global variable <varname>SPI_tuptable</varname> as
-   argument.
+   <function>SPI_freetuptable</function> 释放由先前的 SPI 命令执行函数
+   （例如 <function>SPI_execute</function>）创建的结果行集。因此，调用它
+   时经常会直接把全局变量 <varname>SPI_tuptable</varname> 作为参数。
   </para>
 
   <para>
-   This function is useful if a SPI procedure needs to execute
-   multiple commands and does not want to keep the results of earlier
-   commands around until it ends.  Note that any unfreed row sets will
-   be freed anyway at <function>SPI_finish</>.
-   Also, if a subtransaction is started and then aborted within execution
-   of a SPI procedure, SPI automatically frees any row sets created while
-   the subtransaction was running.
+   如果某个使用 SPI 的过程需要执行多条命令，并且不想将前面命令的
+   结果一直保留到过程结束，那么这个函数就很有用。注意，任何尚未释放的结果行集都会在
+   <function>SPI_finish</function> 时被释放。此外，如果在使用 SPI 的过程执行过程中开启了一个子事务而后又中止，SPI 会自动释放该子事务运行期间
+   创建的所有结果行集。
   </para>
 
   <para>
-   Beginning in <productname>PostgreSQL</> 9.3,
-   <function>SPI_freetuptable</function> contains guard logic to protect
-   against duplicate deletion requests for the same row set.  In previous
-   releases, duplicate deletions would lead to crashes.
+   从 <productname>PostgreSQL</productname> 9.3 开始，
+   <function>SPI_freetuptable</function> 内置了保护逻辑，以避免对同一个结
+   果行集重复发出删除请求。在更早的版本中，重复删除会导致崩溃。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>SPITupleTable * <parameter>tuptable</parameter></literal></term>
     <listitem>
      <para>
-      pointer to row set to free, or NULL to do nothing
+      要释放的结果行集指针，或传入 NULL 表示不执行任何操作
      </para>
     </listitem>
    </varlistentry>
@@ -3984,7 +3789,7 @@ void SPI_freetuptable(SPITupleTable * <parameter>tuptable</parameter>)
 
  <refnamediv>
   <refname>SPI_freeplan</refname>
-  <refpurpose>free a previously saved prepared statement</refpurpose>
+  <refpurpose>释放一个之前保存的预备语句</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
@@ -3994,24 +3799,25 @@ int SPI_freeplan(SPIPlanPtr <parameter>plan</parameter>)
  </refsynopsisdiv>
 
  <refsect1>
-  <title>Description</title>
+  <title>描述</title>
 
   <para>
-   <function>SPI_freeplan</function> releases a prepared statement
-   previously returned by <function>SPI_prepare</function> or saved by
-   <function>SPI_keepplan</function> or <function>SPI_saveplan</function>.
+   <function>SPI_freeplan</function>释放一个之前由
+   <function>SPI_prepare</function>返回的或者由
+   <function>SPI_keepplan</function>、<function>SPI_saveplan</function>
+   保存的预备语句。
   </para>
  </refsect1>
 
  <refsect1>
-  <title>Arguments</title>
+  <title>参数</title>
 
   <variablelist>
    <varlistentry>
     <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
-      pointer to statement to free
+      要释放的语句的指针
      </para>
     </listitem>
    </varlistentry>
@@ -4019,12 +3825,11 @@ int SPI_freeplan(SPIPlanPtr <parameter>plan</parameter>)
  </refsect1>
 
  <refsect1>
-  <title>Return Value</title>
+  <title>返回值</title>
 
   <para>
-   0 on success;
-   <symbol>SPI_ERROR_ARGUMENT</symbol> if <parameter>plan</parameter>
-   is <symbol>NULL</symbol> or invalid
+   成功返回 0；如果<parameter>plan</parameter>为<symbol>NULL</symbol>
+   或者无效则返回<symbol>SPI_ERROR_ARGUMENT</symbol>
   </para>
  </refsect1>
 </refentry>
@@ -4032,77 +3837,66 @@ int SPI_freeplan(SPIPlanPtr <parameter>plan</parameter>)
  </sect1>
 
  <sect1 id="spi-visibility">
-  <title>Visibility of Data Changes</title>
+  <title>数据更改的可见性</title>
 
   <para>
-   The following rules govern the visibility of data changes in
-   functions that use SPI (or any other C function):
+   下列规则决定了使用 SPI 的函数（以及其他任何 C 函数）中数据更改的可见
+   性：
 
    <itemizedlist>
     <listitem>
      <para>
-      During the execution of an SQL command, any data changes made by
-      the command are invisible to the command itself.  For
-      example, in:
+      在某条 SQL 命令执行期间，该命令所做的任何数据更改对该命令本身都是不
+      可见的。例如，在
 <programlisting>
 INSERT INTO a SELECT * FROM a;
 </programlisting>
-      the inserted rows are invisible to the <command>SELECT</command>
-      part.
+      中，被插入的行对<command>SELECT</command>部分不可见。
      </para>
     </listitem>
 
     <listitem>
      <para>
-      Changes made by a command C are visible to all commands that are
-      started after C, no matter whether they are started inside C
-      (during the execution of C) or after C is done.
+      某条命令 C 所做的更改，对所有在 C 之后启动的命令都可见，无论这些命令
+      是在 C 内部（即 C 执行期间）启动，还是在 C 完成之后启动。
      </para>
     </listitem>
 
     <listitem>
      <para>
-      Commands executed via SPI inside a function called by an SQL command
-      (either an ordinary function or a trigger) follow one or the
-      other of the above rules depending on the read/write flag passed
-      to SPI.  Commands executed in read-only mode follow the first
-      rule: they cannot see changes of the calling command.  Commands executed
-      in read-write mode follow the second rule: they can see all changes made
-      so far.
+      在由 SQL 命令调用的函数中（无论是普通函数还是触发器）通过 SPI 执行
+      的命令，究竟遵循上述哪条规则，取决于传给 SPI 的读写标志。只读模式下
+      执行的命令遵循第一条规则：它们看不到调用它们的命令所做的更改。读写模
+      式下执行的命令遵循第二条规则：它们能够看到截至当前为止的所有更改。
      </para>
     </listitem>
 
     <listitem>
      <para>
-      All standard procedural languages set the SPI read-write mode
-      depending on the volatility attribute of the function.  Commands of
-      <literal>STABLE</> and <literal>IMMUTABLE</> functions are done in
-      read-only mode, while commands of <literal>VOLATILE</> functions are
-      done in read-write mode.  While authors of C functions are able to
-      violate this convention, it's unlikely to be a good idea to do so.
+      所有标准过程语言都会根据函数的易变性属性设置 SPI 的读写模式。
+      <literal>STABLE</literal> 和 <literal>IMMUTABLE</literal> 函数中的命
+      令会以只读模式执行，而 <literal>VOLATILE</literal> 函数中的命令则以
+      读写模式执行。虽然 C 函数作者能够违背这一约定，但通常并不是好主意。
      </para>
     </listitem>
    </itemizedlist>
   </para>
 
   <para>
-   The next section contains an example that illustrates the
-   application of these rules.
+   下一节给出了一个展示这些规则如何应用的示例。
   </para>
  </sect1>
 
  <sect1 id="spi-examples">
-  <title>Examples</title>
+  <title>示例</title>
 
   <para>
-   This section contains a very simple example of SPI usage. The
-   procedure <function>execq</function> takes an SQL command as its
-   first argument and a row count as its second, executes the command
-   using <function>SPI_exec</function> and returns the number of rows
-   that were processed by the command.  You can find more complex
-   examples for SPI in the source tree in
-   <filename>src/test/regress/regress.c</filename> and in the
-   <xref linkend="contrib-spi"> module.
+   本节给出一个非常简单的 SPI 用法示例。过程
+   <function>execq</function> 以一条 SQL 命令作为第一个参数、以行数计数作
+   为第二个参数，使用 <function>SPI_exec</function> 执行该命令，并返回该
+   命令实际处理的行数。更复杂的 SPI 示例可以在源码树的
+   <filename>src/test/regress/regress.c</filename> 以及
+   <xref linkend="contrib-spi"> 模块中找到。
   </para>
 
 <programlisting>
@@ -4145,7 +3939,6 @@ execq(text *sql, int cnt)
         for (j = 0; j &lt; proc; j++)
         {
             HeapTuple tuple = tuptable-&gt;vals[j];
-
             for (i = 1, buf[0] = 0; i &lt;= tupdesc-&gt;natts; i++)
                 snprintf(buf + strlen (buf), sizeof(buf) - strlen(buf), " %s%s",
                         SPI_getvalue(tuple, tupdesc, i),
@@ -4162,14 +3955,12 @@ execq(text *sql, int cnt)
 </programlisting>
 
   <para>
-   (This function uses call convention version 0, to make the example
-   easier to understand.  In real applications you should use the new
-   version 1 interface.)
+   （此函数使用版本 0 调用约定，以使示例更易于理解。在实际应用中，你应该使用新的版本 1 接口。）
   </para>
 
   <para>
-   This is how you declare the function after having compiled it into
-   a shared library (details are in <xref linkend="dfunc">.):
+   将该函数编译成共享库之后（详见 <xref linkend="dfunc">），可以这样声
+   明它：
 
 <programlisting>
 CREATE FUNCTION execq(text, integer) RETURNS integer
@@ -4179,8 +3970,7 @@ CREATE FUNCTION execq(text, integer) RETURNS integer
   </para>
 
   <para>
-   Here is a sample session:
-
+   以下是一个示例会话：
 <programlisting>
 =&gt; SELECT execq('CREATE TABLE a (x integer)', 0);
  execq
@@ -4191,8 +3981,8 @@ CREATE FUNCTION execq(text, integer) RETURNS integer
 =&gt; INSERT INTO a VALUES (execq('INSERT INTO a VALUES (0)', 0));
 INSERT 0 1
 =&gt; SELECT execq('SELECT * FROM a', 0);
-INFO:  EXECQ:  0    -- inserted by execq
-INFO:  EXECQ:  1    -- returned by execq and inserted by upper INSERT
+INFO:  EXECQ:  0    -- 由 execq 插入
+INFO:  EXECQ:  1    -- 由 execq 返回并被外层 INSERT 插入
 
  execq
 -------
@@ -4208,11 +3998,11 @@ INFO:  EXECQ:  1    -- returned by execq and inserted by upper INSERT
 =&gt; SELECT execq('SELECT * FROM a', 10);
 INFO:  EXECQ:  0
 INFO:  EXECQ:  1
-INFO:  EXECQ:  2    -- 0 + 2, only one row inserted - as specified
+INFO:  EXECQ:  2    -- 0 + 2，按指定只插入一行
 
  execq
 -------
-     3              -- 10 is the max value only, 3 is the real number of rows
+     3              -- 10 只是最大值，3 才是真正的行数
 (1 row)
 
 =&gt; DELETE FROM a;
@@ -4222,7 +4012,7 @@ INSERT 0 1
 =&gt; SELECT * FROM a;
  x
 ---
- 1                  -- no rows in a (0) + 1
+ 1                  -- a 中没有行（0）+ 1
 (1 row)
 
 =&gt; INSERT INTO a VALUES (execq('SELECT * FROM a', 0) + 1);
@@ -4232,10 +4022,10 @@ INSERT 0 1
  x
 ---
  1
- 2                  -- there was one row in a + 1
+ 2                  -- a 中原有一行 + 1
 (2 rows)
 
--- This demonstrates the data changes visibility rule:
+-- 下面演示数据更改可见性规则：
 
 =&gt; INSERT INTO a SELECT execq('SELECT * FROM a', 0) * x FROM a;
 INFO:  EXECQ:  1
@@ -4249,10 +4039,10 @@ INSERT 0 2
 ---
  1
  2
- 2                  -- 2 rows * 1 (x in first row)
- 6                  -- 3 rows (2 + 1 just inserted) * 2 (x in second row)
+ 2                  -- 2 行 * 1（第一行中的 x）
+ 6                  -- 3 行（前面的 2 行加上刚插入的 1 行）* 2（第二行中的 x）
 (4 rows)               ^^^^^^
-                       rows visible to execq() in different invocations
+                       不同调用中 execq() 可见的行
 </programlisting>
   </para>
  </sect1>
