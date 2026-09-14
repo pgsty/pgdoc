@@ -376,37 +376,31 @@
     来确定表中的哪些页面必须扫描。通常，即使某些页面仍然含有带旧 XID 值的行版本，
     只要这些页面没有任何死行版本，它也会跳过。因此，普通的 <command>VACUUM</command>
     不一定会冻结表中的每一个旧行版本。在这种情况下，<command>VACUUM</command> 最终需要执行一次
-    <firstterm>激进扫描</firstterm>，它会冻结所有符合条件且尚未冻结的 XID 和 MXID 值，
+    <firstterm>激进清理</firstterm>，它会冻结所有符合条件且尚未冻结的 XID 和 MXID 值，
     包括那些来自全部可见（all-visible）但未全部冻结（all-frozen）页面的值。
    </para>
 
    <para>
     如果一个表正在积累全部可见但尚未全部冻结的页面，普通清理可能会选择扫描这些本可跳过的页面，
-    以尝试冻结它们。这样可以减少下一次激进扫描必须扫描的页面数。这类页面称为
+    以尝试冻结它们。这样可以减少下一次激进清理必须扫描的页面数。这类页面称为
     <firstterm>急切扫描页</firstterm>。通过增大 <xref
     linkend="guc-vacuum-max-eager-freeze-failure-rate"/>，可以调整急切扫描，
     使其尝试冻结更多全部可见页面。即使急切扫描已将全部可见但未全部冻结页面的数量降到最低，
-    大多数表仍然需要周期性地进行激进扫描。不过，任何成功被急切冻结的页面在激进扫描时都可以跳过，
-    因此急切冻结可以尽量减小激进扫描的开销。
+    大多数表仍然需要周期性地进行激进清理。不过，任何成功被急切冻结的页面在激进清理时都可以跳过，
+    因此急切冻结可以尽量减小激进清理的开销。
    </para>
 
    <para>
     <xref linkend="guc-vacuum-freeze-table-age"/>
-    控制何时对表执行激进扫描。如果距离上一次这类扫描以来经过的事务数大于
+    控制何时对表执行激进清理。如果距离上一次这类扫描以来经过的事务数大于
     <varname>vacuum_freeze_table_age</varname> 减去
     <varname>vacuum_freeze_min_age</varname>，就会扫描所有全部可见但未全部冻结的页面。
     把 <varname>vacuum_freeze_table_age</varname> 设为 0 会强制
     <command>VACUUM</command> 始终采用其激进策略。
    </para>
 
-   <para>
-    一个表在不被清理的情况下所能维持的最长时间，是最后一次激进扫描时的
-    <varname>vacuum_freeze_min_age</varname> 值从 20 亿事务中扣除后的结果。
-    如果超过这个时间仍不清理，就可能导致数据丢失。为了确保不会发生这种情况，
-    任何可能包含未冻结行且其 XID 年龄超过配置参数 <xref
-    linkend="guc-autovacuum-freeze-max-age"/> 所指定年龄的表，都会触发自动清理。
-    （即使自动清理已被禁用，也会如此。）
-   </para>
+   <para>一个表可以不清理的最长时间，是 20 亿个事务减去上次激进清理时的 <varname>vacuum_freeze_min_age</varname> 值。超过这个期限仍不清理，就可能丢失数据。为确保不会发生这种情况，对于可能包含未冻结行、且其 XID 年龄大于配置参数 <xref
+    linkend="guc-autovacuum-freeze-max-age"/> 所指定年龄的任何表，都会调用自动清理。（即使禁用了自动清理，也会如此。）</para>
 
    <para>
     这意味着，如果一个表本来不会因为其他原因被清理，大约每经过
@@ -428,7 +422,7 @@
     应设置为略低于 <varname>autovacuum_freeze_max_age</varname> 的值，并留出足够空档，
     使一次常规调度的 <command>VACUUM</command> 或由正常删除、更新活动触发的自动清理
     能在这个窗口内运行。若设置得过于接近，即使该表最近已经为了回收空间而清理过，
-    也可能仍会触发防回卷自动清理；而较低的值则会导致更频繁的激进扫描。
+    也可能仍会触发防回卷自动清理；而较低的值则会导致更频繁的激进清理。
    </para>
 
    <para>
@@ -606,13 +600,13 @@ HINT:  Execute a database-wide VACUUM in that database.
     </para>
 
     <para>
-     每当 <command>VACUUM</command> 扫描表的任何部分时，它都会把遇到的、早于
+     每当 <command>VACUUM</command> 扫描表的任何部分时，它都会把遇到的、年龄超过
      <xref linkend="guc-vacuum-multixact-freeze-min-age"/>
      的任何 多事务 ID 替换为另一个值，该值可能是零值、单个事务 ID，或者更新的 多事务 ID。
      对于每个表，<structname>pg_class</structname>.<structfield>relminmxid</structfield>
-     保存该表任何元组中仍可能出现的最老 多事务 ID。如果这个值早于
-     <xref linkend="guc-vacuum-multixact-freeze-table-age"/>，就会强制执行一次激进扫描。
-     正如上一节所述，激进扫描意味着只有那些已知为全部冻结的页面才会被跳过。
+     保存该表任何元组中仍可能出现的最老 多事务 ID。如果这个值的年龄超过
+     <xref linkend="guc-vacuum-multixact-freeze-table-age"/>，就会强制执行一次激进清理。
+     正如上一节所述，激进清理意味着只有那些已知为全部冻结的页面才会被跳过。
      可以对 <structname>pg_class</structname>.<structfield>relminmxid</structfield>
      使用 <function>mxid_age()</function> 来查看其年龄。
     </para>
@@ -632,7 +626,7 @@ HINT:  Execute a database-wide VACUUM in that database.
     即使自动清理名义上被禁用，这两类激进扫描也都会发生。
     当条目数量达到大约 40 亿个
     （在 <literal>pg_multixact/members</literal> 目录中占用大约 20GB）时，
-    会触发更激进的清理来回收成员存储空间。
+    会触发更激进的清理扫描来回收成员存储空间。
    </para>
 
    <para>
@@ -770,7 +764,7 @@ vacuum insert threshold = vacuum base insert threshold + vacuum insert scale fac
     这是一个由每次 <command>UPDATE</command>、<command>DELETE</command> 和
     <command>INSERT</command> 操作更新的最终一致计数。如果该表的
     <structfield>relfrozenxid</structfield>值的年龄超过
-    <varname>vacuum_freeze_table_age</varname> 个事务，就会执行一次激进扫描，
+    <varname>vacuum_freeze_table_age</varname> 个事务，就会执行一次激进清理，
     以冻结旧元组并推进 <structfield>relfrozenxid</structfield>。
    </para>
 
@@ -889,7 +883,7 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
 
      <listitem>
       <para>
-       <emphasis>插入清理</emphasis> 分量衡量已插入元组的数量，
+       <emphasis>由插入触发的清理</emphasis> 分量衡量已插入元组的数量，
        并与使用 <xref linkend="guc-autovacuum-vacuum-insert-threshold"/> 和
        <xref linkend="guc-autovacuum-vacuum-insert-scale-factor"/> 计算出的阈值比较。
        该分量的最终值可通过

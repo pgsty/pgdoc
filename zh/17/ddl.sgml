@@ -3001,7 +3001,7 @@ VALUES ('Albany', NULL, NULL, 'NY');
       </varlistentry>
 
       <varlistentry id="ddl-partitioning-overview-hash">
-       <term>哈希分区</term>
+       <term>Hash 分区</term>
 
        <listitem>
         <para>
@@ -3361,7 +3361,7 @@ ALTER INDEX measurement_city_id_logdate_key
 
       <listitem>
        <para>
-        声明式分区只支持范围、列表和哈希分区，而表继承允许按用户选择的方式对数据进行分区。（不过注意，如果约束排除无法有效剪枝子表，查询性能可能会很差。）
+        声明式分区只支持范围、列表和 hash 分区，而表继承允许按用户选择的方式对数据进行分区。（不过注意，如果约束排除无法有效剪枝子表，查询性能可能会很差。）
 
        </para>
       </listitem>
@@ -3686,9 +3686,7 @@ SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
     如果没有分区剪枝，上面的查询将会扫描<structname>measurement</structname>表的每一个分区。如果启用了分区剪枝，规划器会检查每个分区的定义，并证明某个分区不需要扫描，因为它不可能包含满足查询<literal>WHERE</literal>子句的任何行。当规划器能够证明这一点时，就会把该分区从查询计划中排除（<firstterm>剪枝</firstterm>）。
    </para>
 
-   <para>
-    通过使用EXPLAIN命令和<xref linkend="guc-enable-partition-pruning"/>配置参数，可以展示剪枝掉分区的计划与没有剪枝的计划之间的差别。对这种类型的表设置，一种典型的未优化计划是：
-<programlisting>
+   <para>通过使用 EXPLAIN 命令和<xref linkend="guc-enable-partition-pruning"/>配置参数，可以显示进行了分区剪枝的计划与未剪枝计划的差异。对于这种表结构，典型的未优化计划如下：<programlisting>
 SET enable_partition_pruning = off;
 EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
                                     QUERY PLAN
@@ -3706,10 +3704,7 @@ EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
                Filter: (logdate &gt;= '2008-01-01'::date)
          -&gt;  Seq Scan on measurement_y2008m01  (cost=0.00..33.12 rows=617 width=0)
                Filter: (logdate &gt;= '2008-01-01'::date)
-</programlisting>
-
-    某些或者全部的分区可能会使用索引扫描取代全表顺序扫描，但是这里的重点是根本不需要扫描较老的分区来回答这个查询。当我们启用分区剪枝时，我们会得到一个便宜很多的计划，而它能给出相同的答案：
-<programlisting>
+</programlisting>某些或全部分区可能使用索引扫描，而不是全表顺序扫描，但这里的重点是，为回答该查询，根本不需要扫描较旧的分区。启用分区剪枝后，可以得到代价明显更低、结果却相同的计划：<programlisting>
 SET enable_partition_pruning = on;
 EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
                                     QUERY PLAN
@@ -3721,7 +3716,7 @@ EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
    </para>
 
    <para>
-    注意，分区剪枝仅由分区键隐式定义的约束所驱动，而不是由索引的存在驱动。因此，没有必要在键列上定义索引。是否需要为一个给定分区创建索引取决于预期的查询扫描该分区时会扫描大部分还是小部分。后一种情况下索引的帮助会比前者大。
+    注意，分区剪枝仅由分区键隐式定义的约束所驱动，而不是由索引的存在驱动。因此，没有必要在键列上定义索引。是否需要为一个给定分区创建索引取决于预期的查询扫描该分区时会扫描大部分还是小部分。索引有助于后一种情况，对前一种情况则没有帮助。
    </para>
 
    <para>
@@ -3733,7 +3728,7 @@ EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
     <itemizedlist>
      <listitem>
       <para>
-       在查询计划的初始化阶段。对于在执行初始化阶段就已知的参数值，可以在这里执行分区剪枝。这个阶段被剪掉的分区不会出现在查询的<command>EXPLAIN</command>或<command>EXPLAIN ANALYZE</command>结果中。通过观察<command>EXPLAIN</command>输出中的<quote>Subplans Removed</quote>属性，可以确定这个阶段被移除的分区数。查询规划器会为计划中的所有分区获取锁。不过，当执行器使用缓存计划时，只会为执行初始化阶段分区剪枝后仍保留下来的分区获取锁，也就是那些显示在<command>EXPLAIN</command>输出中、而不是由<quote>Subplans Removed</quote>属性表示的分区。
+       在查询计划的初始化阶段。对于在执行初始化阶段就已知的参数值，可以在这里执行分区剪枝。这个阶段被剪掉的分区不会出现在查询的<command>EXPLAIN</command>或<command>EXPLAIN ANALYZE</command>结果中。通过观察<command>EXPLAIN</command>输出中的<quote>Subplans Removed</quote>属性，可以确定这个阶段被移除的分区数。需要注意的是，在此阶段被分区剪枝移除的任何分区，仍会在执行开始时被锁定。
       </para>
      </listitem>
 
@@ -3769,8 +3764,8 @@ EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
    </para>
 
    <para>
-    由于约束排除使用<literal>CHECK</literal>约束，这导致它比分区剪枝要慢，但有时候可以被当作一种优点加以利用：因为甚至可以在声明式分区的表上（在分区边界之外）定义约束，约束排除可能可以从查询计划中消去额外的分区。
-   </para>
+   约束排除使用<literal>CHECK</literal>约束，这使它比分区剪枝慢，但有时也可以成为一种优势：除了内部分区边界外，声明式分区表也可以定义约束，因此约束排除可能从查询计划中进一步排除分区。
+  </para>
 
    <para>
     <xref linkend="guc-constraint-exclusion"/>的默认（也是推荐的）设置不是<literal>on</literal>也不是<literal>off</literal>，而是一种被称为<literal>partition</literal>的中间设置，这会导致该技术仅被应用于可能工作在继承分区表上的查询。<literal>on</literal>设置导致规划器检查所有查询中的<literal>CHECK</literal>约束，甚至是那些不太可能受益的简单查询。
@@ -3839,7 +3834,7 @@ EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
    </para>
 
    <para>
-    考虑查询计划和执行期间的分区开销也很重要。
+    考虑查询规划和执行期间的分区开销也很重要。
     查询规划器通常能够较好地处理多达几千个分区的层次结构，前提是典型查询能让规划器剪枝掉除少量分区之外的所有分区。
     规划器执行分区剪枝后保留更多分区时，规划时间会变长，内存消耗会更高。
     担心拥有大量分区的另一个原因是，服务器的内存消耗可能会随着时间的推移而显著增加，特别是如果许多会话接触大量分区。
