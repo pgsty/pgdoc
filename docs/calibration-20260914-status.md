@@ -2,7 +2,7 @@ PG10—PG20 校准阶段报告（2026-09-14T14:42:30.720497+08:00）
 
 原清单 F-001—F-026 均已有逐版修复、原已正确或不适用的源码记录及分批核验。后续审校继续发现并修复了配置、函数、psql、pgbench、数据类型及其四个包含文件中的问题。**全书逐句语义校准、最终独立对账和 33 项最终构建仍未完成。** 本报告不将机器扫描、历史通过记录或台账数量当作全文验收。
 
-2026-09-15 最新完成范围为 [ALTER TABLE 全页及 CREATE TABLE 两个关联条款](/Users/vonng/pgsty/pgdoc/docs/calibration-alter-table-20260915.md)，另有 [CREATE FOREIGN TABLE 全页](/Users/vonng/pgsty/pgdoc/docs/calibration-create-foreign-table-20260915.md)。各自均完成十一版英中对照与新快照核验；本批合计 58 个问题／回归组、638 个逐版格，210 条既有 ID 提示逐项核定，零范围未决、零漂移。新发现的 ALTER FOREIGN TABLE 同类未来内容继续处理。此前信息模式、CREATE DOMAIN、ECPG、libpq、大对象和协议已完成分批校准与提交；全书剩余范围及最终 33 构建仍未完成。
+2026-09-15 最新完成范围为 [ALTER TABLE 全页及 CREATE TABLE 两个关联条款](/Users/vonng/pgsty/pgdoc/docs/calibration-alter-table-20260915.md)，另有 [CREATE FOREIGN TABLE 全页](/Users/vonng/pgsty/pgdoc/docs/calibration-create-foreign-table-20260915.md)。各自均完成十一版英中对照与新快照核验；本批合计 58 个问题／回归组、638 个逐版格，210 条既有 ID 提示逐项核定，零范围未决、零漂移。新发现的 ALTER FOREIGN TABLE 同类未来内容也已完成十一版全文修复和新快照核验，见文末的关联报告。此前信息模式、CREATE DOMAIN、ECPG、libpq、大对象和协议已完成分批校准与提交；全书剩余范围及最终 33 构建仍未完成。
 
 英文固定为 10.23、11.22、12.22、13.23、14.24、15.19、16.15、17.11、18.6、19beta3 和 PG20 提交 86f7c82cf1023e3599f40f939727791a7090cd44。PG18 优先阅读；其他版本逐一核对完整段落、表格行和版本差异，同义英文共用译文，保留自身功能、签名、默认值、限制、代码和链接。遵守 exclude、glossary 及语境规则、style 的优先顺序。
 
@@ -223,3 +223,5 @@ ECPG 全章已核验提交 `74d86e305d68d39fe4b2868ec5211da5ec28f2ff`（11正文
 2026-09-15：[CREATE FOREIGN TABLE 全页](/Users/vonng/pgsty/pgdoc/docs/calibration-create-foreign-table-20260915.md)完成十一版全文及新快照核验，16组176格，82条既有ID逐项核定，零未决零漂移。关联 ALTER TABLE 继续核对，CREATE TABLE 关联条款待新快照；全书及33最终构建未完成。
 
 2026-09-15：[ALTER TABLE 全页及关联条款报告](/Users/vonng/pgsty/pgdoc/docs/calibration-alter-table-20260915.md)已保存，含42组十一版矩阵及124+4条新快照提示的逐项绑定。旧报告中的 information_schema 待读项已由信息模式全章报告关闭；其他未读范围、历史对账及33最终构建继续。
+
+2026-09-15：[ALTER FOREIGN TABLE 全页报告](/Users/vonng/pgsty/pgdoc/docs/calibration-alter-foreign-table-20260915.md)补齐关联修复：十一版9组99格，修复未来ADD NOT NULL及STORAGE DEFAULT，1条既有ID逐项核定，零范围未决和漂移。前一表定义阶段已提交b6f2bb9（34文件，未推送）；全书、表格余项和33最终构建继续。
