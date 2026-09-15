@@ -4,8 +4,8 @@
    <title>编写一个外部数据包装器</title>
 
    <indexterm zone="fdwhandler">
-    <primary>foreign data wrapper</primary>
-    <secondary>handler for</secondary>
+    <primary>外部数据包装器</primary>
+    <secondary>处理器</secondary>
    </indexterm>
 
    <para>
@@ -34,9 +34,9 @@
     </para>
 
     <para>
-     验证函数负责验证在<command>CREATE</command>和<command>ALTER</command>命令中为该外部数据包装器给定的选项，
+     验证器函数负责验证在<command>CREATE</command>和<command>ALTER</command>命令中为该外部数据包装器给定的选项，
      以及使用该包装器的外部服务器、用户映射和外部表上的选项。
-     验证函数必须注册为接受两个参数，一个包含要验证的选项的文本数组，
+     验证器函数必须注册为接受两个参数，一个包含要验证的选项的 text 数组，
      另一个表示这些选项所关联对象类型的 OID。后者对应于该对象将存储于其中的系统目录 OID 之一：
      <itemizedlist spacing="compact">
       <listitem><para><literal>AttributeRelationId</literal></para></listitem>
@@ -45,7 +45,7 @@
       <listitem><para><literal>ForeignTableRelationId</literal></para></listitem>
       <listitem><para><literal>UserMappingRelationId</literal></para></listitem>
      </itemizedlist>
-     如果没有提供验证函数，则在创建或修改对象时不会检查选项。
+     如果没有提供验证器函数，则在创建或修改对象时不会检查选项。
     </para>
 
    </sect1>
@@ -156,7 +156,7 @@ IterateForeignScan(ForeignScanState *node);
     </para>
 
     <para>
-     注意<productname>PostgreSQL</productname>的执行器并不在乎被返回的行是否违背了定义在该外部表上的任何约束 &mdash; 但是规划器会在乎这一点，并且如果在外部表中有可见行不满足一个约束，规划器可能会错误地优化查询。如果当用户已经声明一个约束应该为真时它却被违背，最合适的处理可能是产生一个错误（就像在数据类型失配的情况下所作的那样）。
+     注意<productname>PostgreSQL</productname>的执行器并不在乎被返回的行是否违背了定义在该外部表上的任何约束 &mdash; 但是规划器会在乎这一点，并且如果在外部表中有可见行不满足一个约束，规划器可能会错误地优化查询。如果当用户已经声明一个约束应该为真时它却被违背，产生一个错误可能比较合适（就像在数据类型失配的情况下所作的那样）。
     </para>
 
     <para>
@@ -199,9 +199,7 @@ GetForeignJoinPaths(PlannerInfo *root,
      为两个或更多个同属一个外部服务器的外部表连接创建可能的访问路径。这个可选函数会在查询规划期间被调用。与<function>GetForeignPaths</function>一样，它应当为给定的 <literal>joinrel</literal> 生成一个或多个 <structname>ForeignPath</structname> 路径（使用<function>create_foreign_join_path</function>构造），并调用<function>add_path</function>把这些路径加入该连接待考虑的路径集合。不过，与<function>GetForeignPaths</function>不同的是，这个函数不必成功创建至少一条路径，因为涉及本地连接的路径总是可行的。
     </para>
 
-    <para>
-     注意为相同的连接关系将会重复地调用这个函数用来生成内外关系的不同组合。FDW 需要负责最小化其中重复的工作。
-    </para>
+    <para>注意，对同一个连接关系，会以不同的内外关系组合反复调用这个函数。FDW 应负责尽量减少重复工作。</para>
 
     <para>
      还要注意，应用到该连接上的连接子句集合以 <literal>extra-&gt;restrictlist</literal> 的形式传入，它会随着内外关系组合的不同而变化。该 <structname>ForeignPath</structname> 路径（针对 <literal>joinrel</literal> 生成）必须包含它所使用的那组连接子句；如果规划器将该 <structname>ForeignPath</structname> 路径选作 <literal>joinrel</literal> 的最佳路径，就会使用这些信息把它转换成计划。
@@ -292,7 +290,7 @@ PlanForeignModify(PlannerInfo *root,
 
     <para>
      <literal>root</literal>是规划器关于该查询的全局信息。
-     <literal>plan</literal>是<structname>ModifyTable</structname>计划节点，它除了<structfield>fdwPrivLists</structfield>域之外是完整的。
+     <literal>plan</literal>是<structname>ModifyTable</structname>计划节点，它除了<structfield>fdwPrivLists</structfield>字段之外是完整的。
      <literal>resultRelation</literal>通过目标外部表的范围表索引来标识它。
      <literal>subplan_index</literal>标识这是<structname>ModifyTable</structname>计划节点的哪个目标，从零开始计数；
      如果你希望索引到<literal>plan</literal>节点的逐目标关系子结构中，请使用它。
@@ -353,17 +351,14 @@ ExecForeignInsert(EState *estate,
     <para>
      返回槽中的数据只会在以下情况下使用：<command>INSERT</command> 语句带有 <literal>RETURNING</literal> 子句，或者涉及带有 <literal>WITH CHECK OPTION</literal> 的视图；又或者外部表具有 <literal>AFTER ROW</literal> 触发器。
      触发器需要所有列，但 FDW 可以根据 <literal>RETURNING</literal> 子句或 <literal>WITH CHECK OPTION</literal> 约束的内容，选择优化掉部分或全部返回列。
-     不管怎样，某些槽必须被返回来指示成功，或者查询报告的行计数将会是错误的。
+     无论如何，都必须返回一个槽以表示成功，否则查询报告的行数会不正确。
     </para>
 
     <para>
      如果<function>ExecForeignInsert</function>指针被设置为<literal>NULL</literal>，尝试向外部表插入将会失败并报告一个错误消息。
     </para>
 
-    <para>
-     请注意，把路由后的元组插入外部表分区，或者在外部表上执行 <command>COPY FROM</command> 时，也会调用这个函数；在这些情况下，它的调用方式与 <command>INSERT</command> 时有所不同。
-     请参阅下面所述的允许 FDW 支持的回调函数。
-    </para>
+    <para>注意，将路由后的元组插入外部表分区，或者在外部表上执行<command>COPY FROM</command>时，也会调用此函数；在这些情况下，它的调用方式与<command>INSERT</command>时不同。下文介绍了供 FDW 支持这些操作的回调函数。</para>
 
     <para>
 <programlisting>
@@ -387,7 +382,7 @@ ExecForeignBatchInsert(EState *estate,
 
     <para>
      只有当<command>INSERT</command>语句涉及带有<literal>WITH CHECK OPTION</literal>的视图，或者外部表具有一个<literal>AFTER ROW</literal>触发器时，返回槽中的数据才会被使用。
-     触发器需要所有列，但是FDW可以根据<literal>WITH CHECK OPTION</literal>约束的内容选择优化返回部分或全部列。
+     触发器需要所有列，但是FDW可以根据<literal>WITH CHECK OPTION</literal>约束的内容选择省略部分或全部列的返回，以进行优化。
     </para>
 
     <para>
@@ -395,10 +390,7 @@ ExecForeignBatchInsert(EState *estate,
      如果<command>INSERT</command>有<literal>RETURNING</literal>子句，这个函数不被使用。
     </para>
 
-    <para>
-     请注意，把路由后的元组插入外部表分区，或者在外部表上执行 <command>COPY FROM</command> 时，也会调用这个函数；在这些情况下，它的调用方式与 <command>INSERT</command> 时有所不同。
-     请参阅下面所述的允许 FDW 支持的回调函数。
-    </para>
+    <para>注意，将路由后的元组插入外部表分区，或者在外部表上执行<command>COPY FROM</command>时，也会调用此函数；在这些情况下，它的调用方式与<command>INSERT</command>时不同。下文介绍了供 FDW 支持这些操作的回调函数。</para>
 
     <para>
 <programlisting>
@@ -442,7 +434,7 @@ ExecForeignUpdate(EState *estate,
     <para>
      返回槽中的数据只会在以下情况下使用：<command>UPDATE</command> 语句带有 <literal>RETURNING</literal> 子句，或者涉及带有 <literal>WITH CHECK OPTION</literal> 的视图；又或者外部表具有 <literal>AFTER ROW</literal> 触发器。
      触发器需要所有列，但 FDW 可以根据 <literal>RETURNING</literal> 子句或 <literal>WITH CHECK OPTION</literal> 约束的内容，选择优化掉部分或全部返回列。
-     不管怎样，某些槽必须被返回来指示成功，或者查询报告的行计数将会是错误的。
+     无论如何，都必须返回一个槽以表示成功，否则查询报告的行数会不正确。
     </para>
 
     <para>
@@ -468,7 +460,7 @@ ExecForeignDelete(EState *estate,
     <para>
      返回槽中的数据只会在以下情况下使用：<command>DELETE</command> 查询带有 <literal>RETURNING</literal> 子句，或者外部表具有 <literal>AFTER ROW</literal> 触发器。
      触发器需要所有列，但 FDW 可以根据 <literal>RETURNING</literal> 子句的内容，选择优化掉部分或全部返回列。
-     不管怎样，某些槽必须被返回来指示成功，或者查询报告的行计数将会是错误的。
+     无论如何，都必须返回一个槽以表示成功，否则查询报告的行数会不正确。
     </para>
 
     <para>
@@ -503,7 +495,7 @@ BeginForeignInsert(ModifyTableState *mtstate,
      开始在外部表上执行插入操作。
      当外部表被选作元组路由的分区，或者被指定为<command>COPY FROM</command>命令的目标时，在第一个元组被插入该外部表之前会调用该例程。
      它应该执行实际插入之前所需的任何初始化工作。
-     随后，为每一个被插入到该外部表的元组都将调用<function>ExecForeignInsert</function>或<function>ExecForeignBatchInsert</function>。
+     随后，将针对待插入该外部表的一个或多个元组调用<function>ExecForeignInsert</function>或<function>ExecForeignBatchInsert</function>。
     </para>
 
     <para>
@@ -511,7 +503,7 @@ BeginForeignInsert(ModifyTableState *mtstate,
     </para>
 
     <para>
-     当此函数由 <command>COPY FROM</command> 命令调用时，与计划相关的全局数据 <literal>mtstate</literal> 不会提供；随后对每个插入元组调用 <function>ExecForeignInsert</function> 时，其 <literal>planSlot</literal> 参数都是 <literal>NULL</literal>，无论该外部表是作为元组路由选中的分区，还是命令中指定的目标。
+     当此函数由 <command>COPY FROM</command> 命令调用时，不会提供 <literal>mtstate</literal> 中与计划相关的全局数据；随后对每个插入元组调用 <function>ExecForeignInsert</function> 时，其 <literal>planSlot</literal> 参数都是 <literal>NULL</literal>，无论该外部表是作为元组路由选中的分区，还是命令中指定的目标。
     </para>
 
     <para>
@@ -623,10 +615,7 @@ IterateDirectModify(ForeignScanState *node);
 <programlisting>
 void
 EndDirectModify(ForeignScanState *node);
-</programlisting>
-
-     在远程服务器上的直接修改后进行清理。通常释放用 palloc 分配的内存并不重要，但是诸如打开的文件和到远程服务器的连接应该被清除。
-    </para>
+</programlisting>在远程服务器上直接修改后进行清理。通常无需专门释放 palloc 分配的内存，但应清理打开的文件、到远程服务器的连接等资源。</para>
 
     <para>
      如果<function>EndDirectModify</function>指针被设置为<literal>NULL</literal>，不会尝试在远程服务器上执行直接修改。
@@ -653,7 +642,7 @@ ExecForeignTruncate(List *rels,
     </para>
 
     <para>
-     如果<literal>restart_seqs</literal>为<literal>true</literal>，原始的<command>TRUNCATE</command>命令需要<literal>RESTART IDENTITY</literal>行为，否则将需要<literal>CONTINUE IDENTITY</literal>行为。
+     如果<literal>restart_seqs</literal>为<literal>true</literal>，原始的<command>TRUNCATE</command>命令请求了<literal>RESTART IDENTITY</literal>行为，否则请求的是<literal>CONTINUE IDENTITY</literal>行为。
     </para>
 
     <para>
@@ -722,12 +711,10 @@ RefetchForeignRow(EState *estate,
      此外，如果取得的是一个更新过的版本而不是之前获得的同一版本，<literal>*updated</literal>应被设置为<literal>true</literal>（如果 FDW 无法确定这一点，推荐总是返回<literal>true</literal>）。
     </para>
 
-    <para>
-     注意在默认情况下，获取行锁失败应该导致产生错误。如果<literal>erm-&gt;waitPolicy</literal>指定了<literal>SKIP LOCKED</literal>，只有返回空槽才是合适的。
-    </para>
+    <para>注意，默认情况下，获取行锁失败应产生错误；只有<literal>erm-&gt;waitPolicy</literal>指定了<literal>SKIP LOCKED</literal>选项时，返回空槽才合适。</para>
 
     <para>
-     <literal>rowid</literal>是要被重新取得的行之前读到的<structfield>ctid</structfield>值。尽管<literal>rowid</literal>值被作为<type>Datum</type>传递，但是目前它只能被读作<type>tid</type>。选择该函数 API 是希望未来能允许其他的行 ID 数据类型。
+     <literal>rowid</literal>是要被重新取得的行之前读到的<structfield>ctid</structfield>值。尽管<literal>rowid</literal>值被作为<type>Datum</type>传递，但是目前它只能是<type>tid</type>类型的值。选择该函数 API 是希望未来能允许其他的行 ID 数据类型。
     </para>
 
     <para>
@@ -760,10 +747,7 @@ RecheckForeignScan(ForeignScanState *node,
 void
 ExplainForeignScan(ForeignScanState *node,
                    ExplainState *es);
-</programlisting>
-
-     为一个外部表扫描打印额外的<command>EXPLAIN</command>输出。这个函数可以调用<function>ExplainPropertyText</function>和相关函数来向<command>EXPLAIN</command>输出中增加域。<literal>es</literal>中的标志域可以被用来决定什么将被打印，并且<structname>ForeignScanState</structname>节点的状态可以被检查来为<command>EXPLAIN ANALYZE</command>提供运行时统计数据。
-    </para>
+</programlisting>打印额外的 <command>EXPLAIN</command> 输出，用于说明外部表扫描。此函数可以调用 <function>ExplainPropertyText</function> 及相关函数，向 <command>EXPLAIN</command> 输出添加字段。可以利用 <literal>es</literal> 中的标志字段确定打印内容；也可以检查 <structname>ForeignScanState</structname> 节点的状态，以提供运行时统计信息，这适用于 <command>EXPLAIN ANALYZE</command> 的情况。</para>
 
     <para>
      如果<function>ExplainForeignScan</function>指针被设置为<literal>NULL</literal>，在<command>EXPLAIN</command>期间不会打印任何额外的信息。
@@ -777,9 +761,7 @@ ExplainForeignModify(ModifyTableState *mtstate,
                      List *fdw_private,
                      int subplan_index,
                      struct ExplainState *es);
-</programlisting>
-
-     为一个外部表更新打印额外的<command>EXPLAIN</command>输出。这个函数可以调用<function>ExplainPropertyText</function>和相关函数来向<command>EXPLAIN</command>输出中增加域。<literal>es</literal>中的标志域可以被用来决定什么将被打印，并且<structname>ModifyTableState</structname>节点的状态可以被检查来为<command>EXPLAIN ANALYZE</command>提供运行时统计数据。前四个参数和<function>BeginForeignModify</function>相同。
+</programlisting>打印额外的 <command>EXPLAIN</command> 输出，用于说明外部表更新。此函数可以调用 <function>ExplainPropertyText</function> 及相关函数，向 <command>EXPLAIN</command> 输出添加字段。可以利用 <literal>es</literal> 中的标志字段确定打印内容；也可以检查 <structname>ModifyTableState</structname> 节点的状态，以提供运行时统计信息，这适用于 <command>EXPLAIN ANALYZE</command> 的情况。前四个参数与以下函数相同：<function>BeginForeignModify</function>。
     </para>
 
     <para>
@@ -820,9 +802,7 @@ AnalyzeForeignTable(Relation relation,
      如果FDW不支持为任何表收集统计信息，<function>AnalyzeForeignTable</function>指针可以被设置为<literal>NULL</literal>。
     </para>
 
-    <para>
-     如果提供，采样收集函数必须具有签名
-<programlisting>
+    <para>如果提供样本收集函数，其签名必须为<programlisting>
 int
 AcquireSampleRowsFunc(Relation relation,
                       int elevel,
@@ -830,10 +810,7 @@ AcquireSampleRowsFunc(Relation relation,
                       int targrows,
                       double *totalrows,
                       double *totaldeadrows);
-</programlisting>
-
-     应该从该表上收集最多<parameter>targrows</parameter>行的一个随机采样并将它存放到调用者提供的<parameter>rows</parameter>数组中。实际被收集的行的数量必须被返回。另外，将表中有效行和死亡行的总数存储到输出参数<parameter>totalrows</parameter>和<parameter>totaldeadrows</parameter>中（如果FDW没有死亡行的概念，将<parameter>totaldeadrows</parameter>设置为 0 ）。
-    </para>
+</programlisting>应从表中随机收集最多 <parameter>targrows</parameter> 行，并存入调用者提供的 <parameter>rows</parameter> 数组。必须返回实际收集的行数。此外，还应将表中存活行和死行总数的估计值，分别存入输出参数 <parameter>totalrows</parameter> 和 <parameter>totaldeadrows</parameter>。（如果 FDW 没有死行的概念，则将 <parameter>totaldeadrows</parameter> 设为零。）</para>
 
    </sect2>
 
@@ -844,10 +821,7 @@ AcquireSampleRowsFunc(Relation relation,
 <programlisting>
 List *
 ImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid);
-</programlisting>
-
-     取得一个外部表创建命令的列表。在执行<xref linkend="sql-importforeignschema"/>时会调用这个函数，并且会把该语句的解析树以及要使用的外部服务器的 OID 传递给它。它应该返回一个 C 字符串的列表，每一个必须包含一个<xref linkend="sql-createforeigntable"/>命令。这些命令将被核心服务器所解析和执行。
-    </para>
+</programlisting>取得外部表创建命令的列表。执行 <xref linkend="sql-importforeignschema"/> 时会调用此函数，传入该语句的语法解析树和要使用的外部服务器的 OID。它应返回一个 C 字符串列表，每个字符串必须包含一条 <xref linkend="sql-createforeigntable"/> 命令。这些字符串将由核心服务器解析并执行。</para>
 
     <para>
      在<structname>ImportForeignSchemaStmt</structname>结构体中，<structfield>remote_schema</structfield>是要从其中导入这些表的远程模式的名称。<structfield>list_type</structfield>标识如何过滤表名：<literal>FDW_IMPORT_SCHEMA_ALL</literal>表示该远程模式中的所有表都应该被导入（这种情况下<structfield>table_list</structfield>为空），<literal>FDW_IMPORT_SCHEMA_LIMIT_TO</literal>表示只包括<structfield>table_list</structfield>中列出的表，而<literal>FDW_IMPORT_SCHEMA_EXCEPT</literal>则表示排除<structfield>table_list</structfield>中列出的表。<structfield>options</structfield>是一个用于该导入处理的选项列表。选项的含义由 FDW 决定。例如，一个 FDW 可以用一个选项来定义是否应该导入列的<literal>NOT NULL</literal>属性。这些选项不需要与那些 FDW 支持的数据库对象选项有什么关系。
@@ -858,7 +832,7 @@ ImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid);
     </para>
 
     <para>
-     FDW 也不必担心实现<structfield>list_type</structfield>以及<structfield>table_list</structfield>所指定的过滤，因为核心服务器将自动根据那些选项跳过为被排除的表所返回的命令。不过，起初就避免为被排除的表创建命令当然更好。函数<function>IsImportableForeignTable()</function>可以用来测试一个给定的外部表名是否能通过该过滤器。
+     FDW 也不必担心实现<structfield>list_type</structfield>以及<structfield>table_list</structfield>所指定的过滤，因为核心服务器将自动根据那些选项跳过为被排除的表所返回的命令。不过，从一开始就避免为被排除的表创建命令，通常可以省去这部分工作。函数<function>IsImportableForeignTable()</function>可能有助于检查给定的外部表名是否能通过该过滤器。
     </para>
 
     <para>
@@ -870,7 +844,7 @@ ImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid);
    <sect2 id="fdw-callbacks-parallel">
     <title>并行执行的 FDW 例程</title>
     <para>
-     <structname>ForeignScan</structname>节点可以选择支持并行执行。一个并行的<structname>ForeignScan</structname>会在多个进程中执行，并且每个元组在这些协作进程中必须只返回一次。为做到这一点，各进程可以通过固定大小的动态共享内存块协作。并不保证这部分共享内存在每个进程中都映射到相同地址，因此其中不能包含指针。下面这些函数通常都是可选的，但若要支持并行执行，就必须提供其中的大部分。
+     <structname>ForeignScan</structname>节点可以选择支持并行执行。一个并行的<structname>ForeignScan</structname>会在多个进程中执行，并且每个元组在这些协作进程中必须只返回一次。为做到这一点，各进程可以通过固定大小的动态共享内存块协作。并不保证这部分共享内存在每个进程中都映射到相同地址，因此其中不能包含指针。下面这些函数都是可选的，但若要支持并行执行，就必须提供其中的大部分。
     </para>
 
     <para>
@@ -879,7 +853,7 @@ bool
 IsForeignScanParallelSafe(PlannerInfo *root, RelOptInfo *rel,
                           RangeTblEntry *rte);
 </programlisting>
-    测试某个扫描是否可以在并行工作进程中执行。只有当规划器认为可以使用并行计划时才会调用这个函数；如果该扫描在并行工作进程中安全，此函数应返回真。如果远程数据源具有事务语义，通常这并不成立，除非工作进程到该数据源的连接能够以某种方式共享与领导者相同的事务环境。
+    测试某个扫描是否可以在并行工作进程中执行。只有当规划器认为可能使用并行计划时才会调用这个函数；如果该扫描在并行工作进程中安全，此函数应返回真。如果远程数据源具有事务语义，通常这并不成立，除非工作进程到该数据源的连接能够以某种方式共享与领导者相同的事务环境。
     </para>
 
     <para>
@@ -943,8 +917,8 @@ bool
 IsForeignPathAsyncCapable(ForeignPath *path);
 </programlisting>
      测试给定的<structname>ForeignPath</structname>路径是否可以异步扫描底层外部关系。
-     当给定路径是<structname>AppendPath</structname>路径的直接子路径，并且规划器认为异步执行提高性能时，才会在查询计划结束时调用该函数。
-     如果给出的路径能够异步扫描外部关系，则将返回真。
+     当给定路径是<structname>AppendPath</structname>路径的直接子路径，并且规划器认为异步执行提高性能时，才会在查询规划结束时调用该函数。
+     如果给出的路径能够异步扫描外部关系，则应返回真。
     </para>
 
     <para>
@@ -957,10 +931,10 @@ IsForeignPathAsyncCapable(ForeignPath *path);
 void
 ForeignAsyncRequest(AsyncRequest *areq);
 </programlisting>
-     从<structname>ForeignScan</structname>节点异步地产生一个元组。
-     <literal>areq</literal>是描述<structname>ForeignScan</structname>节点和父<structname>Append</structname>节点请求元组的<structname>AsyncRequest</structname>结构体。
-     该函数应该将元组存储在<literal>areq-&gt;result</literal>指定的槽中，并将<literal>areq-&gt;request_complete</literal>设置为<literal>true</literal>；或者如果它需要等待核心服务器外部的事件，例如网络I/O，并且不能立刻生成任何元组，则将设置标记为<literal>false</literal>，并且将<literal>areq-&gt;callback_pending</literal>设置为<literal>true</literal>，以便<structname>ForeignScan</structname>节点从下面描述的回调函数中获取回调。
-     如果没有更多的元组可用，则将槽位设置为NULL或空槽位，以及将<literal>areq-&gt;request_complete</literal>标志设置为<literal>true</literal>。
+     从<structname>ForeignScan</structname>节点异步生成一个元组。
+     <literal>areq</literal>是一个<structname>AsyncRequest</structname>结构体，描述该<structname>ForeignScan</structname>节点，以及向它请求元组的父<structname>Append</structname>节点。
+     该函数应该将元组存储在<literal>areq-&gt;result</literal>指定的槽中，并将<literal>areq-&gt;request_complete</literal>设置为<literal>true</literal>；或者，如果它需要等待核心服务器外部的事件，例如网络 I/O，并且不能立刻生成任何元组，则将该标志设置为<literal>false</literal>，并且将<literal>areq-&gt;callback_pending</literal>设置为<literal>true</literal>，以便<structname>ForeignScan</structname>节点从下面描述的回调函数中获取回调。
+     如果没有更多的元组可用，则将槽位设置为 NULL 或空槽位，并将<literal>areq-&gt;request_complete</literal>标志设置为<literal>true</literal>。
      建议使用<function>ExecAsyncRequestDone</function> 或 <function>ExecAsyncRequestPending</function>来设置<literal>areq</literal>中的输出参数。
     </para>
 
@@ -977,8 +951,8 @@ ForeignAsyncConfigureWait(AsyncRequest *areq);
 void
 ForeignAsyncNotify(AsyncRequest *areq);
 </programlisting>
-     处理已经发生的相关事件，然后从<structname>ForeignScan</structname>节点异步地产生一个元组。
-     该函数将设置<literal>areq</literal> 中的输出参数，与<function>ForeignAsyncRequest</function>的方法相同。
+     处理已经发生的相关事件，然后从<structname>ForeignScan</structname>节点异步生成一个元组。
+     该函数应按与<function>ForeignAsyncRequest</function>相同的方式设置<literal>areq</literal>中的输出参数。
     </para>
    </sect2>
 
@@ -998,7 +972,7 @@ ReparameterizeForeignPathByChild(PlannerInfo *root, List *fdw_private,
    </sect1>
 
    <sect1 id="fdw-helpers">
-    <title>外部数据包装器助手函数</title>
+    <title>外部数据包装器辅助函数</title>
 
     <para>
      核心服务器导出了若干辅助函数，使外部数据包装器作者能够方便地访问 FDW 相关对象的属性，例如 FDW 选项。要使用这些函数中的任意一个，需要在源码文件中包含头文件<filename>foreign/foreign.h</filename>。该头文件也定义了这些函数返回的结构体类型。
