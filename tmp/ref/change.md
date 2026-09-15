@@ -68,3 +68,7 @@ PG14—19 中文源文完成 1,895 个定点原子修改、321 个文件：1,626
 ## 2026-09-15 数据修改章节与命令校准
 
 新增第 642 条 composite column → 复合列，沿用十一版行类型章和发布说明的稳定译法，统一 INSERT／MERGE 的组合列。已扫描十一版固定英文并完整核对所有对应段落，保留复合类型、复合键、列和字段的区别。词表及规则各 642 条，既定九项用户回退不变。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/dml-commands-full-reviewed-*；全书及 33 项最终构建继续。
+
+## 2026-09-15 PG10—PG20 转储恢复工具与引用语法校准
+
+新增第 643 条 dollar quoting → 美元引用，沿用语法章的稳定译法，统一普通说明中的美元符引用、美元符号引用及未译概念。已按十一版自身英文核对空格、连字符与 dollar-quoted 形式的全部关联段落；保留美元符号、定界符、标签、原始代码、字面量和选项 --disable-dollar-quoting，区分对整个函数体加引用与在函数体内部引用固定文本。词表及逐条规则各 643 条，既定九项用户回退不变。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/dump-restore-full-reviewed-*、dump-dollar-expanded-*；全书校准与 33 项最终构建继续。
