@@ -74,14 +74,21 @@ rows = rel_cardinality * selectivity
 </programlisting>
   </para>
 
-  <para>接下来，考虑一个包含等值条件的示例，其条件位于<literal>WHERE</literal>子句中：<programlisting>
+  <para>
+   接下来考虑一个在<literal>WHERE</literal>子句中包含等值条件的示例：
+
+<programlisting>
 EXPLAIN SELECT * FROM tenk1 WHERE stringu1 = 'CRAAAA';
 
                         QUERY PLAN
 ----------------------------------------------------------
  Seq Scan on tenk1  (cost=0.00..483.00 rows=30 width=244)
    Filter: (stringu1 = 'CRAAAA'::name)
-</programlisting>规划器同样会检查<literal>WHERE</literal>子句中的条件，查找操作符<literal>=</literal>的选择率函数，即<function>eqsel</function>。对于等值估计，直方图没有用；应该使用<firstterm>高频值</firstterm> （<acronym>MCV</acronym>）列表来确定选择率。查看 MCV，并同时查看后面会用到的其他一些列：<programlisting>
+</programlisting>
+
+   规划器同样会检查<literal>WHERE</literal>子句中的条件，并查找<literal>=</literal>对应的选择率函数，也就是<function>eqsel</function>。对于等值估计，直方图并无用处；相反，会使用<firstterm>高频值</firstterm>（<acronym>MCV</acronym>）列表来确定选择率。让我们看一下这些 MCV，并同时看看后面会用到的几个额外列：
+
+<programlisting>
 SELECT null_frac, n_distinct, most_common_vals, most_common_freqs FROM pg_stats
 WHERE tablename='tenk1' AND attname='stringu1';
 
@@ -90,10 +97,16 @@ n_distinct        | 676
 most_common_vals  | {EJAAAA,BBAAAA,CRAAAA,FCAAAA,FEAAAA,GSAAAA,JOAAAA,MCAAAA,NAAAAA,WGAAAA}
 most_common_freqs | {0.00333333,0.003,0.003,0.003,0.003,0.003,0.003,0.003,0.003,0.003}
 
-</programlisting>由于<literal>CRAAAA</literal>出现在 MCV 列表中，选择率就是最常见值频率（<acronym>MCF</acronym>）列表中的对应条目：<programlisting>
+</programlisting>
+
+   因为<literal>CRAAAA</literal>出现在 MCV 列表中，所以选择率就是高频值频率（<acronym>MCF</acronym>）列表中对应的那一项：
+
+<programlisting>
 selectivity = mcf[3]
             = 0.003
-</programlisting>与之前一样，估计行数就是这个值与表的基数的乘积。这里所用的表为<structname>tenk1</structname>：
+</programlisting>
+
+   和前面一样，估计行数就是它与<structname>tenk1</structname>基数的乘积：
 
 <programlisting>
 rows = 10000 * 0.003
@@ -101,52 +114,84 @@ rows = 10000 * 0.003
 </programlisting>
   </para>
 
-  <para>现在考虑同一个查询，但使用一个不在<acronym>MCV</acronym>列表中的常量：<programlisting>
+  <para>
+   现在考虑同一个查询，但其中的常量不在<acronym>MCV</acronym>列表里：
+
+<programlisting>
 EXPLAIN SELECT * FROM tenk1 WHERE stringu1 = 'xxx';
 
                         QUERY PLAN
 ----------------------------------------------------------
  Seq Scan on tenk1  (cost=0.00..483.00 rows=15 width=244)
    Filter: (stringu1 = 'xxx'::name)
-</programlisting>这是一个完全不同的问题：当值<emphasis>不</emphasis>在<acronym>MCV</acronym>列表中时，如何估计选择率。方法是利用该值不在列表中的事实，再结合所有<acronym>MCV</acronym>的频率信息：<programlisting>
+</programlisting>
+
+   这是一个很不同的问题：当该值<emphasis>不</emphasis>在<acronym>MCV</acronym>列表中时，如何估计选择率。方法是利用它不在列表中的事实，再结合所有<acronym>MCV</acronym>的频率信息：
+
+<programlisting>
 selectivity = (1 - sum(mvf))/(num_distinct - num_mcv)
             = (1 - (0.00333333 + 0.003 + 0.003 + 0.003 + 0.003 + 0.003 +
                     0.003 + 0.003 + 0.003 + 0.003))/(676 - 10)
             = 0.0014559
-</programlisting>也就是说，把所有<acronym>MCV</acronym>的频率加起来，用一减去这个总和，再除以<emphasis>其他</emphasis>非重复值的数量。这相当于假设该列中不属于任何 MCV 的那部分值，均匀分布在其他所有非重复值上。注意，这里没有空值，所以不必考虑它们（否则还应从分子中减去空值比例）。然后照常计算估计行数：<programlisting>
+</programlisting>
+
+   也就是说，先把所有<acronym>MCV</acronym>的频率加总，再从 1 中减去，然后除以<emphasis>其他</emphasis>非重复值的数量。这相当于假设该列中不属于任何 MCV 的那一部分，在所有其他非重复值之间均匀分布。注意这里没有空值，因此不必考虑它们（否则还需要从分子中减去空值比例）。估计行数随后按通常方式计算：
+
+<programlisting>
 rows = 10000 * 0.0014559
      = 15  (rounding off)
 </programlisting>
   </para>
 
-  <para>前面条件为<literal>unique1 &lt; 1000</literal>的示例，过度简化了<function>scalarltsel</function>的实际行为。现在已经看过 MCV 的使用示例，可以补充一些细节。前面的示例就其涉及的范围而言是正确的，因为<structfield>unique1</structfield>是唯一列，所以没有 MCV（显然，没有哪个值会比其他值更常见）。对于非唯一列，通常既有直方图，也有 MCV 列表，而且<emphasis>直方图不包括该列总体中由 MCV 表示的那一部分</emphasis>。这样处理可以使估计更准确。在这种情况下，<function>scalarltsel</function>直接将条件（例如<quote>&lt; 1000</quote>）应用于 MCV 列表中的每个值，并将满足条件的 MCV 的频率相加。这可以精确估计表中 MCV 所代表部分的选择率。然后按前面所述的方法使用直方图，估计表中非 MCV 部分的选择率，再将两个值结合起来，估计整体选择率。例如，考虑以下查询：<programlisting>
+  <para>
+   前面带有<literal>unique1 &lt; 1000</literal>的示例，把<function>scalarltsel</function>的实际工作方式过于简化了；现在既然已经看到 MCV 的用法，我们可以补充更多细节。那个示例在其适用范围内是正确的，因为<structfield>unique1</structfield>是唯一列，所以没有 MCV（显然，没有哪个值会比其他值更常见）。对于非唯一列，通常既会有直方图，也会有 MCV 列表，而且<emphasis>直方图不包括该列总体中由 MCV 表示的那一部分</emphasis>。这样做是为了得到更精确的估计。在这种情况下，<function>scalarltsel</function>会把条件（例如<quote>&lt; 1000</quote>）直接应用到 MCV 列表中的每个值上，并把满足条件的 MCV 频率加总起来。这就为表中属于 MCV 的那一部分给出了精确的选择率估计。随后，再像上面那样用直方图估算非 MCV 部分的选择率，最后将两者合并，得到整体选择率估计。例如，考虑
+
+<programlisting>
 EXPLAIN SELECT * FROM tenk1 WHERE stringu1 &lt; 'IAAAAA';
 
                          QUERY PLAN
 ------------------------------------------------------------
  Seq Scan on tenk1  (cost=0.00..483.00 rows=3077 width=244)
    Filter: (stringu1 &lt; 'IAAAAA'::name)
-</programlisting>我们已经看过<structfield>stringu1</structfield>的 MCV 信息，下面是它的直方图：<programlisting>
+</programlisting>
+
+   我们已经看过<structfield>stringu1</structfield>的高频值信息，这里是它的直方图：
+
+<programlisting>
 SELECT histogram_bounds FROM pg_stats
 WHERE tablename='tenk1' AND attname='stringu1';
 
                                 histogram_bounds
 --------------------------------------------------------------------------------
  {AAAAAA,CQAAAA,FRAAAA,IBAAAA,KRAAAA,NFAAAA,PSAAAA,SGAAAA,VAAAAA,XLAAAA,ZZAAAA}
-</programlisting>检查 MCV 列表可以发现，条件<literal>stringu1 &lt; 'IAAAAA'</literal>被前六个条目满足，而后四个条目不满足，因此总体中 MCV 部分的选择率为：<programlisting>
+</programlisting>
+
+   检查 MCV 列表后可知，条件<literal>stringu1 &lt; 'IAAAAA'</literal>对前 6 项成立，对后 4 项不成立，因此在由 MCV 表示的那部分总体中的选择率是：
+
+<programlisting>
 selectivity = sum(relevant mvfs)
             = 0.00333333 + 0.003 + 0.003 + 0.003 + 0.003 + 0.003
             = 0.01833333
-</programlisting>将所有 MCF 相加，还可以得知 MCV 所代表的部分占总体的比例为 0.03033333，因此直方图所代表的部分占比为 0.96966667（这里同样没有空值，否则还需要将其排除）。可以看到，值<literal>IAAAAA</literal>接近第三个直方图桶的末尾。规划器对不同字符的频率作出一些粗略假设，估计直方图所代表的总体中有 0.298387 的部分小于<literal>IAAAAA</literal>。然后将 MCV 和非 MCV 两部分的估计结合起来：<programlisting>
+</programlisting>
+
+   将所有 MCF 相加，还可得知由 MCV 表示的总体比例是 0.03033333，因此由直方图表示的比例就是 0.96966667（同样，这里没有空值，否则还得在此处将它们排除）。可以看出，值<literal>IAAAAA</literal>几乎落在第三个直方图桶的末尾。规划器基于一些相当粗略的关于不同字符出现频率的假设，得到直方图所表示总体中小于<literal>IAAAAA</literal>的那一部分估计为 0.298387。然后我们将 MCV 与非 MCV 总体的估计合并：
+
+<programlisting>
 selectivity = mcv_selectivity + histogram_selectivity * histogram_fraction
             = 0.01833333 + 0.298387 * 0.96966667
             = 0.307669
 
 rows        = 10000 * 0.307669
             = 3077  (rounding off)
-</programlisting>在这个特定的示例中，MCV 列表带来的修正相当小，因为该列的分布实际上相当均匀（统计信息显示这些特定值比其他值更常见，主要是采样误差造成的）。更常见的情况是，某些值明显比其他值更常见；这时，这个复杂过程能够有效提高准确性，因为最常见值的选择率是精确求得的。</para>
+</programlisting>
 
-  <para>现在考虑另一种情形，其中多个条件出现在<literal>WHERE</literal>子句中：<programlisting>
+   在这个特定示例中，来自 MCV 列表的修正相当小，因为该列的分布实际上相当平坦（统计信息显示这些特定值比其他值更常见，主要是抽样误差造成的）。在更典型的场景下，一些值会明显比其他值更常见，这一较为复杂的过程能够有效提高准确性，因为高频值的选择率可以精确求出。
+  </para>
+
+  <para>
+   现在来考虑一个<literal>WHERE</literal>子句中有多个条件的情形：
+
+<programlisting>
 EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 1000 AND stringu1 = 'xxx';
 
                                    QUERY PLAN
@@ -156,14 +201,21 @@ EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 1000 AND stringu1 = 'xxx';
    Filter: (stringu1 = 'xxx'::name)
    -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..23.80 rows=1007 width=0)
          Index Cond: (unique1 &lt; 1000)
-</programlisting>规划器假定这两个条件相互独立，因此可以将各个子句的选择率相乘：<programlisting>
+</programlisting>
+
+   规划器假定这两个条件彼此独立，因此可以将各子句的选择率相乘：
+
+<programlisting>
 selectivity = selectivity(unique1 &lt; 1000) * selectivity(stringu1 = 'xxx')
             = 0.100697 * 0.0014559
             = 0.0001466
 
 rows        = 10000 * 0.0001466
             = 1  (rounding off)
-</programlisting>注意，位图索引扫描的估计返回行数只反映用于索引的条件。这一点很重要，因为它会影响后续堆访问的代价估计。</para>
+</programlisting>
+
+   请注意，位图索引扫描估计返回的行数只反映用于该索引的条件；这一点很重要，因为它会影响后续堆获取的代价估计。
+  </para>
 
   <para>最后，来看一个涉及连接的查询：<programlisting>
 EXPLAIN SELECT * FROM tenk1 t1, tenk2 t2
@@ -254,14 +306,19 @@ SELECT relpages, reltuples FROM pg_class WHERE relname = 't';
     数据分布非常简单；每一列中都只有 100 个不同的值，并且均匀分布。
    </para>
 
-   <para>下例展示了对一个<literal>WHERE</literal>条件进行估计的结果，该条件作用于<structfield>a</structfield>列：<programlisting>
+   <para>
+    下面的示例展示了对<literal>WHERE</literal>条件在<structfield>a</structfield>列上进行估计的结果：
+
+<programlisting>
 EXPLAIN (ANALYZE, TIMING OFF) SELECT * FROM t WHERE a = 1;
                                  QUERY PLAN                                  
 -------------------------------------------------------------------------------
  Seq Scan on t  (cost=0.00..170.00 rows=100 width=8) (actual rows=100 loops=1)
    Filter: (a = 1)
    Rows Removed by Filter: 9900
-</programlisting>规划器检查这个条件，并确定该子句的选择率为 1%。比较估计值与实际行数，可以看到估计非常准确（实际上完全准确，因为表很小）。如果修改<literal>WHERE</literal>条件，使其使用<structfield>b</structfield>列，会生成完全相同的计划。再看将同一条件应用于两个列的情况，这两个条件之间使用<literal>AND</literal>：
+</programlisting>
+
+    规划器会检查该条件，并认定此子句的选择率为 1%。将该估计与实际行数相比，可以看出估计非常准确（实际上是精确的，因为这张表非常小）。把<literal>WHERE</literal>条件改为使用<structfield>b</structfield>列，会生成相同的计划。但请看如果把同一条件同时应用到两列上，并用<literal>AND</literal>连接，会发生什么：
 
 <programlisting>
 EXPLAIN (ANALYZE, TIMING OFF) SELECT * FROM t WHERE a = 1 AND b = 1;
@@ -270,9 +327,15 @@ EXPLAIN (ANALYZE, TIMING OFF) SELECT * FROM t WHERE a = 1 AND b = 1;
  Seq Scan on t  (cost=0.00..195.00 rows=1 width=8) (actual rows=100 loops=1)
    Filter: ((a = 1) AND (b = 1))
    Rows Removed by Filter: 9900
-</programlisting>规划器分别估计每个条件的选择率，得到与上面相同的 1%。然后假定两个条件独立，将其选择率相乘，得到最终选择率估计值仅为 0.01%。这显著低估了结果，因为实际满足条件的行数（100）比估计值高两个数量级。</para>
+</programlisting>
 
-   <para>可以通过创建一个统计信息对象来解决此问题，使<command>ANALYZE</command>计算这两个列的函数依赖多变量统计信息：<programlisting>
+    规划器分别估计每个条件的选择率，得到与上面相同的 1% 估计值。然后它假定这些条件彼此独立，于是将它们的选择率相乘，得到最终只有 0.01% 的选择率估计。这是严重的低估，因为实际匹配这些条件的行数（100）要高出两个数量级。
+   </para>
+
+   <para>
+    这个问题可以通过创建一个统计信息对象来解决，该对象会指示<command>ANALYZE</command>在这两列上计算函数依赖的多元统计信息：
+
+<programlisting>
 CREATE STATISTICS stts (dependencies) ON a, b FROM t;
 ANALYZE t;
 EXPLAIN (ANALYZE, TIMING OFF) SELECT * FROM t WHERE a = 1 AND b = 1;
@@ -288,21 +351,27 @@ EXPLAIN (ANALYZE, TIMING OFF) SELECT * FROM t WHERE a = 1 AND b = 1;
   <sect2>
    <title>多元非重复值计数</title>
 
-   <para>估计由多个列组成的集合的基数时，也会出现类似问题，例如估计<command>GROUP BY</command>子句产生的分组数。当<command>GROUP BY</command>只列出一个列时，非重复值数量估计（显示为 HashAggregate 节点返回的估计行数）非常准确：<programlisting>
+   <para>
+    在估计多列集合的基数时，也会出现类似的问题，例如<command>GROUP BY</command>子句会生成多少个组。当<command>GROUP BY</command>只列出一列时，非重复值数量估计（可从 HashAggregate 节点估计返回的行数看出）非常准确：
+<programlisting>
 EXPLAIN (ANALYZE, TIMING OFF) SELECT COUNT(*) FROM t GROUP BY a;
                                        QUERY PLAN                                        
 -----------------------------------------------------------------------------------------
  HashAggregate  (cost=195.00..196.00 rows=100 width=12) (actual rows=100 loops=1)
    Group Key: a
    -&gt;  Seq Scan on t  (cost=0.00..145.00 rows=10000 width=4) (actual rows=10000 loops=1)
-</programlisting>但如果没有多变量统计信息，查询中<command>GROUP BY</command>涉及两个列时，对分组数的估计会相差一个数量级，如下例所示：<programlisting>
+</programlisting>
+    但是如果没有多元统计信息，对于在<command>GROUP BY</command>中包含两列的查询，组数估计会像下面这样差一个数量级：
+<programlisting>
 EXPLAIN (ANALYZE, TIMING OFF) SELECT COUNT(*) FROM t GROUP BY a, b;
                                        QUERY PLAN                                        
 --------------------------------------------------------------------------------------------
  HashAggregate  (cost=220.00..230.00 rows=1000 width=16) (actual rows=100 loops=1)
    Group Key: a, b
    -&gt;  Seq Scan on t  (cost=0.00..145.00 rows=10000 width=8) (actual rows=10000 loops=1)
-</programlisting>重新定义统计信息对象，使其包含这两个列的非重复值计数后，估计会有很大改善：<programlisting>
+</programlisting>
+    通过重新定义统计信息对象，使其包含这两列的非重复值计数，估计值就会大幅改进：
+<programlisting>
 DROP STATISTICS stts;
 CREATE STATISTICS stts (dependencies, ndistinct) ON a, b FROM t;
 ANALYZE t;
@@ -329,7 +398,7 @@ EXPLAIN (ANALYZE, TIMING OFF) SELECT COUNT(*) FROM t GROUP BY a, b;
    为了防止这种情况，以下规则适用于所有内置选择率估算函数。在规划查询时，若要使用已存储的统计信息，当前用户必须对该表或相关列具有<literal>SELECT</literal>权限，或者所用操作符必须是<literal>LEAKPROOF</literal>（更准确地说，是该操作符所基于的函数必须如此）。否则，选择率估算器会像不存在可用统计信息一样工作，规划器则会按默认或后备假设继续。</para>
 
   <para>
-   如果用户对表或列不具备所需权限，那么在许多情况下，查询最终都会收到一个权限被拒绝的错误，因此这一机制在实际中是不可见的。但如果用户是通过安全屏障视图读取数据，规划器可能会想要检查一个用户本来无权访问的底层表的统计信息。在这种情况下，操作符应当是 leakproof，否则统计信息不会被使用。对此没有直接反馈，除非计划可能不是最优的。如果怀疑发生了这种情况，可以尝试让权限更高的用户运行该查询，看看是否会得到不同的计划。
+   如果用户对表或列不具备所需权限，那么在许多情况下，查询最终都会收到一个权限被拒绝的错误，因此这一机制在实际中是不可见的。但如果用户是通过安全屏障视图读取数据，规划器可能会想要检查一个用户本来无权访问的底层表的统计信息。在这种情况下，操作符应当是 leak-proof，否则统计信息不会被使用。除了计划可能不够理想之外，对此没有直接反馈。如果怀疑发生了这种情况，可以尝试让权限更高的用户运行该查询，看看是否会得到不同的计划。
   </para>
 
   <para>
