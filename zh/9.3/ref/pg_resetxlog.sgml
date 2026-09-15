@@ -1,0 +1,180 @@
+<!--
+doc/src/sgml/ref/pg_resetxlog.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="APP-PGRESETXLOG">
+ <indexterm zone="app-pgresetxlog">
+  <primary>pg_resetxlog</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle><application>pg_resetxlog</application></refentrytitle>
+  <manvolnum>1</manvolnum>
+  <refmiscinfo>应用程序</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>pg_resetxlog</refname>
+  <refpurpose>重置一个 <productname>PostgreSQL</productname> 数据库集簇的事务日志及其他控制信息</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+  <cmdsynopsis>
+   <command>pg_resetxlog</command>
+   <arg choice="opt"><option>-f</option></arg>
+   <arg choice="opt"><option>-n</option></arg>
+   <arg choice="opt"><option>-o</option> <replaceable class="parameter">oid</replaceable></arg>
+   <arg choice="opt"><option>-x</option> <replaceable class="parameter">xid</replaceable></arg>
+   <arg choice="opt"><option>-e</option> <replaceable class="parameter">xid_epoch</replaceable></arg>
+   <arg choice="opt"><option>-m</option> <replaceable class="parameter">mxid</replaceable>,<replaceable class="parameter">mxid</replaceable></arg>
+   <arg choice="opt"><option>-O</option> <replaceable class="parameter">mxoff</replaceable></arg>
+   <arg choice="opt"><option>-l</option> <replaceable class="parameter">xlogfile</replaceable></arg>
+   <arg choice="plain"><replaceable>datadir</replaceable></arg>
+  </cmdsynopsis>
+ </refsynopsisdiv>
+
+ <refsect1 id="R1-APP-PGRESETXLOG-1">
+  <title>描述</title>
+  <para>
+   <command>pg_resetxlog</command> 清空事务日志（WAL），并有选择地重置
+   <filename>pg_control</filename> 文件中存储的一些其他控制信息。当这些文件
+   损坏时，有时就需要这项功能。它应当只作为最后的手段使用，即当服务器因这种
+   损坏而无法启动时。
+  </para>
+
+  <para>
+   运行这条命令之后，应当就能启动服务器了，但请记住，由于部分提交的事务，
+   数据库中可能包含不一致的数据。你应当立即转储数据、运行 <command>initdb</command>
+   并重新装载。重新装载之后，检查不一致之处并按需修复。
+  </para>
+
+  <para>
+   这个工具只能由安装服务器的用户运行，因为它需要对数据目录的读写访问权限。
+   出于安全原因，你必须在命令行上指定数据目录。<command>pg_resetxlog</command>
+   不使用环境变量 <envar>PGDATA</envar>。
+  </para>
+
+  <para>
+   如果 <command>pg_resetxlog</command> 抱怨说无法确定 <filename>pg_control</filename>
+   的有效数据，你可以通过指定 <option>-f</option>（强制）选项迫使它继续执行。
+   在这种情况下，缺失的数据会用貌似合理的值代替。大多数字段都可以期望是匹配的，
+   但下一个 OID、下一个事务 ID 及其纪元、下一个多事务 ID 及偏移量、WAL 起始地址
+   这些字段可能需要人工协助。这些字段可以用下面讨论的选项来设置。如果你无法为
+   所有这些字段确定正确的值，仍可以使用 <option>-f</option>，但恢复出的数据库
+   必须受到比平常更多的怀疑：必须立即转储并重新装载。在转储之前<emphasis>不要</emphasis>
+   在数据库中执行任何修改数据的操作，因为任何此类操作都很可能使损坏加剧。
+  </para>
+  <para>
+   <option>-o</option>、<option>-x</option>、<option>-e</option>、
+   <option>-m</option>、<option>-O</option>
+   和 <option>-l</option>
+   选项允许手动设置下一个 OID、下一个事务 ID、下一个事务 ID 的纪元、
+   下一个和最旧的多事务 ID、下一个多事务偏移量以及 WAL 起始地址。只有当 <command>pg_resetxlog</command>
+   无法通过读取 <filename>pg_control</filename> 确定合适的值时，才需要
+   这些选项。安全值可以按如下方法确定：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      下一个事务 ID（<option>-x</option>）的安全值可以通过在数据目录下的
+      <filename>pg_clog</filename> 目录中查找数值最大的文件名、加一、
+      再乘以 1048576 来确定。注意文件名为十六进制。通常最简单的做法也是
+      用十六进制指定选项值。例如，如果 <filename>0011</filename> 是
+      <filename>pg_clog</filename> 中最大的项，则
+      <literal>-x 0x1200000</literal> 可行（五个尾随零提供正确的乘数）。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      下一个多事务 ID 的安全值（<option>-m</option> 的第一部分）可以通过
+      在数据目录下的 <filename>pg_multixact/offsets</filename> 目录中查找
+      数值最大的文件名、加一、再乘以 65536 来确定。反之，最旧多事务 ID 的
+      安全值（<option>-m</option> 的第二部分）可以通过在同一目录中查找
+      数值最小的文件名再乘以 65536 来确定。如上所述，文件名为十六进制，
+      因此最简单的做法是用十六进制指定选项值并追加四个零。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      下一个多事务偏移量（<option>-O</option>）的安全值可以通过在数据目录
+      下的 <filename>pg_multixact/members</filename> 目录中查找数值最大的
+      文件名、加一、再乘以 52352 来确定。如上所述，文件名为十六进制。
+      这里没有像上面那些方法一样追加零的简单方法。
+     </para>
+    </listitem>
+
+        <listitem>
+     <para>
+      WAL 起始地址（<option>-l</option>）应当大于数据目录下
+      <filename>pg_xlog</filename> 目录中现存的任何 WAL 段文件名。
+      这些名称同样是十六进制的，并且分为三部分。第一部分是<quote>时间线
+      ID</quote>，通常应保持不变。例如，如果
+      <filename>00000001000000320000004A</filename> 是
+      <filename>pg_xlog</filename> 中最大的项，则使用
+      <literal>-l 00000001000000320000004B</literal> 或更高的值。
+     </para>
+
+     <note>
+      <para>
+       <command>pg_resetxlog</command> 本身会查看 <filename>pg_xlog</filename>
+       中的文件，并选择一个超出最后一个现存文件名的默认 <option>-l</option>
+       设置。因此，只有当你知道存在当前不在 <filename>pg_xlog</filename> 中的
+       WAL 段文件（例如离线归档中的条目），或者 <filename>pg_xlog</filename>
+       的内容已完全丢失时，才需要手动调整 <option>-l</option>。
+      </para>
+     </note>
+    </listitem>
+
+    <listitem>
+     <para>
+      没有同样简单的方法来确定一个超出数据库中最大 OID 的下一个 OID，
+      但幸运的是，下一个 OID 设置得是否正确并不关键。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      事务 ID 纪元实际上并不存储在数据库中的任何地方（由
+      <command>pg_resetxlog</command> 设置的字段除外），因此就数据库本身而言，
+      任何值都可以。你可能需要调整这个值以确保 <application>Slony-I</application>
+      等复制系统正常工作&mdash;&mdash;
+      如果需要，应该可以从下游复制数据库的状态中获得合适的值。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </para>
+
+  <para>
+   <option>-n</option>（不操作）选项指示 <command>pg_resetxlog</command>
+   打印从 <filename>pg_control</filename> 重建的值以及即将更改的值，然后
+   不做任何修改直接退出。这主要是一种调试工具，但在真正让
+   <command>pg_resetxlog</command> 执行之前，也可以用作健全性检查。
+  </para>
+
+  <para>
+   <option>-V</option> 和 <option>--version</option> 选项打印
+   <application>pg_resetxlog</application> 的版本并退出。<option>-?</option>
+   和 <option>--help</option> 选项显示支持的参数，并退出。
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>注解</title>
+
+  <para>
+   服务器正在运行时不得使用这条命令。如果 <command>pg_resetxlog</command>
+   在数据目录中发现服务器锁文件，它将拒绝启动。如果服务器崩溃过，可能会留下
+   锁文件；这种情况下你可以删除锁文件以允许 <command>pg_resetxlog</command>
+   运行。但在这样做之前，请务必再三确认没有仍然存活的服务器进程。
+  </para>
+
+  <para>
+   <command>pg_resetxlog</command> 只能用于同一大版本的服务器。
+  </para>
+ </refsect1>
+
+
+</refentry>

@@ -1,0 +1,3946 @@
+<!-- doc/src/sgml/plpgsql.sgml -->
+
+<chapter id="plpgsql">
+  <title><application>PL/pgSQL</application> &mdash; <acronym>SQL</acronym> 过程语言</title>
+
+ <indexterm zone="plpgsql">
+  <primary>PL/pgSQL</primary>
+ </indexterm>
+
+ <sect1 id="plpgsql-overview">
+  <title>概述</title>
+
+ <para>
+  <application>PL/pgSQL</application> 是一种用于 <productname>PostgreSQL</productname> 数据库系统的可载入过程语言。<application>PL/pgSQL</application> 的设计目标，是创建一种具备以下特性的可载入过程语言：
+
+    <itemizedlist>
+     <listitem>
+      <para>可用于创建函数和触发器函数，</para>
+     </listitem>
+     <listitem>
+      <para>
+       为<acronym>SQL</acronym>语言增加控制结构，
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       可以执行复杂计算，
+      </para>
+     </listitem>
+     <listitem>
+      <para>继承所有用户定义的类型、函数和操作符，</para>
+     </listitem>
+     <listitem>
+      <para>
+       可定义为受服务器信任的语言，
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       便于使用。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>
+    用 <application>PL/pgSQL</application> 创建的函数，可以用于任何可以使用内置函数的地方。例如，可以创建带有复杂条件逻辑的计算函数，随后用它们定义操作符，或者把它们用于索引表达式。
+   </para>
+
+   <para>
+    在 <productname>PostgreSQL</productname> 9.0 及更高版本中，<application>PL/pgSQL</application> 默认安装。不过它仍然是一个可载入模块，因此对安全性特别敏感的管理员也可以选择移除它。
+   </para>
+
+  <sect2 id="plpgsql-advantages">
+
+   <title>使用<application>PL/pgSQL</application>的优点</title>
+
+    <para>
+     <acronym>SQL</acronym> 是 <productname>PostgreSQL</productname> 以及大多数其他关系数据库使用的查询语言。它具有可移植性，也容易学习。但每条 <acronym>SQL</acronym> 语句都必须由数据库服务器单独执行。
+    </para>
+
+    <para>
+     这意味着客户端应用必须把每个查询发送给数据库服务器，等待其处理完成，接收并处理结果，做一些计算，然后再向服务器发送更多查询。这一切都会产生进程间通信开销；如果客户端与数据库服务器不在同一台机器上，还会额外产生网络开销。
+    </para>
+
+    <para>
+     借助 <application>PL/pgSQL</application>，你可以把一段计算逻辑和一系列查询放在数据库服务器<emphasis>内部</emphasis>执行。这样既具备了过程语言的能力，也保留了 SQL 的易用性，同时还能显著减少客户端/服务器通信开销。
+    </para>
+    <itemizedlist>
+
+     <listitem>
+
+<para> 消除了客户端和服务器之间额外的往返通信 </para>
+</listitem>
+
+     <listitem>
+
+<para> 客户端不需要的中间结果不必在服务器与客户端之间编组或传输 </para>
+</listitem>
+
+     <listitem>
+
+<para> 可以避免多轮查询解析 </para>
+</listitem>
+
+    </itemizedlist>
+
+    <para> 与不使用存储函数的应用相比，这可能带来相当可观的性能提升。
+    </para>
+
+    <para>
+     此外，通过 <application>PL/pgSQL</application> 你可以使用 SQL 的全部数据类型、操作符和函数。
+    </para>
+  </sect2>
+
+  <sect2 id="plpgsql-args-results">
+   <title>支持的参数和结果数据类型</title>
+
+    <para>
+     用 <application>PL/pgSQL</application> 编写的函数，可以接受服务器支持的任意标量或数组数据类型作为参数，也可以返回这些类型中的任意一种。它们还可以接受或返回任何按名称指定的复合类型（行类型）。也可以把 <application>PL/pgSQL</application> 函数声明为返回 <type>record</type>，这表示结果是一种行类型，其列由调用查询中的指定内容决定，如 <xref linkend="queries-tablefunctions"> 所述。
+    </para>
+
+    <para>
+     <application>PL/pgSQL</application> 函数还可以通过使用 <literal>VARIADIC</literal> 标记声明为接受可变数量的参数。这与 SQL 函数中的行为完全相同，详见 <xref linkend="xfunc-sql-variadic-functions">。
+    </para>
+
+    <para><application>PL/pgSQL</application>函数也可以声明为接受和返回多态类型<type>anyelement</type>、<type>anyarray</type>、<type>anynonarray</type>、<type>anyenum</type>和<type>anyrange</type>。多态函数处理的实际数据类型可以在不同调用之间变化，如<xref linkend="extend-types-polymorphic">所述。示例见<xref linkend="plpgsql-declaration-parameters">。</para>
+
+    <para>
+     <application>PL/pgSQL</application> 函数还可以声明为返回任意可单独返回的数据类型的<quote>集合</quote>（或表）。这类函数可以通过对结果集中的每个目标元素执行 <command>RETURN NEXT</command> 生成输出，也可以通过 <command>RETURN QUERY</command> 输出某个查询的结果。
+    </para>
+
+    <para>
+     最后，如果某个 <application>PL/pgSQL</application> 函数没有有意义的返回值，可以将其声明为返回 <type>void</type>。
+    </para>
+
+    <para>
+     <application>PL/pgSQL</application> 函数也可以声明为使用输出参数，而不是显式指定返回类型。这并没有为该语言增加新的基本能力，但通常会更方便，尤其是在需要返回多个值时。<literal>RETURNS TABLE</literal> 记法也可以用来代替 <literal>RETURNS SETOF</literal>。
+    </para>
+
+    <para>
+     具体示例见 <xref linkend="plpgsql-declaration-parameters"> 和 <xref linkend="plpgsql-statements-returning">。
+    </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="plpgsql-structure">
+  <title><application>PL/pgSQL</application>的结构</title>
+
+  <para>
+   通过执行 <xref linkend="sql-createfunction"> 命令，可以把用 <application>PL/pgSQL</application> 编写的函数定义到服务器中。这类命令通常类似于：
+<programlisting>
+CREATE FUNCTION somefunc(integer, text) RETURNS integer
+AS '<replaceable>function body text</replaceable>'
+LANGUAGE plpgsql;
+</programlisting>
+   就 <command>CREATE FUNCTION</command> 而言，函数体只是一个字符串字面量。编写函数体时，通常最好使用美元引用（见 <xref linkend="sql-syntax-dollar-quoting">），而不是普通的单引号语法。如果不使用美元引用，函数体中的任何单引号或反斜线都必须通过双写进行转义。本章几乎所有示例的函数体都使用了美元引用。
+  </para>
+
+  <para>
+   <application>PL/pgSQL</application> 是一种块结构语言。函数体的完整文本必须是一个<firstterm>块</firstterm>。块的定义如下：
+
+<synopsis>
+<optional> &lt;&lt;<replaceable>label</replaceable>&gt;&gt; </optional>
+<optional> DECLARE
+    <replaceable>declarations</replaceable> </optional>
+BEGIN
+    <replaceable>statements</replaceable>
+END <optional> <replaceable>label</replaceable> </optional>;
+</synopsis>
+    </para>
+
+    <para>
+     块中的每个声明和每条语句都以分号结束。如上所示，嵌套在其他块中的块，必须在 <literal>END</literal> 之后写分号；但是结束整个函数体的最后一个 <literal>END</literal> 不需要分号。
+    </para>
+
+    <tip>
+
+     <para>
+      一个常见错误是在 <literal>BEGIN</literal> 后面立刻写分号。这是不正确的，并会导致语法错误。
+     </para>
+    </tip>
+
+    <para>
+     只有在你希望通过 <literal>EXIT</literal> 语句标识某个块，或者希望用块名限定块内声明的变量名时，才需要 <replaceable>label</replaceable>。如果在 <literal>END</literal> 之后写了标签，它必须与块开始处的标签一致。
+    </para>
+
+    <para>
+     所有关键字都不区分大小写。标识符除非用双引号括起，否则会像普通 SQL 命令中那样被隐式转换为小写。
+    </para>
+
+    <para>
+     <application>PL/pgSQL</application> 代码中的注释与普通 SQL 相同。双连字符（<literal>--</literal>）开始一段持续到行尾的注释。<literal>/*</literal> 开始一段块注释，它会持续到匹配的 <literal>*/</literal>。块注释可以嵌套。
+    </para>
+
+    <para>
+     块的语句部分中的任意语句都可以是一个<firstterm>子块</firstterm>。子块可用于逻辑分组，或者把变量局部化到一小组语句中。在子块存续期间，子块中声明的变量会遮蔽外层块中的同名变量。不过，如果使用块标签限定外层变量名，仍然可以访问它们。例如：
+<programlisting>
+CREATE FUNCTION somefunc() RETURNS integer AS $$
+&lt;&lt; outerblock &gt;&gt;
+DECLARE
+    quantity integer := 30;
+BEGIN
+    RAISE NOTICE 'Quantity here is %', quantity;  -- Prints 30
+    quantity := 50;
+    --
+    -- 创建一个子块
+    --
+    DECLARE
+        quantity integer := 80;
+    BEGIN
+        RAISE NOTICE 'Quantity here is %', quantity;  -- Prints 80
+        RAISE NOTICE 'Outer quantity here is %', outerblock.quantity;  -- Prints 50
+    END;
+
+    RAISE NOTICE 'Quantity here is %', quantity;  -- Prints 50
+
+    RETURN quantity;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+    </para>
+
+    <note>
+
+     <para>
+      实际上，任何 <application>PL/pgSQL</application> 函数体外面都包着一个隐藏的<quote>外层块</quote>。该块提供函数参数（如果有）的声明，以及一些诸如 <literal>FOUND</literal> 之类的特殊变量（见 <xref linkend="plpgsql-statements-diagnostics">）。这个外层块带有函数名标签，这意味着参数和特殊变量可以用函数名来限定。
+     </para>
+    </note>
+
+    <para>需要特别注意，不要把<command>BEGIN</command>/<command>END</command>在<application>PL/pgSQL</application>中用于分组语句的用法，与用于事务控制的同名 SQL 命令混淆。<application>PL/pgSQL</application>中的<command>BEGIN</command>/<command>END</command>只用于分组，不会开始或结束事务。函数和触发器函数总是在外层查询建立的事务中执行 &mdash; 它们不能开始或提交该事务，否则就没有可供其执行的上下文。但是，包含<literal>EXCEPTION</literal>子句的块实际上会形成一个可回滚而不影响外层事务的子事务。详见<xref linkend="plpgsql-error-trapping">。</para>
+  </sect1>
+
+  <sect1 id="plpgsql-declarations">
+    <title>声明</title>
+
+    <para>
+     在一个块中使用的所有变量，都必须在该块的声明部分声明。（唯一的例外是：在整数范围上迭代的 <literal>FOR</literal> 循环变量会被自动声明为整数变量；同样，在游标结果上迭代的 <literal>FOR</literal> 循环变量会被自动声明为记录变量。）
+    </para>
+
+    <para>
+     <application>PL/pgSQL</application> 变量可以是任意 SQL 数据类型，例如 <type>integer</type>、<type>varchar</type> 和 <type>char</type>。
+    </para>
+
+    <para>
+     这里是变量声明的一些示例：
+<programlisting>
+user_id integer;
+quantity numeric(5);
+url varchar;
+myrow tablename%ROWTYPE;
+myfield tablename.columnname%TYPE;
+arow RECORD;
+</programlisting>
+    </para>
+
+    <para>
+     一个变量声明的一般语法是：
+<synopsis>
+<replaceable>name</replaceable> <optional> CONSTANT </optional> <replaceable>type</replaceable> <optional> COLLATE <replaceable>collation_name</replaceable> </optional> <optional> NOT NULL </optional> <optional> { DEFAULT | := | = } <replaceable>expression</replaceable> </optional>;
+</synopsis>
+      如果给定 <literal>DEFAULT</literal> 子句，它会指定进入该块时赋给该变量的初始值。如果没有给出 <literal>DEFAULT</literal> 子句，则变量会被初始化为 <acronym>SQL</acronym> 空值。<literal>CONSTANT</literal> 选项会阻止该变量在初始化之后再次被赋值，因此其值在整个块的持续期间保持不变。<literal>COLLATE</literal> 选项指定该变量使用的排序规则（见 <xref linkend="plpgsql-declaration-collation">）。如果指定了 <literal>NOT NULL</literal>，给该变量赋空值将导致运行时错误。所有声明为 <literal>NOT NULL</literal> 的变量都必须指定非空默认值。等号（<literal>=</literal>）可以代替兼容 PL/SQL 的 <literal>:=</literal>。
+     </para>
+
+     <para>
+      变量的默认值会在每次进入该块时重新计算并赋给该变量，而不是每次函数调用只计算一次。因此，例如把 <literal>now()</literal> 赋给一个 <type>timestamp</type> 类型变量，会使该变量得到当前函数调用时的时间，而不是函数预编译时的时间。
+     </para>
+
+     <para>例如：<programlisting>
+quantity integer DEFAULT 32;
+url varchar := 'http://mysite.com';
+user_id CONSTANT integer := 10;
+</programlisting>
+     </para>
+
+    <sect2 id="plpgsql-declaration-parameters">
+     <title>声明函数参数</title>
+
+     <para>
+      传递给函数的参数使用标识符 <literal>$1</literal>、<literal>$2</literal> 等命名。也可以为这些 <literal>$<replaceable>n</replaceable></literal> 形式的参数名声明别名，以提高可读性。之后既可以使用别名，也可以使用数字标识符来引用参数值。
+     </para>
+
+     <para>
+      有两种方式可以创建别名。推荐的方式是在 <command>CREATE FUNCTION</command> 命令中直接为参数命名。例如：
+<programlisting>
+CREATE FUNCTION sales_tax(subtotal real) RETURNS real AS $$
+BEGIN
+    RETURN subtotal * 0.06;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+      另一种方式是使用声明语法显式声明别名。
+
+<synopsis>
+<replaceable>name</replaceable> ALIAS FOR $<replaceable>n</replaceable>;
+</synopsis>
+
+      同样的示例，按这种写法如下：
+<programlisting>
+CREATE FUNCTION sales_tax(real) RETURNS real AS $$
+DECLARE
+    subtotal ALIAS FOR $1;
+BEGIN
+    RETURN subtotal * 0.06;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+     </para>
+
+    <note>
+
+     <para>
+      这两个示例并不完全等价。在第一种情况下，<literal>subtotal</literal> 可以写成 <literal>sales_tax.subtotal</literal> 来引用；但在第二种情况下则不行。（如果我们给内层块附上一个标签，那么 <literal>subtotal</literal> 可以用那个标签来限定。）
+     </para>
+    </note>
+
+     <para>
+      更多一些示例：
+<programlisting>
+CREATE FUNCTION instr(varchar, integer) RETURNS integer AS $$
+DECLARE
+    v_string ALIAS FOR $1;
+    index ALIAS FOR $2;
+BEGIN
+    -- 这里是一些使用 v_string 和 index 的计算
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE FUNCTION concat_selected_fields(in_t sometablename) RETURNS text AS $$
+BEGIN
+    RETURN in_t.f1 || in_t.f3 || in_t.f5 || in_t.f7;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+     </para>
+
+     <para>
+      当 <application>PL/pgSQL</application> 函数声明了输出参数时，输出参数也会像普通输入参数一样获得 <literal>$<replaceable>n</replaceable></literal> 名称和可选别名。输出参数本质上是一个初始值为 NULL 的变量，应在函数执行期间给它赋值。该参数的最终值就是返回值。例如，销售税的示例也可以这样写：
+
+<programlisting>
+CREATE FUNCTION sales_tax(subtotal real, OUT tax real) AS $$
+BEGIN
+    tax := subtotal * 0.06;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+
+      注意这里省略了 <literal>RETURNS real</literal> &mdash; 当然也可以写上，但那只是冗余。
+     </para>
+
+     <para>
+      当需要返回多个值时，输出参数尤其有用。下面是一个简单示例：
+
+<programlisting>
+CREATE FUNCTION sum_n_product(x int, y int, OUT sum int, OUT prod int) AS $$
+BEGIN
+    sum := x + y;
+    prod := x * y;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+
+      如 <xref linkend="xfunc-output-parameters"> 所述，这实际上会为函数结果创建一个匿名记录类型。如果写了 <literal>RETURNS</literal> 子句，它必须是 <literal>RETURNS record</literal>。
+     </para>
+
+     <para>
+      声明 <application>PL/pgSQL</application> 函数的另一种方式是使用 <literal>RETURNS TABLE</literal>，例如：
+
+<programlisting>
+CREATE FUNCTION extended_sales(p_itemno int)
+RETURNS TABLE(quantity int, total numeric) AS $$
+BEGIN
+    RETURN QUERY SELECT s.quantity, s.quantity * s.price FROM sales AS s
+                 WHERE s.itemno = p_itemno;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+
+      这与声明一个或多个 <literal>OUT</literal> 参数并指定 <literal>RETURNS SETOF <replaceable>sometype</replaceable></literal> 完全等效。
+     </para>
+
+     <para>如果一个<application>PL/pgSQL</application>函数的返回类型被声明为多态类型（<type>anyelement</type>，
+      <type>anyarray</type>， <type>anynonarray</type>， <type>anyenum</type>或<type>anyrange</type>），就会创建特殊参数<literal>$0</literal>。其数据类型是函数的实际返回类型，根据实际输入类型推导得出（见<xref linkend="extend-types-polymorphic">）。这使函数可以访问其实际返回类型，方式见<xref linkend="plpgsql-declaration-type">。
+      <literal>$0</literal>被初始化为 null，函数可以修改它，因此需要时可以用它保存返回值，但这并不是必需的。<literal>$0</literal>也可以设置别名。例如，下面的函数适用于任何具有<literal>+</literal>操作符的数据类型：<programlisting>
+CREATE FUNCTION add_three_values(v1 anyelement, v2 anyelement, v3 anyelement)
+RETURNS anyelement AS $$
+DECLARE
+    result ALIAS FOR $0;
+BEGIN
+    result := v1 + v2 + v3;
+    RETURN result;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+     </para>
+
+     <para>
+      把一个或多个输出参数声明为多态类型，也可以达到同样的效果。在这种情况下，不使用特殊参数 <literal>$0</literal>，输出参数本身就承担相同作用。例如：
+
+<programlisting>
+CREATE FUNCTION add_three_values(v1 anyelement, v2 anyelement, v3 anyelement,
+                                 OUT sum anyelement)
+AS $$
+BEGIN
+    sum := v1 + v2 + v3;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+     </para>
+    </sect2>
+
+  <sect2 id="plpgsql-declaration-alias">
+   <title><literal>ALIAS</literal></title>
+
+<synopsis>
+<replaceable>newname</replaceable> ALIAS FOR <replaceable>oldname</replaceable>;
+</synopsis>
+
+   <para>
+    <literal>ALIAS</literal> 语法比上一节所展示的更一般化：你可以为任何变量声明别名，而不只是函数参数。它最主要的实际用途，是为那些名称预先固定的变量指定另一个名字，例如触发器函数中的 <varname>NEW</varname> 或 <varname>OLD</varname>。
+   </para>
+
+   <para>
+    示例：
+<programlisting>
+DECLARE
+  prior ALIAS FOR old;
+  updated ALIAS FOR new;
+</programlisting>
+   </para>
+
+   <para>
+    由于 <literal>ALIAS</literal> 为同一个对象提供了两种命名方式，滥用它会让代码变得混乱。最好只把它用于改写那些预先固定的名称。
+   </para>
+   </sect2>
+
+  <sect2 id="plpgsql-declaration-type">
+   <title>复制类型</title>
+
+<synopsis>
+<replaceable>variable</replaceable>%TYPE
+</synopsis>
+
+   <para>
+    <literal>%TYPE</literal>提供变量或表列的数据类型。可以用它声明将保存数据库值的变量。例如，假设有一个名为<literal>user_id</literal>的列，位于<literal>users</literal>表中。要声明一个数据类型与<literal>users.user_id</>相同的变量，可以写：<programlisting>
+user_id users.user_id%TYPE;
+</programlisting>
+   </para>
+
+   <para>
+    使用 <literal>%TYPE</literal> 的好处是，你不必知道所引用结构的实际数据类型；更重要的是，如果被引用项的数据类型将来发生变化（例如把 <literal>user_id</literal> 的类型从 <type>integer</type> 改成 <type>real</type>），你可能就不需要修改函数定义。
+   </para>
+
+   <para>
+    <literal>%TYPE</literal> 在多态函数中特别有价值，因为内部变量所需的数据类型可能在不同调用之间变化。可以把 <literal>%TYPE</literal> 应用到函数参数或结果占位符上，以创建合适的变量。
+   </para>
+
+  </sect2>
+
+    <sect2 id="plpgsql-declaration-rowtypes">
+     <title>行类型</title>
+
+<synopsis>
+<replaceable>name</replaceable> <replaceable>table_name</replaceable><literal>%ROWTYPE</literal>;
+<replaceable>name</replaceable> <replaceable>composite_type_name</replaceable>;
+</synopsis>
+
+   <para>
+    复合类型的变量称为<firstterm>行</firstterm>变量（或<firstterm>行类型</firstterm>变量）。只要查询的列集合与该变量声明的类型相匹配，这种变量就可以保存 <command>SELECT</command> 或 <command>FOR</command> 查询结果中的整行。行值的各个字段可以使用通常的点号记法访问，例如 <literal>rowvar.field</literal>。
+   </para>
+
+   <para>
+    行变量既可以通过 <replaceable>table_name</replaceable><literal>%ROWTYPE</literal> 记法声明为与现有表或视图的行具有相同类型，也可以通过给出某个复合类型的名称来声明。（由于每个表都有一个同名的关联复合类型，所以在 <productname>PostgreSQL</productname> 中实际上写不写 <literal>%ROWTYPE</literal> 并无区别；不过带 <literal>%ROWTYPE</literal> 的形式可移植性更好。）
+   </para>
+
+   <para>
+    函数参数也可以是复合类型（完整的表行）。在这种情况下，相应的标识符 <literal>$<replaceable>n</replaceable></literal> 就是一个行变量，并且可以从中选取字段，例如 <literal>$1.user_id</literal>。
+   </para>
+
+   <para>在行类型变量中，只能访问表行中用户定义的列，不能访问 OID 或其他系统列（因为该行可能来自视图）。对于<type>char(<replaceable>n</replaceable>)</type>这样的数据类型，行类型中的字段会继承表字段的大小或精度。</para>
+
+   <para>
+    下面是一个使用复合类型的示例。<structname>table1</structname> 和 <structname>table2</structname> 是已经存在的表，它们至少包含下面提到的字段：
+
+<programlisting>
+CREATE FUNCTION merge_fields(t_row table1) RETURNS text AS $$
+DECLARE
+    t2_row table2%ROWTYPE;
+BEGIN
+    SELECT * INTO t2_row FROM table2 WHERE ... ;
+    RETURN t_row.f1 || t2_row.f3 || t_row.f5 || t2_row.f7;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT merge_fields(t.*) FROM table1 t WHERE ... ;
+</programlisting>
+   </para>
+  </sect2>
+
+  <sect2 id="plpgsql-declaration-records">
+
+   <title>记录类型</title>
+
+<synopsis>
+<replaceable>name</replaceable> RECORD;
+</synopsis>
+
+   <para>
+    记录变量与行类型变量类似，但没有预定义结构。它会在 <command>SELECT</command> 或 <command>FOR</command> 命令为其赋值时采用相应行的实际结构。记录变量的内部结构在每次被赋值时都可能变化。其后果是：在记录变量第一次被赋值之前，它没有任何子结构，任何试图访问其中字段的行为都会引发运行时错误。
+   </para>
+
+   <para>
+    注意，<literal>RECORD</literal> 并不是真正的数据类型，它只是一个占位符。还需要认识到，<application>PL/pgSQL</application> 函数被声明为返回 <type>record</type>，与记录变量并不是完全相同的概念，尽管这样的函数可能会用记录变量保存结果。这两种情况下，在编写函数时都不知道实际的行结构；但对于返回 <type>record</type> 的函数，实际结构会在解析调用查询时确定，而记录变量的行结构则可以在运行过程中随时变化。
+   </para>
+  </sect2>
+
+  <sect2 id="plpgsql-declaration-collation">
+
+   <title><application>PL/pgSQL</application>变量的排序规则</title>
+
+   <indexterm>
+    <primary>排序规则</primary>
+    <secondary>在 PL/pgSQL 中</secondary>
+   </indexterm>
+
+   <para>
+    当 <application>PL/pgSQL</application> 函数具有一个或多个支持排序规则的数据类型参数时，每次函数调用都会根据分配给实际参数的排序规则确定出一个排序规则，如 <xref linkend="collation"> 所述。如果该排序规则能成功确定出来（即参数之间的隐式排序规则没有冲突），那么所有支持排序规则的参数都会被视为隐式带有该排序规则。这会影响函数中那些受排序规则影响的操作。例如，考虑
+
+<programlisting>
+CREATE FUNCTION less_than(a text, b text) RETURNS boolean AS $$
+BEGIN
+    RETURN a &lt; b;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT less_than(text_field_1, text_field_2) FROM table1;
+SELECT less_than(text_field_1, text_field_2 COLLATE "C") FROM table1;
+</programlisting>
+
+    第一次调用 <function>less_than</function> 时，比较会使用 <structfield>text_field_1</structfield> 与 <structfield>text_field_2</structfield> 的共同排序规则；第二次则会使用 <literal>C</literal> 排序规则。
+   </para>
+
+   <para>
+    此外，确定出的排序规则也会被视为任何支持排序规则的数据类型局部变量的排序规则。因此，即使把这个函数写成下面这样，其行为也不会有任何不同：
+
+<programlisting>
+CREATE FUNCTION less_than(a text, b text) RETURNS boolean AS $$
+DECLARE
+    local_a text := a;
+    local_b text := b;
+BEGIN
+    RETURN local_a &lt; local_b;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+   </para>
+
+   <para>
+    如果函数没有支持排序规则的数据类型的参数，或者无法为它们确定共同排序规则，那么参数和局部变量将使用其数据类型的默认排序规则（通常是数据库默认排序规则，但对于域类型变量也可能不同）。
+   </para>
+
+   <para>
+    通过在支持排序规则的数据类型局部变量的声明中加入 <literal>COLLATE</literal> 选项，可以为其指定不同的排序规则，例如
+
+<programlisting>
+DECLARE
+    local_a text COLLATE "en_US";
+</programlisting>
+
+    这个选项会覆盖按上述规则原本应赋给该变量的排序规则。
+   </para>
+
+   <para>
+    当然，如果某个函数希望在特定操作中强制使用特定排序规则，也可以在函数内部显式写出 <literal>COLLATE</literal> 子句。例如：
+
+<programlisting>
+CREATE FUNCTION less_than_c(a text, b text) RETURNS boolean AS $$
+BEGIN
+    RETURN a &lt; b COLLATE "C";
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+
+    这会覆盖表达式中表列、参数或局部变量所关联的排序规则，就像在普通 SQL 命令中一样。
+   </para>
+  </sect2>
+  </sect1>
+
+  <sect1 id="plpgsql-expressions">
+  <title>表达式</title>
+
+    <para>在<application>PL/pgSQL</application>语句中使用的所有表达式都由服务器的主<acronym>SQL</acronym>执行器处理。例如，编写如下<application>PL/pgSQL</application>语句时：<synopsis>
+IF <replaceable>expression</replaceable> THEN ...
+</synopsis>
+     <application>PL/pgSQL</application>会把如下查询交给主 SQL 引擎，以对表达式求值：<synopsis>
+SELECT <replaceable>expression</replaceable>
+</synopsis>在形成<command>SELECT</>命令时，所有出现的<application>PL/pgSQL</application>变量名都会被替换为参数，详见<xref linkend="plpgsql-var-subst">。这样，<command>SELECT</command>的查询计划只需准备一次，随后就可以在变量值不同时重复使用。因此，首次使用表达式时，实际发生的事情本质上是执行一个<command>PREPARE</command>命令。例如，如果已经声明了两个整数变量<literal>x</>和<literal>y</>，并写下：<programlisting>
+IF x &lt; y THEN ...
+</programlisting>背后发生的事情就等同于：<programlisting>
+PREPARE <replaceable>statement_name</replaceable>(integer, integer) AS SELECT $1 &lt; $2;
+</programlisting>随后，对该预备语句调用<command>EXECUTE</command>，以完成每次<command>IF</command>语句的执行，并把<application>PL/pgSQL</application>变量的当前值作为参数值提供。通常，这些细节对<application>PL/pgSQL</application>用户并不重要，但在诊断问题时了解它们很有帮助。更多信息见<xref linkend="plpgsql-plan-caching">。
+    </para>
+  </sect1>
+
+  <sect1 id="plpgsql-statements">
+  <title>基本语句</title>
+
+   <para>在本节和后续各节中，我们描述<application>PL/pgSQL</application>能够明确理解的所有语句类型。凡是不被识别为这些类型之一的内容，都被视为 SQL 命令并发送给主数据库引擎执行，详见<xref linkend="plpgsql-statements-sql-noresult">和<xref linkend="plpgsql-statements-sql-onerow">。</para>
+
+   <sect2 id="plpgsql-statements-assignment">
+    <title>赋值</title>
+
+    <para>向<application>PL/pgSQL</application>变量赋值的写法为：<synopsis>
+<replaceable>variable</replaceable> { := | = } <replaceable>expression</replaceable>;
+</synopsis>如前所述，这种语句中的表达式通过发送给主数据库引擎的 SQL<command>SELECT</command>命令求值。表达式必须产生单个值（如果变量是行变量或记录变量，也可以是行值）。目标变量可以是简单变量（可以用块名限定）、行变量或记录变量的字段，或者由简单变量或字段表示的数组中的元素。可以使用等号（<literal>=</literal>）代替符合 PL/SQL 的<literal>:=</literal>。
+    </para>
+
+    <para>
+     如果该表达式的结果数据类型不匹配变量的数据类型，或者变量具有特定
+     的大小/精度（例如 <type>char(20)</type>），结果值将由
+     <application>PL/pgSQL</application>解释器使用结果类型的输出函数和变量
+     类型的输入函数隐式转换。注意如果结果值的字符串形式无法被输入函数
+     所接受，这可能会导致由输入函数产生的运行时错误。
+    </para>
+
+    <para>例如：<programlisting>
+tax := subtotal * 0.06;
+my_record.user_id := 20;
+</programlisting>
+    </para>
+   </sect2>
+
+   <sect2 id="plpgsql-statements-sql-noresult">
+    <title>执行没有结果的命令</title>
+
+    <para>对于不返回行的 SQL 命令，例如没有<literal>RETURNING</literal>子句的<command>INSERT</command>，只需写出命令，就可以在<application>PL/pgSQL</application>函数中执行它。</para>
+
+    <para>命令文本中出现的任何<application>PL/pgSQL</application>变量名都被视为参数，然后在运行时将变量的当前值作为参数值提供。这与前面描述的表达式处理完全相同；详情见<xref linkend="plpgsql-var-subst">。</para>
+
+    <para>以这种方式执行 SQL 命令时，<application>PL/pgSQL</application>可能会缓存和复用命令的执行计划，详见<xref linkend="plpgsql-plan-caching">。</para>
+
+    <para>有时，对表达式或<command>SELECT</command>查询求值但丢弃结果会很有用，例如调用有副作用但没有有用结果值的函数时。要在<application>PL/pgSQL</application>中这样做，可以使用<command>PERFORM</command>语句：<synopsis>
+PERFORM <replaceable>query</replaceable>;
+</synopsis>这会执行<replaceable>query</replaceable>并丢弃结果。编写<replaceable>query</replaceable>的方式与编写 SQL<command>SELECT</command>命令相同，只需把开头的关键字<command>SELECT</command>替换为<command>PERFORM</command>。对于<command>WITH</command>查询，使用<command>PERFORM</command>，然后用圆括号括住查询。（此时查询只能返回一行。）<application>PL/pgSQL</application>变量会被替换到查询中，方式与不返回结果的命令相同，计划也会以相同方式缓存。另外，特殊变量<literal>FOUND</literal>在查询至少产生一行时设为真，没有产生行时设为假（见<xref linkend="plpgsql-statements-diagnostics">）。
+    </para>
+
+    <note>
+     <para>
+      我们可能期望直接写<command>SELECT</command>能实现这个结果，但是当前唯一被接受的方式是<command>PERFORM</command>。一个能返回行的 SQL 命令（例如<command>SELECT</command>）将被当成一个错误拒绝，除非它像下一节中讨论的有一个<literal>INTO</literal>子句。
+     </para>
+    </note>
+
+    <para>
+     一个示例：
+<programlisting>
+PERFORM create_mv('cs_session_page_requests_mv', my_query);
+</programlisting>
+    </para>
+   </sect2>
+
+   <sect2 id="plpgsql-statements-sql-onerow">
+    <title>执行返回单行结果的查询</title>
+
+    <indexterm zone="plpgsql-statements-sql-onerow">
+     <primary>SELECT INTO</primary>
+     <secondary>在 PL/pgSQL 中</secondary>
+    </indexterm>
+
+    <indexterm zone="plpgsql-statements-sql-onerow">
+     <primary>RETURNING INTO</primary>
+     <secondary>在 PL/pgSQL 中</secondary>
+    </indexterm>
+
+    <para>产生单行（可能有多列）结果的 SQL 命令，其结果可以赋给记录变量、行类型变量或标量变量列表。方法是在基本 SQL 命令中添加<literal>INTO</literal>子句。例如：<synopsis>
+SELECT <replaceable>select_expressions</replaceable> INTO <optional>STRICT</optional> <replaceable>target</replaceable> FROM ...;
+INSERT ... RETURNING <replaceable>expressions</replaceable> INTO <optional>STRICT</optional> <replaceable>target</replaceable>;
+UPDATE ... RETURNING <replaceable>expressions</replaceable> INTO <optional>STRICT</optional> <replaceable>target</replaceable>;
+DELETE ... RETURNING <replaceable>expressions</replaceable> INTO <optional>STRICT</optional> <replaceable>target</replaceable>;
+</synopsis>其中，<replaceable>target</replaceable>可以是记录变量、行变量，或逗号分隔的简单变量及记录/行字段列表。<application>PL/pgSQL</application>变量会被替换到查询的其余部分，计划也会被缓存，正如上面描述的不返回行的命令一样。这适用于<command>SELECT</command>，
+     <command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command>带有<literal>RETURNING</literal>的情况，以及返回行集结果的工具命令（例如<command>EXPLAIN</command>）。除了<literal>INTO</literal>子句以外，SQL 命令的写法与在<application>PL/pgSQL</application>之外的写法相同。</para>
+
+   <tip>
+
+    <para>
+     注意带<literal>INTO</literal>的<command>SELECT</command>的这种解释和<productname>PostgreSQL</productname>常规的<command>SELECT INTO</command>命令有很大的不同，后者的<literal>INTO</literal>目标是一个新创建的表。如果你想要在一个<application>PL/pgSQL</application>函数中从一个<command>SELECT</command>的结果创建一个表，请使用语法<command>CREATE TABLE ... AS SELECT</command>。
+    </para>
+   </tip>
+
+    <para>如果使用行变量或变量列表作为目标，查询结果列的数量和数据类型必须与目标结构完全匹配，否则会发生运行时错误。如果目标是记录变量，它会自动将自身配置为查询结果列的行类型。</para>
+
+    <para>
+     <literal>INTO</literal>子句几乎可以出现在 SQL 命令中的任何位置。通常它被写成刚好在<command>SELECT</command>命令中的<replaceable>select_expressions</replaceable>列表之前或之后，或者在其他命令类型的命令最后。我们推荐你遵循这种惯例，以防<application>PL/pgSQL</application>的解析器在未来的版本中变得更严格。
+    </para>
+
+    <para>如果<literal>STRICT</literal>没有在<literal>INTO</literal>子句中指定，那么<replaceable>target</replaceable>会被设为查询返回的第一行；如果查询没有返回行，则设为空值。（注意，<quote>第一行</quote>并没有明确定义，除非使用了<literal>ORDER BY</>。）第一行之后的所有结果行都会被丢弃。可以检查特殊的<literal>FOUND</literal>变量（见<xref linkend="plpgsql-statements-diagnostics">），以确定是否返回了行：<programlisting>
+SELECT * INTO myrec FROM emp WHERE empname = myname;
+IF NOT FOUND THEN
+    RAISE EXCEPTION 'employee % not found', myname;
+END IF;
+</programlisting>如果指定<literal>STRICT</literal>选项，查询必须恰好返回一行，否则会报告运行时错误：<literal>NO_DATA_FOUND</>（没有行）或<literal>TOO_MANY_ROWS</>（多于一行）。如果希望捕获错误，可以使用异常块，例如：<programlisting>
+BEGIN
+    SELECT * INTO STRICT myrec FROM emp WHERE empname = myname;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            RAISE EXCEPTION 'employee % not found', myname;
+        WHEN TOO_MANY_ROWS THEN
+            RAISE EXCEPTION 'employee % not unique', myname;
+END;
+</programlisting>成功执行带有<literal>STRICT</literal>的命令总会将<literal>FOUND</literal>设为真。</para>
+
+    <para>
+     对于带有<literal>RETURNING</literal>的<command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command>，即使没有指定<literal>STRICT</literal>，<application>PL/pgSQL</application>也会针对多于一个返回行的情况报告一个错误。这是因为没有类似于<literal>ORDER BY</literal>的选项可以用来决定应该返回哪个被影响的行。
+    </para>
+
+    <para>如果<literal>print_strict_params</>已为该函数启用，那么当不满足<literal>STRICT</literal>要求而抛出错误时，错误消息的<literal>DETAIL</>部分将包含传给查询的参数信息。可以为所有函数更改<literal>print_strict_params</>设置，方法是设置<varname>plpgsql.print_strict_params</varname>，不过只会影响随后编译的函数。也可以通过编译器选项逐函数启用，例如：<programlisting>
+CREATE FUNCTION get_userid(username text) RETURNS int
+AS $$
+#print_strict_params on
+DECLARE
+userid int;
+BEGIN
+    SELECT users.userid INTO STRICT userid
+        FROM users WHERE users.username = get_userid.username;
+    RETURN userid;
+END
+$$ LANGUAGE plpgsql;
+</programlisting>失败时，该函数可能产生如下错误消息：<programlisting>
+ERROR:  query returned no rows
+DETAIL:  parameters: $1 = 'nosuchuser'
+CONTEXT:  PL/pgSQL function get_userid(text) line 6 at SQL statement
+</programlisting>
+    </para>
+
+    <note>
+
+     <para>
+      <literal>STRICT</literal>选项匹配 Oracle PL/SQL 的<command>SELECT INTO</command>和相关语句的行为。
+     </para>
+    </note>
+
+    <para>对于需要处理 SQL 查询的多个结果行的情况，请参见<xref linkend="plpgsql-records-iterating">。</para>
+
+   </sect2>
+
+   <sect2 id="plpgsql-statements-executing-dyn">
+    <title>执行动态命令</title>
+
+    <para>
+     很多时候你将想要在<application>PL/pgSQL</application>函数中产生动态命令，也就是每次执行中会涉及到不同表或不同数据类型的命令。<application>PL/pgSQL</application>通常对于命令所做的缓存计划尝试（如<xref linkend="plpgsql-plan-caching">中讨论）在这种情境下无法工作。要处理这一类问题，提供了<command>EXECUTE</command>语句：
+
+<synopsis>
+EXECUTE <replaceable class="command">command-string</replaceable> <optional> INTO <optional>STRICT</optional> <replaceable>target</replaceable> </optional> <optional> USING <replaceable>expression</replaceable> <optional>, ... </optional> </optional>;
+</synopsis>
+
+     其中<replaceable>command-string</replaceable>是一个能得到一个包含要被执行命令字符串（类型<type>text</type>）的表达式。可选的<replaceable>target</replaceable>是一个记录变量、一个行变量或者一个逗号分隔的简单变量以及记录/行字段的列表，该命令的结果将存储在其中。可选的<literal>USING</literal>表达式提供要被插入到该命令中的值。
+    </para>
+
+    <para>
+     在计算得到的命令字符串中，不会做<application>PL/pgSQL</application>变量的替换。任何所需的变量值必须在命令字符串被构造时被插入其中，或者你可以使用下面描述的参数。
+    </para>
+
+    <para>此外，通过 <command>EXECUTE</command> 执行的命令不会缓存计划，而是在每次运行该语句时重新规划。因此，可以在函数中动态构造命令字符串，对不同的表和列执行操作。</para>
+
+    <para>
+     <literal>INTO</literal>子句指定一个返回行的 SQL 命令的结果应该被赋值到哪里。如果提供了一个行变量或变量列表，它必须完全匹配查询命令结果的结构（当一个记录变量被提供时，它会自动把它自己配置为匹配结果结构）。如果返回多个行，只有第一个行会被赋值给<literal>INTO</literal>变量。如果没有返回行，NULL 会被赋值给<literal>INTO</literal>变量。如果没有指定<literal>INTO</literal>子句，该查询结果会被抛弃。
+    </para>
+
+    <para>
+     如果给出了<literal>STRICT</literal>选项，除非该查询刚好产生一行，否则将会报告一个错误。
+    </para>
+
+    <para>
+     命令字符串可以使用参数值，它们在命令中用<literal>$1</literal>、<literal>$2</literal>等引用。这些符号引用在<literal>USING</literal>子句中提供的值。这种方法通常比把数据值作为文本插入命令字符串更可取：它避免了将该值转换为文本以及转换回来的运行时负荷，并且它更不容易被 SQL 注入攻击，因为不需要引用或转义。一个示例是：
+<programlisting>
+EXECUTE 'SELECT count(*) FROM mytable WHERE inserted_by = $1 AND inserted &lt;= $2'
+   INTO c
+   USING checked_user, checked_date;
+</programlisting>
+    </para>
+
+    <para>注意，参数符号只能用于数据值 &mdash; 如果要使用动态确定的表名或列名，必须将其作为文本插入命令字符串。例如，如果前面的查询需要针对动态选择的表执行，可以这样写：<programlisting>
+EXECUTE 'SELECT count(*) FROM '
+    || tabname::regclass
+    || ' WHERE inserted_by = $1 AND inserted &lt;= $2'
+   INTO c
+   USING checked_user, checked_date;
+</programlisting>参数符号的另一个限制是，它们只能用于<command>SELECT</command>， <command>INSERT</command>， <command>UPDATE</command>以及<command>DELETE</command>命令。在其他语句类型（统称为工具语句）中，即使只是数据值，也必须以文本形式插入。</para>
+
+    <para>
+     在上面第一个示例中，带有一个简单的常量命令字符串和一些<literal>USING</literal>参数的<command>EXECUTE</command>命令在功能上等效于直接用<application>PL/pgSQL</application>写的命令，并且允许自动发生<application>PL/pgSQL</application>变量替换。重要的不同之处在于，<command>EXECUTE</command>会在每一次执行时根据当前的参数值重新计划该命令，而<application>PL/pgSQL</application>则可能创建一个通用计划并且将其缓存以便重用。在最佳计划强依赖于参数值的情况中，使用<command>EXECUTE</command>来明确地保证不会选择一个通用计划是很有帮助的。
+    </para>
+
+    <para>
+     <command>EXECUTE</command>目前不支持<command>SELECT INTO</command>。但是可以执行一个纯的<command>SELECT</command>命令并且指定<literal>INTO</literal>作为<command>EXECUTE</command>本身的一部分。
+    </para>
+
+   <note>
+    <para><application>PL/pgSQL</application>中的<command>EXECUTE</command>语句与<xref linkend="sql-execute">这一由<productname>PostgreSQL</productname>服务器支持的 SQL 语句无关。服务器的<command>EXECUTE</command>语句不能直接在<application>PL/pgSQL</application>函数中使用（并且也没有必要）。</para>
+   </note>
+
+   <example id="plpgsql-quote-literal-example">
+   <title>在动态查询中为值加引号</title>
+
+    <indexterm>
+     <primary>quote_ident</primary>
+     <secondary>在 PL/pgSQL 中使用</secondary>
+    </indexterm>
+
+    <indexterm>
+     <primary>quote_literal</primary>
+     <secondary>在 PL/pgSQL 中使用</secondary>
+    </indexterm>
+
+    <indexterm>
+     <primary>quote_nullable</primary>
+     <secondary>在 PL/pgSQL 中使用</secondary>
+    </indexterm>
+
+    <indexterm>
+     <primary>format</primary>
+     <secondary>在 PL/pgSQL 中使用</secondary>
+    </indexterm>
+
+    <para>
+     在使用动态命令时，经常需要处理单引号的转义。我们推荐在函数体中使用美元引用来引用固定文本。（如果你有未使用美元引用的旧代码，请参阅<xref linkend="plpgsql-quote-tips">中的概述；在把这类代码转换成更合理的写法时，它会帮你省下一些工夫。）
+    </para>
+
+    <para>
+     将被插入到构造出的查询中的动态值需要被小心地处理，因为它们
+     自身可能包含引号字符。一个示例（这假设你对函数整体使用了美元
+     引用，因此引号标记不需要被双写）：
+<programlisting>
+EXECUTE 'UPDATE tbl SET '
+        || quote_ident(colname)
+        || ' = '
+        || quote_literal(newvalue)
+        || ' WHERE key = '
+        || quote_literal(keyvalue);
+</programlisting>
+    </para>
+
+    <para>
+     这个示例展示了<function>quote_ident</function>和<function>quote_literal</function>函数的用法（见<xref linkend="functions-string">）。为了安全起见，在插入动态查询之前，包含列名或表名标识符的表达式应先传给<function>quote_ident</function>。在构造出的命令中应作为字符串字面量出现的值，则应传给<function>quote_literal</function>。这两个函数都会采取适当措施，分别返回用双引号或单引号括起来的输入文本，并正确转义其中嵌入的特殊字符。
+    </para>
+
+    <para>
+     由于<function>quote_literal</function>被标记为<literal>STRICT</literal>，因此用 null 参数调用时它总会返回 null。在上面的示例中，如果<literal>newvalue</literal>或<literal>keyvalue</literal>为 null，整个动态查询字符串都会变成 null，进而导致<command>EXECUTE</command>报错。可以通过使用<function>quote_nullable</function>函数来避免这个问题；它与<function>quote_literal</function>的工作方式相同，只是在用 null 参数调用时会返回字符串<literal>NULL</literal>。例如：
+<programlisting>
+EXECUTE 'UPDATE tbl SET '
+        || quote_ident(colname)
+        || ' = '
+        || quote_nullable(newvalue)
+        || ' WHERE key = '
+        || quote_nullable(keyvalue);
+</programlisting>
+     如果正在处理的参数值可能为空值，那么通常应该用<function>quote_nullable</function>来代替<function>quote_literal</function>。
+    </para>
+
+    <para>
+     通常，必须小心地确保查询中的空值不会产生意料之外的结果。例如如果<literal>keyvalue</literal>为空值，下面的<literal>WHERE</literal>子句
+<programlisting>
+'WHERE key = ' || quote_nullable(keyvalue)
+</programlisting>
+     永远不会成功，因为在<literal>=</literal>操作符中使用空值操作数得到的结果总是空值。如果想让空值像普通键值一样工作，你应该将上面的命令重写成
+<programlisting>
+'WHERE key IS NOT DISTINCT FROM ' || quote_nullable(keyvalue)
+</programlisting>
+     （目前，<literal>IS NOT DISTINCT FROM</literal>的处理效率不如<literal>=</literal>，因此只有在非常必要时才这样做。关于空值和<literal>IS DISTINCT</literal>的详细信息请见<xref linkend="functions-comparison">）。
+    </para>
+
+    <para>
+     请注意美元符号引用只对引用固定文本有用。尝试写出下面这个示例是一个非常糟糕的主意：
+<programlisting>
+EXECUTE 'UPDATE tbl SET '
+        || quote_ident(colname)
+        || ' = $$'
+        || newvalue
+        || '$$ WHERE key = '
+        || quote_literal(keyvalue);
+</programlisting>
+     因为如果<literal>newvalue</literal>的内容碰巧含有<literal>$$</literal>，那么这段代码就会出问题。同样的问题也适用于你选择的任何其他美元符号引用定界符。因此，要想安全地引用事先不知道的文本，<emphasis>必须</emphasis>恰当地使用<function>quote_literal</function>、<function>quote_nullable</function>或<function>quote_ident</function>。
+    </para>
+
+    <para>
+     动态 SQL 语句也可以使用<function>format</function>（见<xref
+     linkend="functions-string">）函数来安全地构造。例如：
+<programlisting>
+EXECUTE format('UPDATE tbl SET %I = %L WHERE key = %L', colname, newvalue, keyvalue);
+</programlisting>
+     <function>format</function>函数可以和
+     <literal>USING</literal>子句一起使用：
+<programlisting>
+EXECUTE format('UPDATE tbl SET %I = $1 WHERE key = $2', colname)
+   USING newvalue, keyvalue;
+</programlisting>
+     这种形式更高效，因为参数<literal>newvalue</literal>和<literal>keyvalue</literal>
+     不会被转换为文本。
+    </para>
+   </example>
+
+    <para>
+     动态命令和<command>EXECUTE</command>的一个更大的示例可以在<xref linkend="plpgsql-porting-ex2">中找到，它会构建并且执行一个<command>CREATE FUNCTION</command>命令来定义一个新的函数。
+    </para>
+   </sect2>
+
+   <sect2 id="plpgsql-statements-diagnostics">
+    <title>获取结果状态</title>
+
+    <para>
+     有好几种方法可以判断一条命令的效果。第一种方法是使用<command>GET DIAGNOSTICS</command>命令，其形式如下：
+
+<synopsis>
+GET <optional> CURRENT </optional> DIAGNOSTICS <replaceable>variable</replaceable> { = | := } <replaceable>item</replaceable> <optional> , ... </optional>;
+</synopsis>
+
+     这条命令允许检索系统状态指示符。<literal>CURRENT</literal>是一个噪声词（另见<xref linkend="plpgsql-exception-diagnostics">中的<command>GET STACKED DIAGNOSTICS</command>）。每个<replaceable>item</replaceable>是一个关键字， 它标识一个要被赋予给指定<replaceable>variable</replaceable>的状态值（变量应具有正确的数据类型来接收状态值）。<xref linkend="plpgsql-current-diagnostics-values">中展示了当前可用的状态项。冒号等号（<literal>:=</literal>）可以被用来取代 SQL 标准的<literal>=</literal>符号。例如：
+<programlisting>
+GET DIAGNOSTICS integer_var = ROW_COUNT;
+</programlisting>
+    </para>
+
+     <table id="plpgsql-current-diagnostics-values">
+      <title>可用的诊断项</title>
+      <tgroup cols="3">
+       <thead>
+
+        <row>
+         <entry>名称</entry>
+         <entry>类型</entry>
+         <entry>描述</entry>
+        </row>
+       </thead>
+       <tbody>
+        <row>
+         <entry><varname>ROW_COUNT</varname></entry>
+         <entry><type>integer</type></entry>
+         <entry>最近的<acronym>SQL</acronym>命令处理的行数</entry>
+        </row>
+        <row>
+         <entry><varname>RESULT_OID</varname></entry>
+         <entry><type>oid</type></entry>
+         <entry>最近一条<acronym>SQL</acronym>命令所插入的最后一行的 OID（仅在对具有 OID 的表执行<command>INSERT</command>命令后有用）</entry>
+        </row>
+        <row>
+         <entry><literal>PG_CONTEXT</literal></entry>
+         <entry><type>text</type></entry>
+         <entry>描述当前调用栈的文本行（见<xref linkend="plpgsql-call-stack">）</entry>
+        </row>
+       </tbody>
+      </tgroup>
+     </table>
+
+    <para>
+     第二种确定命令效果的方法是检查名为<literal>FOUND</literal>的特殊变量，类型为<type>boolean</type>。
+     在每次<application>PL/pgSQL</application>函数调用中，<literal>FOUND</literal>的初始值都是 false。
+     它由以下类型的语句设置：
+
+         <itemizedlist>
+          <listitem>
+           <para>
+            <command>SELECT INTO</command>语句在为目标赋上一行值时将<literal>FOUND</literal>设置为true，
+            如果没有返回行则设置为false。
+           </para>
+          </listitem>
+          <listitem>
+           <para>
+            <command>PERFORM</command>语句在生成（和丢弃）一个或多个行时将<literal>FOUND</literal>设置为true，
+            如果没有生成行则设置为false。
+           </para>
+          </listitem>
+          <listitem>
+           <para><command>UPDATE</command>、<command>INSERT</command>和<command>DELETE</command>语句在至少影响一行时将<literal>FOUND</literal>设置为真，如果没有影响行则设置为假。</para>
+          </listitem>
+          <listitem>
+           <para>
+            <command>FETCH</command>语句在返回行时将<literal>FOUND</literal>设置为true，
+            如果没有返回行则设置为false。
+           </para>
+          </listitem>
+          <listitem>
+           <para>
+            <command>MOVE</command>语句在成功重新定位游标时将<literal>FOUND</literal>设置为true，
+            否则设置为false。
+           </para>
+          </listitem>
+          <listitem>
+           <para>
+            <command>FOR</command>或<command>FOREACH</command>语句在迭代一次或多次时将
+            <literal>FOUND</literal>设置为true，否则设置为false。
+            当循环退出时，<literal>FOUND</literal>会按上述方式设置；
+            在循环执行过程中，<literal>FOUND</literal>不会被循环语句修改，
+            尽管它可能会被循环体内的其他语句执行修改。
+           </para>
+          </listitem>
+          <listitem>
+           <para>
+            <command>RETURN QUERY</command>和<command>RETURN QUERY
+            EXECUTE</command>语句在查询返回至少一行时将<literal>FOUND</literal>设置为true，
+            如果没有返回行则设置为false。
+           </para>
+          </listitem>
+         </itemizedlist>
+
+     其他<application>PL/pgSQL</application>语句不会改变<literal>FOUND</literal>的状态。
+     特别注意，<command>EXECUTE</command>会改变<command>GET DIAGNOSTICS</command>的输出，
+     但不会改变<literal>FOUND</literal>。
+    </para>
+
+    <para>
+     <literal>FOUND</literal>是每个<application>PL/pgSQL</application>函数的局部变量；任何对它的修改只影响当前的函数。
+    </para>
+
+   </sect2>
+
+   <sect2 id="plpgsql-statements-null">
+    <title>什么也不做</title>
+
+    <para>
+     有时一个什么也不做的占位语句也很有用。例如，它能够指示 if/then/else 链中故意留出的空分支。可以使用<command>NULL</command>语句达到这个目的：
+
+<synopsis>
+NULL;
+</synopsis>
+    </para>
+
+    <para>
+     例如，下面的两段代码是等价的：
+<programlisting>
+BEGIN
+    y := x / 0;
+EXCEPTION
+    WHEN division_by_zero THEN
+        NULL;  -- 忽略错误
+END;
+</programlisting>
+
+<programlisting>
+BEGIN
+    y := x / 0;
+EXCEPTION
+    WHEN division_by_zero THEN  -- 忽略错误
+END;
+</programlisting>
+     究竟使用哪一种取决于各人的喜好。
+    </para>
+
+    <note>
+
+     <para>
+      在 Oracle 的 PL/SQL 中，不允许出现空语句列表，并且因此在这种情况下<emphasis>必须</emphasis>使用<command>NULL</command>语句。而<application>PL/pgSQL</application>允许你什么也不写。
+     </para>
+    </note>
+
+   </sect2>
+  </sect1>
+
+  <sect1 id="plpgsql-control-structures">
+   <title>控制结构</title>
+
+   <para>
+    控制结构可能是<application>PL/pgSQL</application>中最有用的（以及最重要）的部分了。利用<application>PL/pgSQL</application>的控制结构，你可以以非常灵活而且强大的方法操纵<productname>PostgreSQL</productname>的数据。
+   </para>
+
+   <sect2 id="plpgsql-statements-returning">
+    <title>从函数返回</title>
+
+    <para>
+     有两个命令让我们能够从函数中返回数据：<command>RETURN</command>和<command>RETURN NEXT</command>。
+    </para>
+
+    <sect3>
+     <title><command>RETURN</command></title>
+
+<synopsis>
+RETURN <replaceable>expression</replaceable>;
+</synopsis>
+
+     <para>
+      带有一个表达式的<command>RETURN</command>用于终止函数并把<replaceable>expression</replaceable>的值返回给调用者。这种形式被用于不返回集合的<application>PL/pgSQL</application>函数。
+     </para>
+
+     <para>
+      如果函数返回的是标量类型，表达式结果会按照赋值部分的说明自动转换为函数的返回类型。但如果要返回一个复合（行）值，你必须写出一个恰好生成所需列集合的表达式。这可能需要显式类型转换。
+     </para>
+
+     <para>
+      如果你声明带输出参数的函数，那么就只需要写不带表达式的<command>RETURN</command>。输出参数变量的当前值将被返回。
+     </para>
+
+     <para>
+      如果你声明函数返回<type>void</type>，一个<command>RETURN</command>语句可以被用来提前退出函数；但是不要在<command>RETURN</command>后面写一个表达式。
+     </para>
+
+     <para>
+      一个函数的返回值不能是未定义。如果控制到达了函数最顶层块的末尾而没有碰到一个<command>RETURN</command>语句，那么会发生一个运行时错误。不过，这个限制不适用于带输出参数的函数以及返回<type>void</type>的函数。在这些情况中，如果顶层的块结束，将自动执行一个<command>RETURN</command>语句。
+     </para>
+
+     <para>
+      一些示例：
+
+<programlisting>
+-- 返回一个标量类型的函数
+RETURN 1 + 2;
+RETURN scalar_var;
+
+-- 返回一个复合类型的函数
+RETURN composite_type_var;
+RETURN (1, 2, 'three'::text);  -- 必须把列类型转换成正确的类型
+</programlisting>
+     </para>
+    </sect3>
+
+    <sect3>
+     <title><command>RETURN NEXT</command> 和 <command>RETURN QUERY</command></title>
+    <indexterm>
+     <primary>RETURN NEXT</primary>
+     <secondary>在 PL/pgSQL 中</secondary>
+    </indexterm>
+    <indexterm>
+     <primary>RETURN QUERY</primary>
+     <secondary>在 PL/pgSQL 中</secondary>
+    </indexterm>
+
+<synopsis>
+RETURN NEXT <replaceable>expression</replaceable>;
+RETURN QUERY <replaceable>query</replaceable>;
+RETURN QUERY EXECUTE <replaceable class="command">command-string</replaceable> <optional> USING <replaceable>expression</replaceable> <optional>, ... </optional> </optional>;
+</synopsis>
+
+     <para>
+      当 <application>PL/pgSQL</application> 函数被声明为返回 <literal>SETOF <replaceable>sometype</replaceable></literal> 时，返回过程会略有不同。在这种情况下，要返回的各个项通过一系列 <command>RETURN NEXT</command> 或 <command>RETURN QUERY</command> 命令指定，最后再用一个不带参数的 <command>RETURN</command> 命令表明函数已经执行完毕。<command>RETURN NEXT</command> 可用于标量和复合数据类型；对于复合结果类型，会返回完整的结果<quote>表</quote>。<command>RETURN QUERY</command> 会把查询执行结果追加到函数的结果集中。在同一个集合返回函数中，<command>RETURN NEXT</command> 和 <command>RETURN QUERY</command> 可以自由混用，此时它们的结果会被串接起来。
+     </para>
+
+     <para>
+      <command>RETURN NEXT</command>和<command>RETURN QUERY</command>实际上不会从函数中返回 &mdash; 它们简单地向函数的结果集中追加零或多行。然后会继续执行<application>PL/pgSQL</application>函数中的下一条语句。随着后继的<command>RETURN NEXT</command>和<command>RETURN QUERY</command>命令的执行，结果集就建立起来了。最后一个<command>RETURN</command>（应该没有参数）会导致控制退出该函数（或者你可以让控制到达函数的结尾）。
+     </para>
+
+     <para>
+      <command>RETURN QUERY</command>有一种变体<command>RETURN QUERY EXECUTE</command>，它可以动态指定要被执行的查询。可以通过<literal>USING</literal>向计算出的查询字符串插入参数表达式，这和在<command>EXECUTE</command>命令中的方式相同。
+     </para>
+
+     <para>
+      如果你声明函数带有输出参数，只需要写不带表达式的<command>RETURN NEXT</command>。在每一次执行时，输出参数变量的当前值将被保存下来用于最终返回为结果的一行。注意为了创建一个带有输出参数的集合返回函数，在有多个输出参数时，你必须声明函数为返回<literal>SETOF record</literal>；或者如果只有一个类型为<replaceable>sometype</replaceable>的输出参数时，声明函数为<literal>SETOF <replaceable>sometype</replaceable></literal>。
+     </para>
+
+     <para>
+      下面是一个使用<command>RETURN NEXT</command>的函数示例：
+
+<programlisting>
+CREATE TABLE foo (fooid INT, foosubid INT, fooname TEXT);
+INSERT INTO foo VALUES (1, 2, 'three');
+INSERT INTO foo VALUES (4, 5, 'six');
+
+CREATE OR REPLACE FUNCTION get_all_foo() RETURNS SETOF foo AS
+$BODY$
+DECLARE
+    r foo%rowtype;
+BEGIN
+    FOR r IN
+        SELECT * FROM foo WHERE fooid &gt; 0
+    LOOP
+        -- 这里可以做一些处理
+        RETURN NEXT r; -- 返回 SELECT 的当前行
+    END LOOP;
+    RETURN;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+SELECT * FROM get_all_foo();
+</programlisting>
+     </para>
+
+     <para>下面的函数示例使用了<command>RETURN QUERY</command>：
+
+<programlisting>
+CREATE FUNCTION get_available_flightid(date) RETURNS SETOF integer AS
+$BODY$
+BEGIN
+    RETURN QUERY SELECT flightid
+                   FROM flight
+                  WHERE flightdate >= $1
+                    AND flightdate < ($1 + 1);
+
+    -- Since execution is not finished, we can check whether rows were returned
+    -- and raise exception if not.
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'No flight at %.', $1;
+    END IF;
+
+    RETURN;
+ END
+$BODY$
+LANGUAGE plpgsql;
+
+-- Returns available flights or raises exception if there are no
+-- available flights.
+SELECT * FROM get_available_flightid(CURRENT_DATE);
+</programlisting>
+     </para>
+
+     <note>
+
+      <para>
+       如上所述，目前<command>RETURN NEXT</command>和<command>RETURN QUERY</command>的实现在从函数返回之前会把整个结果集都保存起来。这意味着如果一个<application>PL/pgSQL</application>函数生成一个非常大的结果集，性能可能会很差：数据将被写到磁盘上以避免内存耗尽，但是函数本身在整个结果集都生成之前不会退出。将来的<application>PL/pgSQL</application>版本可能会允许用户定义没有这种限制的集合返回函数。目前，数据开始被写入到磁盘的时机由配置变量<xref linkend="guc-work-mem">控制。拥有足够内存来存储大型结果集的管理员可以考虑增大这个参数。
+      </para>
+     </note>
+    </sect3>
+   </sect2>
+
+   <sect2 id="plpgsql-conditionals">
+    <title>条件语句</title>
+
+    <para>
+     <command>IF</command> 和 <command>CASE</command> 语句让你可以根据条件执行不同的命令。<application>PL/pgSQL</application> 有三种形式的 <command>IF</command>：
+    <itemizedlist>
+     <listitem>
+      <para><literal>IF ... THEN ... END IF</literal></para>
+     </listitem>
+     <listitem>
+      <para><literal>IF ... THEN ... ELSE ... END IF</literal></para>
+     </listitem>
+     <listitem>
+      <para><literal>IF ... THEN ... ELSIF ... THEN ... ELSE ... END IF</literal></para>
+     </listitem>
+    </itemizedlist>
+
+    以及两种形式的<command>CASE</command>：
+    <itemizedlist>
+     <listitem>
+      <para><literal>CASE ... WHEN ... THEN ... ELSE ... END CASE</literal></para>
+     </listitem>
+     <listitem>
+      <para><literal>CASE WHEN ... THEN ... ELSE ... END CASE</literal></para>
+     </listitem>
+    </itemizedlist>
+    </para>
+
+    <sect3>
+     <title><literal>IF-THEN</literal></title>
+
+<synopsis>
+IF <replaceable>boolean-expression</replaceable> THEN
+    <replaceable>statements</replaceable>
+END IF;
+</synopsis>
+
+       <para>
+        <literal>IF-THEN</literal>语句是<literal>IF</literal>的最简单形式。 如果条件为真，在<literal>THEN</literal>和<literal>END IF</literal>之间的语句将被执行。否则，将忽略它们。
+       </para>
+
+       <para>
+        示例：
+<programlisting>
+IF v_user_id &lt;&gt; 0 THEN
+    UPDATE users SET email = v_email WHERE user_id = v_user_id;
+END IF;
+</programlisting>
+       </para>
+     </sect3>
+
+     <sect3>
+      <title><literal>IF-THEN-ELSE</literal></title>
+
+<synopsis>
+IF <replaceable>boolean-expression</replaceable> THEN
+    <replaceable>statements</replaceable>
+ELSE
+    <replaceable>statements</replaceable>
+END IF;
+</synopsis>
+
+       <para>
+        <literal>IF-THEN-ELSE</literal>语句对<literal>IF-THEN</literal>进行了增加，它让你能够指定一组在条件不为真时应该被执行的语句（注意这也包括条件为 NULL 的情况）。
+       </para>
+
+       <para>
+        示例：
+<programlisting>
+IF parentid IS NULL OR parentid = ''
+THEN
+    RETURN fullname;
+ELSE
+    RETURN hp_true_filename(parentid) || '/' || fullname;
+END IF;
+</programlisting>
+
+<programlisting>
+IF v_count &gt; 0 THEN
+    INSERT INTO users_count (count) VALUES (v_count);
+    RETURN 't';
+ELSE
+    RETURN 'f';
+END IF;
+</programlisting>
+     </para>
+    </sect3>
+
+     <sect3>
+      <title><literal>IF-THEN-ELSIF</literal></title>
+
+<synopsis>
+IF <replaceable>boolean-expression</replaceable> THEN
+    <replaceable>statements</replaceable>
+<optional> ELSIF <replaceable>boolean-expression</replaceable> THEN
+    <replaceable>statements</replaceable>
+<optional> ELSIF <replaceable>boolean-expression</replaceable> THEN
+    <replaceable>statements</replaceable>
+    ...
+</optional>
+</optional>
+<optional> ELSE
+    <replaceable>statements</replaceable> </optional>
+END IF;
+</synopsis>
+
+       <para>
+        有时会有多于两种选择。<literal>IF-THEN-ELSIF</literal>则提供了一个简便的方法来检查多个条件。<literal>IF</literal>条件会被一个接一个测试，直到找到第一个为真的。然后执行相关语句，然后控制会被交给<literal>END IF</literal>之后的下一个语句（后续的任何<literal>IF</literal>条件<emphasis>不会</emphasis>被测试）。如果没有一个<literal>IF</literal>条件为真，那么<literal>ELSE</literal>块（如果有）将被执行。
+       </para>
+
+       <para>
+        这里有一个示例：
+
+<programlisting>
+IF number = 0 THEN
+    result := 'zero';
+ELSIF number &gt; 0 THEN
+    result := 'positive';
+ELSIF number &lt; 0 THEN
+    result := 'negative';
+ELSE
+    -- 嗯，唯一的其他可能性是 number 为 null
+    result := 'NULL';
+END IF;
+</programlisting>
+       </para>
+
+       <para>
+        关键词<literal>ELSIF</literal>也可以被拼写成<literal>ELSEIF</literal>。
+       </para>
+
+       <para>
+        另一个可以完成相同任务的方法是嵌套<literal>IF-THEN-ELSE</literal>语句，如下例：
+
+<programlisting>
+IF demo_row.sex = 'm' THEN
+    pretty_sex := 'man';
+ELSE
+    IF demo_row.sex = 'f' THEN
+        pretty_sex := 'woman';
+    END IF;
+END IF;
+</programlisting>
+       </para>
+
+       <para>
+        不过，这种方法需要为每个<literal>IF</literal>都写一个匹配的<literal>END IF</literal>，因此当有很多选择时，这种方法比使用<literal>ELSIF</literal>要麻烦得多。
+       </para>
+     </sect3>
+
+     <sect3>
+      <title>简单 <literal>CASE</literal></title>
+
+<synopsis>
+CASE <replaceable>search-expression</replaceable>
+    WHEN <replaceable>expression</replaceable> <optional>, <replaceable>expression</replaceable> <optional> ... </optional></optional> THEN
+      <replaceable>statements</replaceable>
+  <optional> WHEN <replaceable>expression</replaceable> <optional>, <replaceable>expression</replaceable> <optional> ... </optional></optional> THEN
+      <replaceable>statements</replaceable>
+    ... </optional>
+  <optional> ELSE
+      <replaceable>statements</replaceable> </optional>
+END CASE;
+</synopsis>
+
+      <para>
+       <command>CASE</command> 的简单形式提供了基于操作数等值判断的条件执行。<replaceable>search-expression</replaceable> 会被计算一次，然后依次与各个 <literal>WHEN</literal> 子句中的 <replaceable>expression</replaceable> 比较。如果找到匹配，就执行相应的 <replaceable>statements</replaceable>，随后控制转到 <literal>END CASE</literal> 之后的下一条语句（后续的 <literal>WHEN</literal> 表达式不会再被计算）。如果没有找到匹配，则执行 <literal>ELSE</literal> <replaceable>statements</replaceable>；但如果没有 <literal>ELSE</literal>，则会抛出 <literal>CASE_NOT_FOUND</literal> 异常。
+      </para>
+
+      <para>
+       这里是一个简单的示例：
+
+<programlisting>
+CASE x
+    WHEN 1, 2 THEN
+        msg := 'one or two';
+    ELSE
+        msg := 'other value than one or two';
+END CASE;
+</programlisting>
+      </para>
+     </sect3>
+
+     <sect3>
+      <title>搜索式 <literal>CASE</literal></title>
+
+<synopsis>
+CASE
+    WHEN <replaceable>boolean-expression</replaceable> THEN
+      <replaceable>statements</replaceable>
+  <optional> WHEN <replaceable>boolean-expression</replaceable> THEN
+      <replaceable>statements</replaceable>
+    ... </optional>
+  <optional> ELSE
+      <replaceable>statements</replaceable> </optional>
+END CASE;
+</synopsis>
+
+      <para>
+       <command>CASE</command>的搜索式形式根据布尔表达式的真假进行条件执行。每个<literal>WHEN</literal>子句的<replaceable>boolean-expression</replaceable>都会依次求值，直到找到一个结果为<literal>true</literal>的表达式。然后执行相应的<replaceable>statements</replaceable>，控制接着转到<literal>END CASE</literal>之后的下一条语句。（后续的<literal>WHEN</literal>表达式不会再被求值。）如果没有找到为真的结果，就执行<literal>ELSE</literal> <replaceable>statements</replaceable>；但如果不存在<literal>ELSE</literal>，则会抛出<literal>CASE_NOT_FOUND</literal>异常。
+      </para>
+
+      <para>
+       这里是一个示例：
+
+<programlisting>
+CASE
+    WHEN x BETWEEN 0 AND 10 THEN
+        msg := 'value is between zero and ten';
+    WHEN x BETWEEN 11 AND 20 THEN
+        msg := 'value is between eleven and twenty';
+END CASE;
+</programlisting>
+      </para>
+
+      <para>这种形式的<command>CASE</command>与<literal>IF-THEN-ELSIF</literal>完全等价，唯一的区别是：如果执行到被省略的<literal>ELSE</literal>子句，就会报错，而不是简单地什么也不做。</para>
+
+     </sect3>
+   </sect2>
+
+   <sect2 id="plpgsql-control-structures-loops">
+    <title>简单循环</title>
+
+    <indexterm zone="plpgsql-control-structures-loops">
+     <primary>循环</primary>
+     <secondary>在 PL/pgSQL 中</secondary>
+    </indexterm>
+
+    <para>
+     使用<literal>LOOP</literal>、<literal>EXIT</literal>、<literal>CONTINUE</literal>、<literal>WHILE</literal>、<literal>FOR</literal>和<literal>FOREACH</literal>语句，你可以安排<application>PL/pgSQL</application>函数重复一系列命令。
+    </para>
+
+    <sect3>
+     <title><literal>LOOP</literal></title>
+
+<synopsis>
+<optional> &lt;&lt;<replaceable>label</replaceable>&gt;&gt; </optional>
+LOOP
+    <replaceable>statements</replaceable>
+END LOOP <optional> <replaceable>label</replaceable> </optional>;
+</synopsis>
+
+     <para>
+      <literal>LOOP</literal>定义一个无条件的循环，它会无限重复直到被<literal>EXIT</literal>或<command>RETURN</command>语句终止。可选的<replaceable>label</replaceable>可以被<literal>EXIT</literal>和<literal>CONTINUE</literal>语句用在嵌套循环中指定这些语句引用的是哪一层循环。
+     </para>
+    </sect3>
+
+     <sect3>
+      <title><literal>EXIT</literal></title>
+
+     <indexterm>
+      <primary>EXIT</primary>
+      <secondary>在 PL/pgSQL 中</secondary>
+     </indexterm>
+
+<synopsis>
+EXIT <optional> <replaceable>label</replaceable> </optional> <optional> WHEN <replaceable>boolean-expression</replaceable> </optional>;
+</synopsis>
+
+       <para>
+        如果没有给出<replaceable>label</replaceable>，那么最内层的循环会被终止，然后跟在<literal>END LOOP</literal>后面的语句会被执行。如果给出了<replaceable>label</replaceable>，那么它必须是当前或者更高层的嵌套循环或者语句块的标签。然后该命名循环或块就会被终止，并且控制会转移到该循环/块相应的<literal>END</literal>之后的语句上。
+       </para>
+
+       <para>
+        如果指定了<literal>WHEN</literal>，只有<replaceable>boolean-expression</replaceable>为真时才会发生循环退出。否则，控制会转移到<literal>EXIT</literal>之后的语句。
+       </para>
+
+       <para>
+        <literal>EXIT</literal>可以被用在所有类型的循环中，它并不限于在无条件循环中使用。
+       </para>
+
+       <para>
+        与 <literal>BEGIN</literal> 块一起使用时，<literal>EXIT</literal> 会把控制转交给该块结束后的下一条语句。需要注意的是，为此必须使用标签；未加标签的 <literal>EXIT</literal> 永远不会被视为匹配某个 <literal>BEGIN</literal> 块。这与 <productname>PostgreSQL</productname> 8.4 之前的版本不同，旧版本允许未加标签的 <literal>EXIT</literal> 匹配 <literal>BEGIN</literal> 块。
+       </para>
+
+       <para>
+        示例：
+<programlisting>
+LOOP
+    -- 一些计算
+    IF count &gt; 0 THEN
+        EXIT;  -- 退出循环
+    END IF;
+END LOOP;
+
+LOOP
+    -- 一些计算
+    EXIT WHEN count &gt; 0;  -- 和前一个示例相同的结果
+END LOOP;
+
+&lt;&lt;ablock&gt;&gt;
+BEGIN
+    -- 一些计算
+    IF stocks &gt; 100000 THEN
+        EXIT ablock;  -- 导致从 BEGIN 块中退出
+    END IF;
+    -- 当stocks &gt; 100000时，这里的计算将被跳过
+END;
+</programlisting>
+       </para>
+     </sect3>
+
+     <sect3>
+      <title><literal>CONTINUE</literal></title>
+
+     <indexterm>
+      <primary>CONTINUE</primary>
+      <secondary>在 PL/pgSQL 中</secondary>
+     </indexterm>
+
+<synopsis>
+CONTINUE <optional> <replaceable>label</replaceable> </optional> <optional> WHEN <replaceable>boolean-expression</replaceable> </optional>;
+</synopsis>
+
+       <para>
+        如果没有给出<replaceable>label</replaceable>，最内层循环的下一次迭代会开始。也就是，循环体中剩余的所有语句将被跳过，并且控制会返回到循环控制表达式（如果有）来决定是否需要另一次循环迭代。如果<replaceable>label</replaceable>存在，它指定应该继续执行的循环的标签。
+       </para>
+
+       <para>
+        如果指定了<literal>WHEN</literal>，该循环的下一次迭代只有在<replaceable>boolean-expression</replaceable>为真时才会开始。否则，控制会传递给<literal>CONTINUE</literal>后面的语句。
+       </para>
+
+       <para>
+        <literal>CONTINUE</literal>可以被用在所有类型的循环中，它并不限于在无条件循环中使用。
+       </para>
+
+       <para>
+        示例：
+<programlisting>
+LOOP
+    -- 一些计算
+    EXIT WHEN count &gt; 100;
+    CONTINUE WHEN count &lt; 50;
+    -- 一些用于 count IN [50 .. 100] 的计算
+END LOOP;
+</programlisting>
+       </para>
+     </sect3>
+
+
+     <sect3>
+      <title><literal>WHILE</literal></title>
+
+     <indexterm>
+      <primary>WHILE</primary>
+      <secondary>在 PL/pgSQL 中</secondary>
+     </indexterm>
+
+<synopsis>
+<optional> &lt;&lt;<replaceable>label</replaceable>&gt;&gt; </optional>
+WHILE <replaceable>boolean-expression</replaceable> LOOP
+    <replaceable>statements</replaceable>
+END LOOP <optional> <replaceable>label</replaceable> </optional>;
+</synopsis>
+
+       <para>
+        只要<replaceable>boolean-expression</replaceable>被计算为真，<literal>WHILE</literal>语句就会重复一个语句序列。在每次进入到循环体之前都会检查该表达式。
+       </para>
+
+       <para>
+        例如：
+<programlisting>
+WHILE amount_owed &gt; 0 AND gift_certificate_balance &gt; 0 LOOP
+    -- 这里是一些计算
+END LOOP;
+
+WHILE NOT done LOOP
+    -- 这里是一些计算
+END LOOP;
+</programlisting>
+       </para>
+     </sect3>
+
+     <sect3 id="plpgsql-integer-for">
+
+      <title><literal>FOR</literal>（整型变体）</title>
+
+<synopsis>
+<optional> &lt;&lt;<replaceable>label</replaceable>&gt;&gt; </optional>
+FOR <replaceable>name</replaceable> IN <optional> REVERSE </optional> <replaceable>expression</replaceable> .. <replaceable>expression</replaceable> <optional> BY <replaceable>expression</replaceable> </optional> LOOP
+    <replaceable>statements</replaceable>
+END LOOP <optional> <replaceable>label</replaceable> </optional>;
+</synopsis>
+
+       <para>
+        这种形式的<literal>FOR</literal>会创建一个在一个整数范围上迭代的循环。变量<replaceable>name</replaceable>会自动定义为类型<type>integer</type>并且只在循环内存在（任何该变量名的现有定义在此循环内都将被忽略）。给出范围上下界的两个表达式在进入循环的时候计算一次。如果没有指定<literal>BY</literal>子句，迭代步长为 1，否则步长是<literal>BY</literal>中指定的值，该值也只在循环进入时计算一次。如果指定了<literal>REVERSE</literal>，那么在每次迭代后会减去步长，而不是加上步长。
+       </para>
+
+       <para>
+        整数<literal>FOR</literal>循环的一些示例：
+<programlisting>
+FOR i IN 1..10 LOOP
+    -- i 在循环中将取值 1,2,3,4,5,6,7,8,9,10
+END LOOP;
+
+FOR i IN REVERSE 10..1 LOOP
+    -- i 在循环中将取值 10,9,8,7,6,5,4,3,2,1
+END LOOP;
+
+FOR i IN REVERSE 10..1 BY 2 LOOP
+    -- i 在循环中将取值 10,8,6,4,2
+END LOOP;
+</programlisting>
+       </para>
+
+       <para>
+        如果下界大于上界（或者在<literal>REVERSE</literal>情况下是小于），循环体根本不会被执行。而且不会抛出任何错误。
+       </para>
+
+       <para>
+        如果一个<replaceable>label</replaceable>被附加到<literal>FOR</literal>循环，那么整数循环变量可以用一个使用那个<replaceable>label</replaceable>的限定名引用。
+       </para>
+     </sect3>
+   </sect2>
+
+   <sect2 id="plpgsql-records-iterating">
+    <title>遍历查询结果</title>
+
+    <para>
+     使用一种不同类型的<literal>FOR</literal>循环，你可以通过一个查询的结果进行迭代并且操纵相应的数据。语法是：
+<synopsis>
+<optional> &lt;&lt;<replaceable>label</replaceable>&gt;&gt; </optional>
+FOR <replaceable>target</replaceable> IN <replaceable>query</replaceable> LOOP
+    <replaceable>statements</replaceable>
+END LOOP <optional> <replaceable>label</replaceable> </optional>;
+</synopsis>
+     <replaceable>target</replaceable> 可以是记录变量、行变量，或者由标量变量组成的逗号分隔列表。<replaceable>query</replaceable> 产生的每一行都会依次赋给 <replaceable>target</replaceable>，并为每一行执行一次循环体。下面是一个示例：
+<programlisting>
+CREATE FUNCTION refresh_mviews() RETURNS integer AS $$
+DECLARE
+    mviews RECORD;
+BEGIN
+    RAISE NOTICE 'Refreshing all materialized views...';
+
+    FOR mviews IN
+       SELECT n.nspname AS mv_schema,
+              c.relname AS mv_name,
+              pg_catalog.pg_get_userbyid(c.relowner) AS owner
+         FROM pg_catalog.pg_class c
+    LEFT JOIN pg_catalog.pg_namespace n ON (n.oid = c.relnamespace)
+        WHERE c.relkind = 'm'
+     ORDER BY 1
+    LOOP
+
+        -- Now "mviews" has one record with information about the materialized view
+
+        RAISE NOTICE 'Refreshing materialized view %.% (owner: %)...',
+                     quote_ident(mviews.mv_schema),
+                     quote_ident(mviews.mv_name),
+                     quote_ident(mviews.owner);
+        EXECUTE 'REFRESH MATERIALIZED VIEW ' || quote_ident(mviews.mv_schema)
+                      || '.' || quote_ident(mviews.mv_name);
+    END LOOP;
+
+    RAISE NOTICE 'Done refreshing materialized views.';
+    RETURN 1;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+
+     如果循环被一个<literal>EXIT</literal>语句终止，那么在循环之后你仍然可以访问最后被赋予的行值。
+    </para>
+
+    <para>
+     在这类 <literal>FOR</literal> 语句中使用的 <replaceable>query</replaceable>，可以是任何向调用者返回行的 SQL 命令：最常见的是 <command>SELECT</command>，但也可以是带 <literal>RETURNING</literal> 子句的 <command>INSERT</command>、<command>UPDATE</command> 或 <command>DELETE</command>。某些工具命令，如 <command>EXPLAIN</command>，也可以用于此处。
+    </para>
+
+    <para><application>PL/pgSQL</application>变量会被替换到查询文本中，并且如<xref linkend="plpgsql-var-subst">和<xref linkend="plpgsql-plan-caching">中详细讨论的，查询计划会被缓存以用于可能的重用。</para>
+
+    <para>
+     <literal>FOR-IN-EXECUTE</literal>语句是在行上迭代的另一种方式：
+<synopsis>
+<optional> &lt;&lt;<replaceable>label</replaceable>&gt;&gt; </optional>
+FOR <replaceable>target</replaceable> IN EXECUTE <replaceable>text_expression</replaceable> <optional> USING <replaceable>expression</replaceable> <optional>, ... </optional> </optional> LOOP
+    <replaceable>statements</replaceable>
+END LOOP <optional> <replaceable>label</replaceable> </optional>;
+</synopsis>
+     这个示例类似前面的形式，只不过源查询被指定为一个字符串表达式，在每次进入<literal>FOR</literal>循环时都会计算它并且重新计划。这允许程序员在一个预先计划好了的命令的速度和一个动态命令的灵活性之间进行选择，就像一个纯<command>EXECUTE</command>语句那样。与<command>EXECUTE</command>一样，可以通过<literal>USING</literal>将参数值插入到动态命令中。
+    </para>
+
+    <para>
+     另一种指定要对其结果迭代的查询的方式是将它声明为一个游标。这会在<xref linkend="plpgsql-cursor-for-loop">中描述。
+    </para>
+   </sect2>
+
+   <sect2 id="plpgsql-foreach-array">
+    <title>遍历数组</title>
+
+    <para>这种<literal>FOREACH</literal>循环与<literal>FOR</literal>循环很相似，但它遍历的是数组值中的元素，而不是 SQL 查询返回的行。（一般来说，<literal>FOREACH</literal>旨在遍历复合值表达式的组成部分；未来可能会增加用于遍历数组以外复合值的变体。）用于遍历数组的<literal>FOREACH</literal>语句为：<synopsis>
+<optional> &lt;&lt;<replaceable>label</replaceable>&gt;&gt; </optional>
+FOREACH <replaceable>target</replaceable> <optional> SLICE <replaceable>number</replaceable> </optional> IN ARRAY <replaceable>expression</replaceable> LOOP
+    <replaceable>statements</replaceable>
+END LOOP <optional> <replaceable>label</replaceable> </optional>;
+</synopsis>
+    </para>
+
+    <para>
+     如果没有写<literal>SLICE</literal>，或者指定的是<literal>SLICE 0</literal>，循环就会遍历计算<replaceable>expression</replaceable>所得数组的各个独立元素。<replaceable>target</replaceable>变量会依次接收每个元素值，并对每个元素执行一次循环体。下面是一个遍历整数数组元素的示例：
+
+<programlisting>
+CREATE FUNCTION sum(int[]) RETURNS int8 AS $$
+DECLARE
+  s int8 := 0;
+  x int;
+BEGIN
+  FOREACH x IN ARRAY $1
+  LOOP
+    s := s + x;
+  END LOOP;
+  RETURN s;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+
+     元素会按存储顺序访问，而不管数组有多少维。尽管<replaceable>target</replaceable>通常只是单个变量，但在遍历复合值（记录）数组时，它也可以是一个变量列表。在这种情况下，每个数组元素都会按复合值的连续列给这些变量赋值。
+    </para>
+
+    <para>
+     当<literal>SLICE</literal>为正值时，<literal>FOREACH</literal>遍历的是数组切片，而不是单个元素。<literal>SLICE</literal>值必须是一个不大于数组维数的整数常量。<replaceable>target</replaceable>变量必须是数组，并且它会依次接收数组值的各个切片，其中每个切片都具有<literal>SLICE</literal>指定的维数。下面是一个遍历一维切片的示例：
+
+<programlisting>
+CREATE FUNCTION scan_rows(int[]) RETURNS void AS $$
+DECLARE
+  x int[];
+BEGIN
+  FOREACH x SLICE 1 IN ARRAY $1
+  LOOP
+    RAISE NOTICE 'row = %', x;
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT scan_rows(ARRAY[[1,2,3],[4,5,6],[7,8,9],[10,11,12]]);
+
+NOTICE:  row = {1,2,3}
+NOTICE:  row = {4,5,6}
+NOTICE:  row = {7,8,9}
+NOTICE:  row = {10,11,12}
+</programlisting>
+    </para>
+   </sect2>
+
+   <sect2 id="plpgsql-error-trapping">
+    <title>捕获错误</title>
+
+    <indexterm>
+     <primary>异常</primary>
+     <secondary>在 PL/pgSQL 中</secondary>
+    </indexterm>
+
+    <para>
+     默认情况下，<application>PL/pgSQL</application>函数中发生的任何错误都会中止函数及其外围事务的执行。你可以使用带有<literal>EXCEPTION</literal>子句的<command>BEGIN</command>块来捕获错误并从中恢复。其语法是在普通<command>BEGIN</command>块语法上的扩展：
+
+<synopsis>
+<optional> &lt;&lt;<replaceable>label</replaceable>&gt;&gt; </optional>
+<optional> DECLARE
+    <replaceable>declarations</replaceable> </optional>
+BEGIN
+    <replaceable>statements</replaceable>
+EXCEPTION
+    WHEN <replaceable>condition</replaceable> <optional> OR <replaceable>condition</replaceable> ... </optional> THEN
+        <replaceable>handler_statements</replaceable>
+    <optional> WHEN <replaceable>condition</replaceable> <optional> OR <replaceable>condition</replaceable> ... </optional> THEN
+          <replaceable>handler_statements</replaceable>
+      ... </optional>
+END;
+</synopsis>
+    </para>
+
+    <para>
+     如果没有发生错误，这种形式的块只是简单地执行所有<replaceable>statements</replaceable>， 并且接着控制转到<literal>END</literal>之后的下一个语句。但是如果在<replaceable>statements</replaceable>内发生了一个错误，则会放弃对<replaceable>statements</replaceable>的进一步处理，然后控制会转到<literal>EXCEPTION</literal>列表。系统会在列表中寻找匹配所发生错误的第一个<replaceable>condition</replaceable>。如果找到一个匹配，则执行对应的<replaceable>handler_statements</replaceable>，并且接着把控制转到<literal>END</literal>之后的下一个语句。如果没有找到匹配，该错误就会传播出去，就好像根本没有<literal>EXCEPTION</literal>一样：错误可以被一个带有<literal>EXCEPTION</literal>的外围块捕捉，如果没有这样的块则中止该函数的处理。
+    </para>
+
+    <para>
+     <replaceable>condition</replaceable>的名字可以是<xref linkend="errcodes-appendix">中显示的任何名字。一个分类名匹配其中所有的错误。特殊的条件名<literal>OTHERS</literal>匹配除了<literal>QUERY_CANCELED</literal>之外的所有错误类型（虽然可能但通常并不明智，还是可以用名字捕获<literal>QUERY_CANCELED</literal>）。条件名是大小写无关的。一个错误条件也可以通过<literal>SQLSTATE</literal>代码指定，例如以下是等价的：
+<programlisting>
+WHEN division_by_zero THEN ...
+WHEN SQLSTATE '22012' THEN ...
+</programlisting>
+    </para>
+
+    <para>
+     如果在选中的<replaceable>handler_statements</replaceable>内发生了新的错误，那么它不能被这个<literal>EXCEPTION</literal>子句捕获，而是被传播出去。一个外层的<literal>EXCEPTION</literal>子句可以捕获它。
+    </para>
+
+    <para>
+     当一个错误被<literal>EXCEPTION</literal>捕获时，<application>PL/pgSQL</application>函数的局部变量会保持错误发生时的值，但是该块中所有对持久数据库状态的改变都会被回滚。例如，考虑这个片段：
+
+<programlisting>
+INSERT INTO mytab(firstname, lastname) VALUES('Tom', 'Jones');
+BEGIN
+    UPDATE mytab SET firstname = 'Joe' WHERE lastname = 'Jones';
+    x := x + 1;
+    y := x / 0;
+EXCEPTION
+    WHEN division_by_zero THEN
+        RAISE NOTICE 'caught division_by_zero';
+        RETURN x;
+END;
+</programlisting>
+
+     当控制到达对<literal>y</literal>赋值的地方时，它会带着一个<literal>division_by_zero</literal>错误失败。这个错误将被<literal>EXCEPTION</literal>子句捕获。而在<command>RETURN</command>语句中返回的值将是<literal>x</literal>增加过后的值。但是<command>UPDATE</command>命令的效果将已经被回滚。不过，在该块之前的<command>INSERT</command>将不会被回滚，因此最终的结果是数据库包含<literal>Tom Jones</literal>但不包含<literal>Joe Jones</literal>。
+    </para>
+
+    <tip>
+     <para>
+      进入和退出一个包含<literal>EXCEPTION</literal>子句的块要比不包含该子句的块开销大得多。因此，只在必要的时候使用<literal>EXCEPTION</literal>。
+     </para>
+    </tip>
+
+    <example id="plpgsql-upsert-example">
+
+    <title><command>UPDATE</command>/<command>INSERT</command>的异常</title>
+
+    <para>
+    这个示例使用异常处理来酌情执行<command>UPDATE</command>或
+    <command>INSERT</command>：
+
+<programlisting>
+CREATE TABLE db (a INT PRIMARY KEY, b TEXT);
+
+CREATE FUNCTION merge_db(key INT, data TEXT) RETURNS VOID AS
+$$
+BEGIN
+    LOOP
+        -- 先尝试更新该键
+        UPDATE db SET b = data WHERE a = key;
+        IF found THEN
+            RETURN;
+        END IF;
+        -- 该键不存在，因此尝试插入
+        -- 如果其他某人并发地插入同一个键，
+        -- 就可能发生违反唯一约束的错误
+        BEGIN
+            INSERT INTO db(a,b) VALUES (key, data);
+            RETURN;
+        EXCEPTION WHEN unique_violation THEN
+            -- 什么也不做，并且循环再次尝试 UPDATE
+        END;
+    END LOOP;
+END;
+$$
+LANGUAGE plpgsql;
+
+SELECT merge_db(1, 'david');
+SELECT merge_db(1, 'dennis');
+</programlisting>
+
+     这段代码假定<literal>unique_violation</literal>错误是<command>INSERT</command>造成，并且不是由该表上一个触发器函数中的<command>INSERT</command>导致。如果在该表上有多于一个唯一索引，也可能会发生不正确的行为，因为不管哪个索引导致该错误它都将重试该操作。通过接下来要讨论的特性来检查被捕获的错误是否为所预期的会更安全。
+    </para>
+    </example>
+
+   <sect3 id="plpgsql-exception-diagnostics">
+    <title>获取错误信息</title>
+
+    <para>
+     异常处理器经常需要识别所发生的具体错误。有两种方法可以获取<application>PL/pgSQL</application>中当前异常的信息：特殊变量和<command>GET STACKED DIAGNOSTICS</command>命令。
+    </para>
+
+    <para>
+     在一个异常处理器内，特殊变量<varname>SQLSTATE</varname>包含了对应于被抛出异常的错误代码（可能的错误代码列表见<xref linkend="errcodes-table">）。特殊变量<varname>SQLERRM</varname>包含与该异常相关的错误消息。这些变量在异常处理器外是未定义的。
+    </para>
+
+    <para>
+     在一个异常处理器内，我们也可以用<command>GET STACKED DIAGNOSTICS</command>命令检索有关当前异常的信息，该命令的形式为：
+
+<synopsis>
+GET STACKED DIAGNOSTICS <replaceable>variable</replaceable> { = | := } <replaceable>item</replaceable> <optional> , ... </optional>;
+</synopsis>
+
+     每个<replaceable>item</replaceable>是一个关键词，它标识一个被赋予给指定<replaceable>variable</replaceable>（应该具有接收该值的正确数据类型）的状态值。<xref linkend="plpgsql-exception-diagnostics-values">中显示了当前可用的状态项。
+    </para>
+
+     <table id="plpgsql-exception-diagnostics-values">
+      <title>错误诊断项</title>
+      <tgroup cols="3">
+       <thead>
+
+        <row>
+         <entry>名称</entry>
+         <entry>类型</entry>
+         <entry>描述</entry>
+        </row>
+       </thead>
+       <tbody>
+
+        <row>
+         <entry><literal>RETURNED_SQLSTATE</literal></entry>
+         <entry><type>text</type></entry>
+         <entry>该异常的 SQLSTATE 错误代码</entry>
+        </row>
+
+        <row>
+         <entry><literal>COLUMN_NAME</literal></entry>
+         <entry><type>text</type></entry>
+         <entry>与异常相关的列名</entry>
+        </row>
+
+        <row>
+         <entry><literal>CONSTRAINT_NAME</literal></entry>
+         <entry><type>text</type></entry>
+         <entry>与异常相关的约束名</entry>
+        </row>
+
+        <row>
+         <entry><literal>PG_DATATYPE_NAME</literal></entry>
+         <entry><type>text</type></entry>
+         <entry>与异常相关的数据类型名</entry>
+        </row>
+
+        <row>
+         <entry><literal>MESSAGE_TEXT</literal></entry>
+         <entry><type>text</type></entry>
+         <entry>该异常的主要消息的文本</entry>
+        </row>
+
+        <row>
+         <entry><literal>TABLE_NAME</literal></entry>
+         <entry><type>text</type></entry>
+         <entry>与异常相关的表名</entry>
+        </row>
+
+        <row>
+         <entry><literal>SCHEMA_NAME</literal></entry>
+         <entry><type>text</type></entry>
+         <entry>与异常相关的模式名</entry>
+        </row>
+
+        <row>
+         <entry><literal>PG_EXCEPTION_DETAIL</literal></entry>
+         <entry><type>text</type></entry>
+         <entry>该异常的详细消息文本（如果有）</entry>
+        </row>
+
+        <row>
+         <entry><literal>PG_EXCEPTION_HINT</literal></entry>
+         <entry><type>text</type></entry>
+         <entry>该异常的提示消息文本（如果有）</entry>
+        </row>
+
+        <row>
+         <entry><literal>PG_EXCEPTION_CONTEXT</literal></entry>
+         <entry><type>text</type></entry>
+         <entry>描述产生异常时调用栈的文本行（见<xref linkend="plpgsql-call-stack">）</entry>
+        </row>
+       </tbody>
+      </tgroup>
+     </table>
+
+    <para>
+     如果异常没有为一个项设置值，将返回一个空字符串。
+    </para>
+
+    <para>
+     这里是一个示例：
+<programlisting>
+DECLARE
+  text_var1 text;
+  text_var2 text;
+  text_var3 text;
+BEGIN
+  -- 某些可能导致异常的处理
+  ...
+EXCEPTION WHEN OTHERS THEN
+  GET STACKED DIAGNOSTICS text_var1 = MESSAGE_TEXT,
+                          text_var2 = PG_EXCEPTION_DETAIL,
+                          text_var3 = PG_EXCEPTION_HINT;
+END;
+</programlisting>
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 id="plpgsql-call-stack">
+
+   <title>获得执行位置信息</title>
+
+   <para>
+    <command>GET DIAGNOSTICS</command>（之前在<xref linkend="plpgsql-statements-diagnostics">中描述）命令检索有关当前执行状态的信息（反之上文讨论的<command>GET STACKED DIAGNOSTICS</command>命令报告先前发生错误时的执行状态信息）。它的<literal>PG_CONTEXT</literal>状态项可用于标识当前执行位置。状态项<literal>PG_CONTEXT</literal>将返回一个文本字符串，其中包含一行或多行描述该调用栈的文本。第一行会指向当前函数以及当前正在执行的<command>GET DIAGNOSTICS</command>命令。第二行及其后的行表示调用栈中更上层的调用函数。例如：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION outer_func() RETURNS integer AS $$
+BEGIN
+  RETURN inner_func();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION inner_func() RETURNS integer AS $$
+DECLARE
+  stack text;
+BEGIN
+  GET DIAGNOSTICS stack = PG_CONTEXT;
+  RAISE NOTICE E'--- Call Stack ---\n%', stack;
+  RETURN 1;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT outer_func();
+
+NOTICE:  --- Call Stack ---
+PL/pgSQL function inner_func() line 5 at GET DIAGNOSTICS
+PL/pgSQL function outer_func() line 3 at RETURN
+CONTEXT:  PL/pgSQL function outer_func() line 3 at RETURN
+ outer_func
+ ------------
+           1
+(1 row)
+</programlisting>
+
+   </para>
+
+   <para>
+    <literal>GET STACKED DIAGNOSTICS ... PG_EXCEPTION_CONTEXT</literal>返回同类的栈跟踪，但是它描述检测到错误的位置而不是当前位置。
+   </para>
+  </sect2>
+  </sect1>
+
+  <sect1 id="plpgsql-cursors">
+   <title>游标</title>
+
+   <indexterm zone="plpgsql-cursors">
+    <primary>游标</primary>
+    <secondary>在 PL/pgSQL 中</secondary>
+   </indexterm>
+
+   <para>
+    和一次执行整个查询不同，可以建立一个<firstterm>游标</firstterm>来封装该查询，并且接着一次读取该查询结果的一些行。这样做的原因之一是在结果中包含大量行时避免内存不足（不过，<application>PL/pgSQL</application>用户通常不需要担心这些，因为<literal>FOR</literal>循环在内部会自动使用一个游标来避免内存问题）。一种更有趣的用法是返回一个函数已经创建的游标的引用，允许调用者读取行。这提供了一种有效的方法从函数中返回大型行集。
+   </para>
+
+   <sect2 id="plpgsql-cursor-declarations">
+    <title>声明游标变量</title>
+
+    <para>
+     所有在<application>PL/pgSQL</application>中对游标的访问都会通过游标变量，它总是特殊的数据类型<type>refcursor</type>。创建游标变量的一种方法是把它声明为一个类型为<type>refcursor</type>的变量。另外一种方法是使用游标声明语法，通常是：
+<synopsis>
+<replaceable>name</replaceable> <optional> <optional> NO </optional> SCROLL </optional> CURSOR <optional> ( <replaceable>arguments</replaceable> ) </optional> FOR <replaceable>query</replaceable>;
+</synopsis>
+     （为兼容 <productname>Oracle</productname>，可以用 <literal>IS</literal> 代替 <literal>FOR</literal>。）如果指定了 <literal>SCROLL</literal>，游标就支持向后滚动；如果指定了 <literal>NO SCROLL</literal>，向后提取会被拒绝；如果两者都未指定，是否允许向后提取则取决于查询本身。如果指定了 <replaceable>arguments</replaceable>，它就是一个由 <literal><replaceable>name</replaceable> <replaceable>datatype</replaceable></literal> 对组成的逗号分隔列表，这些名字会在给定查询中被参数值替换。实际替换这些名字的值会在打开游标时提供。
+    </para>
+    <para>
+     一些示例：
+<programlisting>
+DECLARE
+    curs1 refcursor;
+    curs2 CURSOR FOR SELECT * FROM tenk1;
+    curs3 CURSOR (key integer) FOR SELECT * FROM tenk1 WHERE unique1 = key;
+</programlisting>
+     所有这三个变量都是<type>refcursor</type>类型，但是第一个可以用于任何查询，而第二个已经被<firstterm>绑定</firstterm>了一个完全指定的查询，并且最后一个被绑定了一个参数化查询。（游标被打开时，<literal>key</literal>将被一个整数参数值替换）。变量<literal>curs1</literal>被称为<firstterm>未绑定</firstterm>，因为它没有被绑定到任何特定查询。
+    </para>
+   </sect2>
+
+   <sect2 id="plpgsql-cursor-opening">
+    <title>打开游标</title>
+
+    <para>
+     在能够使用游标检索行之前，必须先将其<firstterm>打开</firstterm>（这等效于 SQL 命令<command>DECLARE CURSOR</command>）。<application>PL/pgSQL</application>有三种形式的<command>OPEN</command>命令，其中两种用于未绑定游标变量，另一种用于已绑定游标变量。
+    </para>
+
+    <note>
+     <para>
+      可以通过<xref linkend="plpgsql-cursor-for-loop">中描述的<command>FOR</command>语句在不显式打开游标的情况下使用已绑定的游标变量。
+     </para>
+    </note>
+
+    <sect3>
+     <title><command>OPEN FOR</command> <replaceable>query</replaceable></title>
+
+<synopsis>
+OPEN <replaceable>unbound_cursorvar</replaceable> <optional> <optional> NO </optional> SCROLL </optional> FOR <replaceable>query</replaceable>;
+</synopsis>
+
+       <para>
+        该游标变量会被打开，并被赋予要执行的指定查询。该游标不能已经处于打开状态，并且它必须已被声明为未绑定游标变量（即，一个简单的<type>refcursor</type>变量）。该查询必须是<command>SELECT</command>，或其他会返回行的命令（例如<command>EXPLAIN</command>）。该查询会以与<application>PL/pgSQL</application>中其他 SQL 命令相同的方式处理：替换<application>PL/pgSQL</application>变量名，并缓存查询计划以备后续重用。当一个<application>PL/pgSQL</application>变量被替换到游标查询中时，被替换的是它在<command>OPEN</command>时刻所具有的值；之后对该变量的更改不会影响游标的行为。<literal>SCROLL</literal>和<literal>NO SCROLL</literal>选项与已绑定游标中的含义相同。
+       </para>
+
+       <para>
+        一个示例：
+<programlisting>
+OPEN curs1 FOR SELECT * FROM foo WHERE key = mykey;
+</programlisting>
+       </para>
+     </sect3>
+
+    <sect3>
+     <title><command>OPEN FOR EXECUTE</command></title>
+
+<synopsis>
+OPEN <replaceable>unbound_cursorvar</replaceable> <optional> <optional> NO </optional> SCROLL </optional> FOR EXECUTE <replaceable class="command">query_string</replaceable>
+                                     <optional> USING <replaceable>expression</replaceable> <optional>, ... </optional> </optional>;
+</synopsis>
+
+         <para>
+          该游标变量会被打开，并被赋予要执行的指定查询。该游标不能已经处于打开状态，并且必须已被声明为未绑定游标变量（即，一个简单的<type>refcursor</type>变量）。该查询以字符串表达式的形式给出，这一点与<command>EXECUTE</command>命令相同。像往常一样，这提供了灵活性，因此查询计划可以在不同执行之间变化（见<xref linkend="plpgsql-plan-caching">），同时也意味着不会在该命令字符串上执行变量替换。与<command>EXECUTE</command>一样，可以通过<literal>USING</literal>把参数值插入动态命令中。<literal>SCROLL</literal>和<literal>NO SCROLL</literal>选项与已绑定游标中的含义相同。
+         </para>
+
+       <para>
+        一个示例：
+<programlisting>
+OPEN curs1 FOR EXECUTE 'SELECT * FROM ' || quote_ident(tabname)
+                                        || ' WHERE col1 = $1' USING keyvalue;
+</programlisting>
+        在这个示例中，表名以文本方式插入到查询中，因此建议使用
+        <function>quote_ident()</function>来防范 SQL 注入。<literal>col1</literal>
+        的比较值通过<literal>USING</literal>参数插入，因此无需加引号。
+       </para>
+     </sect3>
+
+    <sect3 id="plpgsql-open-bound-cursor">
+     <title>打开已绑定游标</title>
+
+<synopsis>
+OPEN <replaceable>bound_cursorvar</replaceable> <optional> ( <optional> <replaceable>argument_name</replaceable> := </optional> <replaceable>argument_value</replaceable> <optional>, ...</optional> ) </optional>;
+</synopsis>
+
+         <para>
+          这种形式的<command>OPEN</command>用于打开一个在声明时就已经绑定查询的游标变量。该游标不能已经处于打开状态。当且仅当该游标被声明为接收参数时，才必须提供实际参数值表达式列表。这些值会被替换到查询中。
+         </para>
+
+         <para>
+          已绑定游标的查询计划始终被视为可缓存；在这种情况下没有与<command>EXECUTE</command>对应的形式。注意，不能在<command>OPEN</command>中指定<literal>SCROLL</literal>和<literal>NO SCROLL</literal>，因为游标的滚动行为已经确定。
+         </para>
+
+         <para>
+          使用<firstterm>位置</firstterm>或<firstterm>命名</firstterm>记号可以传递参数值。在位置记号中，所有参数都必须按照顺序指定。在命名记号中，每一个参数的名字使用<literal>:=</literal>与参数表达式分隔。类似于<xref linkend="sql-syntax-calling-funcs">中描述的调用函数，也允许混合位置和命名记号。
+         </para>
+
+         <para>
+          示例（这些示例使用上面示例中的游标声明）：
+<programlisting>
+OPEN curs2;
+OPEN curs3(42);
+OPEN curs3(key := 42);
+</programlisting>
+         </para>
+
+         <para>
+          因为已绑定游标的查询会进行变量替换，实际上有两种方式把值传给游标：要么向<command>OPEN</command>传入显式参数，要么在查询中隐式引用<application>PL/pgSQL</application>变量。不过，只有在声明已绑定游标之前就已声明的变量才会被替换到查询中。在这两种情况下，要传递的值都在<command>OPEN</command>时确定。例如，获得与上面<literal>curs3</literal>示例相同效果的另一种方式是
+<programlisting>
+DECLARE
+    key integer;
+    curs4 CURSOR FOR SELECT * FROM tenk1 WHERE unique1 = key;
+BEGIN
+    key := 42;
+    OPEN curs4;
+</programlisting>
+         </para>
+     </sect3>
+   </sect2>
+
+   <sect2 id="plpgsql-cursor-using">
+    <title>使用游标</title>
+
+    <para>
+     一旦一个游标已经被打开，那么就可以用这里描述的语句操作它。
+    </para>
+
+    <para>
+     这些操作不必发生在最初打开该游标的同一个函数中。你可以从函数中返回一个<type>refcursor</type>值，让调用者来操作该游标。（在内部，<type>refcursor</type>值只是一个所谓 portal 的字符串名称，该 portal 包含了该游标活动查询的状态。这个名称可以被传递、赋给其他<type>refcursor</type>变量等等，而不会干扰该 portal。）
+    </para>
+
+    <para>
+     所有 portal 都会在事务结束时被隐式关闭。因此，<type>refcursor</type>值只能在事务结束之前用于引用一个打开的游标。
+    </para>
+
+    <sect3>
+     <title><literal>FETCH</literal></title>
+
+<synopsis>
+FETCH <optional> <replaceable>direction</replaceable> { FROM | IN } </optional> <replaceable>cursor</replaceable> INTO <replaceable>target</replaceable>;
+</synopsis>
+
+    <para><command>FETCH</command>从游标中检索下一行到目标中，目标可以是一个行变量、记录变量或者逗号分隔的简单变量列表，就像<command>SELECT INTO</command>一样。如果没有下一行，目标会被设置为 NULL。与<command>SELECT INTO</command>一样，可以检查特殊变量<literal>FOUND</literal>来看是否获得了一行。</para>
+
+    <para>
+     <replaceable>direction</replaceable>子句可以是 SQL <xref linkend="sql-fetch">命令中允许的任何变体，除了那些能够取得多于一行的。即它可以是
+     <literal>NEXT</literal>、
+     <literal>PRIOR</literal>、
+     <literal>FIRST</literal>、
+     <literal>LAST</literal>、
+     <literal>ABSOLUTE</literal> <replaceable>count</replaceable>、
+     <literal>RELATIVE</literal> <replaceable>count</replaceable>、
+     <literal>FORWARD</literal>或者
+     <literal>BACKWARD</literal>。
+     省略<replaceable>direction</replaceable>和指定<literal>NEXT</literal>是一样的。在使用<replaceable>count</replaceable>的形式中，<replaceable>count</replaceable>可以是任意的整数值表达式（与SQL命令<command>FETCH</command>不一样，后者仅允许整数常量）。除非游标被使用<literal>SCROLL</literal>选项声明或打开，否则要求反向移动的<replaceable>direction</replaceable>值很可能会失败。
+    </para>
+
+    <para>
+     <replaceable>cursor</replaceable>必须是一个引用已打开游标 portal 的<type>refcursor</type>变量名。
+    </para>
+
+    <para>
+     示例：
+<programlisting>
+FETCH curs1 INTO rowvar;
+FETCH curs2 INTO foo, bar, baz;
+FETCH LAST FROM curs3 INTO x, y;
+FETCH RELATIVE -2 FROM curs4 INTO x;
+</programlisting>
+       </para>
+     </sect3>
+
+    <sect3>
+     <title><literal>MOVE</literal></title>
+
+<synopsis>
+MOVE <optional> <replaceable>direction</replaceable> { FROM | IN } </optional> <replaceable>cursor</replaceable>;
+</synopsis>
+
+    <para><command>MOVE</command>重新定位一个游标而不检索任何数据。<command>MOVE</command>的工作方式与<command>FETCH</command>完全一样，只是仅重新定位游标，而不返回移动到的行。与<command>SELECT INTO</command>一样，可以检查特殊变量<literal>FOUND</literal>来看是否存在可移动到的下一行。</para>
+
+    <para>
+     示例：
+<programlisting>
+MOVE curs1;
+MOVE LAST FROM curs3;
+MOVE RELATIVE -2 FROM curs4;
+MOVE FORWARD 2 FROM curs4;
+</programlisting>
+       </para>
+     </sect3>
+
+    <sect3>
+     <title><literal>UPDATE/DELETE WHERE CURRENT OF</literal></title>
+
+<synopsis>
+UPDATE <replaceable>table</replaceable> SET ... WHERE CURRENT OF <replaceable>cursor</replaceable>;
+DELETE FROM <replaceable>table</replaceable> WHERE CURRENT OF <replaceable>cursor</replaceable>;
+</synopsis>
+
+       <para>
+        当游标定位在某个表行上时，可以使用该游标来标识该行，并对其执行更新或删除。游标查询的形式有一些限制（尤其不能包含分组），并且在这类场景中最好对游标使用 <literal>FOR UPDATE</literal>。详见 <xref linkend="sql-declare"> 参考页。
+       </para>
+
+       <para>
+        一个示例：
+<programlisting>
+UPDATE foo SET dataval = myval WHERE CURRENT OF curs1;
+</programlisting>
+       </para>
+     </sect3>
+
+    <sect3>
+     <title><literal>CLOSE</literal></title>
+
+<synopsis>
+CLOSE <replaceable>cursor</replaceable>;
+</synopsis>
+
+       <para>
+        <command>CLOSE</command>关闭打开游标所基于的 portal。这样就可以在事务结束之前提前释放资源，或者释放该游标变量以便再次打开。
+       </para>
+
+       <para>
+        一个示例：
+<programlisting>
+CLOSE curs1;
+</programlisting>
+       </para>
+     </sect3>
+
+    <sect3>
+     <title>返回游标</title>
+
+       <para>
+        <application>PL/pgSQL</application>函数可以向调用者返回游标。这对于返回多行或多列，特别是非常大的结果集时很有用。要做到这一点，函数需要打开游标，并把游标名返回给调用者（或者直接使用调用者指定或已知的 portal 名称来打开游标）。随后调用者就可以从该游标中提取行。游标既可以由调用者关闭，也会在事务结束时自动关闭。
+       </para>
+
+       <para>
+        游标使用的 portal 名称既可以由程序员指定，也可以自动生成。要指定 portal 名称，只需在打开<type>refcursor</type>变量之前给它赋一个字符串值。<command>OPEN</command>会把该<type>refcursor</type>变量的字符串值用作底层 portal 的名称。不过，如果<type>refcursor</type>变量为 null，<command>OPEN</command>就会自动生成一个与任何现有 portal 都不冲突的名称，并把它赋回给<type>refcursor</type>变量。
+       </para>
+
+       <note>
+        <para>
+         已绑定游标变量会被初始化为表示其名称的字符串值，因此除非程序员在打开游标之前通过赋值覆盖它，否则 portal 名称与游标变量名相同。而未绑定游标变量在初始时默认为空值，因此除非被覆盖，否则它会得到一个自动生成的唯一名称。
+        </para>
+       </note>
+
+       <para>
+        下面的示例显示了一个调用者提供游标名字的方法：
+
+<programlisting>
+CREATE TABLE test (col text);
+INSERT INTO test VALUES ('123');
+
+CREATE FUNCTION reffunc(refcursor) RETURNS refcursor AS '
+BEGIN
+    OPEN $1 FOR SELECT col FROM test;
+    RETURN $1;
+END;
+' LANGUAGE plpgsql;
+
+BEGIN;
+SELECT reffunc('funccursor');
+FETCH ALL IN funccursor;
+COMMIT;
+</programlisting>
+       </para>
+
+       <para>
+        下面的示例使用了自动游标名生成：
+
+<programlisting>
+CREATE FUNCTION reffunc2() RETURNS refcursor AS '
+DECLARE
+    ref refcursor;
+BEGIN
+    OPEN ref FOR SELECT col FROM test;
+    RETURN ref;
+END;
+' LANGUAGE plpgsql;
+
+-- 需要在一个事务中使用游标。
+BEGIN;
+SELECT reffunc2();
+
+      reffunc2
+--------------------
+ &lt;unnamed cursor 1&gt;
+(1 row)
+
+FETCH ALL IN "&lt;unnamed cursor 1&gt;";
+COMMIT;
+</programlisting>
+       </para>
+
+       <para>
+        下面的示例展示了从一个函数中返回多个游标的一种方法：
+
+<programlisting>
+CREATE FUNCTION myfunc(refcursor, refcursor) RETURNS SETOF refcursor AS $$
+BEGIN
+    OPEN $1 FOR SELECT * FROM table_1;
+    RETURN NEXT $1;
+    OPEN $2 FOR SELECT * FROM table_2;
+    RETURN NEXT $2;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 需要在一个事务中使用游标。
+BEGIN;
+
+SELECT * FROM myfunc('a', 'b');
+
+FETCH ALL FROM a;
+FETCH ALL FROM b;
+COMMIT;
+</programlisting>
+       </para>
+     </sect3>
+   </sect2>
+
+   <sect2 id="plpgsql-cursor-for-loop">
+    <title>遍历游标结果</title>
+
+    <para>
+     有一种<command>FOR</command>语句的变体，它允许通过游标返回的行进行迭代。语法是：
+
+<synopsis>
+<optional> &lt;&lt;<replaceable>label</replaceable>&gt;&gt; </optional>
+FOR <replaceable>recordvar</replaceable> IN <replaceable>bound_cursorvar</replaceable> <optional> ( <optional> <replaceable>argument_name</replaceable> := </optional> <replaceable>argument_value</replaceable> <optional>, ...</optional> ) </optional> LOOP
+    <replaceable>statements</replaceable>
+END LOOP <optional> <replaceable>label</replaceable> </optional>;
+</synopsis>
+
+     该游标变量必须在声明时已经被绑定到某个查询，并且它<emphasis>不能</emphasis>已经被打开。<command>FOR</command>语句会自动打开游标，并且在退出循环时自动关闭游标。当且仅当游标被声明要使用参数时，才必须出现一个实际参数值表达式的列表。这些值会被替换到查询中，采用<command>OPEN</command>期间的方式（见<xref linkend="plpgsql-open-bound-cursor">）。
+   </para>
+
+   <para>
+     变量<replaceable>recordvar</replaceable>会被自动定义为<type>record</type>类型，并且只存在于循环内部（循环中该变量名任何已有定义都会被忽略）。每一个由游标返回的行都会被陆续地赋值给这个记录变量并且执行循环体。
+    </para>
+   </sect2>
+
+  </sect1>
+
+  <sect1 id="plpgsql-errors-and-messages">
+   <title>错误和消息</title>
+
+   <indexterm>
+    <primary>RAISE</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>报告错误</primary>
+    <secondary>在 PL/pgSQL 中</secondary>
+   </indexterm>
+
+   <para>使用<command>RAISE</command>语句报告消息和抛出错误。<synopsis>
+RAISE <optional> <replaceable class="parameter">level</replaceable> </optional> '<replaceable class="parameter">format</replaceable>' <optional>, <replaceable class="parameter">expression</replaceable> <optional>, ... </optional></optional> <optional> USING <replaceable class="parameter">option</replaceable> = <replaceable class="parameter">expression</replaceable> <optional>, ... </optional> </optional>;
+RAISE <optional> <replaceable class="parameter">level</replaceable> </optional> <replaceable class="parameter">condition_name</> <optional> USING <replaceable class="parameter">option</replaceable> = <replaceable class="parameter">expression</replaceable> <optional>, ... </optional> </optional>;
+RAISE <optional> <replaceable class="parameter">level</replaceable> </optional> SQLSTATE '<replaceable class="parameter">sqlstate</>' <optional> USING <replaceable class="parameter">option</replaceable> = <replaceable class="parameter">expression</replaceable> <optional>, ... </optional> </optional>;
+RAISE <optional> <replaceable class="parameter">level</replaceable> </optional> USING <replaceable class="parameter">option</replaceable> = <replaceable class="parameter">expression</replaceable> <optional>, ... </optional>;
+RAISE ;
+</synopsis>其中，<replaceable class="parameter">level</replaceable>选项指定错误的严重程度。允许的级别为<literal>DEBUG</literal>，
+    <literal>LOG</literal>， <literal>INFO</literal>，
+    <literal>NOTICE</literal>， <literal>WARNING</literal>以及<literal>EXCEPTION</literal>，其中<literal>EXCEPTION</literal>是默认值。<literal>EXCEPTION</literal>会抛出错误（通常会中止当前事务）；其他级别只会生成不同优先级的消息。特定优先级的消息是报告给客户端、写入服务器日志，还是两者都做，由<xref linkend="guc-log-min-messages">和<xref linkend="guc-client-min-messages">配置变量控制。更多信息见<xref linkend="runtime-config">中的说明。</para>
+
+   <para>在<replaceable class="parameter">level</replaceable>（如果有）之后，可以写一个<replaceable class="parameter">format</replaceable>（必须是简单的字符串字面量，不能是表达式）。格式字符串指定要报告的错误消息文本。格式字符串之后可以跟上可选的参数表达式，其值将被插入消息中。在格式字符串内，<literal>%</literal>会被替换为下一个可选参数值的字符串表示。写成<literal>%%</literal>可以输出一个字面的<literal>%</literal>。</para>
+
+   <para>
+    在这个示例中，<literal>v_job_id</literal>的值将替换字符串中的<literal>%</literal>：
+<programlisting>
+RAISE NOTICE 'Calling cs_create_job(%)', v_job_id;
+</programlisting>
+   </para>
+
+   <para>可以为错误报告附加额外信息，方法是写出<literal>USING</literal>，后面跟上<replaceable
+    class="parameter">option</replaceable> = <replaceable
+    class="parameter">expression</replaceable>项目。每个<replaceable class="parameter">expression</replaceable>都可以是任意字符串值表达式。允许的<replaceable
+    class="parameter">option</replaceable>关键字为：<variablelist id="raise-using-options">
+     <varlistentry>
+      <term><literal>MESSAGE</literal></term>
+      <listitem>
+       <para>设置错误消息文本。该选项不能用于在<literal>USING</literal>之前包含格式字符串的<command>RAISE</command>形式。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>DETAIL</literal></term>
+      <listitem>
+       <para>提供错误的详细信息。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>HINT</literal></term>
+      <listitem>
+       <para>提供一个提示消息。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ERRCODE</literal></term>
+      <listitem>
+       <para>指定要报告的错误代码（SQLSTATE），可以用<xref linkend="errcodes-appendix">中所示的条件名，或者直接作为一个五字符 SQLSTATE 代码。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>COLUMN</literal></term>
+      <term><literal>CONSTRAINT</literal></term>
+      <term><literal>DATATYPE</literal></term>
+      <term><literal>TABLE</literal></term>
+      <term><literal>SCHEMA</literal></term>
+      <listitem>
+       <para>提供一个相关对象的名称。</para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>这个例子会中止事务，并给出指定的错误消息和提示：<programlisting>
+RAISE EXCEPTION 'Nonexistent ID --> %', user_id
+      USING HINT = 'Please check your user ID';
+</programlisting>
+   </para>
+
+   <para>
+    这两个示例展示了设置 SQLSTATE 的两种等价的方法：
+<programlisting>
+RAISE 'Duplicate user ID: %', user_id USING ERRCODE = 'unique_violation';
+RAISE 'Duplicate user ID: %', user_id USING ERRCODE = '23505';
+</programlisting>
+   </para>
+
+   <para>
+    还有第二种<command>RAISE</command>语法，其中主参数是要报告的条件名或 SQLSTATE，例如：
+<programlisting>
+RAISE division_by_zero;
+RAISE SQLSTATE '22012';
+</programlisting>
+    在这种语法中，<literal>USING</literal>可以用来提供自定义的错误消息、细节或提示。另一种达到前面示例同样效果的方式是：
+<programlisting>
+RAISE unique_violation USING MESSAGE = 'Duplicate user ID: ' || user_id;
+</programlisting>
+   </para>
+
+   <para>
+    还有另一种变体是写<literal>RAISE USING</literal>或<literal>RAISE <replaceable class="parameter">level</replaceable> USING</literal>，并把其余内容都放在<literal>USING</literal>列表里。
+   </para>
+
+   <para>
+    <command>RAISE</command>的最后一种变体根本没有参数。这种形式只能被用在一个<literal>BEGIN</literal>块的<literal>EXCEPTION</literal>子句中，它导致当前正在被处理的错误被重新抛出。
+   </para>
+
+   <note>
+
+    <para>
+     在<productname>PostgreSQL</productname> 9.1 之前，没有参数的<command>RAISE</command>被解释为重新抛出来自包含活动异常处理器的块的错误。因此一个嵌套在那个处理器中的<literal>EXCEPTION</literal>子句无法捕捉它，即使<command>RAISE</command>位于嵌套<literal>EXCEPTION</literal>子句的块中也是这样。这种行为很奇怪，也并不兼容 Oracle 的 PL/SQL。
+    </para>
+   </note>
+
+   <para>
+    如果在<command>RAISE EXCEPTION</command>命令中没有指定条件名称或SQLSTATE，
+    则默认使用<literal>ERRCODE_RAISE_EXCEPTION</literal> (<literal>P0001</literal>)。
+    如果没有指定消息文本，则默认使用条件名称或SQLSTATE作为消息文本。
+</para>
+
+   <note>
+
+    <para>
+     当用 SQLSTATE 代码指定错误代码时，你并不受限于预定义错误代码，而是可以选择任何由五位数字和/或大写 ASCII 字母构成的错误代码，唯一不能使用的是 <literal>00000</literal>。我们建议尽量避免抛出以三个零结尾的错误代码，因为这些是类别代码，只能通过捕获整个类别来捕获这类错误。
+    </para>
+   </note>
+
+  
+
+   </sect1>
+
+ <sect1 id="plpgsql-trigger">
+  <title>触发器函数</title>
+
+  <indexterm zone="plpgsql-trigger">
+   <primary>触发器</primary>
+   <secondary>在 PL/pgSQL 中</secondary>
+  </indexterm>
+
+  <sect2 id="plpgsql-dml-trigger">
+   <title>数据更改触发器</title>
+
+   <para>
+    <application>PL/pgSQL</application>可以被用来定义触发器函数。触发器函数用<command>CREATE FUNCTION</command>命令创建，它被声明为一个没有参数并且返回类型为<type>trigger</type>的函数。注意，即便该函数准备接收一些在<command>CREATE TRIGGER</command>中指定的参数 &mdash; 这类参数通过<varname>TG_ARGV</varname>传递（如下所述），也必须把它声明为没有参数。
+   </para>
+
+  <para>当一个<application>PL/pgSQL</application>函数作为触发器被调用时，会在顶层块中自动创建一些特殊变量。它们是：<variablelist>
+    <varlistentry>
+     <term><varname>NEW</varname></term>
+     <listitem>
+      <para>数据类型为<type>RECORD</type>；该变量保存行级触发器中用于<command>INSERT</command>/<command>UPDATE</command>操作的新数据行。在语句级触发器和<command>DELETE</command>操作中，该变量未被赋值。</para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>OLD</varname></term>
+     <listitem>
+      <para>数据类型为<type>RECORD</type>；该变量保存行级触发器中用于<command>UPDATE</command>/<command>DELETE</command>操作的旧数据行。在语句级触发器和<command>INSERT</command>操作中，该变量未被赋值。</para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TG_NAME</varname></term>
+     <listitem>
+      <para>
+       数据类型为 <type>name</type>；包含实际触发的触发器名称的变量。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TG_WHEN</varname></term>
+     <listitem>
+      <para>
+       数据类型为 <type>text</type>；根据触发器定义，其值为字符串  <literal>BEFORE</literal>、<literal>AFTER</literal> 或 <literal>INSTEAD OF</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TG_LEVEL</varname></term>
+     <listitem>
+      <para>
+       数据类型为 <type>text</type>；根据触发器定义，其值为字符串  <literal>ROW</literal> 或 <literal>STATEMENT</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TG_OP</varname></term>
+     <listitem>
+      <para>
+       数据类型为 <type>text</type>；表示触发器对应操作的字符串：<literal>INSERT</literal>、<literal>UPDATE</literal>、<literal>DELETE</literal> 或 <literal>TRUNCATE</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TG_RELID</varname></term>
+     <listitem>
+      <para>数据类型为<type>oid</type>；导致触发器调用的表的对象 ID。</para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TG_RELNAME</varname></term>
+     <listitem>
+      <para>
+       数据类型为 <type>name</type>；导致触发器调用的表名。该变量已弃用，未来版本可能移除；请改用 <literal>TG_TABLE_NAME</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TG_TABLE_NAME</varname></term>
+     <listitem>
+      <para>
+       数据类型为 <type>name</type>；导致触发器调用的表名。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TG_TABLE_SCHEMA</varname></term>
+     <listitem>
+      <para>
+       数据类型为 <type>name</type>；导致触发器调用的表所在模式名。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TG_NARGS</varname></term>
+     <listitem>
+      <para>数据类型为<type>integer</type>；<command>CREATE TRIGGER</command>语句中传给触发器函数的参数个数。</para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TG_ARGV[]</varname></term>
+     <listitem>
+      <para>数据类型为<type>text</type>数组；来自<command>CREATE TRIGGER</command>语句的参数。索引从 0 开始；非法索引（小于 0 或大于等于<varname>tg_nargs</varname>）返回 null。</para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+   <para>
+    一个触发器函数必须返回<symbol>NULL</symbol>或者是一个与触发器为之引发的表结构完全相同的记录/行值。
+   </para>
+
+   <para>
+    <literal>BEFORE</literal> 行级触发器可以返回 null，以通知触发器管理器跳过该行后续的操作（也就是说，不再触发后续触发器，并且不会对该行执行<command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command>）。如果返回非 null 值，则操作会继续进行，并使用该行值。返回一个不同于原始<varname>NEW</varname>的行值会改变即将插入或更新的行。因此，如果触发器函数希望触发动作正常成功而不修改行值，就必须返回<varname>NEW</varname>（或与之相等的值）。若要修改将被存储的行，可以直接替换<varname>NEW</varname>中的单个值并返回修改后的<varname>NEW</varname>，或者构造一个完整的新记录/行来返回。对于作用于<command>DELETE</command>的 before 触发器，返回值本身没有直接效果，但必须为非 null 才能让触发器动作继续。注意，在<command>DELETE</command>触发器中<varname>NEW</varname>为 null，因此通常没有理由返回它。在<command>DELETE</command>触发器中，常见写法是返回<varname>OLD</varname>。
+   </para>
+
+   <para>
+    <literal>INSTEAD OF</literal>触发器（总是行级触发器，并且只能用于视图）能够返回 null 来表示它们没有执行任何更新，并且对该行剩余的操作应被跳过（即后续的触发器不会被引发，并且该行不会被计入外围<command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command>的行影响状态中）。否则应该返回一个非 null 值用以表示该触发器执行了所请求的操作。对于<command>INSERT</command> 和<command>UPDATE</command>操作，返回值应该是<varname>NEW</varname>，触发器函数可能对它进行了修改来支持<command>INSERT RETURNING</command>和<command>UPDATE RETURNING</command>（这也将影响被传递给任何后续触发器的行值）。对于<command>DELETE</command>操作，返回值应该是<varname>OLD</varname>。
+   </para>
+
+   <para>
+    一个<literal>AFTER</literal>行级触发器或一个<literal>BEFORE</literal>或<literal>AFTER</literal>语句级触发器的返回值总是会被忽略，因此也可以返回 null。不过，任何这些类型的触发器可能仍会通过抛出一个错误来中止整个操作。
+   </para>
+
+   <para>
+    <xref linkend="plpgsql-trigger-example">展示了<application>PL/pgSQL</application>中一个触发器函数的示例。
+   </para>
+
+   <example id="plpgsql-trigger-example">
+    <title>一个 <application>PL/pgSQL</application> 触发器函数</title>
+
+    <para>
+     这个示例触发器保证：任何时候一个行在表中被插入或更新时，当前用户名和时间也会被标记在该行中。并且它会检查给出了一个雇员的姓名以及薪水是一个正值。
+    </para>
+
+<programlisting>
+CREATE TABLE emp (
+    empname text,
+    salary integer,
+    last_date timestamp,
+    last_user text
+);
+
+CREATE FUNCTION emp_stamp() RETURNS trigger AS $emp_stamp$
+    BEGIN
+        -- Check that empname and salary are given
+        IF NEW.empname IS NULL THEN
+            RAISE EXCEPTION 'empname cannot be null';
+        END IF;
+        IF NEW.salary IS NULL THEN
+            RAISE EXCEPTION '% cannot have null salary', NEW.empname;
+        END IF;
+
+        -- Who works for us when she must pay for it?
+        IF NEW.salary &lt; 0 THEN
+            RAISE EXCEPTION '% cannot have a negative salary', NEW.empname;
+        END IF;
+
+        -- Remember who changed the payroll when
+        NEW.last_date := current_timestamp;
+        NEW.last_user := current_user;
+        RETURN NEW;
+    END;
+$emp_stamp$ LANGUAGE plpgsql;
+
+CREATE TRIGGER emp_stamp BEFORE INSERT OR UPDATE ON emp
+    FOR EACH ROW EXECUTE PROCEDURE emp_stamp();
+</programlisting>
+   </example>
+
+   <para>
+    另一种记录对表的改变的方法涉及到创建一个新表来为每一个发生的插入、更新或删除保持一行。这种方法可以被认为是对一个表的改变的审计。<xref linkend="plpgsql-trigger-audit-example">展示了<application>PL/pgSQL</application>中一个审计触发器函数的示例。
+   </para>
+
+   <example id="plpgsql-trigger-audit-example">
+    <title>一个用于审计的 <application>PL/pgSQL</application> 触发器函数</title>
+
+    <para>
+     这个示例触发器保证了在<literal>emp</literal>表上的任何插入、更新或删除一行的动作都被记录（即审计）在<literal>emp_audit</literal>表中。当前时间和用户名会被记录到行中，还有在其上执行的操作类型。
+    </para>
+
+<programlisting>
+CREATE TABLE emp (
+    empname           text NOT NULL,
+    salary            integer
+);
+
+CREATE TABLE emp_audit(
+    operation         char(1)   NOT NULL,
+    stamp             timestamp NOT NULL,
+    userid            text      NOT NULL,
+    empname           text      NOT NULL,
+    salary integer
+);
+
+CREATE OR REPLACE FUNCTION process_emp_audit() RETURNS TRIGGER AS $emp_audit$
+    BEGIN
+        --
+        -- Create a row in emp_audit to reflect the operation performed on emp,
+        -- make use of the special variable TG_OP to work out the operation.
+        --
+        IF (TG_OP = 'DELETE') THEN
+            INSERT INTO emp_audit SELECT 'D', now(), user, OLD.*;
+            RETURN OLD;
+        ELSIF (TG_OP = 'UPDATE') THEN
+            INSERT INTO emp_audit SELECT 'U', now(), user, NEW.*;
+            RETURN NEW;
+        ELSIF (TG_OP = 'INSERT') THEN
+            INSERT INTO emp_audit SELECT 'I', now(), user, NEW.*;
+            RETURN NEW;
+        END IF;
+        RETURN NULL; -- result is ignored since this is an AFTER trigger
+    END;
+$emp_audit$ LANGUAGE plpgsql;
+
+CREATE TRIGGER emp_audit
+AFTER INSERT OR UPDATE OR DELETE ON emp
+    FOR EACH ROW EXECUTE PROCEDURE process_emp_audit();
+</programlisting>
+   </example>
+
+   <para>
+    前一个示例的一个变体使用视图把主表和审计表连接起来，以显示每个条目最后一次被修改的时间。这种方法仍然记录了表更改的完整审计轨迹，同时也提供了一个简化视图，只显示从审计轨迹中导出的每个条目的最后修改时间戳。<xref linkend="plpgsql-view-trigger-audit-example">展示了<application>PL/pgSQL</application>中一个定义在视图上的审计触发器示例。
+   </para>
+
+   <example id="plpgsql-view-trigger-audit-example">
+    <title>一个用于审计的 <application>PL/pgSQL</application> 视图触发器函数</title>
+
+    <para>
+     这个示例在视图上使用了一个触发器让它变得可更新，并且确保视图中一行的任何插入、更新或删除被记录（即审计）在<literal>emp_audit</literal>表中。当前时间和用户名会被与执行的操作类型一起记录，并且该视图会显示每一行的最后修改时间。
+    </para>
+
+<programlisting>
+CREATE TABLE emp (
+    empname           text PRIMARY KEY,
+    salary            integer
+);
+
+CREATE TABLE emp_audit(
+    operation         char(1)   NOT NULL,
+    userid            text      NOT NULL,
+    empname           text      NOT NULL,
+    salary            integer,
+    stamp             timestamp NOT NULL
+);
+
+CREATE VIEW emp_view AS
+    SELECT e.empname,
+           e.salary,
+           max(ea.stamp) AS last_updated
+      FROM emp e
+      LEFT JOIN emp_audit ea ON ea.empname = e.empname
+     GROUP BY 1, 2;
+
+CREATE OR REPLACE FUNCTION update_emp_view() RETURNS TRIGGER AS $$
+    BEGIN
+        --
+        -- Perform the required operation on emp, and create a row in emp_audit
+        -- to reflect the change made to emp.
+        --
+        IF (TG_OP = 'DELETE') THEN
+            DELETE FROM emp WHERE empname = OLD.empname;
+            IF NOT FOUND THEN RETURN NULL; END IF;
+
+            OLD.last_updated = now();
+            INSERT INTO emp_audit VALUES('D', user, OLD.*);
+            RETURN OLD;
+        ELSIF (TG_OP = 'UPDATE') THEN
+            UPDATE emp SET salary = NEW.salary WHERE empname = OLD.empname;
+            IF NOT FOUND THEN RETURN NULL; END IF;
+
+            NEW.last_updated = now();
+            INSERT INTO emp_audit VALUES('U', user, NEW.*);
+            RETURN NEW;
+        ELSIF (TG_OP = 'INSERT') THEN
+            INSERT INTO emp VALUES(NEW.empname, NEW.salary);
+
+            NEW.last_updated = now();
+            INSERT INTO emp_audit VALUES('I', user, NEW.*);
+            RETURN NEW;
+        END IF;
+    END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER emp_audit
+INSTEAD OF INSERT OR UPDATE OR DELETE ON emp_view
+    FOR EACH ROW EXECUTE PROCEDURE update_emp_view();
+</programlisting>
+   </example>
+
+   <para>
+    触发器的一种用途是维护另一个表的汇总表。得到的汇总结果可以在某些查询中替代原始表使用，而且通常能大幅缩短运行时间。这种技术在数据仓库中很常见，其中用于度量或观察数据的表（称为事实表）可能会非常大。<xref linkend="plpgsql-trigger-summary-example">展示了<application>PL/pgSQL</application>中一个为数据仓库事实表维护汇总表的触发器函数示例。
+   </para>
+
+
+   <example id="plpgsql-trigger-summary-example">
+    <title>一个用于维护汇总表的 <application>PL/pgSQL</application> 触发器函数</title>
+
+    <para>
+     这里详述的模式有一部分是基于 Ralph Kimball 所作的<emphasis>数据仓库工具包</emphasis>中的<emphasis>Grocery Store</emphasis>示例。
+    </para>
+
+<programlisting>
+--
+-- Main tables - time dimension and sales fact.
+--
+CREATE TABLE time_dimension (
+    time_key                    integer NOT NULL,
+    day_of_week                 integer NOT NULL,
+    day_of_month                integer NOT NULL,
+    month                       integer NOT NULL,
+    quarter                     integer NOT NULL,
+    year                        integer NOT NULL
+);
+CREATE UNIQUE INDEX time_dimension_key ON time_dimension(time_key);
+
+CREATE TABLE sales_fact (
+    time_key                    integer NOT NULL,
+    product_key                 integer NOT NULL,
+    store_key                   integer NOT NULL,
+    amount_sold                 numeric(12,2) NOT NULL,
+    units_sold                  integer NOT NULL,
+    amount_cost                 numeric(12,2) NOT NULL
+);
+CREATE INDEX sales_fact_time ON sales_fact(time_key);
+
+--
+-- Summary table - sales by time.
+--
+CREATE TABLE sales_summary_bytime (
+    time_key                    integer NOT NULL,
+    amount_sold                 numeric(15,2) NOT NULL,
+    units_sold                  numeric(12) NOT NULL,
+    amount_cost                 numeric(15,2) NOT NULL
+);
+CREATE UNIQUE INDEX sales_summary_bytime_key ON sales_summary_bytime(time_key);
+
+--
+-- Function and trigger to amend summarized column(s) on UPDATE, INSERT, DELETE.
+--
+CREATE OR REPLACE FUNCTION maint_sales_summary_bytime() RETURNS TRIGGER
+AS $maint_sales_summary_bytime$
+    DECLARE
+        delta_time_key          integer;
+        delta_amount_sold       numeric(15,2);
+        delta_units_sold        numeric(12);
+        delta_amount_cost       numeric(15,2);
+    BEGIN
+
+        -- Work out the increment/decrement amount(s).
+        IF (TG_OP = 'DELETE') THEN
+
+            delta_time_key = OLD.time_key;
+            delta_amount_sold = -1 * OLD.amount_sold;
+            delta_units_sold = -1 * OLD.units_sold;
+            delta_amount_cost = -1 * OLD.amount_cost;
+
+        ELSIF (TG_OP = 'UPDATE') THEN
+
+            -- forbid updates that change the time_key -
+            -- (probably not too onerous, as DELETE + INSERT is how most
+            -- changes will be made).
+            IF ( OLD.time_key != NEW.time_key) THEN
+                RAISE EXCEPTION 'Update of time_key : % -&gt; % not allowed',
+                                                      OLD.time_key, NEW.time_key;
+            END IF;
+
+            delta_time_key = OLD.time_key;
+            delta_amount_sold = NEW.amount_sold - OLD.amount_sold;
+            delta_units_sold = NEW.units_sold - OLD.units_sold;
+            delta_amount_cost = NEW.amount_cost - OLD.amount_cost;
+
+        ELSIF (TG_OP = 'INSERT') THEN
+
+            delta_time_key = NEW.time_key;
+            delta_amount_sold = NEW.amount_sold;
+            delta_units_sold = NEW.units_sold;
+            delta_amount_cost = NEW.amount_cost;
+
+        END IF;
+
+
+        -- Insert or update the summary row with the new values.
+        &lt;&lt;insert_update&gt;&gt;
+        LOOP
+            UPDATE sales_summary_bytime
+                SET amount_sold = amount_sold + delta_amount_sold,
+                    units_sold = units_sold + delta_units_sold,
+                    amount_cost = amount_cost + delta_amount_cost
+                WHERE time_key = delta_time_key;
+
+            EXIT insert_update WHEN found;
+
+            BEGIN
+                INSERT INTO sales_summary_bytime (
+                            time_key,
+                            amount_sold,
+                            units_sold,
+                            amount_cost)
+                    VALUES (
+                            delta_time_key,
+                            delta_amount_sold,
+                            delta_units_sold,
+                            delta_amount_cost
+                           );
+
+                EXIT insert_update;
+
+            EXCEPTION
+                WHEN UNIQUE_VIOLATION THEN
+                    -- do nothing
+            END;
+        END LOOP insert_update;
+
+        RETURN NULL;
+
+    END;
+$maint_sales_summary_bytime$ LANGUAGE plpgsql;
+
+CREATE TRIGGER maint_sales_summary_bytime
+AFTER INSERT OR UPDATE OR DELETE ON sales_fact
+    FOR EACH ROW EXECUTE PROCEDURE maint_sales_summary_bytime();
+
+INSERT INTO sales_fact VALUES(1,1,1,10,3,15);
+INSERT INTO sales_fact VALUES(1,2,1,20,5,35);
+INSERT INTO sales_fact VALUES(2,2,1,40,15,135);
+INSERT INTO sales_fact VALUES(2,3,1,10,1,13);
+SELECT * FROM sales_summary_bytime;
+DELETE FROM sales_fact WHERE product_key = 1;
+SELECT * FROM sales_summary_bytime;
+UPDATE sales_fact SET units_sold = units_sold * 2;
+SELECT * FROM sales_summary_bytime;
+</programlisting>
+   </example>
+
+   
+</sect2>
+
+  <sect2 id="plpgsql-event-trigger">
+   <title>事件触发器</title>
+
+   <para>
+    <application>PL/pgSQL</application>可以被用来定义事件触发器。<productname>PostgreSQL</productname>要求一个可以作为事件触发器调用的函数必须被声明为没有参数并且返回类型为<literal>event_trigger</literal>。
+   </para>
+
+   <para>当一个<application>PL/pgSQL</application>函数作为事件触发器被调用时，会在顶层块中自动创建一些特殊变量。它们是：<variablelist>
+    <varlistentry>
+     <term><varname>TG_EVENT</varname></term>
+     <listitem>
+      <para>
+       数据类型为 <type>text</type>；表示触发器被触发时对应事件的字符串。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TG_TAG</varname></term>
+     <listitem>
+      <para>
+       数据类型为 <type>text</type>；包含触发该触发器的命令标签的变量。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+   <para>
+    <xref linkend="plpgsql-event-trigger-example">展示了<application>PL/pgSQL</application>中一个事件触发器函数的示例。
+   </para>
+
+   <example id="plpgsql-event-trigger-example">
+    <title>一个 <application>PL/pgSQL</application> 事件触发器函数</title>
+
+    <para>
+     这个示例触发器在受支持命令每一次被执行时会简单地抛出一个<literal>NOTICE</literal>消息。
+    </para>
+
+<programlisting>
+CREATE OR REPLACE FUNCTION snitch() RETURNS event_trigger AS $$
+BEGIN
+    RAISE NOTICE 'snitch: % %', tg_event, tg_tag;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE EVENT TRIGGER snitch ON ddl_command_start EXECUTE PROCEDURE snitch();
+</programlisting>
+   </example>
+  </sect2>
+
+  </sect1>
+
+  <sect1 id="plpgsql-implementation">
+   <title><application>PL/pgSQL</application> 内部机制</title>
+
+   <para>本节讨论一些实现细节，了解这些细节对 <application>PL/pgSQL</application> 用户通常很重要。</para>
+
+  <sect2 id="plpgsql-var-subst">
+   <title>变量替换</title>
+
+   <para>在<application>PL/pgSQL</application>函数中，SQL 语句和表达式可以引用函数的变量和参数。在内部，<application>PL/pgSQL</application>会用查询参数替换这些引用。只有在语法上允许参数或列引用的位置才会进行参数替换。作为一个极端例子，来看下面这种不良编程风格：<programlisting>
+INSERT INTO foo (foo) VALUES (foo);
+</programlisting>第一次出现的<literal>foo</>在语法上必须是表名，所以不会被替换，即使函数有一个变量也叫<literal>foo</>。第二次出现的位置必须是该表的列名，所以也不会被替换。只有第三次出现的位置才可能是对函数变量的引用。</para>
+
+   <note>
+    <para><productname>PostgreSQL</productname> 9.0 以前的版本会尝试在这三个位置都进行变量替换，从而导致语法错误。</para>
+   </note>
+
+   <para>
+    由于变量名在语法上与表列名没有区别，所以在同时引用表的语句中就可能产生歧义：某个给定名称到底是指表列，还是变量？把前面的示例改成下面这样：
+<programlisting>
+INSERT INTO dest (col) SELECT foo + bar FROM src;
+</programlisting>
+    这里，<literal>dest</literal> 和 <literal>src</literal> 必须是表名，<literal>col</literal> 也必须是 <literal>dest</literal> 的一列，但 <literal>foo</literal> 和 <literal>bar</literal> 既可能是该函数的变量，也可能是 <literal>src</literal> 的列。
+   </para>
+
+   <para>默认情况下，如果 SQL 语句中的名称既可能指变量，也可能指表列，<application>PL/pgSQL</application>就会报告错误。可以通过重命名变量或列、限定有歧义的引用，或者告诉<application>PL/pgSQL</application>优先采用哪种解释来解决这类问题。</para>
+
+   <para>
+    最简单的解决方案是重命名变量或列。一种常用的编码规则是为<application>PL/pgSQL</application>变量使用一种不同于列名的命名习惯。例如，如果你将函数变量统一地命名为<literal>v_<replaceable>something</replaceable></literal>，而你的列名不会开始于<literal>v_</literal>，就不会发生冲突。
+   </para>
+
+   <para>
+    另外你可以限定有歧义的引用让它们变清晰。在上面的示例中，<literal>src.foo</literal>将是对表列的一种无歧义的引用。要创建对一个变量的无歧义引用，在一个被标记的块中声明它并且使用块的标签（见<xref linkend="plpgsql-structure">）。例如
+<programlisting>
+&lt;&lt;block&gt;&gt;
+DECLARE
+    foo int;
+BEGIN
+    foo := ...;
+    INSERT INTO dest (col) SELECT block.foo + bar FROM src;
+</programlisting>
+    这里<literal>block.foo</literal>表示变量，即使在<literal>src</literal>中有一个列<literal>foo</literal>。函数参数以及诸如<literal>FOUND</literal>的特殊变量，都能通过函数的名称被限定，因为它们被隐式地声明在一个带有该函数名称的外层块中。
+   </para>
+
+   <para>
+    有时候在一个大型的<application>PL/pgSQL</application>代码体中修复所有的有歧义引用是不现实的。在这种情况下，你可以指定<application>PL/pgSQL</application>应该将有歧义的引用作为变量（这与<application>PL/pgSQL</application>在 <productname>PostgreSQL</productname> 9.0 之前的行为兼容）或表列（这与某些其他系统兼容，例如<productname>Oracle</productname>）解决。
+   </para>
+
+   <indexterm>
+     <primary><varname>plpgsql.variable_conflict</varname>配置参数</primary>
+   </indexterm>
+
+   <para>
+    要在系统范围内改变这种行为，将配置参数<literal>plpgsql.variable_conflict</literal>设置为<literal>error</literal>、<literal>use_variable</literal>或者<literal>use_column</literal>（这里<literal>error</literal>是出厂设置）之一。这个参数会影响<application>PL/pgSQL</application>函数中语句的后续编译，但是不会影响在当前会话中已经编译过的语句。因为改变这个设置能够导致<application>PL/pgSQL</application>函数中行为的意想不到的改变，所以只能由一个超级用户来更改它。
+   </para>
+
+   <para>
+    你也可以按函数单独设置这一行为，方法是在函数文本开头插入以下特殊命令之一：
+<programlisting>
+#variable_conflict error
+#variable_conflict use_variable
+#variable_conflict use_column
+</programlisting>
+    这些命令只影响它们所属的函数，并且会覆盖<literal>plpgsql.variable_conflict</literal>的设置。一个示例是：
+<programlisting>
+CREATE FUNCTION stamp_user(id int, comment text) RETURNS void AS $$
+    #variable_conflict use_variable
+    DECLARE
+        curtime timestamp := now();
+    BEGIN
+        UPDATE users SET last_modified = curtime, comment = comment
+          WHERE users.id = id;
+    END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+    在<literal>UPDATE</literal>命令中，<literal>curtime</literal>、<literal>comment</literal>以及<literal>id</literal>将引用该函数的变量和参数，不管<literal>users</literal>有没有这些名称的列。注意，我们不得不在<literal>WHERE</literal>子句中对<literal>users.id</literal>的引用加以限定，以便让它引用表列。但是我们不需要对<literal>UPDATE</literal>列表中作为目标的<literal>comment</literal>引用加以限定，因为语法上那必须是<literal>users</literal>的一列。我们可以用下面的方式写一个相同的不依赖于<literal>variable_conflict</literal>设置的函数：
+<programlisting>
+CREATE FUNCTION stamp_user(id int, comment text) RETURNS void AS $$
+    &lt;&lt;fn&gt;&gt;
+    DECLARE
+        curtime timestamp := now();
+    BEGIN
+        UPDATE users SET last_modified = fn.curtime, comment = stamp_user.comment
+          WHERE users.id = stamp_user.id;
+    END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+   </para>
+
+   <para>
+    传递给 <command>EXECUTE</command> 及其变体的命令字符串中，不会发生变量替换。如果你需要向这种命令中插入变化的值，应在构造字符串值时完成，或者像 <xref linkend="plpgsql-statements-executing-dyn"> 所说明的那样使用 <literal>USING</literal>。
+   </para>
+
+   <para>目前，变量替换只在<command>SELECT</command>、<command>INSERT</command>、<command>UPDATE</command>和<command>DELETE</command>命令中生效，因为主 SQL 引擎只允许在这些命令中使用查询参数。若要在其他语句类型（统称为工具语句）中使用非常量名称或值，就必须把该工具语句构造为字符串，再用<command>EXECUTE</command>执行。</para>
+
+  </sect2>
+
+  <sect2 id="plpgsql-plan-caching">
+
+   <title>计划缓存</title>
+
+   <para>
+    在函数第一次被调用时（每个会话中都会如此），<application>PL/pgSQL</application>解释器会解析函数源文本，并生成一棵内部的二进制指令树。该指令树完整表示了<application>PL/pgSQL</application>语句结构，但函数中使用的各个<acronym>SQL</acronym>表达式和<acronym>SQL</acronym>命令并不会立即被分析。
+   </para>
+
+   <para>
+    <indexterm>
+     <primary>准备一个查询</primary>
+     <secondary>在 PL/pgSQL 中</secondary>
+    </indexterm>
+    当函数中的某个表达式或 <acronym>SQL</acronym> 命令第一次执行时，<application>PL/pgSQL</application> 解释器会使用 <acronym>SPI</acronym> 管理器的 <function>SPI_prepare</function> 函数，对该命令进行解析和分析，以创建预备语句。之后再次执行该表达式或命令时，就会重用该预备语句。因此，对于那些很少访问的条件分支，函数不会承担分析当前会话中从未执行到的命令的开销。缺点是，某个具体表达式或命令中的错误，只有在执行到函数的那一部分时才能被发现。（简单语法错误会在最初的解析阶段发现，但更深层的问题只有在执行时才会显现。）
+   </para>
+
+   <para>
+    <application>PL/pgSQL</application>（更准确地说，是 SPI 管理器）还可以尝试缓存与某个预备语句相关的执行计划。如果没有使用缓存计划，那么每次执行该语句时都会生成新的执行计划，而当前参数值（也就是 <application>PL/pgSQL</application> 变量值）可用于优化所选计划。如果该语句没有参数，或者会被执行很多次，SPI 管理器就会考虑创建一个不依赖具体参数值的<firstterm>通用</firstterm>计划，并将其缓存起来供重复使用。通常只有在执行计划对其中引用的 <application>PL/pgSQL</application> 变量值不太敏感时，才会这样做。如果执行计划对参数值非常敏感，那么每次重新生成计划总体上反而更划算。关于预备语句的行为，详见 <xref linkend="sql-prepare">。
+   </para>
+
+   <para>
+    由于<application>PL/pgSQL</application>保存预备语句并且有时候以这种方式保存执行计划，直接出现在一个<application>PL/pgSQL</application>函数中的 SQL 命令必须在每次执行时引用相同的表和列。也就是说，你不能在一个 SQL 命令中把一个参数用作表或列的名字。要绕过这种限制，你可以构建<application>PL/pgSQL</application> <command>EXECUTE</command>使用的动态命令，但是会付出在每次执行时需要执行新解析分析以及构建新执行计划的代价。
+   </para>
+
+    <para>
+     记录变量的可变特性在这里还会带来另一个问题。当记录变量的字段被用于表达式或语句中时，这些字段的数据类型不能在函数的不同调用之间发生变化，因为每个表达式都会按照第一次执行到它时所看到的数据类型来分析。必要时，可以用<command>EXECUTE</command>绕过这个问题。
+    </para>
+
+    <para>
+     如果同一个函数被用作多个表的触发器，<application>PL/pgSQL</application>会针对每个这样的表独立地准备并缓存语句。也就是说，缓存是按“触发器函数 + 表”的组合建立的，而不是每个函数只有一个缓存。这缓解了数据类型变化带来的部分问题；例如，即使不同表中名为<literal>key</literal>的列类型不同，一个触发器函数也仍然能够成功使用它。
+    </para>
+
+    <para>
+     同样，具有多态参数类型的函数也会为它们已经被调用的每一种实参类型组合都保留一个独立的缓存，这样数据类型差异不会导致意想不到的失败。
+    </para>
+
+   <para>
+    语句缓存有时可能在解释时间敏感的值时产生令人惊讶的效果。例如这两个函数做的事情就有区别：
+
+<programlisting>
+CREATE FUNCTION logfunc1(logtxt text) RETURNS void AS $$
+    BEGIN
+        INSERT INTO logtable VALUES (logtxt, 'now');
+    END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+
+     以及：
+
+<programlisting>
+CREATE FUNCTION logfunc2(logtxt text) RETURNS void AS $$
+    DECLARE
+        curtime timestamp;
+    BEGIN
+        curtime := 'now';
+        INSERT INTO logtable VALUES (logtxt, curtime);
+    END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+    </para>
+
+    <para>
+     在<function>logfunc1</function>中，<productname>PostgreSQL</productname>的主解析器在分析<command>INSERT</command>时就知道字符串<literal>'now'</literal>应该被解释为<type>timestamp</type>，因为<classname>logtable</classname>的目标列是这种类型。因此，在<command>INSERT</command>被分析时<literal>'now'</literal>将被转换为一个<type>timestamp</type>常量，并且在该会话的生命周期内被用于所有对<function>logfunc1</function>的调用。不用说，这不是程序员想要的。一个更好的主意是使用<literal>now()</literal>或<literal>current_timestamp</literal>函数。
+    </para>
+
+    <para>
+     在<function>logfunc2</function>中，<productname>PostgreSQL</productname>的主解析器不知道应该把<literal>'now'</literal>解释成什么类型，因此返回一个<type>text</type>类型的数据值，其中包含字符串<literal>now</literal>。在随后给局部变量<varname>curtime</varname>赋值时，<application>PL/pgSQL</application>解释器通过调用用于该转换的<function>text_out</function>和<function>timestamp_in</function>函数，把这个字符串转换为<type>timestamp</type>类型。因此，计算得到的时间戳会按程序员预期在每次执行时更新。虽然这恰好能得到预期结果，但效率并不高，因此使用<literal>now()</literal>函数仍然是更好的主意。
+    </para>
+
+  </sect2>
+
+  </sect1>
+
+ <sect1 id="plpgsql-development-tips">
+  <title><application>PL/pgSQL</application>开发提示</title>
+
+   <para>
+    在<application>PL/pgSQL</application>中进行开发的一种好方法，是用你喜欢的文本编辑器编写函数，并在另一个窗口里使用<application>psql</application>载入和测试这些函数。如果你采用这种方式，最好使用<command>CREATE OR REPLACE FUNCTION</command>来编写函数。这样只需重新载入该文件，就可以更新函数定义。例如：
+<programlisting>
+CREATE OR REPLACE FUNCTION testfunc(integer) RETURNS integer AS $$
+          ....
+$$ LANGUAGE plpgsql;
+</programlisting>
+   </para>
+
+   <para>
+    在运行<application>psql</application>期间，你可以用下面的命令载入或者重载这样一个函数定义文件：
+<programlisting>
+\i filename.sql
+</programlisting>
+    并且接着立即发出 SQL 命令来测试该函数。
+   </para>
+
+   <para>
+    另一种使用<application>PL/pgSQL</application>进行开发的好方法，是使用有助于过程语言开发的 GUI 数据库访问工具。这类工具的一个例子是<application>pgAdmin</application>，当然也有其他工具。它们通常提供一些方便的特性，例如转义单引号，以及让重新创建和调试函数变得更容易。
+   </para>
+
+  <sect2 id="plpgsql-quote-tips">
+   <title>引号的处理</title>
+
+   <para>
+    一个<application>PL/pgSQL</application>函数的代码在一个<command>CREATE FUNCTION</command>中被指定为一个字符串字面量。如果你用通常的方式把该字符串写在单引号中间，那么该函数体中的任何单引号都必须被双写；同样任何反斜线也必须被双写（假定使用了转义字符串语法）。双写引号本身就很繁琐，并且在更复杂的情况中代码会变得完全无法理解，因为你很容易发现你需要半打或者更多相邻的引号。我们推荐你转而把函数体写成一个<quote>美元引用</quote>的字符串（见<xref linkend="sql-syntax-dollar-quoting">）。在美元引用方法中，你从不需要双写任何引号。但是要注意为你需要的每一层嵌套选择一个不同的美元引用定界符。例如，你可能把<command>CREATE FUNCTION</command>命令写成：
+<programlisting>
+CREATE OR REPLACE FUNCTION testfunc(integer) RETURNS integer AS $PROC$
+          ....
+$PROC$ LANGUAGE plpgsql;
+</programlisting>
+    在这里面，你可以在 SQL 命令中为简单字符串使用引号并且用<literal>$$</literal>来界定被你组装成字符串的 SQL 命令片段。如果你需要引用包括<literal>$$</literal>的文本，你可以使用<literal>$Q$</literal>等等。
+   </para>
+
+   <para>
+    下表展示了在不使用美元引用时，编写引号必须采取的做法。在把旧式的非美元引用代码改写成更易理解的形式时，它可能会有所帮助。
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>1 个引号</term>
+    <listitem>
+
+     <para>
+      用来开始和结束函数体，例如：
+<programlisting>
+CREATE FUNCTION foo() RETURNS integer AS '
+          ....
+' LANGUAGE plpgsql;
+</programlisting>
+      在一个单引号引用的函数体中的任何位置，引号<emphasis>必须</emphasis>成对出现。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>2 个引号</term>
+    <listitem>
+
+     <para>
+      用于函数体内的字符串字面量，例如：
+<programlisting>
+a_output := ''Blah'';
+SELECT * FROM users WHERE f_name=''foobar'';
+</programlisting>
+      在美元引用方法中，你只需要写：
+<programlisting>
+a_output := 'Blah';
+SELECT * FROM users WHERE f_name='foobar';
+</programlisting>
+      这恰好就是<application>PL/pgSQL</application>解析器在两种情况中会看到的。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>4 个引号</term>
+    <listitem>
+
+     <para>
+      当你在函数内的一个字符串常量中需要一个单引号时，例如：
+<programlisting>
+a_output := a_output || '' AND name LIKE ''''foobar'''' AND xyz''
+</programlisting>
+      实际会被追加到<literal>a_output</literal>的值将是：<literal> AND name LIKE 'foobar' AND xyz</literal>。
+     </para>
+
+     <para>
+      在美元引用方法中，你可以写：
+<programlisting>
+a_output := a_output || $$ AND name LIKE 'foobar' AND xyz$$
+</programlisting>
+      要小心在这周围的任何美元引用定界符都不能是<literal>$$</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>6 个引号</term>
+    <listitem>
+
+     <para>
+      当在函数体内的一个字符串中的一个单引号与该字符串常量末尾相邻，例如：
+<programlisting>
+a_output := a_output || '' AND name LIKE ''''foobar''''''
+</programlisting>
+      被追加到<literal>a_output</literal>的值则将是：<literal> AND name LIKE 'foobar'</literal>。
+     </para>
+
+     <para>
+      在美元引用方法中，这会变成：
+<programlisting>
+a_output := a_output || $$ AND name LIKE 'foobar'$$
+</programlisting>
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>10 个引号</term>
+    <listitem>
+
+     <para>
+      当字符串常量中需要两个单引号（这需要 8 个引号），而且它们紧邻该字符串常量的末尾（还需 2 个引号）时。通常只有在编写生成其他函数的函数时（如<xref linkend="plpgsql-porting-ex2">所示），才会需要这种写法。例如：
+<programlisting>
+a_output := a_output || '' if v_'' ||
+    referrer_keys.kind || '' like ''''''''''
+    || referrer_keys.key_string || ''''''''''
+    then return ''''''  || referrer_keys.referrer_type
+    || ''''''; end if;'';
+</programlisting>
+      <literal>a_output</literal>的值将是：
+<programlisting>
+if v_... like ''...'' then return ''...''; end if;
+</programlisting>
+     </para>
+
+     <para>
+      在美元引用方法中，这会变成：
+<programlisting>
+a_output := a_output || $$ if v_$$ || referrer_keys.kind || $$ like '$$
+    || referrer_keys.key_string || $$'
+    then return '$$  || referrer_keys.referrer_type
+    || $$'; end if;$$;
+</programlisting>
+      这里我们假定我们只需要把单引号放在<literal>a_output</literal>中，因为在使用前它将被再引用。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  </sect2>
+  <sect2 id="plpgsql-extra-checks">
+   <title>额外的编译时检查</title>
+
+   <para>
+    为了辅助用户在一些简单但常见的问题产生危害之前找到它们，
+    <application>PL/PgSQL</application>提供了额外的<replaceable>检查</replaceable>。当被启用时，
+    根据配置，它们可以在一个函数的编译期间被用来发出
+    <literal>WARNING</literal>或者<literal>ERROR</literal>。一个已经收到了
+    <literal>WARNING</literal>的函数可以被继续执行而不会产生进一步的消息，
+    因此建议你在一个单独的开发环境中进行测试。
+   </para>
+
+ <para>这些额外检查通过配置变量启用，其中<varname>plpgsql.extra_warnings</varname>用于警告，<varname>plpgsql.extra_errors</varname>用于错误。两者都可以设为逗号分隔的检查项列表、<literal>"none"</literal>或<literal>"all"</literal>。默认值为<literal>"none"</literal>。当前可用的检查只有一项：<variablelist>
+   <varlistentry>
+    <term><varname>shadowed_variables</varname></term>
+    <listitem>
+       <para>
+        检查声明是否遮蔽了先前定义的变量。
+       </para>
+      </listitem>
+   </varlistentry>
+  </variablelist>下面的例子展示了此设置的效果：<varname>plpgsql.extra_warnings</varname>设为<varname>shadowed_variables</varname>：
+<programlisting>
+SET plpgsql.extra_warnings TO 'shadowed_variables';
+
+CREATE FUNCTION foo(f1 int) RETURNS int AS $$
+DECLARE
+f1 int;
+BEGIN
+RETURN f1;
+END
+$$ LANGUAGE plpgsql;
+WARNING:  variable "f1" shadows a previously defined variable
+LINE 3: f1 int;
+        ^
+CREATE FUNCTION
+</programlisting>
+ </para>
+ </sect2>
+ </sect1>
+
+  <!-- **** Porting from Oracle PL/SQL **** -->
+
+ <sect1 id="plpgsql-porting">
+  <title>从<productname>Oracle</productname> PL/SQL 移植</title>
+
+  <indexterm zone="plpgsql-porting">
+   <primary>Oracle</primary>
+   <secondary>从 PL/SQL 移植到 PL/pgSQL</secondary>
+  </indexterm>
+
+  <indexterm zone="plpgsql-porting">
+   <primary>PL/SQL (Oracle)</primary>
+   <secondary>移植到 PL/pgSQL</secondary>
+  </indexterm>
+
+  <para>
+   这一节解释了<productname>PostgreSQL</productname>的<application>PL/pgSQL</application>语言和 Oracle 的<application>PL/SQL</application>语言之间的差别，用以帮助那些从<trademark class="registered">Oracle</trademark>向<productname>PostgreSQL</productname>移植应用的人。
+  </para>
+
+  <para>
+   <application>PL/pgSQL</application>在许多方面都与 PL/SQL 类似。它是一种具有块结构的命令式语言，所有变量都必须声明。赋值、循环和条件语句也都很相似。在从<application>PL/SQL</application>移植到<application>PL/pgSQL</application>时，应当记住以下主要差异：<itemizedlist>
+     <listitem>
+      <para>如果 SQL 命令中使用的名字既可能是表的列名，也可能是对函数中变量的引用，<application>PL/SQL</application>会将其当作列名。这对应于<application>PL/pgSQL</application>的<literal>plpgsql.variable_conflict</literal> = <literal>use_column</literal>行为，这不是默认行为，如<xref linkend="plpgsql-var-subst">所述。通常最好一开始就避免这种歧义，但如果必须移植大量依赖这种行为的代码，设置<literal>variable_conflict</literal>可能是最好的解决办法。</para>
+     </listitem>
+
+     <listitem>
+      <para>
+       在<productname>PostgreSQL</productname>中，函数体必须写成字符串字面量。因此你需要使用美元符引用或者转义函数体中的单引号（见<xref linkend="plpgsql-quote-tips">）。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       应该用模式把函数组织成不同的分组，而不是用包。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       因为没有包，所以也没有包级变量。这一点有时会带来不便。你可以改为在临时表中保存会话级状态。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       带有<literal>REVERSE</literal>的整数<command>FOR</command>循环的工作方式不同：<application>PL/SQL</application>中是从第二个数向第一个数倒数，而<application>PL/pgSQL</application>是从第一个数向第二个数倒数，因此在移植时需要交换循环边界。不幸的是这种不兼容性是不太可能改变的（见<xref linkend="plpgsql-integer-for">）。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       查询上的<command>FOR</command>循环（不是游标）的工作方式同样不同：目标变量必须已经被声明，而<application>PL/SQL</application>总是会隐式地声明它们。但是这样做的优点是在退出循环后，变量值仍然可以访问。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       在使用游标变量方面，存在一些记法差异。
+      </para>
+     </listitem>
+
+    </itemizedlist>
+   </para>
+
+  <sect2>
+   <title>移植示例</title>
+
+   <para>
+    <xref linkend="pgsql-porting-ex1">展示了如何从<application>PL/SQL</application>移植一个简单的函数到<application>PL/pgSQL</application>中。
+   </para>
+
+   <example id="pgsql-porting-ex1">
+
+    <title>从<application>PL/SQL</application>移植一个简单的函数到<application>PL/pgSQL</application></title>
+
+    <para>
+     这里有一个<productname>Oracle</productname> <application>PL/SQL</application>函数：
+<programlisting>
+CREATE OR REPLACE FUNCTION cs_fmt_browser_version(v_name varchar,
+                                                  v_version varchar)
+RETURN varchar IS
+BEGIN
+    IF v_version IS NULL THEN
+        RETURN v_name;
+    END IF;
+    RETURN v_name || '/' || v_version;
+END;
+/
+show errors;
+</programlisting>
+    </para>
+
+    <para>
+     让我们过一遍这个函数并且看看与<application>PL/pgSQL</application>相比有什么样的不同：
+
+     <itemizedlist>
+      <listitem>
+       <para>
+        在函数原型中（不是函数体中）的<literal>RETURN</literal>关键字在<productname>PostgreSQL</productname>中变成了<literal>RETURNS</literal>。还有，<literal>IS</literal>变成了<literal>AS</literal>，并且你还需要增加一个<literal>LANGUAGE</literal>子句，因为<application>PL/pgSQL</application>并非唯一可用的函数语言。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        在<productname>PostgreSQL</productname>中，函数体被认为是一个字符串字面量，所以你需要使用引号或者美元引用定界符包围它。这代替了Oracle 方法中的用于终止的<literal>/</literal>。
+       </para>
+      </listitem>
+
+      <listitem>
+       <para>
+        在<productname>PostgreSQL</productname>中没有<literal>show errors</literal>命令， 并且也不需要这个命令，因为错误是自动报告的。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </para>
+
+    <para>
+     这个函数被移植到<productname>PostgreSQL</productname>后看起来会是这样：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION cs_fmt_browser_version(v_name varchar,
+                                                  v_version varchar)
+RETURNS varchar AS $$
+BEGIN
+    IF v_version IS NULL THEN
+        RETURN v_name;
+    END IF;
+    RETURN v_name || '/' || v_version;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+    </para>
+   </example>
+
+   <para>
+    <xref linkend="plpgsql-porting-ex2">展示了如何移植一个会创建另一个函数的函数，以及如何处理引号问题。
+   </para>
+
+   <example id="plpgsql-porting-ex2">
+    <title>从<application>PL/SQL</application>移植一个创建另一个函数的函数到<application>PL/pgSQL</application></title>
+
+    <para>下面的过程从 <command>SELECT</command> 语句读取行，并将结果写入 <literal>IF</literal> 语句，从而构造一个大型函数，以提高效率。</para>
+
+    <para>
+     这是 Oracle 版本：
+<programlisting>
+CREATE OR REPLACE PROCEDURE cs_update_referrer_type_proc IS
+    CURSOR referrer_keys IS
+        SELECT * FROM cs_referrer_keys
+        ORDER BY try_order;
+    func_cmd VARCHAR(4000);
+BEGIN
+    func_cmd := 'CREATE OR REPLACE FUNCTION cs_find_referrer_type(v_host IN VARCHAR,
+                 v_domain IN VARCHAR, v_url IN VARCHAR) RETURN VARCHAR IS BEGIN';
+                 
+    FOR referrer_key IN referrer_keys LOOP
+        func_cmd := func_cmd ||
+          ' IF v_' || referrer_key.kind
+          || ' LIKE ''' || referrer_key.key_string
+          || ''' THEN RETURN ''' || referrer_key.referrer_type
+          || '''; END IF;';
+    END LOOP;
+
+    func_cmd := func_cmd || ' RETURN NULL; END;';
+
+    EXECUTE IMMEDIATE func_cmd;
+END;
+/
+show errors;
+</programlisting>
+    </para>
+
+    <para>下面是这个函数的最终移植结果，目标数据库为<productname>PostgreSQL</productname>：
+<programlisting>
+CREATE OR REPLACE FUNCTION cs_update_referrer_type_proc() RETURNS void AS $func$
+DECLARE
+    referrer_keys CURSOR IS
+        SELECT * FROM cs_referrer_keys
+        ORDER BY try_order;
+    func_body text;
+    func_cmd text;
+BEGIN
+    func_body := 'BEGIN';
+
+    FOR referrer_key IN referrer_keys LOOP
+        func_body := func_body ||
+          ' IF v_' || referrer_key.kind
+          || ' LIKE ' || quote_literal(referrer_key.key_string)
+          || ' THEN RETURN ' || quote_literal(referrer_key.referrer_type)
+          || '; END IF;' ;
+    END LOOP;
+
+    func_body := func_body || ' RETURN NULL; END;';
+
+    func_cmd :=
+      'CREATE OR REPLACE FUNCTION cs_find_referrer_type(v_host varchar,
+                                                        v_domain varchar,
+                                                        v_url varchar)
+        RETURNS varchar AS '
+      || quote_literal(func_body)
+      || ' LANGUAGE plpgsql;' ;
+
+    EXECUTE func_cmd;
+END;
+$func$ LANGUAGE plpgsql;
+</programlisting>注意，这里单独构造函数体，然后将其传给<literal>quote_literal</literal>，使其中的每个引号都变成两个。这种技术是必需的，因为不能安全地使用美元引用来定义新函数：我们无法确定会插入什么字符串，其来源是<structfield>referrer_key.key_string</structfield>字段。（这里假定<structfield>referrer_key.kind</structfield>可信，其值总是<literal>host</literal>， <literal>domain</literal>或<literal>url</literal>，但是<structfield>referrer_key.key_string</structfield>可能是任何内容，尤其可能包含美元符号。）这个函数实际上改进了 Oracle 原版：当<structfield>referrer_key.key_string</structfield>或<structfield>referrer_key.referrer_type</structfield>中包含引号时，它也不会生成有问题的代码。</para>
+   </example>
+
+   <para>
+    <xref linkend="plpgsql-porting-ex3">展示了如何移植一个带有<literal>OUT</literal>参数和字符串处理的函数。<productname>PostgreSQL</productname>没有内置的<function>instr</function>函数，但是你可以用其它函数的组合来创建一个。<indexterm><primary>instr</primary></indexterm>在<xref linkend="plpgsql-porting-appendix">中有一个<function>instr</function>的<application>PL/pgSQL</application>实现，你可以用它让你的移植变得更容易。
+   </para>
+
+   <example id="plpgsql-porting-ex3">
+    <title>从<application>PL/SQL</application>移植一个带有字符串操作以及<literal>OUT</literal>参数的过程到<application>PL/pgSQL</application></title>
+
+    <para>
+     下面的<productname>Oracle</productname> PL/SQL 过程被用来解析一个 URL 并且返回一些元素（主机、路径和查询）。
+    </para>
+
+    <para>
+     这是 Oracle 版本：
+<programlisting>
+CREATE OR REPLACE PROCEDURE cs_parse_url(
+    v_url IN VARCHAR2,
+    v_host OUT VARCHAR2,  -- 这个值将被返回
+    v_path OUT VARCHAR2,  -- 这个也是
+    v_query OUT VARCHAR2) -- 还有这个
+IS
+    a_pos1 INTEGER;
+    a_pos2 INTEGER;
+BEGIN
+    v_host := NULL;
+    v_path := NULL;
+    v_query := NULL;
+    a_pos1 := instr(v_url, '//');
+
+    IF a_pos1 = 0 THEN
+        RETURN;
+    END IF;
+    a_pos2 := instr(v_url, '/', a_pos1 + 2);
+    IF a_pos2 = 0 THEN
+        v_host := substr(v_url, a_pos1 + 2);
+        v_path := '/';
+        RETURN;
+    END IF;
+
+    v_host := substr(v_url, a_pos1 + 2, a_pos2 - a_pos1 - 2);
+    a_pos1 := instr(v_url, '?', a_pos2 + 1);
+
+    IF a_pos1 = 0 THEN
+        v_path := substr(v_url, a_pos2);
+        RETURN;
+    END IF;
+
+    v_path := substr(v_url, a_pos2, a_pos1 - a_pos2);
+    v_query := substr(v_url, a_pos1 + 1);
+END;
+/
+show errors;
+</programlisting>
+    </para>
+
+    <para>
+     这里给出一种可能的 <application>PL/pgSQL</application> 写法：
+<programlisting>
+CREATE OR REPLACE FUNCTION cs_parse_url(
+    v_url IN VARCHAR,
+    v_host OUT VARCHAR,  -- 这个值将被返回
+    v_path OUT VARCHAR,  -- 这个也是
+    v_query OUT VARCHAR) -- 还有这个
+AS $$
+DECLARE
+    a_pos1 INTEGER;
+    a_pos2 INTEGER;
+BEGIN
+    v_host := NULL;
+    v_path := NULL;
+    v_query := NULL;
+    a_pos1 := instr(v_url, '//');
+
+    IF a_pos1 = 0 THEN
+        RETURN;
+    END IF;
+    a_pos2 := instr(v_url, '/', a_pos1 + 2);
+    IF a_pos2 = 0 THEN
+        v_host := substr(v_url, a_pos1 + 2);
+        v_path := '/';
+        RETURN;
+    END IF;
+
+    v_host := substr(v_url, a_pos1 + 2, a_pos2 - a_pos1 - 2);
+    a_pos1 := instr(v_url, '?', a_pos2 + 1);
+
+    IF a_pos1 = 0 THEN
+        v_path := substr(v_url, a_pos2);
+        RETURN;
+    END IF;
+
+    v_path := substr(v_url, a_pos2, a_pos1 - a_pos2);
+    v_query := substr(v_url, a_pos1 + 1);
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+
+     这个函数可以这样使用：
+<programlisting>
+SELECT * FROM cs_parse_url('http://foobar.com/query.cgi?baz');
+</programlisting>
+    </para>
+   </example>
+
+   <para>
+    <xref linkend="plpgsql-porting-ex4">展示了如何移植一个使用了多种 Oracle 专属特性的过程。
+   </para>
+
+   <example id="plpgsql-porting-ex4">
+    <title>从<application>PL/SQL</application>移植一个过程到<application>PL/pgSQL</application></title>
+
+    <para>Oracle 版本：<programlisting>
+CREATE OR REPLACE PROCEDURE cs_create_job(v_job_id IN INTEGER) IS
+    a_running_job_count INTEGER;
+    PRAGMA AUTONOMOUS_TRANSACTION;<co id="co.plpgsql-porting-pragma">
+BEGIN
+    LOCK TABLE cs_jobs IN EXCLUSIVE MODE;<co id="co.plpgsql-porting-locktable">
+
+    SELECT count(*) INTO a_running_job_count FROM cs_jobs WHERE end_stamp IS NULL;
+
+    IF a_running_job_count &gt; 0 THEN
+        COMMIT; -- free lock<co id="co.plpgsql-porting-commit">
+        raise_application_error(-20000,
+                 'Unable to create a new job: a job is currently running.');
+    END IF;
+
+    DELETE FROM cs_active_job;
+    INSERT INTO cs_active_job(job_id) VALUES (v_job_id);
+
+    BEGIN
+        INSERT INTO cs_jobs (job_id, start_stamp) VALUES (v_job_id, now());
+    EXCEPTION
+        WHEN dup_val_on_index THEN NULL; -- don't worry if it already exists
+    END;
+    COMMIT;
+END;
+/
+show errors
+</programlisting>
+   </para>
+
+   <para>这样的过程可以很容易地转换为<productname>PostgreSQL</productname>中返回<type>void</type>的函数。这个过程尤其值得关注，因为它能说明以下几点：<calloutlist> <callout arearefs="co.plpgsql-porting-pragma"> <para><productname>PostgreSQL</productname>中没有<literal>PRAGMA</literal>语句。</para> </callout> <callout arearefs="co.plpgsql-porting-locktable"> <para>如果在<application>PL/pgSQL</application>中执行<command>LOCK TABLE</command>，锁要等到调用事务结束时才会释放。</para> </callout> <callout arearefs="co.plpgsql-porting-commit"> <para>不能在<application>PL/pgSQL</application>函数中发出<command>COMMIT</command>。函数运行在某个外层事务之中，因此<command>COMMIT</command>意味着终止函数的执行。不过，在这个特定情形中本来也不需要提交，因为抛出错误时，<command>LOCK TABLE</command>获得的锁就会被释放。</para> </callout> </calloutlist></para>
+
+   <para>下面展示了如何移植这个过程，目标语言为<application>PL/pgSQL</application>：
+
+<programlisting>
+CREATE OR REPLACE FUNCTION cs_create_job(v_job_id integer) RETURNS void AS $$
+DECLARE
+    a_running_job_count integer;
+BEGIN
+    LOCK TABLE cs_jobs IN EXCLUSIVE MODE;
+
+    SELECT count(*) INTO a_running_job_count FROM cs_jobs WHERE end_stamp IS NULL;
+
+    IF a_running_job_count &gt; 0 THEN
+        RAISE EXCEPTION 'Unable to create a new job: a job is currently running';<co id="co.plpgsql-porting-raise">
+    END IF;
+
+    DELETE FROM cs_active_job;
+    INSERT INTO cs_active_job(job_id) VALUES (v_job_id);
+
+    BEGIN
+        INSERT INTO cs_jobs (job_id, start_stamp) VALUES (v_job_id, now());
+    EXCEPTION
+        WHEN unique_violation THEN <co id="co.plpgsql-porting-exception">
+            -- don't worry if it already exists
+    END;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+
+    <calloutlist>
+     <callout arearefs="co.plpgsql-porting-raise">
+      <para>
+       <literal>RAISE</literal>的语法与 Oracle 的语句相当不同，尽管基本的形式<literal>RAISE</literal> <replaceable class="parameter">exception_name</replaceable>工作起来是相似的。
+      </para>
+     </callout>
+     <callout arearefs="co.plpgsql-porting-exception">
+      <para>
+       <application>PL/pgSQL</application>所支持的异常名称不同于 Oracle。内置的异常名称集合要更大（见<xref linkend="errcodes-appendix">）。目前没有办法声明用户定义的异常名称，尽管你能够抛出用户选择的 SQLSTATE 值。
+      </para>
+     </callout>
+    </calloutlist>这个过程与 Oracle 对应过程的主要功能差异在于，<literal>cs_jobs</>表上的排他锁会一直保持到调用事务完成。此外，如果调用者随后中止（例如由于错误），这个过程的效果也会回滚。</para>
+   </example>
+  </sect2>
+
+  <sect2 id="plpgsql-porting-other">
+   <title>其他要关注的事项</title>
+
+   <para>
+    这一节解释了在移植 Oracle <application>PL/SQL</application>函数到<productname>PostgreSQL</productname>中时要关注的一些其他问题。
+   </para>
+
+   <sect3 id="plpgsql-porting-exceptions">
+
+    <title>异常后隐式回滚</title>
+
+    <para>
+     在<application>PL/pgSQL</application>中，当异常被<literal>EXCEPTION</literal>子句捕获后，自该块的<literal>BEGIN</literal>以来所做的所有数据库更改都会被自动回滚。也就是说，这种行为等效于你在 Oracle 中使用下面的代码所得到的效果：
+
+<programlisting>
+BEGIN
+    SAVEPOINT s1;
+    ... code here ...
+EXCEPTION
+    WHEN ... THEN
+        ROLLBACK TO s1;
+        ... code here ...
+    WHEN ... THEN
+        ROLLBACK TO s1;
+        ... code here ...
+END;
+</programlisting>
+
+     如果你正在移植一个以这种方式使用<command>SAVEPOINT</command>和<command>ROLLBACK TO</command>的 Oracle 过程，工作会比较简单：只要省略<command>SAVEPOINT</command>和<command>ROLLBACK TO</command>即可。如果你的 Oracle 过程以不同方式使用<command>SAVEPOINT</command>和<command>ROLLBACK TO</command>，那就需要认真思考了。
+    </para>
+   </sect3>
+
+   <sect3>
+    <title><command>EXECUTE</command></title>
+
+    <para>
+     <application>PL/pgSQL</application>中的<command>EXECUTE</command>与<application>PL/SQL</application>中的版本工作方式相似，但必须记得按照<xref linkend="plpgsql-statements-executing-dyn">中的说明使用<function>quote_literal</function>和<function>quote_ident</function>。像 <literal>EXECUTE 'SELECT * FROM $1';</literal> 这样的写法如果不借助这些函数，将无法可靠地工作。
+    </para>
+   </sect3>
+
+   <sect3 id="plpgsql-porting-optimization">
+
+    <title>优化 <application>PL/pgSQL</application> 函数</title>
+
+    <para>
+     <productname>PostgreSQL</productname>提供了两种函数创建修饰符来优化执行：<quote>volatility</quote>（对于给定的相同参数，函数是否总是返回相同的结果）以及<quote>strictness</quote> （如果任何参数为空值，函数是否返回空值）。详见<xref linkend="sql-createfunction">参考页。
+    </para>
+
+    <para>
+     在利用这些优化属性时，你的<command>CREATE FUNCTION</command>语句可能像这样：
+
+<programlisting>
+CREATE FUNCTION foo(...) RETURNS integer AS $$
+...
+$$ LANGUAGE plpgsql STRICT IMMUTABLE;
+</programlisting>
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 id="plpgsql-porting-appendix">
+
+   <title>附录</title>
+
+   <para>
+    这一节包含了一组 Oracle 兼容的<function>instr</function>函数代码，你可以用它来简化你的移植工作。
+   </para>
+
+   <indexterm>
+    <primary><function>instr</function> 函数</primary>
+   </indexterm>
+
+<programlisting><![CDATA[
+--
+-- instr functions that mimic Oracle's counterpart
+-- Syntax: instr(string1, string2 [, n [, m]])
+-- where [] denotes optional parameters.
+--
+-- Search string1, beginning at the nth character, for the mth occurrence
+-- of string2.  If n is negative, search backwards, starting at the abs(n)'th
+-- character from the end of string1.
+-- If n is not passed, assume 1 (search starts at first character).
+-- If m is not passed, assume 1 (find first occurrence).
+-- Returns starting index of string2 in string1, or 0 if string2 is not found.
+--
+
+CREATE FUNCTION instr(varchar, varchar) RETURNS integer AS $$
+BEGIN
+    RETURN instr($1, $2, 1);
+END;
+$$ LANGUAGE plpgsql STRICT IMMUTABLE;
+
+CREATE FUNCTION instr(string varchar, string_to_search_for varchar,
+                      beg_index integer)
+RETURNS integer AS $$
+DECLARE
+    pos integer NOT NULL DEFAULT 0;
+    temp_str varchar;
+    beg integer;
+    length integer;
+    ss_length integer;
+BEGIN
+    IF beg_index > 0 THEN
+        temp_str := substring(string FROM beg_index);
+        pos := position(string_to_search_for IN temp_str);
+
+        IF pos = 0 THEN
+            RETURN 0;
+        ELSE
+            RETURN pos + beg_index - 1;
+        END IF;
+    ELSIF beg_index < 0 THEN
+        ss_length := char_length(string_to_search_for);
+        length := char_length(string);
+        beg := length + 1 + beg_index;
+
+        WHILE beg > 0 LOOP
+            temp_str := substring(string FROM beg FOR ss_length);
+            IF string_to_search_for = temp_str THEN
+                RETURN beg;
+            END IF;
+
+            beg := beg - 1;
+        END LOOP;
+
+        RETURN 0;
+    ELSE
+        RETURN 0;
+    END IF;
+END;
+$$ LANGUAGE plpgsql STRICT IMMUTABLE;
+
+CREATE FUNCTION instr(string varchar, string_to_search_for varchar,
+                      beg_index integer, occur_index integer)
+RETURNS integer AS $$
+DECLARE
+    pos integer NOT NULL DEFAULT 0;
+    occur_number integer NOT NULL DEFAULT 0;
+    temp_str varchar;
+    beg integer;
+    i integer;
+    length integer;
+    ss_length integer;
+BEGIN
+    IF occur_index <= 0 THEN
+        RAISE 'argument ''%'' is out of range', occur_index
+          USING ERRCODE = '22003';
+    END IF;
+
+    IF beg_index > 0 THEN
+        beg := beg_index - 1;
+        FOR i IN 1..occur_index LOOP
+            temp_str := substring(string FROM beg + 1);
+            pos := position(string_to_search_for IN temp_str);
+            IF pos = 0 THEN
+                RETURN 0;
+            END IF;
+            beg := beg + pos;
+        END LOOP;
+
+        RETURN beg;
+    ELSIF beg_index < 0 THEN
+        ss_length := char_length(string_to_search_for);
+        length := char_length(string);
+        beg := length + 1 + beg_index;
+
+        WHILE beg > 0 LOOP
+            temp_str := substring(string FROM beg FOR ss_length);
+            IF string_to_search_for = temp_str THEN
+                occur_number := occur_number + 1;
+                IF occur_number = occur_index THEN
+                    RETURN beg;
+                END IF;
+            END IF;
+
+            beg := beg - 1;
+        END LOOP;
+
+        RETURN 0;
+    ELSE
+        RETURN 0;
+    END IF;
+END;
+$$ LANGUAGE plpgsql STRICT IMMUTABLE;
+]]>
+</programlisting>
+  </sect2>
+
+ </sect1>
+
+</chapter>

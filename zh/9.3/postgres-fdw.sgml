@@ -1,0 +1,414 @@
+<!-- doc/src/sgml/postgres-fdw.sgml -->
+
+<sect1 id="postgres-fdw" xreflabel="postgres_fdw">
+ <title>postgres_fdw</title>
+
+ <indexterm zone="postgres-fdw">
+  <primary>postgres_fdw</primary>
+ </indexterm>
+
+ <para>
+  <filename>postgres_fdw</filename> 模块提供外部数据包装器
+  <literal>postgres_fdw</literal>，可用于访问存储在外部
+  <productname>PostgreSQL</productname> 服务器中的数据。
+ </para>
+
+ <para>
+  本模块提供的功能与较旧的 <xref linkend="dblink"> 模块在很大程度上重叠。
+  但 <filename>postgres_fdw</filename> 为访问远程表提供了更透明且符合标准的语法，
+  并且在许多情况下性能更好。
+ </para>
+
+ <para>
+  要准备通过 <filename>postgres_fdw</filename> 进行远程访问：
+  <orderedlist spacing="compact">
+   <listitem>
+    <para>
+     安装 <filename>postgres_fdw</filename> 扩展，可使用 <xref
+     linkend="sql-createextension">。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     使用 <xref linkend="sql-createserver"> 创建外部服务器对象，
+     用来表示每个要连接的远程数据库。将除 <literal>user</literal> 和
+     <literal>password</literal> 之外的连接信息指定为服务器对象的选项。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     对于每个需要获准访问各个外部服务器的数据库用户，使用
+     <xref linkend="sql-createusermapping"> 创建用户映射。将要使用的
+     远程用户名和密码指定为用户映射的 <literal>user</literal> 和
+     <literal>password</literal> 选项。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     对于每个要访问的远程表，使用 <xref linkend="sql-createforeigntable">
+     创建外部表。
+     外部表的列必须与被引用的远程表匹配。不过，如果在外部表对象的选项中
+     指定正确的远程名称，也可以使用与远程表不同的表名和/或列名。
+    </para>
+   </listitem>
+  </orderedlist>
+ </para>
+
+ <para>
+  现在，只需对外部表执行 <command>SELECT</command>，即可访问其底层远程表中
+  存储的数据。也可以使用 <command>INSERT</command>、<command>UPDATE</command> 或
+  <command>DELETE</command> 修改远程表。
+  （当然，在用户映射中指定的远程用户必须拥有执行这些操作的权限。）
+ </para>
+
+  <para>
+  通常建议将外部表的列声明为与被引用远程表的对应列具有完全相同的数据类型，
+  并在适用时具有相同的排序规则。尽管 <filename>postgres_fdw</filename>
+  目前在按需执行数据类型转换方面相当宽容，但当类型或排序规则不匹配时，
+  仍可能出现令人意外的语义异常，因为远程服务器对 <literal>WHERE</literal> 子句的
+  解释与本地服务器略有不同。
+ </para>
+
+ <para>
+  请注意，外部表的声明可以比其底层远程表少一些列，或者使用不同的列顺序。
+  与远程表列的匹配是按名称而不是按位置进行的。
+ </para>
+
+ <sect2>
+  <title>postgres_fdw 的 FDW 选项</title>
+
+  <sect3>
+   <title>连接选项</title>
+
+   <para>使用<filename>postgres_fdw</filename>外部数据包装器的外部服务器，可以使用与<application>libpq</>连接字符串所接受的相同选项，详见<xref linkend="libpq-paramkeywords">，但以下选项不被允许：<itemizedlist spacing="compact">
+     <listitem>
+      <para><literal>user</literal> 和 <literal>password</literal>（应改为在用户映射中指定）</para>
+     </listitem>
+     <listitem>
+      <para>
+       <literal>client_encoding</literal>（会根据本地服务器编码自动设置）
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <literal>fallback_application_name</literal>（始终设置为
+       <literal>postgres_fdw</literal>）
+      </para>
+     </listitem>
+    </itemizedlist>
+   </para>
+
+   <para>只有超级用户才能不使用密码认证连接到外部服务器，因此应始终为属于非超级用户的用户映射指定 <literal>password</literal> 选项。</para>
+  </sect3>
+
+  <sect3>
+   <title>对象名称选项</title>
+
+   <para>
+    这些选项可用于控制发送到远程 <productname>PostgreSQL</productname>
+    服务器的 SQL 语句中所使用的名称。当创建外部表时所用的名称与其底层
+    远程表的名称不同时，就需要这些选项。
+   </para>
+
+   <variablelist>
+
+    <varlistentry>
+     <term><literal>schema_name</literal></term>
+     <listitem>
+      <para>
+       该选项可为外部表指定，用于给出在远程服务器上为该外部表使用的模式名。
+       如果省略，则使用外部表自身所在模式的名称。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>table_name</literal></term>
+     <listitem>
+      <para>
+       该选项可为外部表指定，用于给出在远程服务器上为该外部表使用的表名。
+       如果省略，则使用外部表自身的名称。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>column_name</literal></term>
+     <listitem>
+      <para>
+       该选项可为外部表的某个列指定，用于给出在远程服务器上为该列使用的列名。
+       如果省略，则使用该列自身的名称。
+      </para>
+     </listitem>
+    </varlistentry>
+
+   </variablelist>
+
+  </sect3>
+
+  <sect3>
+   <title>代价估算选项</title>
+
+   <para>
+    <filename>postgres_fdw</filename> 通过在远程服务器上执行查询来获取远程数据，
+    因此，理想情况下，扫描外部表的估计代价应当等于在远程服务器上完成该操作的
+    代价，再加上一些通信开销。获得这种估算最可靠的方法，是向远程服务器询问，
+    再把开销加上去；但对于简单查询，为了取得代价估算而额外发送一次远程查询，
+    可能并不划算。因此 <filename>postgres_fdw</filename> 提供以下选项来控制
+    代价估算的方式：
+   </para>
+
+   <variablelist>
+
+    <varlistentry>
+     <term><literal>use_remote_estimate</literal></term>
+     <listitem>
+      <para>
+       该选项可为外部表或外部服务器指定，用于控制
+       <filename>postgres_fdw</filename> 是否发出远程 <command>EXPLAIN</command>
+       命令来获取代价估算。外部表上的设置会覆盖其所属服务器的设置，但只对
+       该表生效。默认值为 <literal>false</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>fdw_startup_cost</literal></term>
+     <listitem>
+      <para>
+       该选项可为外部服务器指定，是一个数值，会被加到该服务器上任何
+       外部表扫描的估计启动代价中。它表示建立连接、在远程端解析并规划查询等
+       额外开销。默认值为 <literal>100</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>fdw_tuple_cost</literal></term>
+     <listitem>
+      <para>
+       该选项可为外部服务器指定，是一个数值，用作该服务器上外部表扫描的
+       每个元组的额外代价。它表示服务器之间数据传输的额外开销。可以增大或
+       减小该数值，以反映到远程服务器更高或更低的网络延迟。默认值为
+       <literal>0.01</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+
+   </variablelist>
+
+   <para>
+    当 <literal>use_remote_estimate</literal> 为真时，
+    <filename>postgres_fdw</filename> 从远程服务器获取行数和代价估算，然后
+    将 <literal>fdw_startup_cost</literal> 和 <literal>fdw_tuple_cost</literal>
+    加到代价估算中。当 <literal>use_remote_estimate</literal> 为假时，
+    <filename>postgres_fdw</filename> 在本地执行行数和代价估算，然后再将
+    <literal>fdw_startup_cost</literal> 和 <literal>fdw_tuple_cost</literal>
+    加到代价估算中。除非有远程表统计信息的本地副本可用，否则这种本地估算
+    不太可能非常准确。更新本地统计信息的方法，是在外部表上运行
+    <xref linkend="sql-analyze">；这样会扫描远程表，然后像对待本地表一样
+    计算并存储统计信息。保留本地统计信息可以有效减少远程表每次查询的规划开销；
+    但如果远程表经常更新，本地统计信息很快就会过时。
+   </para>
+
+  </sect3>
+
+
+  <sect3>
+   <title>可更新性选项</title>
+
+   <para>
+    默认情况下，所有使用 <filename>postgres_fdw</filename> 的外部表都被
+    假定为可更新。这一点可以通过以下选项覆盖：
+   </para>
+
+   <variablelist>
+
+    <varlistentry>
+     <term><literal>updatable</literal></term>
+     <listitem>
+      <para>
+       该选项控制 <filename>postgres_fdw</filename> 是否允许使用
+       <command>INSERT</command>、<command>UPDATE</command> 和
+       <command>DELETE</command> 命令修改外部表。它可为外部表或外部服务器
+       指定。表级选项会覆盖服务器级选项。默认值为 <literal>true</literal>。
+      </para>
+
+      <para>
+       当然，如果远程表实际上不可更新，最终仍会报错。该选项的主要作用是
+       允许在本地直接抛出错误，而无需查询远程服务器。但请注意，
+       <literal>information_schema</literal> 视图会根据该选项的设置，将
+       <filename>postgres_fdw</filename> 外部表报告为可更新（或不可更新），
+       而不会对远程服务器进行任何检查。
+      </para>
+     </listitem>
+    </varlistentry>
+
+   </variablelist>
+  </sect3>
+
+   </sect2>
+
+ <sect2>
+  <title>连接管理</title>
+
+  <para>
+   <filename>postgres_fdw</filename> 在首次执行使用与某个外部服务器关联的
+   外部表的查询时，会建立到该外部服务器的连接。该连接会在同一会话中保留并供后续查询重用。如果使用多个用户标识
+   （用户映射）访问该外部服务器，则会为每个用户映射建立一个连接。
+  </para>
+ </sect2>
+
+ <sect2>
+  <title>事务管理</title>
+
+  <para>
+   在引用某个外部服务器上任意远程表的查询期间，如果当前本地事务尚未在该
+   远程服务器上打开对应的事务，<filename>postgres_fdw</filename> 就会在
+   该远程服务器上打开一个事务。本地事务提交或中止时，远程事务也会提交或
+   中止。保存点也会通过创建对应的远程保存点进行类似管理。
+  </para>
+
+  <para>
+   当本地事务的隔离级别为 <literal>SERIALIZABLE</literal> 时，远程事务使用
+   <literal>SERIALIZABLE</literal>；否则使用
+   <literal>REPEATABLE READ</literal> 隔离级别。这一选择确保如果一个查询
+   在远程服务器上执行多次表扫描，所有扫描都能获得快照一致的结果。其结果是，
+   同一事务中的后续查询会看到来自远程服务器的相同数据，即使远程服务器由于
+   其他活动正在发生并发更新。对于使用 <literal>SERIALIZABLE</literal> 或
+   <literal>REPEATABLE READ</literal> 隔离级别的本地事务，这种行为本来就
+   符合预期；但对于 <literal>READ COMMITTED</literal> 本地事务，则可能令人
+   意外。未来的 <productname>PostgreSQL</productname> 版本可能会修改这些
+   规则。
+  </para>
+
+  <para>
+   请注意，<filename>postgres_fdw</filename> 当前不支持为两阶段提交预备远程事务。
+  </para>
+ </sect2>
+
+ <sect2>
+  <title>远程查询优化</title>
+
+  <para>
+   <filename>postgres_fdw</filename> 会尽力优化远程查询，以减少从外部
+   服务器传输的数据量。这是通过将查询的 <literal>WHERE</literal> 子句发送到
+   远程服务器执行，以及不获取当前查询不需要的表列来实现的。为降低查询被
+   错误执行的风险，只有当 <literal>WHERE</literal> 子句使用内置数据类型、
+   操作符和函数时，才会将该子句发送到远程服务器。这类子句中的操作符和函数还必须是
+   <literal>IMMUTABLE</literal>。
+  </para>
+
+  <para>
+   可以使用 <command>EXPLAIN VERBOSE</command> 查看实际发送给远程服务器
+   执行的查询。
+  </para>
+ </sect2>
+
+ <sect2>
+  <title>远程查询执行环境</title>
+
+  <para>
+   在 <filename>postgres_fdw</filename> 打开的远程会话中，
+   <xref linkend="guc-search-path"> 参数会被设置为仅包含
+   <literal>pg_catalog</literal>，这样无需模式限定就只能看到内置对象。
+   这对 <filename>postgres_fdw</filename> 自身生成的查询不是问题，因为它
+   总是提供这种限定。然而，这可能会对那些通过远程表上的触发器或规则在
+   远程服务器上执行的函数带来风险。例如，如果远程表实际上是一个视图，
+   则该视图中使用的任何函数都会在受限的搜索路径下执行。建议在这类函数中
+   对所有名称都写成带模式限定的形式，或者为这类函数附加
+   <literal>SET search_path</literal> 选项（见
+   <xref linkend="sql-createfunction">），以建立其预期的搜索路径环境。
+  </para>
+
+  <para>
+   <filename>postgres_fdw</filename> 同样会为参数
+   <xref linkend="guc-timezone">、<xref linkend="guc-datestyle">、
+   <xref linkend="guc-intervalstyle">和<xref linkend="guc-extra-float-digits">
+   建立远程会话设置。这些设置通常不像 <varname>search_path</varname> 那样
+   容易出问题，但如果有需要，也可以通过函数的 <literal>SET</literal> 选项处理。
+  </para>
+
+  <para>
+   <emphasis>不</emphasis>建议通过修改这些参数的会话级设置来覆盖这种行为；
+   这很可能导致 <filename>postgres_fdw</filename> 工作异常。
+  </para>
+ </sect2>
+
+ <sect2>
+  <title>跨版本兼容性</title>
+
+  <para>
+   <filename>postgres_fdw</filename> 可用于最早追溯到
+   <productname>PostgreSQL</productname> 8.3 的远程服务器。只读能力可追溯到
+   8.1。
+  
+
+   不过有一个限制是，<filename>postgres_fdw</filename> 通常假定：
+   如果外部表的 <literal>WHERE</literal> 子句中出现不可变的内置函数和
+   操作符，那么把它们发送到远程服务器执行是安全的。因此，某个在远程服务器
+   所属发行版本之后才加入的内置函数，可能仍会被发送到该远程服务器执行，
+   从而导致<quote>function does not exist</quote>或类似错误。可以通过
+   重写查询绕过这类失败，例如把外部表引用放入一个带
+   <literal>OFFSET 0</literal> 的子 <literal>SELECT</literal> 中，作为优化
+   栅栏，并将有问题的函数或操作符放到子 <literal>SELECT</literal> 之外。
+  </para>
+ </sect2>
+
+ <sect2>
+  <title>示例</title>
+
+  <para>
+   下面是使用 <literal>postgres_fdw</literal> 创建外部表的一个示例。
+   首先安装扩展：
+  </para>
+
+<programlisting>
+CREATE EXTENSION postgres_fdw;
+</programlisting>
+
+  <para>
+   然后使用 <xref linkend="sql-createserver"> 创建外部服务器。
+   在本示例中，希望连接到一台 <productname>PostgreSQL</productname> 服务器，
+   它运行在主机 <literal>192.83.123.89</literal> 上并监听
+   <literal>5432</literal> 端口。要连接的数据库在远程服务器上名为
+   <literal>foreign_db</literal>：
+
+<programlisting>
+CREATE SERVER foreign_server
+        FOREIGN DATA WRAPPER postgres_fdw
+        OPTIONS (host '192.83.123.89', port '5432', dbname 'foreign_db');
+</programlisting>
+  </para>
+
+  <para>
+   还需要用 <xref linkend="sql-createusermapping"> 定义一个用户映射，
+   以标识在远程服务器上使用哪个角色：
+
+<programlisting>
+CREATE USER MAPPING FOR local_user
+        SERVER foreign_server
+        OPTIONS (user 'foreign_user', password 'password');
+</programlisting>
+  </para>
+
+  <para>现在可以通过<xref linkend="sql-createforeigntable">创建外部表。在本例中，要访问远程服务器上的表<structname>some_schema.some_table</structname>，其本地名称为<structname>foreign_table</structname>：
+
+<programlisting>
+CREATE FOREIGN TABLE foreign_table (
+        id integer NOT NULL,
+        data text
+)
+        SERVER foreign_server
+        OPTIONS (schema_name 'some_schema', table_name 'some_table');
+</programlisting>必须确保在<command>CREATE FOREIGN TABLE</command>中声明的列的数据类型和其他属性，与实际远程表匹配。列名也必须匹配，除非为各列附加<literal>column_name</literal>选项，指明它们在远程表中的名称。</para>
+ </sect2>
+
+ <sect2>
+  <title>作者</title>
+  <para>
+   Shigeru Hanada <email>shigeru.hanada@gmail.com</email>
+  </para>
+ </sect2>
+
+</sect1>
