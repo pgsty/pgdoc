@@ -76,3 +76,7 @@ PG14—19 中文源文完成 1,895 个定点原子修改、321 个文件：1,626
 ## 2026-09-15 PG10—PG20 物理存储及关联说明校准
 
 新增第 644/645 条：out-of-line storage → 行外存储，in-line storage → 行内存储，沿用位串类型、SP-GiST 及既有发行说明的稳定译法。十一版按各自英文核对 TOAST、存储策略、系统目录、限制和相关用例，区分 SQL 文本之外独立传递的参数、编译器函数内联、匿名代码块及脚本内联数据；实际代码、类型、选项与原始输出保持。词表和规则各 645 条，既定九项用户回退保留。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/physical-storage-full-*；全书及 33 项最终构建继续。
+
+## 2026-09-15 PG10—PG20 amcheck 及 TOAST 关联说明校准
+
+新增第 646 条 toasted → 经过 TOAST 处理，沿用十一版横向核对中已有的 SP-GiST、过程快照和局部解压说明译法。连同 TOASTed 和 acronym 标签拆分的形式完整核对，修复普通说明中的英文残留、toast 字段及 TOAST 化混用，保留实际函数宏、错误消息和原始代码。词表及规则各 646 条，既定九项用户回退保留。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/amcheck-full-*；全书校准与 33 项最终构建继续。
