@@ -59,7 +59,7 @@
      <substeps>
       <step>
        <para>
-        先看该词元是否匹配任何已知的时区缩写。这些缩写由 <xref linkend="datetime-config-files"/> 中描述的配置设置决定。
+        先看该词元是否匹配任何已知的时区缩写。这些缩写由 <xref linkend="datetime-config-files"/> 中描述的配置文件提供。
        </para>
       </step>
 
@@ -164,7 +164,7 @@
  2018-11-04 01:30:00-05
 (1 row)
 </programlisting>
-    在那一天，1:30AM 有两种可能的解释；先有一次 1:30AM EDT，随后一小时后时钟从 2AM EDT 回拨到 1AM EST，于是又出现一次 1:30AM EST。再次，<productname>PostgreSQL</productname> 将给定时间按标准时间（UTC-5）来解释。我们可以通过显式指定夏令时来强制采用另一种解释：
+    在那一天，1:30AM 有两种可能的解释：先有一次 1:30AM EDT；一小时后又有一次 1:30AM EST，其间时钟已从 2AM EDT 回拨到 1AM EST。再次，<productname>PostgreSQL</productname> 将给定时间按标准时间（UTC-5）来解释。我们可以通过显式指定夏令时来强制采用另一种解释：
 <programlisting>
 =&gt; SELECT '2018-11-04 01:30 EDT'::timestamptz;
       timestamptz
@@ -175,7 +175,7 @@
    </para>
 
    <para>
-    在这类情况下适用的精确规则是：如果一个无效时间戳看起来落在夏令时前向跳转转换之内，则为它分配该时区在转换前刚刚生效的 UTC 偏移；如果一个有歧义的时间戳可能落在回拨转换前后任一侧，则为它分配该时区在转换后刚刚生效的 UTC 偏移。在大多数时区，这等价于说<quote>拿不准时优先采用标准时间的解释</quote>。
+    在这类情况下适用的精确规则是：如果一个无效时间戳看起来落在夏令时前向跳转转换之内，则为它分配该时区在转换前一刻采用的 UTC 偏移；如果一个有歧义的时间戳可能落在回拨转换前后任一侧，则为它分配该时区在转换后一刻采用的 UTC 偏移。在大多数时区，这等价于说<quote>有疑义时，优先按标准时间解释</quote>。
    </para>
 
    <para>
@@ -350,13 +350,23 @@
     <secondary>输入缩写</secondary>
    </indexterm>
 
-   <para>由于时区缩写没有得到良好的标准化，<productname>PostgreSQL</productname> 提供了一种定制服务器所接受缩写集合的方法。运行时参数 <xref linkend="guc-timezone-abbreviations"/> 决定当前使用的缩写集合。任何数据库用户都可以修改此参数，但它的可选值由数据库管理员控制；这些值实际上是安装目录中 <filename>.../share/timezonesets/</filename> 下的配置文件名。管理员可以通过在该目录中添加或修改文件，制定本地时区缩写策略。</para>
+   <para>
+    由于时区缩写缺乏良好的标准化，<productname>PostgreSQL</productname>
+    提供了一种机制来自定义服务器可接受的缩写集合。
+    <xref linkend="guc-timezone-abbreviations"/> 运行时参数决定当前活动的缩写集合。
+    虽然这个参数可以由任何数据库用户修改，但它的可能取值受数据库管理员控制
+    &mdash; 它们实际上是安装目录中 <filename>.../share/timezonesets/</filename>
+    里保存的配置文件名称。通过向该目录添加或修改文件，管理员可以为时区缩写设定本地策略。
+   </para>
 
    <para>
     如果文件名完全由字母组成，那么 <varname>timezone_abbreviations</varname> 可以被设置为 <filename>.../share/timezonesets/</filename> 中找到的任意文件名。（禁止在 <varname>timezone_abbreviations</varname> 中使用非字母字符，不仅可以防止读取目标目录之外的文件，也能防止读取编辑器备份文件和其他无关文件。）
    </para>
 
-   <para>时区缩写文件可以包含空行，以及以下字符开头的注释：<literal>#</literal>。非注释行必须采用以下格式之一：<synopsis>
+   <para>
+    时区缩写文件可以包含空行和以 <literal>#</literal> 开头的注释。非注释行必须具有下列格式之一：
+
+<synopsis>
 <replaceable>zone_abbreviation</replaceable> <replaceable>offset</replaceable>
 <replaceable>zone_abbreviation</replaceable> <replaceable>offset</replaceable> D
 <replaceable>zone_abbreviation</replaceable> <replaceable>time_zone_name</replaceable>
@@ -365,9 +375,13 @@
 </synopsis>
    </para>
 
-   <para><replaceable>zone_abbreviation</replaceable> 就是要定义的缩写。<replaceable>offset</replaceable> 是一个整数，表示相对于 UTC 的等效偏移秒数，正数表示格林尼治以东，负数表示以西。例如，-18000 表示格林尼治以西五小时，即北美东海岸标准时间。<literal>D</literal> 表示该时区名称代表当地夏令时间，而非标准时间。</para>
+   <para>
+    <replaceable>zone_abbreviation</replaceable> 就是正在定义的缩写。<replaceable>offset</replaceable> 是一个整数，给出相对 UTC 的秒数偏移；相对格林尼治以东为正，以西为负。例如，-18000 表示位于格林尼治以西五小时，也就是北美东海岸标准时间。<literal>D</literal> 表示该时区名称代表的是本地夏令时，而不是标准时间。
+   </para>
 
-   <para>也可以给出 <replaceable>time_zone_name</replaceable>，引用 IANA 时区数据库中定义的时区名。系统会查阅该时区的定义，判断其中是否正在或曾经使用该缩写；如果是，则采用合适的含义：即正在确定其值的时间戳所处时刻使用的含义；如果该时刻并未使用此缩写，则取此前最近使用的含义；如果只在该时刻之后使用过，则取最早的含义。这对于处理含义曾经发生变化的缩写至关重要。也允许用一个并未出现该缩写的时区名来定义缩写；此时，使用缩写就等价于写出该时区名。</para>
+   <para>
+    另一种写法是给出 <replaceable>time_zone_name</replaceable>，引用 IANA 时区数据库中定义的时区名称。这时会查阅该时区的定义，以判断该缩写是否正在或曾经在该时区使用过；如果是，就采用适当的含义，也就是：在所求时间戳对应时刻实际生效的含义；如果在那个时刻它并不是当时正在使用的含义，则采用紧接其前一个生效的含义；如果它只在那个时刻之后才被使用，则采用最早的含义。对于那些历史上含义曾发生变化的缩写，这种行为至关重要。也允许按一个并不出现该缩写的时区名称来定义某个缩写；这样使用该缩写就等同于直接写出该时区名称。
+   </para>
 
    <tip>
     <para>
@@ -375,9 +389,13 @@
     </para>
    </tip>
 
-   <para><literal>@INCLUDE</literal> 语法允许包含 <filename>.../share/timezonesets/</filename> 目录中的另一个文件。包含可以嵌套，但深度有限。</para>
+   <para>
+    <literal>@INCLUDE</literal> 语法允许包含 <filename>.../share/timezonesets/</filename> 目录中的另一个文件。包含可以嵌套，但嵌套深度有限。
+   </para>
 
-   <para><literal>@OVERRIDE</literal> 语法表示文件中后续的条目可以覆盖之前的条目（通常是从被包含文件中取得的条目）。如果没有此指令，同一时区缩写的冲突定义会被视为错误。</para>
+   <para>
+    <literal>@OVERRIDE</literal> 语法表示文件中的后续条目可以覆盖先前条目（通常是从被包含文件中得到的条目）。如果没有它，同一个时区缩写的冲突定义会被视为错误。
+   </para>
 
    <para>
     在未经修改的安装中，<filename>Default</filename> 文件包含世界上大多数地区中所有互不冲突的时区缩写。另外还为澳大利亚和印度这两个地区提供了 <filename>Australia</filename> 和 <filename>India</filename> 文件：这些文件会先包含 <literal>Default</literal> 文件，然后按需添加或修改缩写。
@@ -506,9 +524,13 @@
    转换规则中的时间字段格式与前面描述的偏移字段相同，只是它们不能包含符号。它们定义了本地当前时间切换到另一种时间的时刻。如果省略，则默认值为 <literal>02:00:00</literal>。
   </para>
 
-  <para>如果给出了夏令时缩写，却省略了转换 <replaceable>rule</replaceable> 字段，则回退为使用规则 <literal>M3.2.0,M11.1.0</literal>。这对应美国截至 2020 年的做法：在三月的第二个星期日向前调时钟，在十一月的第一个星期日向后调时钟，两次转换都发生在当时当地时间凌晨 2 点。注意，此规则无法给出 2007 年之前正确的美国转换日期。</para>
+  <para>
+   如果给出了夏令时时区缩写，但省略了转换 <replaceable>rule</replaceable> 字段，则回退行为会使用规则 <literal>M3.2.0,M11.1.0</literal>，它对应于美国截至 2020 年的做法（也就是说，3 月的第二个星期日春季拨快，11 月的第一个星期日秋季回拨，两次转换都发生在当时有效时间的 2AM）。请注意，这个规则不能给出 2007 年之前美国正确的转换日期。
+  </para>
 
-  <para>例如，<literal>CET-1CEST,M3.5.0,M10.5.0/3</literal> 描述了巴黎当前（截至 2020 年）的计时做法。它表示标准时间缩写为 <literal>CET</literal>，比 UTC 提前一小时（位于其东侧）；夏令时间缩写为 <literal>CEST</literal>，隐含比 UTC 提前两小时；夏令时于三月最后一个星期日凌晨 2 点 CET 开始，于十月最后一个星期日凌晨 3 点 CEST 结束。</para>
+  <para>
+   例如，<literal>CET-1CEST,M3.5.0,M10.5.0/3</literal> 描述了巴黎当前（截至 2020 年）的计时做法。这个规范表明标准时间的缩写是 <literal>CET</literal>，并且比 UTC 快 1 小时（即位于其东侧）；夏令时的缩写是 <literal>CEST</literal>，并且隐含地比 UTC 快 2 小时；夏令时从 3 月最后一个星期日的 2AM CET 开始，到 10 月最后一个星期日的 3AM CEST 结束。
+  </para>
 
   <para>
    这四个时区名称 <literal>EST5EDT</literal>、<literal>CST6CDT</literal>、<literal>MST7MDT</literal> 和 <literal>PST8PDT</literal> 看起来像是 POSIX 时区规范。不过，它们实际上会被当作命名时区处理，因为（出于历史原因）IANA 时区数据库中存在这些名称对应的文件。这在实践中的含义是：这些时区名称会给出有效的美国历史夏令时转换，即使普通的 POSIX 规范做不到这一点。
@@ -599,13 +621,17 @@ $ <userinput>cal 9 1752</userinput>
    <firstterm>儒略日</firstterm>系统是一种为天数编号的方法。它与儒略历并无关系，只是名称容易让人误以为二者有关。儒略日系统由法国学者 Joseph Justus Scaliger（1540&ndash;1609）发明，其名称大概取自他的父亲、意大利学者 Julius Caesar Scaliger（1484&ndash;1558）。
   </para>
 
-  <para>在儒略日系统中，每一天都有一个连续编号，从 JD 0 开始（有时称为<emphasis>起始</emphasis>儒略日）。JD 0 对应儒略历公元前 4713 年 1 月 1 日，或格里高利历公元前 4714 年 11 月 24 日。儒略日计数最常用于天文学家标记夜间观测，因此一天从 UTC 正午开始，到下一个 UTC 正午结束，而不是从午夜到午夜：JD 0 表示从 UTC 公元前 4714 年 11 月 24 日正午，到 UTC 公元前 4714 年 11 月 25 日正午的 24 小时。</para>
+  <para>
+   在儒略日系统中，每一天都有一个连续编号，从 JD 0 开始（有时就称为<emphasis>儒略日</emphasis>）。JD 0 在儒略历中对应公元前 4713 年 1 月 1 日，在格里高利历中对应公元前 4714 年 11 月 24 日。天文学家最常使用儒略日来标记其夜间观测，因此一个日期是从一个 UTC 正午到下一个 UTC 正午，而不是从午夜到午夜：JD 0 指的是从公元前 4714 年 11 月 24 日 UTC 正午到公元前 4714 年 11 月 25 日 UTC 正午这 24 小时。
+  </para>
 
   <para>
    虽然 <productname>PostgreSQL</productname> 支持在日期输入和输出中使用儒略日记法（并且也会在某些内部日期/时间计算中使用儒略日），但它并不遵循日期从正午算到正午这一约定。<productname>PostgreSQL</productname> 将儒略日视为从本地午夜到本地午夜，与普通日期相同。
   </para>
 
-  <para>不过，这一定义也提供了在需要时获得天文学定义的方法：在以下时区中进行运算：<literal>UTC+12</literal>。例如，<programlisting>
+  <para>
+   不过，这一定义确实提供了在需要时获得天文学定义的方法：在时区 <literal>UTC+12</literal> 中进行运算。例如，
+<programlisting>
 =&gt; SELECT extract(julian from '2021-06-23 7:00:00-04'::timestamptz at time zone 'UTC+12');
      date_part
 --------------------

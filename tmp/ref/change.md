@@ -92,3 +92,7 @@ PG14—19 中文源文完成 1,895 个定点原子修改、321 个文件：1,626
 ## 2026-09-16 PG10—PG20 本地化和字符集校准
 
 新增第 649—653 条，统一 Cyrillic → 西里尔字母、Hangul → 谚文、root collation → 根排序规则、root locale → 根区域设置及 Latin 的文字系统用法；复用 SQL 语法、ICU 定制与 CREATE COLLATION 现有译文，区分实际名称、语言、字符编码和文字系统。保留代码、标识符、Unicode 代码点与 BCP 47 标签。十一版完整章节、相关段落与表格水平核查，包含数据库复制约束、SQL_ASCII 含义和 PG16 未来脚注修复。词表和规则各 653 条，九项用户回退保持；全书与 33 最终构建继续。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/charset-full-*。
+
+## 2026-09-16 PG10—PG20 日期与时间附录校准
+
+新增第 654 条 time zone abbreviation → 时区缩写，沿用数据类型、配置和附录的稳定译法，统一系统目录总览中的时区简写。按十一版自身英文核对空格、连字符和复数形式，保留实际时区名称、缩写值、标识符和代码。同步按既有 Julian Date → 儒略日 规则统一格式模板和日期输入示例标签，区分儒略历。词表与规则各 654 条，九项用户回退不变。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/datetime-appendix-full-reviewed-*；全书及 33 最终构建继续。
