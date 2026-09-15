@@ -144,89 +144,63 @@ shared_buffers = 128MB
 
        </sect2>
 
-   <sect2 id="config-setting-sql-command-interaction">
-
-    <title>通过SQL影响参数</title>
-
-     <para>
-      <productname>PostgreSQL</productname>提供了两个SQL命令来建立配置默认值，
-      它们可以针对每个数据库或者每个角色设置默认值：
-     </para>
-
-     <itemizedlist>
-     <listitem>
-
-      <para>
-       <xref linkend="sql-alterdatabase">命令允许针对各个数据库覆盖全局设置。
-      </para>
-     </listitem>
-
-     <listitem>
-
-      <para>
-       <xref linkend="sql-alterrole">命令允许用针对特定用户设置的值来覆盖全局设置和数据库设置。
-      </para>
-     </listitem>
-    </itemizedlist>
-
-     <para>
-      只有当开始一个新的数据库会话时，用<command>ALTER DATABASE</command>和
-      <command>ALTER ROLE</command>设置的值才会被应用。它们会覆盖从配置文件或服务器命令行
-      获得的值，并且作为该会话后续的默认值。注意某些设置在服务器启动后不能被更改，并且因此
-      不能被这些命令（或者下文列举的命令）设置。
-    </para>
-
-     <para>
-      一旦一个客户端连接到数据库，<productname>PostgreSQL</productname>会提供两个额外的SQL命令（
-      以及等效的函数）用以影响会话本地的配置设置：
-    </para>
-
-    <itemizedlist>
-     <listitem>
-
-     <para>
-      <xref linkend="SQL-SHOW"> 命令允许查看所有参数的当前值。对应的函数为 <function>current_setting(setting_name text)</function>。
-     </para>
-     </listitem>
-
-     <listitem>
-
-      <para>
-       <xref linkend="SQL-SET"> 命令允许修改可在会话本地设置的参数的当前值；它对其他会话没有影响。对应的函数为 <function>set_config(setting_name, new_value, is_local)</function>。
-      </para>
-     </listitem>
-    </itemizedlist>
+      <sect2 id="config-setting-other-methods">
+    <title>设置参数的其他方法</title>
 
     <para>
-     此外，系统视图<link
-     linkend="view-pg-settings"><structname>pg_settings</structname></link>可以被用来查看和改变
-     会话本地的值：
+     设置这些配置参数的第二种方法是把它们作为 <command>postgres</command> 命令的命令行选项给出，例如：
+<programlisting>
+postgres -c log_connections=yes -c log_destination='syslog'
+</programlisting>
+     命令行选项覆盖 <filename>postgresql.conf</filename> 中任何冲突的设置。注意这意味着你将无法通过编辑
+     <filename>postgresql.conf</filename> 即时更改该值，因此虽然命令行方法可能很方便，但日后可能会让你失去灵活性。
     </para>
 
-    <itemizedlist>
-     <listitem>
-
-      <para>
-       查询这个视图与使用<command>SHOW ALL</command>相似，但是可以提供更多细节。它也更加灵活，
-       因为可以为它指定过滤条件或者把它与其他关系进行连接。
-      </para>
-     </listitem>
-
-     <listitem>
-
-      <para>
-       在这个视图上使用<xref linkend="SQL-UPDATE">并且指定更新<structname>setting</structname>
-       列，其效果等同于发出<command>SET</command>命令。例如，下面的命令
+    <para>
+     有时只给某个特定会话指定命令行选项很有用。为此可以在客户端使用环境变量
+     <envar>PGOPTIONS</envar>：
 <programlisting>
-SET configuration_parameter TO DEFAULT;
+env PGOPTIONS='-c geqo=off' psql
 </programlisting>
-       等效于：
-<programlisting>
-UPDATE pg_settings SET setting = reset_val WHERE name = 'configuration_parameter';
-</programlisting>
-      </para>
-     </listitem>
-    </itemizedlist>
+     （这适用于任何基于 <application>libpq</application> 的客户端应用，而不仅仅是
+     <application>psql</application>。）注意，对于在服务器启动时就固定、或者必须在
+     <filename>postgresql.conf</filename> 中指定的参数，这种方式无效。
+    </para>
+
+    <para>
+     此外，还可以把一组参数设置指派给某个用户或某个数据库。每当会话启动时，都会加载相关用户和数据库的默认设置。
+     分别使用 <xref linkend="sql-alterrole"> 和 <xref linkend="sql-alterdatabase">
+     命令来配置这些设置。每个数据库的设置覆盖从 <command>postgres</command> 命令行或配置文件收到的任何内容，
+     而后者又被每用户的设置覆盖；两者都会被每会话的设置覆盖。
+    </para>
+
+    <para>
+     有些参数可以在各个 <acronym>SQL</acronym> 会话中用 <xref linkend="SQL-SET">
+     命令更改，例如：
+<screen>
+SET ENABLE_SEQSCAN TO OFF;
+</screen>
+     如果允许 <command>SET</command>，它将覆盖该参数所有其他来源的值。有些参数不能通过
+     <command>SET</command> 更改：例如，控制在不重启整个 <productname>PostgreSQL</productname>
+     服务器的情况下无法更改的行为的参数。此外，有些参数需要超级用户权限才能通过
+     <command>SET</command> 或 <command>ALTER</command> 更改。
+    </para>
+   </sect2>
+
+   <sect2 id="config-setting-examining">
+    <title>查看参数设置</title>
+
+    <para>
+     <xref linkend="SQL-SHOW"> 命令允许查看所有参数的当前值。
+    </para>
+
+    <para>
+     虚拟表 <structname>pg_settings</structname> 也允许显示和更新会话运行时参数；详见
+     <xref linkend="view-pg-settings">，其中有对不同变量类型及何时可以更改它们的描述。
+     <structname>pg_settings</structname> 等价于 <command>SHOW</command> 和
+     <command>SET</command>，但用起来可能更方便，因为它可以与其他表连接，或者用任何想要的选择条件来查询。
+     它还包含比 <command>SHOW</command> 可得的每个参数更多的信息。
+    </para>
 
    </sect2>
 
@@ -899,43 +873,11 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-ssl-prefer-server-ciphers" xreflabel="ssl_prefer_server_ciphers">
-      <term><varname>ssl_prefer_server_ciphers</varname> (<type>bool</type>)
-      <indexterm>
-       <primary><varname>ssl_prefer_server_ciphers</varname>配置参数</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        指定是否使用服务器的 SSL 密码套件优先顺序，而非客户端的优先顺序。默认值为 true。此参数只能在服务器启动时设置。
-       </para>
-       <para>
-        旧版 PostgreSQL没有此设置，始终采用客户端的优先顺序。此设置主要用于与这些旧版本保持向后兼容。采用服务器的优先顺序通常更好，因为服务器更可能得到适当配置。
-       </para>
-      </listitem>
-     </varlistentry>
+     
 
 
 
-     <varlistentry id="guc-ssl-ecdh-curve" xreflabel="ssl_ecdh_curve">
-      <term><varname>ssl_ecdh_curve</varname> (<type>string</type>)
-      <indexterm>
-       <primary><varname>ssl_ecdh_curve</> 配置参数</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        指定在 <acronym>ECDH</acronym> 密钥交换中使用的曲线名称。所有连接的客户端都必须支持该曲线。它不必与服务器椭圆曲线密钥使用的曲线相同。默认值为 <literal>prime256v1</literal>。此参数只能在服务器启动时设置。
-       </para>
-       <para>
-        OpenSSL 中最常见曲线的名称：<literal>prime256v1</literal>（NIST P-256）、<literal>secp384r1</literal>（NIST P-384）、<literal>secp521r1</literal>（NIST P-521）。
-       </para>
-
-       <para>
-        可以用 <command>openssl ecparam -list_curves</command> 命令显示可用曲线的完整列表，但其中并非所有曲线都能用于 <acronym>TLS</acronym>。
-       </para>
-      </listitem>
-     </varlistentry>
+     
 
      <varlistentry id="guc-password-encryption" xreflabel="password_encryption">
       <term><varname>password_encryption</varname> (<type>boolean</type>)
@@ -1048,27 +990,7 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-huge-pages" xreflabel="huge_pages">
-      <term><varname>huge_pages</varname> (<type>enum</type>)
-      <indexterm>
-       <primary><varname>huge_pages</varname>配置参数</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        启用或禁用巨型内存页。有效值为 <literal>try</literal>（默认值）、<literal>on</literal> 和 <literal>off</literal>。
-       </para>
-       <para>
-        目前只有 Linux 支持此特性。在其他系统上，设置为 <literal>try</literal> 时会忽略此设置。
-       </para>
-       <para>
-        使用巨型页可缩小页表，减少内存管理所需的 CPU 时间，从而提高性能。更多信息参见 <xref linkend="linux-huge-pages">。
-       </para>
-       <para>
-        将 <varname>huge_pages</varname> 设为 <literal>try</literal> 时，服务器会尝试使用巨型页，失败后则回退到普通内存分配。设为 <literal>on</literal> 时，使用巨型页失败会导致服务器无法启动。设为 <literal>off</literal> 时，不使用巨型页。
-       </para>
-      </listitem>
-     </varlistentry>
+     
 
      <varlistentry id="guc-temp-buffers" xreflabel="temp_buffers">
       <term><varname>temp_buffers</varname> (<type>integer</type>)
@@ -1129,23 +1051,12 @@ include_dir 'conf.d'
         指定维护操作（如 <command>VACUUM</command>、<command>CREATE INDEX</command> 和 <command>ALTER TABLE ADD FOREIGN KEY</command>）可使用的最大内存量。默认值为 64 兆字节（<literal>64MB</literal>）。由于一个数据库会话一次只能执行一个此类操作，而一个数据库系统通常也不会并发运行很多此类操作，因此可以安全地将该值设得远大于 <varname>work_mem</varname>。更大的设置可能改善清理和恢复数据库转储的性能。
        </para>
        <para>
-        注意，自动清理运行时，最多可能分配此内存量的 <xref linkend="guc-autovacuum-max-workers"> 倍，因此不要将默认值设得过高。单独设置 <xref linkend="guc-autovacuum-work-mem"> 可能有助于控制这一点。
+        注意，自动清理运行时，最多可能分配此内存量的 <xref linkend="guc-autovacuum-max-workers"> 倍，因此不要将默认值设得过高。
        </para>
              </listitem>
      </varlistentry>
 
-          <varlistentry id="guc-autovacuum-work-mem" xreflabel="autovacuum_work_mem">
-      <term><varname>autovacuum_work_mem</varname> (<type>integer</type>)
-      <indexterm>
-       <primary><varname>autovacuum_work_mem</varname>配置参数</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        指定每个自动清理工作进程可使用的最大内存量。默认值为 -1，表示改用 <xref linkend="guc-maintenance-work-mem"> 的值。该设置不影响其他上下文中运行的 <command>VACUUM</command> 的行为。
-       </para>
-             </listitem>
-     </varlistentry>
+          
 
      <varlistentry id="guc-max-stack-depth" xreflabel="max_stack_depth">
       <term><varname>max_stack_depth</varname> (<type>integer</type>)
@@ -1170,18 +1081,7 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-dynamic-shared-memory-type" xreflabel="dynamic_shared_memory_type">
-      <term><varname>dynamic_shared_memory_type</varname> (<type>enum</type>)
-      <indexterm>
-       <primary><varname>dynamic_shared_memory_type</varname>配置参数</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        指定服务器应使用的动态共享内存实现。可选值为 <literal>posix</literal>（使用 <literal>shm_open</literal> 分配的 POSIX 共享内存）、<literal>sysv</literal>（通过 <literal>shmget</literal> 分配的 System V 共享内存）、<literal>windows</literal>（Windows 共享内存）、<literal>mmap</literal>（使用存放在数据目录中的内存映射文件模拟共享内存），以及 <literal>none</literal>（禁用此功能）。并非所有平台都支持所有值；第一个受支持的选项是该平台的默认值。<literal>mmap</literal> 不是任何平台的默认选项，通常不建议使用，因为操作系统可能会反复将修改过的页面写回磁盘，增加系统 I/O 负载；不过，在调试、将 <literal>pg_dynshmem</literal> 目录存放在 RAM 磁盘上，或其他共享内存设施不可用时，它可能有用。
-       </para>
-      </listitem>
-     </varlistentry>
+     
 
      </variablelist>
      </sect2>
@@ -1223,6 +1123,40 @@ include_dir 'conf.d'
        <para>
         设置每个服务器子进程允许同时打开的最大文件数量。默认值为一千个文件。如果内核强制实施了安全的每进程上限，就不必担心此设置。但在某些平台上（尤其是大多数 BSD 系统），内核允许单个进程打开的文件数量很大，如果很多进程都尝试打开这么多文件，就会远超系统实际能够支持的总量。如果遇到 <quote>Too many open files</quote>（打开的文件过多）错误，可尝试减小此设置。此参数只能在服务器启动时设置。
        </para>
+      </listitem>
+     </varlistentry>
+<varlistentry id="guc-shared-preload-libraries" xreflabel="shared_preload_libraries">
+      <term><varname>shared_preload_libraries</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>shared_preload_libraries</varname>配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        这个变量指定一个或者多个要在服务器启动时预载入的共享库。这个参数只能在服务器启动时设置。如果指定的库没有找到，服务器将无法启动。
+       </para>
+
+       <para>
+        有些库需要执行只能在postmaster启动时发生的特定操作，例如分配共享内存、保留轻量级锁
+        或者启动后台工作者。这些库必须通过这个参数在服务器启动时载入。每个库的详情请见文档。
+       </para>
+
+       <para>
+        其他库也能被预载入。通过预载入一个共享库，当该库被第一次使用时就可以避免库的启动时间。
+        不过，启动每个新服务器进程的时间可能会略有增加，即使该进程从不使用该库。因此，推荐只
+        把这个参数用于那些要在大多数会话中使用的库上。还有，改变这个参数要求重启服务器，因此
+        对于短期的调试任务来说这不是好的选择。
+       </para>
+
+      <note>
+
+       <para>
+        在 Windows 主机上，在服务器启动时预载入一个库并不会减少启动每个新服务器进程所需的
+        时间；每一个服务器进程将会重新载入所有预载入的库。不过，对于那些要在postmaster启动时
+        执行操作的库来说，Windows 主机上的
+        <varname>shared_preload_libraries</varname>仍然有用。
+       </para>
+      </note>
       </listitem>
      </varlistentry>
      </variablelist>
@@ -1417,21 +1351,7 @@ include_dir 'conf.d'
       </listitem>
       </varlistentry>
 
-      <varlistentry id="guc-max-worker-processes" xreflabel="max_worker_processes">
-       <term><varname>max_worker_processes</varname> (<type>integer</type>)
-       <indexterm>
-        <primary><varname>max_worker_processes</varname>配置参数</primary>
-       </indexterm>
-       </term>
-       <listitem>
-       <para>
-        设置系统能够支持的后台进程的最大数量。此参数只能在服务器启动时设置。
-       </para>
-       <para>
-        运行备库时，必须将此参数设为与主库相同或更大的值。否则，备库上将不允许执行查询。
-       </para>
-      </listitem>
-      </varlistentry>
+      
 
                      </variablelist>
     </sect2>
@@ -1623,29 +1543,7 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-wal-log-hints" xreflabel="wal_log_hints">
-
-      <term><varname>wal_log_hints</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>wal_log_hints</varname>配置参数</primary>
-      </indexterm>
-      </term>
-      <listitem>
-
-       <para>
-        当这个参数为<literal>on</literal>时，<productname>PostgreSQL</productname>服务器在检查点之后首次修改页面时把该磁盘页面的整个内容都写入 WAL，即使对所谓的提示位做非关键修改也会这样做。
-       </para>
-
-       <para>
-        如果启用了数据校验和，提示位更新总是会被 WAL 记录并且这个设置会被忽略。你可以使用这个
-        设置测试如果你的数据库启用了数据校验和，会有多少额外的 WAL 记录发生。
-       </para>
-
-       <para>
-        这个参数只能在服务器启动时设置。默认值是<literal>off</literal>。
-       </para>
-      </listitem>
-     </varlistentry>
+     
 
           <varlistentry id="guc-wal-buffers" xreflabel="wal_buffers">
       <term><varname>wal_buffers</varname> (<type>integer</type>)
@@ -1884,21 +1782,7 @@ include_dir 'conf.d'
        </listitem>
       </varlistentry>
 
-      <varlistentry id="guc-max-replication-slots" xreflabel="max_replication_slots">
-       <term><varname>max_replication_slots</varname> (<type>integer</type>)
-       <indexterm>
-        <primary><varname>max_replication_slots</varname>配置参数</primary>
-       </indexterm>
-       </term>
-       <listitem>
-        <para>
-         指定服务器可以支持的复制槽（见<xref linkend="streaming-replication-slots">）
-         最大数量。默认值为 0。这个参数只能在服务器启动时设置。将它设置为一个比当前已有复制槽要少的值会阻碍服务器启动。此外，要允许使用复制槽，
-         <varname>wal_level</varname>必须被设置为<literal>archive</literal>或
-         更高。
-        </para>
-       </listitem>
-      </varlistentry>
+      
 
       <varlistentry id="guc-wal-keep-segments" xreflabel="wal_keep_segments">
        <term><varname>wal_keep_segments</varname> (<type>integer</type>)
@@ -4589,34 +4473,13 @@ SET XML OPTION { DOCUMENT | CONTENT };
 
     </sect2>
 
-    <sect2 id="runtime-config-client-preload">
-     <title>共享库预载入</title>
+    
 
-     <para>
-      为了载入附加的功能或者达到提高性能的目的，可用多个设置来预先载入共享库到服务器中。
-      例如<literal>'$libdir/mylib'</literal>设置会使<literal>mylib.so</literal>（或者某些平台上的<literal>mylib.sl</literal>）从安装的标准库目录被预装载。这些设置之间的区别在于生效的时间以及改变它们所需的权限。
-     </para>
-
-     <para>
-      可以用这个方法预装载<productname>PostgreSQL</productname>的过程语言库，通常是使用<literal>'$libdir/plXXX'</literal>语法，其中的<literal>XXX</literal>是<literal>pgsql</literal>、<literal>perl</literal>、<literal>tcl</literal>或<literal>python</literal>。
-     </para>
-
-     <para>
-      对于上述每个参数，如果要加载多个库，库名之间用逗号分隔。除非用双引号括起，所有库名都会被转换为小写。
-     </para>
-
-     <para>
-      只有特别为与PostgreSQL一起使用设计的共享库才能以这种方式载入。每一个PostgreSQL支持
-      的库都有一个<quote>魔法块</quote>，它会被检查以保证兼容性。由于这个原因，非 PostgreSQL 库无法
-      以这种方式被载入。你可能可以使用操作系统的工具（如<envar>LD_PRELOAD</envar>）载入它。
-     </para>
-
-     <para>
-      一般来说，请参考特定模块的文档来用推荐的方法载入它。
-     </para>
+     <sect2 id="runtime-config-client-other">
+     <title>其他默认值</title>
 
      <variablelist>
-     <varlistentry id="guc-local-preload-libraries" xreflabel="local_preload_libraries">
+    <varlistentry id="guc-local-preload-libraries" xreflabel="local_preload_libraries">
       <term><varname>local_preload_libraries</varname> (<type>string</type>)
       <indexterm>
        <primary><varname>local_preload_libraries</varname>配置参数</primary>
@@ -4642,83 +4505,10 @@ SET XML OPTION { DOCUMENT | CONTENT };
        </para>
 
        <para>
-        除非一个模块被特别设计成由非超级用户以这种方式使用，通常不推荐使用这个设置。应该看看
-        <xref linkend="guc-session-preload-libraries">。
+        除非一个模块被特别设计成由非超级用户以这种方式使用，通常不推荐使用这个设置。
        </para>
       </listitem>
      </varlistentry>
-
-
-     <varlistentry id="guc-session-preload-libraries" xreflabel="session_preload_libraries">
-      <term><varname>session_preload_libraries</varname> (<type>string</type>)
-      <indexterm>
-       <primary><varname>session_preload_libraries</varname>配置参数</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        这个变量指定在连接开始时要预加载的一个或多个共享库。只有超级用户能更改这个设置。
-        参数值仅在连接开始时生效。后续更改不会生效。如果指定的库未找到，连接尝试将失败。
-       </para>
-
-       <para>
-        这个特性的意图是允许在特定会话中载入调试用的或者测量性能的库，而不需要显式的给出一个
-        <command>LOAD</command>命令。例如，通过用<command>ALTER ROLE SET</command>设置这个参数可以
-        为一个给定用户名下的所有会话启用<xref linkend="auto-explain">。还有，无需重启
-        服务器就能更改这个参数（但是只有新会话启动时才会生效），这样可以以这种方式更容易地增
-        加新模块，即便它们会应用到所有会话。
-       </para>
-
-       <para>
-        和<xref linkend="guc-shared-preload-libraries">不同，相对于在库被第一次使用
-        时载入它，在会话开始时载入库并没有明显的性能优势。不过，当使用连接池时这样做还是有一些
-        优势。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-shared-preload-libraries" xreflabel="shared_preload_libraries">
-      <term><varname>shared_preload_libraries</varname> (<type>string</type>)
-      <indexterm>
-       <primary><varname>shared_preload_libraries</varname>配置参数</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        这个变量指定一个或者多个要在服务器启动时预载入的共享库。这个参数只能在服务器启动时设置。如果指定的库没有找到，服务器将无法启动。
-       </para>
-
-       <para>
-        有些库需要执行只能在postmaster启动时发生的特定操作，例如分配共享内存、保留轻量级锁
-        或者启动后台工作者。这些库必须通过这个参数在服务器启动时载入。每个库的详情请见文档。
-       </para>
-
-       <para>
-        其他库也能被预载入。通过预载入一个共享库，当该库被第一次使用时就可以避免库的启动时间。
-        不过，启动每个新服务器进程的时间可能会略有增加，即使该进程从不使用该库。因此，推荐只
-        把这个参数用于那些要在大多数会话中使用的库上。还有，改变这个参数要求重启服务器，因此
-        对于短期的调试任务来说这不是好的选择，应该转用
-        <xref linkend="guc-session-preload-libraries">。
-       </para>
-
-      <note>
-
-       <para>
-        在 Windows 主机上，在服务器启动时预载入一个库并不会减少启动每个新服务器进程所需的
-        时间；每一个服务器进程将会重新载入所有预载入的库。不过，对于那些要在postmaster启动时
-        执行操作的库来说，Windows 主机上的
-        <varname>shared_preload_libraries</varname>仍然有用。
-       </para>
-      </note>
-      </listitem>
-     </varlistentry>
-    </variablelist>
-   </sect2>
-
-     <sect2 id="runtime-config-client-other">
-     <title>其他默认值</title>
-
-     <variablelist>
 
      <varlistentry id="guc-dynamic-library-path" xreflabel="dynamic_library_path">
       <term><varname>dynamic_library_path</varname> (<type>string</type>)
@@ -5087,26 +4877,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-data-sync-retry" xreflabel="data_sync_retry">
-      <term><varname>data_sync_retry</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>data_sync_retry</varname>配置参数</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        如果设置为false（默认值），<productname>PostgreSQL</productname>在将修改后的数据文件刷盘到文件系统失败时，将引发PANIC级错误。
-        这样会导致数据库服务器崩溃。这个参数只能在服务器启动时被设置。
-       </para>
-       <para>
-        在某些操作系统上，回写失败后，内核页面缓存中的数据状态未知。 在某些情况下，它可能已被完全遗忘，因此重试不安全；第二次尝试可能报告为成功，而事实上数据已丢失。在此类情形下，避免数据丢失的唯一方法是在报告任何故障后从WAL中恢复，最好是在调查了故障的根本原因并更换了任何有故障的硬件之后。
-       </para>
-       <para>
-        如果设置为true，<productname>PostgreSQL</productname>将报告错误，但会继续运行，以便可以在以后的检查点中重试数据刷盘操作。
-        只有在调查清楚操作系统在回写失败时如何处理缓冲数据之后，才应将其设置为true。
-       </para>
-      </listitem>
-     </varlistentry>
+     
 
     </variablelist>
 
