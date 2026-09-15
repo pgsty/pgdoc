@@ -80,3 +80,7 @@ PG14—19 中文源文完成 1,895 个定点原子修改、321 个文件：1,626
 ## 2026-09-15 PG10—PG20 amcheck 及 TOAST 关联说明校准
 
 新增第 646 条 toasted → 经过 TOAST 处理，沿用十一版横向核对中已有的 SP-GiST、过程快照和局部解压说明译法。连同 TOASTed 和 acronym 标签拆分的形式完整核对，修复普通说明中的英文残留、toast 字段及 TOAST 化混用，保留实际函数宏、错误消息和原始代码。词表及规则各 646 条，既定九项用户回退保留。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/amcheck-full-*；全书校准与 33 项最终构建继续。
+
+## 2026-09-15 PG10—PG20 缓冲区扩展与文件节点说明校准
+
+新增第 647 条 filenode → 文件节点，沿用十一版已核准的 oid2name 旧版选项和 pg_checksums 译法，覆盖普通说明中的复数和 file node，保留实际标识符、路径、代码及输出表头。同步修复旧版未来接口说明、角色成员边界、普通引用和索引标签、NUMA 发行说明。词表及规则各 647 条，既定九项用户回退保留。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/buffer-extensions-full-*。全书余项和 33 项最终构建继续。
