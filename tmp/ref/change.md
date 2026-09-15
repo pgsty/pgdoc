@@ -55,3 +55,8 @@ PG14—19 中文源文完成 1,895 个定点原子修改、321 个文件：1,626
 ## 2026-09-15 PG10—PG20 维护与权限参考页校准
 
 根据十一版自身英文和关联说明，新增第 639 条：buffer access strategy → 缓冲区访问策略，沿用表采样和术语表章节已有译法。普通说明中的单复数及 literal 标签内的概念均使用此译名；首次括注英文和实际 BufferAccessStrategy 类型、参数、代码、配置值保持。横向核对覆盖 PG10—20 表采样说明和 PG16—20 配置、术语表、ANALYZE、VACUUM、vacuumdb，保留 PG16 的 256 kB 默认值及 PG17 起的 2MB。词表与规则各 639 条，不改动既定九项回退。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/maintenance-permissions-reviewed-*；全书校准及 33 项最终构建继续。
+
+
+## 2026-09-15 PG10—PG20 清理与授权说明校准
+
+补入第 640 条 grantee → 被授权者，沿用 ACL 函数参考页的既有译法。十一版全部 366 处英文出现位置逐项归入完整 GRANT 参考页、完整 ddl-priv 节及 281 个信息模式/ACL 函数相关单元；实际字段名、参数和格式占位符保持原样，普通说明中的受让人、被授权人、被授予者统一为被授权者。词表与规则各 640 条，不改动既定九项回退。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/vacuum-privileges-reviewed-* 和 grantee-horizontal-*；全书校准与 33 项最终构建继续。
