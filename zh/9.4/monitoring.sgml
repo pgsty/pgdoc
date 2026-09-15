@@ -1,52 +1,38 @@
 <!-- doc/src/sgml/monitoring.sgml -->
 
 <chapter id="monitoring">
- <title>Monitoring Database Activity</title>
+ <title>监控数据库活动</title>
 
  <indexterm zone="monitoring">
-  <primary>monitoring</primary>
-  <secondary>database activity</secondary>
+  <primary>监控</primary>
+  <secondary>数据库活动</secondary>
  </indexterm>
 
  <indexterm zone="monitoring">
-  <primary>database activity</primary>
-  <secondary>monitoring</secondary>
+  <primary>数据库活动</primary>
+  <secondary>监控</secondary>
  </indexterm>
 
  <para>
-  A database administrator frequently wonders, <quote>What is the system
-  doing right now?</quote>
-  This chapter discusses how to find that out.
+  数据库管理员常常会问：<quote>系统现在正在做什么？</quote>本章将讨论如何回答这个问题。
  </para>
 
   <para>
-   Several tools are available for monitoring database activity and
-   analyzing performance.  Most of this chapter is devoted to describing
-   <productname>PostgreSQL</productname>'s statistics collector,
-   but one should not neglect regular Unix monitoring programs such as
-   <command>ps</>, <command>top</>, <command>iostat</>, and <command>vmstat</>.
-   Also, once one has identified a
-   poorly-performing query, further investigation might be needed using
-   <productname>PostgreSQL</productname>'s <xref linkend="sql-explain"> command.
-   <xref linkend="using-explain"> discusses <command>EXPLAIN</>
-   and other methods for understanding the behavior of an individual
-   query.
-  </para>
+   有几种工具可用于监控数据库活动和分析性能。本章的大部分内容将用于描述<productname>PostgreSQL</productname>的统计收集器，
+   但也不应忽略常见的 Unix 监控程序，例如<command>ps</command>、<command>top</command>、<command>iostat</command>和<command>vmstat</command>。
+   此外，一旦确定了某个查询性能不佳，可能需要使用<productname>PostgreSQL</productname>的<xref linkend="sql-explain">命令进行进一步调查。
+   <xref linkend="using-explain">讨论了<command>EXPLAIN</command>以及理解单个查询行为的其他方法。
+</para>
 
  <sect1 id="monitoring-ps">
-  <title>Standard Unix Tools</title>
+  <title>标准 Unix 工具</title>
 
   <indexterm zone="monitoring-ps">
    <primary>ps</primary>
-   <secondary>to monitor activity</secondary>
+   <secondary>监控活动</secondary>
   </indexterm>
 
-  <para>
-   On most Unix platforms, <productname>PostgreSQL</productname> modifies its
-   command title as reported by <command>ps</>, so that individual server
-   processes can readily be identified.  A sample display is
-
-<screen>
+  <para>在大多数 Unix 平台上，<productname>PostgreSQL</productname>会修改由<command>ps</command>报告的命令标题，以便轻松识别各个服务器进程。以下是一个显示示例：<screen>
 $ ps auxww | grep ^postgres
 postgres  15551  0.0  0.1  57536  7132 pts/0    S    18:02   0:00 postgres -i
 postgres  15554  0.0  0.0  57536  1184 ?        Ss   18:02   0:00 postgres: writer process
@@ -57,204 +43,111 @@ postgres  15558  0.0  0.0  17512  1068 ?        Ss   18:02   0:00 postgres: stat
 postgres  15582  0.0  0.0  58772  3080 ?        Ss   18:04   0:00 postgres: joe runbug 127.0.0.1 idle
 postgres  15606  0.0  0.0  58772  3052 ?        Ss   18:07   0:00 postgres: tgl regression [local] SELECT waiting
 postgres  15610  0.0  0.0  58772  3056 ?        Ss   18:07   0:00 postgres: tgl regression [local] idle in transaction
-</screen>
+</screen>（<command>ps</command>的适当调用方式随平台而异，显示内容的细节也是如此。此示例来自较新的 Linux 系统。）这里列出的第一个进程是主服务器进程。显示的命令参数与启动该进程时使用的参数相同。接下来的五个进程是主进程自动启动的后台工作进程。（如果系统被设置为不启动统计收集器，则不会出现<quote>stats collector</>进程；同样，也可以禁用<quote>autovacuum launcher</>进程。）其余每个进程都是处理一个客户端连接的服务器进程。每个这样的进程都将其命令行显示设置为以下形式：<screen>
+postgres: <replaceable>user</replaceable> <replaceable>database</replaceable> <replaceable>host</replaceable> <replaceable>activity</replaceable>
+</screen>在客户端连接的整个生命周期内，用户、数据库和（客户端）主机这几项保持不变，但活动指示符会改变。活动可以是<literal>idle</>（即等待客户端命令）、<literal>idle in transaction</>（在<command>BEGIN</command>块内等待客户端），或者命令类型名称，例如<literal>SELECT</literal>。此外，服务器进程当前若正在等待另一会话持有的锁，还会附加<literal>waiting</literal>。在上面的示例中，可以推断进程 15606 正在等待进程 15610 完成事务，从而释放某个锁。（进程 15610 必定是阻塞者，因为不存在其他活动会话。在更复杂的情况下，必须查看<link linkend="view-pg-locks"><structname>pg_locks</structname></link>系统视图，才能确定谁在阻塞谁。）</para>
 
-   (The appropriate invocation of <command>ps</> varies across different
-   platforms, as do the details of what is shown.  This example is from a
-   recent Linux system.)  The first process listed here is the
-   master server process.  The command arguments
-   shown for it are the same ones used when it was launched.  The next five
-   processes are background worker processes automatically launched by the
-   master process.  (The <quote>stats collector</> process will not be present
-   if you have set the system not to start the statistics collector; likewise
-   the <quote>autovacuum launcher</> process can be disabled.)
-   Each of the remaining
-   processes is a server process handling one client connection.  Each such
-   process sets its command line display in the form
-
-<screen>
-postgres: <replaceable>user</> <replaceable>database</> <replaceable>host</> <replaceable>activity</>
-</screen>
-
-  The user, database, and (client) host items remain the same for
-  the life of the client connection, but the activity indicator changes.
-  The activity can be <literal>idle</> (i.e., waiting for a client command),
-  <literal>idle in transaction</> (waiting for client inside a <command>BEGIN</> block),
-  or a command type name such as <literal>SELECT</>.  Also,
-  <literal>waiting</> is appended if the server process is presently waiting
-  on a lock held by another session.  In the above example we can infer
-  that process 15606 is waiting for process 15610 to complete its transaction
-  and thereby release some lock.  (Process 15610 must be the blocker, because
-  there is no other active session.  In more complicated cases it would be
-  necessary to look into the
-  <link linkend="view-pg-locks"><structname>pg_locks</structname></link>
-  system view to determine who is blocking whom.)
-  </para>
-
-  <para>
-   If you have turned off <xref linkend="guc-update-process-title"> then the
-   activity indicator is not updated; the process title is set only once
-   when a new process is launched.  On some platforms this saves a measurable
-   amount of per-command overhead;  on others it's insignificant.
+    <para>
+   如果您关闭了<xref linkend="guc-update-process-title">，则活动指示器不会更新；进程标题仅在新进程启动时设置一次。在某些平台上，这可以节省可观的每命令开销；在其他平台上，则微不足道。
   </para>
 
   <tip>
+
   <para>
-  <productname>Solaris</productname> requires special handling. You must
-  use <command>/usr/ucb/ps</command>, rather than
-  <command>/bin/ps</command>. You also must use two <option>w</option>
-  flags, not just one. In addition, your original invocation of the
-  <command>postgres</command> command must have a shorter
-  <command>ps</command> status display than that provided by each
-  server process.  If you fail to do all three things, the <command>ps</>
-  output for each server process will be the original <command>postgres</>
-  command line.
+  <productname>Solaris</productname>需要特殊处理。您必须使用<command>/usr/ucb/ps</command>，而不是<command>/bin/ps</command>。您还必须使用两个<option>w</option>标志，而不仅仅是一个。此外，您对<command>postgres</command>命令的原始调用必须具有比每个服务器进程提供的更短的<command>ps</command>状态显示。如果未满足这三个条件，每个服务器进程的<command>ps</command>输出都会显示原始的<command>postgres</command>命令行。
   </para>
   </tip>
  </sect1>
 
  <sect1 id="monitoring-stats">
-  <title>The Statistics Collector</title>
+  <title>统计收集器</title>
 
   <indexterm zone="monitoring-stats">
-   <primary>statistics</primary>
+   <primary>统计信息</primary>
   </indexterm>
 
   <para>
-   <productname>PostgreSQL</productname>'s <firstterm>statistics collector</>
-   is a subsystem that supports collection and reporting of information about
-   server activity.  Presently, the collector can count accesses to tables
-   and indexes in both disk-block and individual-row terms.  It also tracks
-   the total number of rows in each table, and information about vacuum and
-   analyze actions for each table.  It can also count calls to user-defined
-   functions and the total time spent in each one.
-  </para>
+   <productname>PostgreSQL</productname>的<firstterm>统计收集器</firstterm>是一个支持收集和报告服务器活动信息的子系统。
+   目前，对表和索引的访问分别以磁盘块和单行计数。每个表中的总行数，
+   以及每个表的清理和分析操作的信息也被计数。它还可以统计对用户定义函数的调用
+   和每个函数中花费的总时间。
+</para>
 
   <para>
-   <productname>PostgreSQL</productname> also supports reporting of the exact
-   command currently being executed by other server processes.  This
-   facility is independent of the collector process.
-  </para>
+   <productname>PostgreSQL</productname>还支持报告其他服务器进程当前正在执行的确切命令。
+   此功能独立于收集器进程。
+</para>
 
  <sect2 id="monitoring-stats-setup">
-  <title>Statistics Collection Configuration</title>
+  <title>统计信息收集配置</title>
 
   <para>
-   Since collection of statistics adds some overhead to query execution,
-   the system can be configured to collect or not collect information.
-   This is controlled by configuration parameters that are normally set in
-   <filename>postgresql.conf</>.  (See <xref linkend="runtime-config"> for
-   details about setting configuration parameters.)
+   由于收集统计信息会增加查询执行的开销，因此可以配置系统是否收集信息。这由通常在<filename>postgresql.conf</filename>中设置的配置参数控制（有关设置配置参数的详细信息，请参阅<xref linkend="runtime-config">）。
   </para>
 
   <para>
-   The parameter <xref linkend="guc-track-activities"> enables monitoring
-   of the current command being executed by any server process.
+   参数<xref linkend="guc-track-activities">启用对任意服务器进程当前执行命令的监控。
   </para>
 
   <para>
-   The parameter <xref linkend="guc-track-counts"> controls whether
-   statistics are collected about table and index accesses.
+   参数<xref linkend="guc-track-counts">控制是否收集关于表和索引访问的统计信息。
+</para>
+
+  <para>
+   参数<xref linkend="guc-track-functions">启用对用户定义函数使用的跟踪。
   </para>
 
   <para>
-   The parameter <xref linkend="guc-track-functions"> enables tracking of
-   usage of user-defined functions.
+   参数<xref linkend="guc-track-io-timing">启用对块读取和写入时间的监控。
   </para>
 
   <para>
-   The parameter <xref linkend="guc-track-io-timing"> enables monitoring
-   of block read and write times.
+   通常，这些参数会设置在<filename>postgresql.conf</filename>中，以便它们适用于所有服务器进程，但也可以在单个会话中使用<xref linkend="sql-set">命令打开或关闭它们。（为防止普通用户隐藏其活动不被管理员发现，只有超级用户才能使用<command>SET</command>更改这些参数。）
   </para>
 
   <para>
-   Normally these parameters are set in <filename>postgresql.conf</> so
-   that they apply to all server processes, but it is possible to turn
-   them on or off in individual sessions using the <xref
-   linkend="sql-set"> command. (To prevent
-   ordinary users from hiding their activity from the administrator,
-   only superusers are allowed to change these parameters with
-   <command>SET</>.)
-  </para>
-
-  <para>
-   The statistics collector transmits the collected information to other
-   <productname>PostgreSQL</productname> processes through temporary files.
-   These files are stored in the directory named by the
-   <xref linkend="guc-stats-temp-directory"> parameter,
-   <filename>pg_stat_tmp</filename> by default.
-   For better performance, <varname>stats_temp_directory</> can be
-   pointed at a RAM-based file system, decreasing physical I/O requirements.
-   When the server shuts down cleanly, a permanent copy of the statistics
-   data is stored in the <filename>pg_stat</filename> subdirectory, so that
-   statistics can be retained across server restarts.  When recovery is
-   performed at server start (e.g. after immediate shutdown, server crash,
-   and point-in-time recovery), all statistics counters are reset.
-  </para>
+   统计收集器通过临时文件把收集到的信息传递给其他<productname>PostgreSQL</productname>进程。
+   这些文件默认存放在由<xref linkend="guc-stats-temp-directory">参数指定的目录中，即<filename>pg_stat_tmp</filename>。
+   为了获得更好的性能，可以把<varname>stats_temp_directory</varname>指向基于 RAM 的文件系统，以减少物理 I/O 需求。
+   当服务器正常关闭时，统计信息数据的永久副本会存储在<filename>pg_stat</filename>子目录中，以便在服务器重启后保留这些统计信息。
+   当服务器启动时执行恢复时（例如立即关闭后、服务器崩溃后以及进行时间点恢复时），所有统计计数器都会被重置。
+</para>
 
  </sect2>
 
  <sect2 id="monitoring-stats-views">
-  <title>Viewing Collected Statistics</title>
+  <title>查看收集到的统计信息</title>
 
   <para>
-   Several predefined views, listed in <xref
-   linkend="monitoring-stats-views-table">, are available to show the results
-   of statistics collection.  Alternatively, one can
-   build custom views using the underlying statistics functions, as discussed
-   in <xref linkend="monitoring-stats-functions">.
+   有几个预定义视图列在<xref linkend="monitoring-stats-views-table">中，可用于显示统计信息收集的结果。也可以像<xref linkend="monitoring-stats-functions">中所述那样，使用底层的统计函数构建自定义视图。
+</para>
+
+  <para>
+   当使用统计信息来监视当前活动时，重要的是要意识到信息不会立即更新。每个单独的服务器进程会在转为空闲之前把新的统计计数发送给收集器，因此仍在进行中的查询或事务不会影响显示的总计。并且，收集器本身最多每隔<varname>PGSTAT_STAT_INTERVAL</varname>毫秒才会发出一份新报告一次（除非在构建服务器时做过修改，否则为 500 毫秒）。因此，显示的信息会滞后于实际活动。然而，由<varname>track_activities</varname>收集的当前查询信息始终是最新的。
   </para>
 
   <para>
-   When using the statistics to monitor current activity, it is important
-   to realize that the information does not update instantaneously.
-   Each individual server process transmits new statistical counts to
-   the collector just before going idle; so a query or transaction still in
-   progress does not affect the displayed totals.  Also, the collector itself
-   emits a new report at most once per <varname>PGSTAT_STAT_INTERVAL</varname>
-   milliseconds (500 ms unless altered while building the server).  So the
-   displayed information lags behind actual activity.  However, current-query
-   information collected by <varname>track_activities</varname> is
-   always up-to-date.
-  </para>
+   另一个重要点是，当要求服务器进程显示这些统计信息中的任何一种时，它会先取回收集器进程最近发出的报告，然后在当前事务结束之前，对所有统计视图和函数一直使用这一快照。因此，只要你继续当前事务，统计信息就会显示静态信息。类似地，在事务中第一次请求这类当前查询信息时，就会收集所有会话当前查询的信息，并且在整个事务期间显示的都是同一份信息。这是一个特性，而不是一个错误，因为它允许你对统计信息执行多个查询并对结果做关联，而不必担心数字在你眼前变化。但如果希望每个查询都看到新的结果，请确保在任何事务块之外执行这些查询。或者，也可以调用<function>pg_stat_clear_snapshot</function>()，它会丢弃当前事务的统计快照（如果有）。下一次使用统计信息时，就会获取一个新的快照。
+</para>
 
   <para>
-   Another important point is that when a server process is asked to display
-   any of these statistics, it first fetches the most recent report emitted by
-   the collector process and then continues to use this snapshot for all
-   statistical views and functions until the end of its current transaction.
-   So the statistics will show static information as long as you continue the
-   current transaction.  Similarly, information about the current queries of
-   all sessions is collected when any such information is first requested
-   within a transaction, and the same information will be displayed throughout
-   the transaction.
-   This is a feature, not a bug, because it allows you to perform several
-   queries on the statistics and correlate the results without worrying that
-   the numbers are changing underneath you.  But if you want to see new
-   results with each query, be sure to do the queries outside any transaction
-   block.  Alternatively, you can invoke
-   <function>pg_stat_clear_snapshot</function>(), which will discard the
-   current transaction's statistics snapshot (if any).  The next use of
-   statistical information will cause a new snapshot to be fetched.
-  </para>
-
-  <para>
-   A transaction can also see its own statistics (as yet untransmitted to the
-   collector) in the views <structname>pg_stat_xact_all_tables</>,
-   <structname>pg_stat_xact_sys_tables</>,
-   <structname>pg_stat_xact_user_tables</>, and
-   <structname>pg_stat_xact_user_functions</>.  These numbers do not act as
-   stated above; instead they update continuously throughout the transaction.
-  </para>
+   事务还可以在视图<structname>pg_stat_xact_all_tables</structname>、
+   <structname>pg_stat_xact_sys_tables</structname>、
+   <structname>pg_stat_xact_user_tables</structname>和
+   <structname>pg_stat_xact_user_functions</structname>中看到自己的统计信息
+   （这些统计信息尚未传送给收集器）。这些数字不像上面所述那样起作用；
+   相反，它们在事务期间持续更新。
+</para>
 
   <table id="monitoring-stats-views-table">
-   <title>Standard Statistics Views</title>
+   <title>标准统计视图</title>
 
    <tgroup cols="2">
     <thead>
+
      <row>
-      <entry>View Name</entry>
-      <entry>Description</entry>
+      <entry>视图名称</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
@@ -264,419 +157,463 @@ postgres: <replaceable>user</> <replaceable>database</> <replaceable>host</> <re
        <structname>pg_stat_activity</structname>
        <indexterm><primary>pg_stat_activity</primary></indexterm>
       </entry>
-      <entry>
-       One row per server process, showing information related to
-       the current activity of that process, such as state and current query.
-       See <xref linkend="pg-stat-activity-view"> for details.
-      </entry>
+      <entry>每个服务器进程一行，显示与该进程当前活动有关的信息，例如状态和当前查询。详见<xref linkend="pg-stat-activity-view">。</entry>
      </row>
 
      <row>
-      <entry><structname>pg_stat_archiver</><indexterm><primary>pg_stat_archiver</primary></indexterm></entry>
-      <entry>One row only, showing statistics about the
-       WAL archiver process's activity. See
-       <xref linkend="pg-stat-archiver-view"> for details.
-      </entry>
+      <entry><structname>pg_stat_archiver</structname><indexterm><primary>pg_stat_archiver</primary></indexterm></entry>
+      <entry>只有一行，显示 WAL 归档进程活动的统计信息。详见<xref linkend="pg-stat-archiver-view">。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_bgwriter</><indexterm><primary>pg_stat_bgwriter</primary></indexterm></entry>
-      <entry>One row only, showing statistics about the
-       background writer process's activity. See
-       <xref linkend="pg-stat-bgwriter-view"> for details.
-     </entry>
+<row>
+      <entry><structname>pg_stat_bgwriter</structname><indexterm><primary>pg_stat_bgwriter</primary></indexterm></entry>
+      <entry>只有一行，显示后台写入器活动的统计信息。详见<xref linkend="pg-stat-bgwriter-view">。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_database</><indexterm><primary>pg_stat_database</primary></indexterm></entry>
-      <entry>One row per database, showing database-wide statistics. See
-       <xref linkend="pg-stat-database-view"> for details.
-      </entry>
+<row>
+      <entry><structname>pg_stat_database</structname><indexterm><primary>pg_stat_database</primary></indexterm></entry>
+      <entry>每个数据库一行，显示整个数据库的统计信息。详见<xref linkend="pg-stat-database-view">。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_all_tables</><indexterm><primary>pg_stat_all_tables</primary></indexterm></entry>
-      <entry>
-       One row for each table in the current database, showing statistics
-       about accesses to that specific table.
-       See <xref linkend="pg-stat-all-tables-view"> for details.
-      </entry>
+<row>
+      <entry><structname>pg_stat_all_tables</structname><indexterm><primary>pg_stat_all_tables</primary></indexterm></entry>
+      <entry>当前数据库中的每个表一行，显示访问该表的统计信息。详见<xref linkend="pg-stat-all-tables-view">。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_sys_tables</><indexterm><primary>pg_stat_sys_tables</primary></indexterm></entry>
-      <entry>Same as <structname>pg_stat_all_tables</>, except that only
-      system tables are shown.</entry>
+<row>
+      <entry><structname>pg_stat_sys_tables</structname><indexterm><primary>pg_stat_sys_tables</primary></indexterm></entry>
+      <entry>和<structname>pg_stat_all_tables</structname>一样，但只显示系统表。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_user_tables</><indexterm><primary>pg_stat_user_tables</primary></indexterm></entry>
-      <entry>Same as <structname>pg_stat_all_tables</>, except that only user
-      tables are shown.</entry>
+<row>
+      <entry><structname>pg_stat_user_tables</structname><indexterm><primary>pg_stat_user_tables</primary></indexterm></entry>
+      <entry>和<structname>pg_stat_all_tables</structname>一样，但只显示用户表。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_xact_all_tables</><indexterm><primary>pg_stat_xact_all_tables</primary></indexterm></entry>
-      <entry>Similar to <structname>pg_stat_all_tables</>, but counts actions
-      taken so far within the current transaction (which are <emphasis>not</>
-      yet included in <structname>pg_stat_all_tables</> and related views).
-      The columns for numbers of live and dead rows and vacuum and
-      analyze actions are not present in this view.</entry>
+<row>
+      <entry><structname>pg_stat_xact_all_tables</structname><indexterm><primary>pg_stat_xact_all_tables</primary></indexterm></entry>
+      <entry>与 <structname>pg_stat_all_tables</structname> 相似，但只统计当前事务中截至目前执行的操作（这些操作尚<emphasis>未</emphasis>计入 <structname>pg_stat_all_tables</structname> 及相关视图）。此视图不包含存活行和死行数量以及清理、分析操作的列。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_xact_sys_tables</><indexterm><primary>pg_stat_xact_sys_tables</primary></indexterm></entry>
-      <entry>Same as <structname>pg_stat_xact_all_tables</>, except that only
-      system tables are shown.</entry>
+<row>
+      <entry><structname>pg_stat_xact_sys_tables</structname><indexterm><primary>pg_stat_xact_sys_tables</primary></indexterm></entry>
+      <entry>和<structname>pg_stat_xact_all_tables</structname>一样，但只显示系统表。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_xact_user_tables</><indexterm><primary>pg_stat_xact_user_tables</primary></indexterm></entry>
-      <entry>Same as <structname>pg_stat_xact_all_tables</>, except that only
-      user tables are shown.</entry>
+<row>
+      <entry><structname>pg_stat_xact_user_tables</structname><indexterm><primary>pg_stat_xact_user_tables</primary></indexterm></entry>
+      <entry>和<structname>pg_stat_xact_all_tables</structname>一样，但只显示用户表。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_all_indexes</><indexterm><primary>pg_stat_all_indexes</primary></indexterm></entry>
-      <entry>
-       One row for each index in the current database, showing statistics
-       about accesses to that specific index.
-       See <xref linkend="pg-stat-all-indexes-view"> for details.
-      </entry>
+<row>
+      <entry><structname>pg_stat_all_indexes</structname><indexterm><primary>pg_stat_all_indexes</primary></indexterm></entry>
+      <entry>当前数据库中的每个索引一行，显示访问该索引的统计信息。详见<xref linkend="pg-stat-all-indexes-view">。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_sys_indexes</><indexterm><primary>pg_stat_sys_indexes</primary></indexterm></entry>
-      <entry>Same as <structname>pg_stat_all_indexes</>, except that only
-      indexes on system tables are shown.</entry>
+<row>
+      <entry><structname>pg_stat_sys_indexes</structname><indexterm><primary>pg_stat_sys_indexes</primary></indexterm></entry>
+      <entry>和<structname>pg_stat_all_indexes</structname>一样，但只显示系统表上的索引。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_user_indexes</><indexterm><primary>pg_stat_user_indexes</primary></indexterm></entry>
-      <entry>Same as <structname>pg_stat_all_indexes</>, except that only
-      indexes on user tables are shown.</entry>
+<row>
+      <entry><structname>pg_stat_user_indexes</structname><indexterm><primary>pg_stat_user_indexes</primary></indexterm></entry>
+      <entry>和<structname>pg_stat_all_indexes</structname>一样，但只显示用户表上的索引。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_statio_all_tables</><indexterm><primary>pg_statio_all_tables</primary></indexterm></entry>
-      <entry>
-       One row for each table in the current database, showing statistics
-       about I/O on that specific table.
-       See <xref linkend="pg-statio-all-tables-view"> for details.
-      </entry>
+<row>
+      <entry><structname>pg_statio_all_tables</structname><indexterm><primary>pg_statio_all_tables</primary></indexterm></entry>
+      <entry>当前数据库中的每个表一行，显示该表的 I/O 统计信息。详见<xref linkend="pg-statio-all-tables-view">。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_statio_sys_tables</><indexterm><primary>pg_statio_sys_tables</primary></indexterm></entry>
-      <entry>Same as <structname>pg_statio_all_tables</>, except that only
-      system tables are shown.</entry>
+<row>
+      <entry><structname>pg_statio_sys_tables</structname><indexterm><primary>pg_statio_sys_tables</primary></indexterm></entry>
+      <entry>和<structname>pg_statio_all_tables</structname>一样，但只显示系统表。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_statio_user_tables</><indexterm><primary>pg_statio_user_tables</primary></indexterm></entry>
-      <entry>Same as <structname>pg_statio_all_tables</>, except that only
-      user tables are shown.</entry>
+<row>
+      <entry><structname>pg_statio_user_tables</structname><indexterm><primary>pg_statio_user_tables</primary></indexterm></entry>
+      <entry>和<structname>pg_statio_all_tables</structname>一样，但只显示用户表。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_statio_all_indexes</><indexterm><primary>pg_statio_all_indexes</primary></indexterm></entry>
-      <entry>
-       One row for each index in the current database,
-       showing statistics about I/O on that specific index.
-       See <xref linkend="pg-statio-all-indexes-view"> for details.
-      </entry>
+<row>
+      <entry><structname>pg_statio_all_indexes</structname><indexterm><primary>pg_statio_all_indexes</primary></indexterm></entry>
+      <entry>当前数据库中的每个索引一行，显示该索引的 I/O 统计信息。详见<xref linkend="pg-statio-all-indexes-view">。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_statio_sys_indexes</><indexterm><primary>pg_statio_sys_indexes</primary></indexterm></entry>
-      <entry>Same as <structname>pg_statio_all_indexes</>, except that only
-      indexes on system tables are shown.</entry>
+<row>
+      <entry><structname>pg_statio_sys_indexes</structname><indexterm><primary>pg_statio_sys_indexes</primary></indexterm></entry>
+      <entry>和<structname>pg_statio_all_indexes</structname>一样，但只显示系统表上的索引。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_statio_user_indexes</><indexterm><primary>pg_statio_user_indexes</primary></indexterm></entry>
-      <entry>Same as <structname>pg_statio_all_indexes</>, except that only
-      indexes on user tables are shown.</entry>
+<row>
+      <entry><structname>pg_statio_user_indexes</structname><indexterm><primary>pg_statio_user_indexes</primary></indexterm></entry>
+      <entry>和<structname>pg_statio_all_indexes</structname>一样，但只显示用户表上的索引。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_statio_all_sequences</><indexterm><primary>pg_statio_all_sequences</primary></indexterm></entry>
-     <entry>
-       One row for each sequence in the current database,
-       showing statistics about I/O on that specific sequence.
-       See <xref linkend="pg-statio-all-sequences-view"> for details.
-     </entry>
+<row>
+      <entry><structname>pg_statio_all_sequences</structname><indexterm><primary>pg_statio_all_sequences</primary></indexterm></entry>
+     <entry>当前数据库中的每个序列一行，显示该序列的 I/O 统计信息。详见<xref linkend="pg-statio-all-sequences-view">。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_statio_sys_sequences</><indexterm><primary>pg_statio_sys_sequences</primary></indexterm></entry>
-      <entry>Same as <structname>pg_statio_all_sequences</>, except that only
-      system sequences are shown.  (Presently, no system sequences are defined,
-      so this view is always empty.)</entry>
+<row>
+      <entry><structname>pg_statio_sys_sequences</structname><indexterm><primary>pg_statio_sys_sequences</primary></indexterm></entry>
+      <entry>和<structname>pg_statio_all_sequences</structname>一样，但只显示系统序列（目前没有定义系统序列，因此这个视图总是为空）。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_statio_user_sequences</><indexterm><primary>pg_statio_user_sequences</primary></indexterm></entry>
-      <entry>Same as <structname>pg_statio_all_sequences</>, except that only
-      user sequences are shown.</entry>
+<row>
+      <entry><structname>pg_statio_user_sequences</structname><indexterm><primary>pg_statio_user_sequences</primary></indexterm></entry>
+      <entry>和<structname>pg_statio_all_sequences</structname>一样，但只显示用户序列。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_user_functions</><indexterm><primary>pg_stat_user_functions</primary></indexterm></entry>
-      <entry>
-       One row for each tracked function, showing statistics
-       about executions of that function. See
-       <xref linkend="pg-stat-user-functions-view"> for details.
-      </entry>
+<row>
+      <entry><structname>pg_stat_user_functions</structname><indexterm><primary>pg_stat_user_functions</primary></indexterm></entry>
+      <entry>每个被跟踪的函数一行，显示该函数执行的统计信息。详见<xref linkend="pg-stat-user-functions-view">。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_xact_user_functions</><indexterm><primary>pg_stat_xact_user_functions</primary></indexterm></entry>
-      <entry>Similar to <structname>pg_stat_user_functions</>, but counts only
-      calls during the current transaction (which are <emphasis>not</>
-      yet included in <structname>pg_stat_user_functions</>).</entry>
+<row>
+      <entry><structname>pg_stat_xact_user_functions</structname><indexterm><primary>pg_stat_xact_user_functions</primary></indexterm></entry>
+      <entry>和<structname>pg_stat_user_functions</structname>相似，但是只统计在当前事务期间的调用（还<emphasis>没有</emphasis>被包括在<structname>pg_stat_user_functions</structname>中）。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_replication</><indexterm><primary>pg_stat_replication</primary></indexterm></entry>
-      <entry>One row per WAL sender process, showing statistics about
-       replication to that sender's connected standby server.
-       See <xref linkend="pg-stat-replication-view"> for details.
-      </entry>
+         <row>
+      <entry><structname>pg_stat_replication</structname><indexterm><primary>pg_stat_replication</primary></indexterm></entry>
+      <entry>每个 WAL 发送进程一行，显示向其所连接的备库进行复制的统计信息。详见<xref linkend="pg-stat-replication-view">。</entry>
      </row>
 
-     <row>
-      <entry><structname>pg_stat_database_conflicts</><indexterm><primary>pg_stat_database_conflicts</primary></indexterm></entry>
-      <entry>
-       One row per database, showing database-wide statistics about
-       query cancels due to conflict with recovery on standby servers.
-       See <xref linkend="pg-stat-database-conflicts-view"> for details.
-      </entry>
+<row>
+      <entry><structname>pg_stat_database_conflicts</structname><indexterm><primary>pg_stat_database_conflicts</primary></indexterm></entry>
+      <entry>每个数据库一行，显示备库上因与恢复冲突而取消查询的数据库范围统计信息。详见<xref linkend="pg-stat-database-conflicts-view">。</entry>
      </row>
-
-    </tbody>
+</tbody>
    </tgroup>
   </table>
 
   <para>
-   The per-index statistics are particularly useful to determine which
-   indexes are being used and how effective they are.
+   每个索引的统计信息对于判断哪些索引正在被使用以及它们有多有效尤其有用。
   </para>
 
   <para>
-   The <structname>pg_statio_</> views are primarily useful to
-   determine the effectiveness of the buffer cache.  When the number
-   of actual disk reads is much smaller than the number of buffer
-   hits, then the cache is satisfying most read requests without
-   invoking a kernel call. However, these statistics do not give the
-   entire story: due to the way in which <productname>PostgreSQL</>
-   handles disk I/O, data that is not in the
-   <productname>PostgreSQL</> buffer cache might still reside in the
-   kernel's I/O cache, and might therefore still be fetched without
-   requiring a physical read. Users interested in obtaining more
-   detailed information on <productname>PostgreSQL</> I/O behavior are
-   advised to use the <productname>PostgreSQL</> statistics collector
-   in combination with operating system utilities that allow insight
-   into the kernel's handling of I/O.
+   <structname>pg_statio_</structname>视图主要用于判断缓冲区缓存的有效性。
+   如果实际磁盘读取次数远少于缓冲区命中次数，缓存就能满足大多数读取请求，而无需调用内核。
+   不过，这些统计信息并不能反映全部情况：由于<productname>PostgreSQL</productname>处理磁盘 I/O 的方式，
+   不在<productname>PostgreSQL</productname>缓冲区缓存中的数据仍可能驻留在内核的 I/O 缓存中，
+   因而仍可在不执行物理读取的情况下取得。对于希望更详细地了解<productname>PostgreSQL</productname> I/O 行为的用户，
+   建议将<productname>PostgreSQL</productname>统计收集器与能够深入查看内核 I/O 处理情况的操作系统工具结合使用。
   </para>
 
 
   <table id="pg-stat-activity-view" xreflabel="pg_stat_activity">
-   <title><structname>pg_stat_activity</structname> View</title>
+   <title><structname>pg_stat_activity</structname> 视图</title>
 
    <tgroup cols="3">
     <thead>
     <row>
-      <entry>Column</entry>
-      <entry>Type</entry>
-      <entry>Description</entry>
+      <entry>列</entry>
+      <entry>类型</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
    <tbody>
     <row>
      <entry><structfield>datid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of the database this backend is connected to</entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       这个后端连接到的数据库的OID
+      </entry>
     </row>
     <row>
      <entry><structfield>datname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of the database this backend is connected to</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       这个后端连接到的数据库的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>pid</></entry>
-     <entry><type>integer</></entry>
-     <entry>Process ID of this backend</entry>
+     <entry><type>integer</type></entry>
+     <entry>
+       这个后端的进程 ID
+      </entry>
     </row>
     <row>
      <entry><structfield>usesysid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of the user logged into this backend</entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       登录到这个后端的用户的 OID
+      </entry>
     </row>
     <row>
      <entry><structfield>usename</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of the user logged into this backend</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       登录到此后端的用户名称
+     </entry>
     </row>
     <row>
      <entry><structfield>application_name</></entry>
-     <entry><type>text</></entry>
-     <entry>Name of the application that is connected
-      to this backend</entry>
+     <entry><type>text</type></entry>
+     <entry>
+       连接到此后端的应用名称
+      </entry>
     </row>
     <row>
      <entry><structfield>client_addr</></entry>
-     <entry><type>inet</></entry>
-     <entry>IP address of the client connected to this backend.
-      If this field is null, it indicates either that the client is
-      connected via a Unix socket on the server machine or that this is an
-      internal process such as autovacuum.
-     </entry>
+     <entry><type>inet</type></entry>
+     <entry>
+       连接到这个后端的客户端的 IP 地址。如果这个字段为空值，它表示客户端通过服务器机器上的一个 Unix 套接字连接或者这是一个内部进程，如自动清理。
+      </entry>
     </row>
     <row>
      <entry><structfield>client_hostname</></entry>
-     <entry><type>text</></entry>
-     <entry>Host name of the connected client, as reported by a
-      reverse DNS lookup of <structfield>client_addr</>. This field will
-      only be non-null for IP connections, and only when <xref
-      linkend="guc-log-hostname"> is enabled.
-     </entry>
+     <entry><type>text</type></entry>
+     <entry>
+       已连接的客户端的主机名，由<structfield>client_addr</>的反向 DNS 查找报告。
+	   这个字段将只对 IP 连接非空，并且只有 <xref linkend="guc-log-hostname">被启用时才会非空。
+      </entry>
     </row>
     <row>
      <entry><structfield>client_port</></entry>
-     <entry><type>integer</></entry>
-     <entry>TCP port number that the client is using for communication
-      with this backend, or <literal>-1</> if a Unix socket is used
-     </entry>
+     <entry><type>integer</type></entry>
+     <entry>客户端用于与此后端通信的 TCP 端口号；如果使用 Unix 套接字，则为<literal>-1</literal></entry>
     </row>
     <row>
      <entry><structfield>backend_start</></entry>
-     <entry><type>timestamp with time zone</></entry>
-     <entry>Time when this process was started, i.e., when the
-      client connected to the server
-     </entry>
+     <entry><type>timestamp with time zone</type></entry>
+     <entry>
+       这个进程被启动的时间，也就是客户端连接到服务器的时间
+      </entry>
     </row>
     <row>
      <entry><structfield>xact_start</></entry>
-     <entry><type>timestamp with time zone</></entry>
-     <entry>Time when this process' current transaction was started, or null
-      if no transaction is active. If the current
-      query is the first of its transaction, this column is equal to the
-      <structfield>query_start</> column.
-     </entry>
+     <entry><type>timestamp with time zone</type></entry>
+     <entry>
+       这个进程的当前事务被启动的时间，如果没有活动事务则为空值。
+       如果当前查询是其事务中的第一个查询，这一列等于<structfield>query_start</>列。
+      </entry>
     </row>
     <row>
      <entry><structfield>query_start</></entry>
-     <entry><type>timestamp with time zone</></entry>
-     <entry>Time when the currently active query was started, or if
-      <structfield>state</> is not <literal>active</>, when the last query
-      was started
-     </entry>
+     <entry><type>timestamp with time zone</type></entry>
+     <entry>
+       当前活动查询开始的时间；如果<structfield>state</>不是<literal>active</>，则为上一个查询的开始时间
+      </entry>
     </row>
     <row>
      <entry><structfield>state_change</></entry>
-     <entry><type>timestamp with time zone</></entry>
-     <entry>Time when the <structfield>state</> was last changed</entry>
+     <entry><type>timestamp with time zone</type></entry>
+     <entry>
+       <structfield>state</>上一次发生改变的时间
+      </entry>
     </row>
-    <row>
-     <entry><structfield>waiting</></entry>
-     <entry><type>boolean</></entry>
-     <entry>True if this backend is currently waiting on a lock</entry>
-    </row>
+     <row>
+      <entry><structfield>waiting</></entry>
+      <entry><type>boolean</></entry>
+      <entry>如果此后端当前正在等待一个锁，则为真</entry>
+     </row>
     <row>
      <entry><structfield>state</></entry>
-     <entry><type>text</></entry>
-     <entry>Current overall state of this backend.
-       Possible values are:
-       <itemizedlist>
-         <listitem>
-          <para>
-           <literal>active</>: The backend is executing a query.
-          </para>
-         </listitem>
-         <listitem>
-          <para>
-           <literal>idle</>: The backend is waiting for a new client command.
-          </para>
-         </listitem>
-         <listitem>
-          <para>
-           <literal>idle in transaction</>: The backend is in a transaction,
-           but is not currently executing a query.
-          </para>
-         </listitem>
-         <listitem>
-          <para>
-           <literal>idle in transaction (aborted)</>: This state is similar to
-           <literal>idle in transaction</>, except one of the statements in
-           the transaction caused an error.
-          </para>
-         </listitem>
-         <listitem>
-          <para>
-           <literal>fastpath function call</>: The backend is executing a
-           fast-path function.
-          </para>
-         </listitem>
-         <listitem>
-           <para>
-           <literal>disabled</>: This state is reported if <xref
-           linkend="guc-track-activities"> is disabled in this backend.
-          </para>
-         </listitem>
+     <entry><type>text</type></entry>
+     <entry>该后端当前的总体状态。可能的值为：<itemizedlist>
+        <listitem>
+        <para><literal>active</literal>：后端正在执行一个查询。</para>
+        </listitem>
+        <listitem>
+         <para><literal>idle</literal>：后端正在等待新的客户端命令。</para>
+        </listitem>
+        <listitem>
+         <para><literal>idle in transaction</literal>：后端处于事务中，但当前没有执行查询。</para>
+        </listitem>
+        <listitem>
+         <para><literal>idle in transaction (aborted)</literal>：该状态与<literal>idle in transaction</literal>类似，但事务中的某个语句导致了错误。</para>
+        </listitem>
+        <listitem>
+         <para><literal>fastpath function call</literal>：后端正在执行一个快速路径函数。</para>
+        </listitem>
+        <listitem>
+         <para><literal>disabled</literal>：如果在此后端中禁用了<xref linkend="guc-track-activities">，就会报告此状态。</para>
+       </listitem>
        </itemizedlist>
-     </entry>
+      </entry>
     </row>
     <row>
      <entry><structfield>backend_xid</structfield></entry>
      <entry><type>xid</type></entry>
-     <entry>Top-level transaction identifier of this backend, if any.</entry>
+     <entry>
+       这个后端的顶层事务 ID，如果存在。
+      </entry>
     </row>
     <row>
      <entry><structfield>backend_xmin</structfield></entry>
      <entry><type>xid</type></entry>
-     <entry>The current backend's <literal>xmin</> horizon.</entry>
+     <entry>
+       当前后端的<literal>xmin</>视界。
+      </entry>
     </row>
     <row>
      <entry><structfield>query</></entry>
-     <entry><type>text</></entry>
-     <entry>Text of this backend's most recent query. If
-      <structfield>state</> is <literal>active</> this field shows the
-      currently executing query. In all other states, it shows the last query
-      that was executed.
-     </entry>
+     <entry><type>text</type></entry>
+     <entry>
+       这个后端最近查询的文本。如果<structfield>state</>为<literal>active</>，这个字段显示当前正在执行的查询。
+       在所有其他状态下，它显示上一个被执行的查询。
+      </entry>
     </row>
    </tbody>
    </tgroup>
   </table>
 
   <para>
-   The <structname>pg_stat_activity</structname> view will have one row
-   per server process, showing information related to
-   the current activity of that process.
+   <structname>pg_stat_activity</structname>视图每个服务器进程将有一行，显示与该进程当前活动相关的信息。
   </para>
 
   <note>
    <para>
-    The <structfield>waiting</> and <structfield>state</> columns are
-    independent.  If a backend is in the <literal>active</> state,
-    it may or may not be <literal>waiting</>.  If the state is
-    <literal>active</> and <structfield>waiting</> is true, it means
-    that a query is being executed, but is being blocked by a lock
-    somewhere in the system.
+    <structfield>waiting</structfield>和<structfield>state</structfield>列彼此独立。如果某个后端处于<literal>active</literal>状态，它可能正在<literal>waiting</literal>（等待），也可能没有。如果状态为<literal>active</literal>且<structfield>waiting</structfield>为真，就意味着某个查询正在执行，但在系统中的某处被锁阻塞。
    </para>
   </note>
 
-  <table id="pg-stat-archiver-view" xreflabel="pg_stat_archiver">
-   <title><structname>pg_stat_archiver</structname> View</title>
+  <table id="pg-stat-replication-view" xreflabel="pg_stat_replication">
+   <title><structname>pg_stat_replication</structname> 视图</title>
+   <tgroup cols="3">
+    <thead>
+    <row>
+      <entry>列</entry>
+      <entry>类型</entry>
+      <entry>描述</entry>
+     </row>
+    </thead>
+
+   <tbody>
+    <row>
+     <entry><structfield>pid</></entry>
+     <entry><type>integer</type></entry>
+     <entry>
+       一个 WAL 发送进程的进程 ID
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>usesysid</></entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       登录到这个 WAL 发送进程的用户的 OID
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>usename</></entry>
+     <entry><type>name</type></entry>
+     <entry>
+       登录到这个 WAL 发送进程的用户的名称
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>application_name</></entry>
+     <entry><type>text</type></entry>
+     <entry>
+       连接到这个 WAL 发送进程的应用的名称
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>client_addr</></entry>
+     <entry><type>inet</type></entry>
+     <entry>
+       连接到这个 WAL 发送进程的客户端的 IP 地址。
+       如果这个字段为空值，它表示该客户端通过服务器机器上的一个Unix 套接字连接。
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>client_hostname</></entry>
+     <entry><type>text</type></entry>
+     <entry>
+       已连接的客户端的主机名，由<structfield>client_addr</>的反向 DNS 查找报告。
+	   这个字段将只对 IP 连接非空，并且只有 <xref linkend="guc-log-hostname">被启用时才会非空。
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>client_port</></entry>
+     <entry><type>integer</type></entry>
+     <entry>
+       客户端用来与这个 WAL 发送进程通讯的 TCP 端口号，如果使用 Unix 套接字则为<literal>-1</>
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>backend_start</></entry>
+     <entry><type>timestamp with time zone</type></entry>
+     <entry>
+       这个进程开始的时间，即客户端是何时连接到这个WAL 发送进程的。
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>backend_xmin</structfield></entry>
+     <entry><type>xid</type></entry>
+     <entry>
+       由<xref linkend="guc-hot-standby-feedback">报告的该备库的<literal>xmin</>视界。
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>state</></entry>
+     <entry><type>text</type></entry>
+     <entry>当前 WAL 发送进程的状态</entry>
+    </row>
+    <row>
+     <entry><structfield>sent_location</></entry>
+     <entry><type>pg_lsn</type></entry>
+     <entry>
+       在这个连接上发送的最后一个事务日志的位置
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>write_location</></entry>
+     <entry><type>pg_lsn</type></entry>
+     <entry>
+       该备库已写入磁盘的最后一个事务日志位置
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>flush_location</></entry>
+     <entry><type>pg_lsn</type></entry>
+     <entry>
+       该备库已刷入磁盘的最后一个事务日志位置
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>replay_location</></entry>
+     <entry><type>pg_lsn</type></entry>
+     <entry>
+       已在该备库数据库中重放的最后一个事务日志位置
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>sync_priority</></entry>
+     <entry><type>integer</type></entry>
+     <entry>
+       该备库被选为同步备库的优先级。
+      </entry>
+    </row>
+    <row>
+     <entry><structfield>sync_state</></entry>
+     <entry><type>text</type></entry>
+     <entry>此备库的同步状态</entry>
+    </row>
+   </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   <structname>pg_stat_replication</structname>视图为每个 WAL 发送进程包含一行，显示有关复制到该发送进程所连接备库的统计信息。
+   这里只列出直接连接的备库；不包含下游备库的信息。
+  </para>
+
+
+
+      <table id="pg-stat-archiver-view" xreflabel="pg_stat_archiver">
+   <title><structname>pg_stat_archiver</structname> 视图</title>
 
    <tgroup cols="3">
     <thead>
      <row>
-      <entry>Column</entry>
-      <entry>Type</entry>
-      <entry>Description</entry>
+      <entry>列</entry>
+      <entry>类型</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
@@ -684,56 +621,67 @@ postgres: <replaceable>user</> <replaceable>database</> <replaceable>host</> <re
      <row>
       <entry><structfield>archived_count</></entry>
       <entry><type>bigint</type></entry>
-      <entry>Number of WAL files that have been successfully archived</entry>
+      <entry>
+       已成功归档的WAL文件数
+      </entry>
      </row>
      <row>
       <entry><structfield>last_archived_wal</></entry>
       <entry><type>text</type></entry>
-      <entry>Name of the last WAL file successfully archived</entry>
+      <entry>
+       最近成功归档的WAL文件的名称
+      </entry>
      </row>
      <row>
       <entry><structfield>last_archived_time</></entry>
       <entry><type>timestamp with time zone</type></entry>
-      <entry>Time of the last successful archive operation</entry>
+      <entry>
+       最近成功归档操作的时间
+      </entry>
      </row>
      <row>
       <entry><structfield>failed_count</></entry>
       <entry><type>bigint</type></entry>
-      <entry>Number of failed attempts for archiving WAL files</entry>
+      <entry>
+       记录WAL文件归档失败次数
+      </entry>
      </row>
      <row>
       <entry><structfield>last_failed_wal</></entry>
       <entry><type>text</type></entry>
-      <entry>Name of the WAL file of the last failed archival operation</entry>
+      <entry>
+       最近一次归档操作失败的WAL文件的名称
+      </entry>
      </row>
      <row>
       <entry><structfield>last_failed_time</></entry>
       <entry><type>timestamp with time zone</type></entry>
-      <entry>Time of the last failed archival operation</entry>
+      <entry>
+       最近一次归档操作失败的时间
+      </entry>
      </row>
      <row>
       <entry><structfield>stats_reset</></entry>
       <entry><type>timestamp with time zone</type></entry>
-      <entry>Time at which these statistics were last reset</entry>
+      <entry>这些统计信息上次被重置的时间</entry>
      </row>
     </tbody>
    </tgroup>
   </table>
 
   <para>
-   The <structname>pg_stat_archiver</structname> view will always have a
-   single row, containing data about the archiver process of the cluster.
+   <structname>pg_stat_archiver</structname>视图总是有一行，其中包含关于集簇的归档进程的数据。
   </para>
 
   <table id="pg-stat-bgwriter-view" xreflabel="pg_stat_bgwriter">
-   <title><structname>pg_stat_bgwriter</structname> View</title>
+   <title><structname>pg_stat_bgwriter</structname> 视图</title>
 
    <tgroup cols="3">
     <thead>
     <row>
-      <entry>Column</entry>
-      <entry>Type</entry>
-      <entry>Description</entry>
+      <entry>列</entry>
+      <entry>类型</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
@@ -741,911 +689,877 @@ postgres: <replaceable>user</> <replaceable>database</> <replaceable>host</> <re
      <row>
       <entry><structfield>checkpoints_timed</></entry>
       <entry><type>bigint</type></entry>
-      <entry>Number of scheduled checkpoints that have been performed</entry>
+      <entry>已执行的计划检查点数</entry>
      </row>
      <row>
       <entry><structfield>checkpoints_req</></entry>
       <entry><type>bigint</type></entry>
-      <entry>Number of requested checkpoints that have been performed</entry>
+      <entry>已执行的请求检查点数</entry>
      </row>
      <row>
       <entry><structfield>checkpoint_write_time</></entry>
       <entry><type>double precision</type></entry>
-      <entry>
-        Total amount of time that has been spent in the portion of
-        checkpoint processing where files are written to disk, in milliseconds
-      </entry>
+      <entry>检查点处理中将文件写入磁盘部分所花费的总时间，单位为毫秒</entry>
      </row>
      <row>
       <entry><structfield>checkpoint_sync_time</></entry>
       <entry><type>double precision</type></entry>
-      <entry>
-        Total amount of time that has been spent in the portion of
-        checkpoint processing where files are synchronized to disk, in
-        milliseconds
-      </entry>
+      <entry>检查点处理中将文件同步到磁盘部分所花费的总时间，单位为毫秒</entry>
      </row>
      <row>
       <entry><structfield>buffers_checkpoint</></entry>
       <entry><type>bigint</type></entry>
-      <entry>Number of buffers written during checkpoints</entry>
+      <entry>检查点期间写入的缓冲区数</entry>
      </row>
      <row>
       <entry><structfield>buffers_clean</></entry>
       <entry><type>bigint</type></entry>
-      <entry>Number of buffers written by the background writer</entry>
+      <entry>
+       后台写入器写入的缓冲区数量
+      </entry>
      </row>
      <row>
       <entry><structfield>maxwritten_clean</></entry>
       <entry><type>bigint</type></entry>
-      <entry>Number of times the background writer stopped a cleaning
-       scan because it had written too many buffers</entry>
+      <entry>
+       后台写入器因写入了过多缓冲区而停止清理扫描的次数
+      </entry>
      </row>
      <row>
       <entry><structfield>buffers_backend</></entry>
       <entry><type>bigint</type></entry>
-      <entry>Number of buffers written directly by a backend</entry>
+      <entry>后端直接写入的缓冲区数</entry>
      </row>
      <row>
       <entry><structfield>buffers_backend_fsync</></entry>
       <entry><type>bigint</type></entry>
-      <entry>Number of times a backend had to execute its own
-       <function>fsync</> call (normally the background writer handles those
-       even when the backend does its own write)</entry>
+      <entry>后端必须自行执行<function>fsync</function>调用的次数（通常即使后端自行写入，也由后台写入器处理这些调用）</entry>
      </row>
      <row>
       <entry><structfield>buffers_alloc</></entry>
       <entry><type>bigint</type></entry>
-      <entry>Number of buffers allocated</entry>
+      <entry>
+       分配的缓冲区数量
+      </entry>
      </row>
      <row>
       <entry><structfield>stats_reset</></entry>
       <entry><type>timestamp with time zone</type></entry>
-      <entry>Time at which these statistics were last reset</entry>
+      <entry>这些统计信息上次被重置的时间</entry>
      </row>
     </tbody>
     </tgroup>
   </table>
 
   <para>
-   The <structname>pg_stat_bgwriter</structname> view will always have a
-   single row, containing global data for the cluster.
+   <structname>pg_stat_bgwriter</structname> 视图始终只有一行，包含整个集簇的全局数据。
   </para>
 
   <table id="pg-stat-database-view" xreflabel="pg_stat_database">
-   <title><structname>pg_stat_database</structname> View</title>
+   <title><structname>pg_stat_database</structname> 视图</title>
    <tgroup cols="3">
     <thead>
     <row>
-      <entry>Column</entry>
-      <entry>Type</entry>
-      <entry>Description</entry>
+      <entry>列</entry>
+      <entry>类型</entry>
+      <entry>描述</entry>
+     </row>
+    </thead>
+
+   <tbody>
+
+     <row>
+     <entry><structfield>datid</></entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       数据库的OID
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>datname</></entry>
+     <entry><type>name</type></entry>
+     <entry>
+       数据库的名称
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>numbackends</></entry>
+     <entry><type>integer</type></entry>
+     <entry>
+       当前连接到此数据库的后端数。
+       这是该视图中唯一返回反映当前状态的值的列；所有其他列返回的都是自上次重置以来累积的值。
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>xact_commit</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       此数据库中已提交的事务数
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>xact_rollback</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       该数据库中已回滚的事务数
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>blks_read</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       在该数据库中读取的磁盘块数
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>blks_hit</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       在缓冲区缓存中发现磁盘块、因而无需读取的次数（这里只统计 PostgreSQL 缓冲区缓存中的命中，不包括操作系统文件系统缓存中的命中）
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>tup_returned</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       此数据库中的查询返回的行数
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>tup_fetched</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       此数据库中的查询获取的行数
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>tup_inserted</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       查询在该数据库中插入的行数
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>tup_updated</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       这个数据库中查询更新的行数
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>tup_deleted</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       这个数据库中被查询删除的行数
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>conflicts</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       由于与此数据库中的恢复冲突而被取消的查询数。（冲突只会发生在备库上；请参阅<xref linkend="pg-stat-database-conflicts-view">。）
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>temp_files</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       这个数据库中查询创建的临时文件的数量。所有临时文件都将被计数，而不顾及临时文件为什么被创建(例如，排序或散列)，也不考虑<xref linkend="guc-log-temp-files">设置。
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>temp_bytes</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       这个数据库中的查询写入临时文件的数据总量。所有临时文件都将被计数，而不考虑临时文件为什么被创建，也不考虑<xref linkend="guc-log-temp-files">设置。
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>deadlocks</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       在此数据库中检测到的死锁数
+      </entry>
+    </row>
+
+<row>
+     <entry><structfield>blk_read_time</></entry>
+     <entry><type>double precision</type></entry>
+     <entry>此数据库的后端读取数据文件块所花费的时间，单位为毫秒</entry>
+    </row>
+
+<row>
+     <entry><structfield>blk_write_time</></entry>
+     <entry><type>double precision</type></entry>
+     <entry>此数据库的后端写入数据文件块所花费的时间，单位为毫秒</entry>
+    </row>
+
+<row>
+     <entry><structfield>stats_reset</></entry>
+     <entry><type>timestamp with time zone</type></entry>
+     <entry>
+       这些统计数据最后一次重置的时间
+      </entry>
+    </row>
+
+    </tbody>
+   </tgroup>
+  </table>
+
+  <para><structname>pg_stat_database</structname>视图为集簇中的每个数据库包含一行，显示整个数据库的统计信息。</para>
+
+  <table id="pg-stat-database-conflicts-view" xreflabel="pg_stat_database_conflicts">
+   <title><structname>pg_stat_database_conflicts</structname> 视图</title>
+   <tgroup cols="3">
+    <thead>
+    <row>
+      <entry>列</entry>
+      <entry>类型</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
    <tbody>
     <row>
      <entry><structfield>datid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of a database</entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       数据库的OID
+      </entry>
     </row>
     <row>
      <entry><structfield>datname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of this database</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       数据库的名称
+      </entry>
     </row>
     <row>
-     <entry><structfield>numbackends</></entry>
-     <entry><type>integer</></entry>
-     <entry>Number of backends currently connected to this database.
-     This is the only column in this view that returns a value reflecting
-     current state; all other columns return the accumulated values since
-     the last reset.</entry>
+     <entry><structfield>confl_tablespace</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       这个数据库中由于删除表空间而取消的查询的数量
+      </entry>
     </row>
     <row>
-     <entry><structfield>xact_commit</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of transactions in this database that have been
-      committed</entry>
+     <entry><structfield>confl_lock</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       此数据库中由于锁定超时而被取消的查询数
+      </entry>
     </row>
     <row>
-     <entry><structfield>xact_rollback</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of transactions in this database that have been
-      rolled back</entry>
+     <entry><structfield>confl_snapshot</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       此数据库中由于旧快照而取消的查询数
+      </entry>
     </row>
     <row>
-     <entry><structfield>blks_read</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of disk blocks read in this database</entry>
+     <entry><structfield>confl_bufferpin</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       此数据库中由于缓冲区被钉住而被取消的查询数
+      </entry>
     </row>
     <row>
-     <entry><structfield>blks_hit</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of times disk blocks were found already in the buffer
-      cache, so that a read was not necessary (this only includes hits in the
-      PostgreSQL buffer cache, not the operating system's file system cache)
-     </entry>
-    </row>
-    <row>
-     <entry><structfield>tup_returned</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of rows returned by queries in this database</entry>
-    </row>
-    <row>
-     <entry><structfield>tup_fetched</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of rows fetched by queries in this database</entry>
-    </row>
-    <row>
-     <entry><structfield>tup_inserted</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of rows inserted by queries in this database</entry>
-    </row>
-    <row>
-     <entry><structfield>tup_updated</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of rows updated by queries in this database</entry>
-    </row>
-    <row>
-     <entry><structfield>tup_deleted</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of rows deleted by queries in this database</entry>
-    </row>
-    <row>
-     <entry><structfield>conflicts</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of queries canceled due to conflicts with recovery
-      in this database. (Conflicts occur only on standby servers; see
-      <xref linkend="pg-stat-database-conflicts-view"> for details.)
-     </entry>
-    </row>
-    <row>
-     <entry><structfield>temp_files</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of temporary files created by queries in this database.
-      All temporary files are counted, regardless of why the temporary file
-      was created (e.g., sorting or hashing), and regardless of the
-      <xref linkend="guc-log-temp-files"> setting.
-     </entry>
-    </row>
-    <row>
-     <entry><structfield>temp_bytes</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Total amount of data written to temporary files by queries in
-      this database. All temporary files are counted, regardless of why
-      the temporary file was created, and
-      regardless of the <xref linkend="guc-log-temp-files"> setting.
-     </entry>
-    </row>
-    <row>
-     <entry><structfield>deadlocks</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of deadlocks detected in this database</entry>
-    </row>
-    <row>
-     <entry><structfield>blk_read_time</></entry>
-     <entry><type>double precision</></entry>
-     <entry>Time spent reading data file blocks by backends in this database,
-      in milliseconds</entry>
-    </row>
-    <row>
-     <entry><structfield>blk_write_time</></entry>
-     <entry><type>double precision</></entry>
-     <entry>Time spent writing data file blocks by backends in this database,
-      in milliseconds</entry>
-    </row>
-    <row>
-     <entry><structfield>stats_reset</></entry>
-     <entry><type>timestamp with time zone</></entry>
-     <entry>Time at which these statistics were last reset</entry>
+     <entry><structfield>confl_deadlock</></entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       此数据库中由于死锁而被取消的查询数
+      </entry>
     </row>
    </tbody>
    </tgroup>
   </table>
 
-  <para>
-   The <structname>pg_stat_database</structname> view will contain one row
-   for each database in the cluster, showing database-wide statistics.
-  </para>
+  <para><structname>pg_stat_database_conflicts</structname>视图为每个数据库包含一行，显示备库上因与恢复冲突而取消查询的数据库范围统计信息。由于主库上不会发生这些冲突，该视图只会在备库上包含信息。</para>
 
   <table id="pg-stat-all-tables-view" xreflabel="pg_stat_all_tables">
-   <title><structname>pg_stat_all_tables</structname> View</title>
+   <title><structname>pg_stat_all_tables</structname> 视图</title>
    <tgroup cols="3">
     <thead>
     <row>
-      <entry>Column</entry>
-      <entry>Type</entry>
-      <entry>Description</entry>
+      <entry>列</entry>
+      <entry>类型</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
    <tbody>
     <row>
      <entry><structfield>relid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of a table</entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       表的OID
+      </entry>
     </row>
     <row>
      <entry><structfield>schemaname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of the schema that this table is in</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       该表所在的模式的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>relname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of this table</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       这个表的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>seq_scan</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of sequential scans initiated on this table</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       在此表上启动的顺序扫描数
+      </entry>
     </row>
     <row>
      <entry><structfield>seq_tup_read</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of live rows fetched by sequential scans</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       顺序扫描获取的存活行数
+      </entry>
     </row>
     <row>
      <entry><structfield>idx_scan</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of index scans initiated on this table</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       对这个表发起的索引扫描数
+      </entry>
     </row>
     <row>
      <entry><structfield>idx_tup_fetch</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of live rows fetched by index scans</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       索引扫描获取的存活行数
+      </entry>
     </row>
     <row>
      <entry><structfield>n_tup_ins</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of rows inserted</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       插入的行数
+      </entry>
     </row>
     <row>
      <entry><structfield>n_tup_upd</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of rows updated</entry>
+     <entry><type>bigint</type></entry>
+     <entry>更新的行数</entry>
     </row>
     <row>
      <entry><structfield>n_tup_del</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of rows deleted</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       删除的行数
+      </entry>
     </row>
     <row>
      <entry><structfield>n_tup_hot_upd</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of rows HOT updated (i.e., with no separate index
-      update required)</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       HOT 更新的行数（即不需要单独更新索引）
+      </entry>
     </row>
     <row>
      <entry><structfield>n_live_tup</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Estimated number of live rows</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       活的行的估计数量
+      </entry>
     </row>
     <row>
      <entry><structfield>n_dead_tup</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Estimated number of dead rows</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       死行的估计数量
+      </entry>
     </row>
     <row>
      <entry><structfield>n_mod_since_analyze</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Estimated number of rows modified since this table was last analyzed</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       自上次分析此表以来修改的行的估计数量
+      </entry>
     </row>
     <row>
      <entry><structfield>last_vacuum</></entry>
-     <entry><type>timestamp with time zone</></entry>
-     <entry>Last time at which this table was manually vacuumed
-      (not counting <command>VACUUM FULL</>)</entry>
+     <entry><type>timestamp with time zone</type></entry>
+     <entry>
+       最后一次手动清理这个表的时间（不包括<command>VACUUM FULL</>）
+      </entry>
     </row>
     <row>
      <entry><structfield>last_autovacuum</></entry>
-     <entry><type>timestamp with time zone</></entry>
-     <entry>Last time at which this table was vacuumed by the autovacuum
-      daemon</entry>
+     <entry><type>timestamp with time zone</type></entry>
+     <entry>
+       这个表最后一次被自动清理守护进程清理的时间
+      </entry>
     </row>
     <row>
      <entry><structfield>last_analyze</></entry>
-     <entry><type>timestamp with time zone</></entry>
-     <entry>Last time at which this table was manually analyzed</entry>
+     <entry><type>timestamp with time zone</type></entry>
+     <entry>
+       上一次手动分析这个表的时间
+      </entry>
     </row>
     <row>
      <entry><structfield>last_autoanalyze</></entry>
-     <entry><type>timestamp with time zone</></entry>
-     <entry>Last time at which this table was analyzed by the autovacuum
-      daemon</entry>
+     <entry><type>timestamp with time zone</type></entry>
+     <entry>
+       自动清理守护进程最后一次分析这个表的时间
+      </entry>
     </row>
     <row>
      <entry><structfield>vacuum_count</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of times this table has been manually vacuumed
-      (not counting <command>VACUUM FULL</>)</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       这个表被手动清理的次数（<command>VACUUM FULL</>不计数）
+      </entry>
     </row>
     <row>
      <entry><structfield>autovacuum_count</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of times this table has been vacuumed by the autovacuum
-      daemon</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       这个表被自动清理守护进程清理的次数
+      </entry>
     </row>
     <row>
      <entry><structfield>analyze_count</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of times this table has been manually analyzed</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       手动分析这个表的次数
+      </entry>
     </row>
     <row>
      <entry><structfield>autoanalyze_count</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of times this table has been analyzed by the autovacuum
-      daemon</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       这个表被自动清理守护进程分析的次数
+      </entry>
     </row>
    </tbody>
    </tgroup>
   </table>
 
   <para>
-   The <structname>pg_stat_all_tables</structname> view will contain
-   one row for each table in the current database (including TOAST
-   tables), showing statistics about accesses to that specific table. The
-   <structname>pg_stat_user_tables</structname> and
-   <structname>pg_stat_sys_tables</structname> views
-   contain the same information,
-   but filtered to only show user and system tables respectively.
+   <structname>pg_stat_all_tables</structname>视图将为当前数据库中的每一个表（包括 TOAST 表）包含一行，该行显示与对该表的访问相关的统计信息。
+   <structname>pg_stat_user_tables</structname>和<structname>pg_stat_sys_tables</structname>视图包含相同的信息，但是被过滤得分别只显示用户和系统表。
   </para>
 
   <table id="pg-stat-all-indexes-view" xreflabel="pg_stat_all_indexes">
-   <title><structname>pg_stat_all_indexes</structname> View</title>
+   <title><structname>pg_stat_all_indexes</structname> 视图</title>
    <tgroup cols="3">
     <thead>
     <row>
-      <entry>Column</entry>
-      <entry>Type</entry>
-      <entry>Description</entry>
+      <entry>列</entry>
+      <entry>类型</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
    <tbody>
     <row>
      <entry><structfield>relid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of the table for this index</entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       对于此索引的表的OID
+      </entry>
     </row>
     <row>
      <entry><structfield>indexrelid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of this index</entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       这个索引的OID
+      </entry>
     </row>
     <row>
      <entry><structfield>schemaname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of the schema this index is in</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       这个索引所在的模式名称
+      </entry>
     </row>
     <row>
      <entry><structfield>relname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of the table for this index</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       这个索引的表的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>indexrelname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of this index</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       这个索引的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>idx_scan</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of index scans initiated on this index</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       在这个索引上开启的索引扫描的数量
+      </entry>
     </row>
     <row>
      <entry><structfield>idx_tup_read</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of index entries returned by scans on this index</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       扫描此索引返回的索引项数
+      </entry>
     </row>
     <row>
      <entry><structfield>idx_tup_fetch</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of live table rows fetched by simple index scans using this
-      index</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       使用此索引进行简单索引扫描获取的存活表行数
+      </entry>
     </row>
    </tbody>
    </tgroup>
   </table>
 
   <para>
-   The <structname>pg_stat_all_indexes</structname> view will contain
-   one row for each index in the current database,
-   showing statistics about accesses to that specific index. The
-   <structname>pg_stat_user_indexes</structname> and
-   <structname>pg_stat_sys_indexes</structname> views
-   contain the same information,
-   but filtered to only show user and system indexes respectively.
+   <structname>pg_stat_all_indexes</structname>视图将为当前数据库中的每个索引包含一行，该行显示关于对该索引访问的统计信息。<structname>pg_stat_user_indexes</structname>和<structname>pg_stat_sys_indexes</structname>视图包含相同的信息，但是被过滤得只分别显示用户和系统索引。
   </para>
 
   <para>
-   Indexes can be used via either simple index scans or <quote>bitmap</>
-   index scans.  In a bitmap scan
-   the output of several indexes can be combined via AND or OR rules,
-   so it is difficult to associate individual heap row fetches
-   with specific indexes when a bitmap scan is used.  Therefore, a bitmap
-   scan increments the
-   <structname>pg_stat_all_indexes</>.<structfield>idx_tup_read</>
-   count(s) for the index(es) it uses, and it increments the
-   <structname>pg_stat_all_tables</>.<structfield>idx_tup_fetch</>
-   count for the table, but it does not affect
-   <structname>pg_stat_all_indexes</>.<structfield>idx_tup_fetch</>.
+   索引可以被简单索引扫描或者<quote>位图</quote>索引扫描使用。在一次位图扫描中，多个索引的输出可以被通过 AND 或 OR 规则组合，因此当使用一次位图扫描时难以将取得的个体堆行与特定的索引关联起来。因此，一次位图扫描会增加它使用的索引的<structname>pg_stat_all_indexes</structname>.<structfield>idx_tup_read</structfield>计数，并且为该表增加<structname>pg_stat_all_tables</structname>.<structfield>idx_tup_fetch</structfield>计数，但是它不影响<structname>pg_stat_all_indexes</structname>.<structfield>idx_tup_fetch</structfield>。
   </para>
 
   <note>
+
    <para>
-    The <structfield>idx_tup_read</> and <structfield>idx_tup_fetch</> counts
-    can be different even without any use of bitmap scans,
-    because <structfield>idx_tup_read</> counts
-    index entries retrieved from the index while <structfield>idx_tup_fetch</>
-    counts live rows fetched from the table.  The latter will be less if any
-    dead or not-yet-committed rows are fetched using the index, or if any
-    heap fetches are avoided by means of an index-only scan.
+    即使不用位图扫描，<structfield>idx_tup_read</structfield>和<structfield>idx_tup_fetch</structfield>计数也可能不同，因为<structfield>idx_tup_read</structfield>统计从该索引取得的索引项而<structfield>idx_tup_fetch</structfield>统计从表取得的存活行。如果使用该索引取得了任何死亡行或还未提交的行，或者如果通过一次仅索引扫描的方式避免了任何堆获取，后者将较小。
    </para>
   </note>
 
   <table id="pg-statio-all-tables-view" xreflabel="pg_statio_all_tables">
-   <title><structname>pg_statio_all_tables</structname> View</title>
+   <title><structname>pg_statio_all_tables</structname> 视图</title>
    <tgroup cols="3">
     <thead>
     <row>
-      <entry>Column</entry>
-      <entry>Type</entry>
-      <entry>Description</entry>
+      <entry>列</entry>
+      <entry>类型</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
    <tbody>
     <row>
      <entry><structfield>relid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of a table</entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       表的OID
+      </entry>
     </row>
     <row>
      <entry><structfield>schemaname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of the schema that this table is in</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       该表所在的模式的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>relname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of this table</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       这个表的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>heap_blks_read</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of disk blocks read from this table</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       从该表中读取的磁盘块的数量
+      </entry>
     </row>
     <row>
      <entry><structfield>heap_blks_hit</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of buffer hits in this table</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       该表中的缓冲区命中数
+      </entry>
     </row>
     <row>
      <entry><structfield>idx_blks_read</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of disk blocks read from all indexes on this table</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       从这个表上所有索引读取的磁盘块数
+      </entry>
     </row>
     <row>
      <entry><structfield>idx_blks_hit</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of buffer hits in all indexes on this table</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       这个表上所有索引中的缓冲区命中数
+      </entry>
     </row>
     <row>
      <entry><structfield>toast_blks_read</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of disk blocks read from this table's TOAST table (if any)</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       从这个表的TOAST表中读取的磁盘块的数量（如果有的话）
+      </entry>
     </row>
     <row>
      <entry><structfield>toast_blks_hit</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of buffer hits in this table's TOAST table (if any)</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       这个表的TOAST表中的缓冲区命中数（如果有的话）
+      </entry>
     </row>
     <row>
      <entry><structfield>tidx_blks_read</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of disk blocks read from this table's TOAST table indexes (if any)</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       从这个表的TOAST表索引中读取的磁盘块的数量（如果有的话）
+      </entry>
     </row>
     <row>
      <entry><structfield>tidx_blks_hit</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of buffer hits in this table's TOAST table indexes (if any)</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       这个表的TOAST表索引中的缓冲区命中数（如果有的话）
+      </entry>
     </row>
    </tbody>
    </tgroup>
   </table>
 
   <para>
-   The <structname>pg_statio_all_tables</structname> view will contain
-   one row for each table in the current database (including TOAST
-   tables), showing statistics about I/O on that specific table. The
-   <structname>pg_statio_user_tables</structname> and
-   <structname>pg_statio_sys_tables</structname> views
-   contain the same information,
-   but filtered to only show user and system tables respectively.
+   <structname>pg_statio_all_tables</structname>视图将为当前数据库中的每个表（包括 TOAST 表）包含一行，该行显示指定表上有关 I/O 的统计信息。<structname>pg_statio_user_tables</structname>和<structname>pg_statio_sys_tables</structname>视图包含相同的信息，但是被过滤得分别只显示用户表和系统表。
   </para>
 
   <table id="pg-statio-all-indexes-view" xreflabel="pg_statio_all_indexes">
-   <title><structname>pg_statio_all_indexes</structname> View</title>
+   <title><structname>pg_statio_all_indexes</structname> 视图</title>
    <tgroup cols="3">
     <thead>
     <row>
-      <entry>Column</entry>
-      <entry>Type</entry>
-      <entry>Description</entry>
+      <entry>列</entry>
+      <entry>类型</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
    <tbody>
     <row>
      <entry><structfield>relid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of the table for this index</entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       对于此索引的表的OID
+      </entry>
     </row>
     <row>
      <entry><structfield>indexrelid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of this index</entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       这个索引的OID
+      </entry>
     </row>
     <row>
      <entry><structfield>schemaname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of the schema this index is in</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       这个索引所在的模式名称
+      </entry>
     </row>
     <row>
      <entry><structfield>relname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of the table for this index</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       这个索引的表的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>indexrelname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of this index</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       这个索引的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>idx_blks_read</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of disk blocks read from this index</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       从此索引中读取的磁盘块的数量
+      </entry>
     </row>
     <row>
      <entry><structfield>idx_blks_hit</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of buffer hits in this index</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       此索引中的缓冲区命中数
+      </entry>
     </row>
    </tbody>
    </tgroup>
   </table>
 
   <para>
-   The <structname>pg_statio_all_indexes</structname> view will contain
-   one row for each index in the current database,
-   showing statistics about I/O on that specific index. The
-   <structname>pg_statio_user_indexes</structname> and
-   <structname>pg_statio_sys_indexes</structname> views
-   contain the same information,
-   but filtered to only show user and system indexes respectively.
+   <structname>pg_statio_all_indexes</structname>视图将为当前数据库中的每个索引包含一行，该行显示指定索引上有关 I/O 的统计信息。
+   <structname>pg_statio_user_indexes</structname>和<structname>pg_statio_sys_indexes</structname>视图包含相同的信息，但是被过滤得分别只显示用户索引和系统索引。
   </para>
 
   <table id="pg-statio-all-sequences-view" xreflabel="pg_statio_all_sequences">
-   <title><structname>pg_statio_all_sequences</structname> View</title>
+   <title><structname>pg_statio_all_sequences</structname> 视图</title>
    <tgroup cols="3">
     <thead>
     <row>
-      <entry>Column</entry>
-      <entry>Type</entry>
-      <entry>Description</entry>
+      <entry>列</entry>
+      <entry>类型</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
    <tbody>
     <row>
      <entry><structfield>relid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of a sequence</entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       序列的OID
+      </entry>
     </row>
     <row>
      <entry><structfield>schemaname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of the schema this sequence is in</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       此序列所在的模式的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>relname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of this sequence</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       此序列的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>blks_read</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of disk blocks read from this sequence</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       从这个序列中读取的磁盘块的数量
+      </entry>
     </row>
     <row>
      <entry><structfield>blks_hit</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of buffer hits in this sequence</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       在此序列中的缓冲区命中数
+      </entry>
     </row>
    </tbody>
    </tgroup>
   </table>
 
   <para>
-   The <structname>pg_statio_all_sequences</structname> view will contain
-   one row for each sequence in the current database,
-   showing statistics about I/O on that specific sequence.
+   <structname>pg_statio_all_sequences</structname>视图将为当前数据库中的每个序列包含一行，该行显示在指定序列上有关 I/O 的统计信息。
   </para>
 
   <table id="pg-stat-user-functions-view" xreflabel="pg_stat_user_functions">
-   <title><structname>pg_stat_user_functions</structname> View</title>
+   <title><structname>pg_stat_user_functions</structname> 视图</title>
    <tgroup cols="3">
     <thead>
     <row>
-      <entry>Column</entry>
-      <entry>Type</entry>
-      <entry>Description</entry>
+      <entry>列</entry>
+      <entry>类型</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
    <tbody>
     <row>
      <entry><structfield>funcid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of a function</entry>
+     <entry><type>oid</type></entry>
+     <entry>
+       函数的OID
+      </entry>
     </row>
     <row>
      <entry><structfield>schemaname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of the schema this function is in</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       这个函数所在的模式的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>funcname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of this function</entry>
+     <entry><type>name</type></entry>
+     <entry>
+       这个函数的名称
+      </entry>
     </row>
     <row>
      <entry><structfield>calls</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of times this function has been called</entry>
+     <entry><type>bigint</type></entry>
+     <entry>
+       这个函数已经被调用的次数
+      </entry>
     </row>
     <row>
      <entry><structfield>total_time</></entry>
-     <entry><type>double precision</></entry>
-     <entry>Total time spent in this function and all other functions
-     called by it, in milliseconds</entry>
+     <entry><type>double precision</type></entry>
+     <entry>
+       在这个函数以及它所调用的其他函数中花费的总时间，以毫秒计
+      </entry>
     </row>
     <row>
      <entry><structfield>self_time</></entry>
-     <entry><type>double precision</></entry>
-     <entry>Total time spent in this function itself, not including
-     other functions called by it, in milliseconds</entry>
+     <entry><type>double precision</type></entry>
+     <entry>
+       在这个函数本身花费的总时间，不包括被它调用的其他函数，以毫秒计
+      </entry>
     </row>
    </tbody>
    </tgroup>
   </table>
 
   <para>
-   The <structname>pg_stat_user_functions</structname> view will contain
-   one row for each tracked function, showing statistics about executions of
-   that function.  The <xref linkend="guc-track-functions"> parameter
-   controls exactly which functions are tracked.
-  </para>
-
-  <table id="pg-stat-replication-view" xreflabel="pg_stat_replication">
-   <title><structname>pg_stat_replication</structname> View</title>
-   <tgroup cols="3">
-    <thead>
-    <row>
-      <entry>Column</entry>
-      <entry>Type</entry>
-      <entry>Description</entry>
-     </row>
-    </thead>
-
-   <tbody>
-    <row>
-     <entry><structfield>pid</></entry>
-     <entry><type>integer</></entry>
-     <entry>Process ID of a WAL sender process</entry>
-    </row>
-    <row>
-     <entry><structfield>usesysid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of the user logged into this WAL sender process</entry>
-    </row>
-    <row>
-     <entry><structfield>usename</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of the user logged into this WAL sender process</entry>
-    </row>
-    <row>
-     <entry><structfield>application_name</></entry>
-     <entry><type>text</></entry>
-     <entry>Name of the application that is connected
-      to this WAL sender</entry>
-    </row>
-    <row>
-     <entry><structfield>client_addr</></entry>
-     <entry><type>inet</></entry>
-     <entry>IP address of the client connected to this WAL sender.
-      If this field is null, it indicates that the client is
-      connected via a Unix socket on the server machine.
-     </entry>
-    </row>
-    <row>
-     <entry><structfield>client_hostname</></entry>
-     <entry><type>text</></entry>
-     <entry>Host name of the connected client, as reported by a
-      reverse DNS lookup of <structfield>client_addr</>. This field will
-      only be non-null for IP connections, and only when <xref
-      linkend="guc-log-hostname"> is enabled.
-     </entry>
-    </row>
-    <row>
-     <entry><structfield>client_port</></entry>
-     <entry><type>integer</></entry>
-     <entry>TCP port number that the client is using for communication
-      with this WAL sender, or <literal>-1</> if a Unix socket is used
-     </entry>
-    </row>
-    <row>
-     <entry><structfield>backend_start</></entry>
-     <entry><type>timestamp with time zone</></entry>
-     <entry>Time when this process was started, i.e., when the
-      client connected to this WAL sender
-     </entry>
-    </row>
-    <row>
-     <entry><structfield>backend_xmin</structfield></entry>
-     <entry><type>xid</type></entry>
-     <entry>This standby's <literal>xmin</> horizon reported
-     by <xref linkend="guc-hot-standby-feedback">.</entry>
-    </row>
-    <row>
-     <entry><structfield>state</></entry>
-     <entry><type>text</></entry>
-     <entry>Current WAL sender state</entry>
-    </row>
-    <row>
-     <entry><structfield>sent_location</></entry>
-     <entry><type>pg_lsn</></entry>
-     <entry>Last transaction log position sent on this connection</entry>
-    </row>
-    <row>
-     <entry><structfield>write_location</></entry>
-     <entry><type>pg_lsn</></entry>
-     <entry>Last transaction log position written to disk by this standby
-      server</entry>
-    </row>
-    <row>
-     <entry><structfield>flush_location</></entry>
-     <entry><type>pg_lsn</></entry>
-     <entry>Last transaction log position flushed to disk by this standby
-      server</entry>
-    </row>
-    <row>
-     <entry><structfield>replay_location</></entry>
-     <entry><type>pg_lsn</></entry>
-     <entry>Last transaction log position replayed into the database on this
-      standby server</entry>
-    </row>
-    <row>
-     <entry><structfield>sync_priority</></entry>
-     <entry><type>integer</></entry>
-     <entry>Priority of this standby server for being chosen as the
-      synchronous standby</entry>
-    </row>
-    <row>
-     <entry><structfield>sync_state</></entry>
-     <entry><type>text</></entry>
-     <entry>Synchronous state of this standby server</entry>
-    </row>
-   </tbody>
-   </tgroup>
-  </table>
-
-  <para>
-   The <structname>pg_stat_replication</structname> view will contain one row
-   per WAL sender process, showing statistics about replication to that
-   sender's connected standby server.  Only directly connected standbys are
-   listed; no information is available about downstream standby servers.
-  </para>
-
-  <table id="pg-stat-database-conflicts-view" xreflabel="pg_stat_database_conflicts">
-   <title><structname>pg_stat_database_conflicts</structname> View</title>
-   <tgroup cols="3">
-    <thead>
-    <row>
-      <entry>Column</entry>
-      <entry>Type</entry>
-      <entry>Description</entry>
-     </row>
-    </thead>
-
-   <tbody>
-    <row>
-     <entry><structfield>datid</></entry>
-     <entry><type>oid</></entry>
-     <entry>OID of a database</entry>
-    </row>
-    <row>
-     <entry><structfield>datname</></entry>
-     <entry><type>name</></entry>
-     <entry>Name of this database</entry>
-    </row>
-    <row>
-     <entry><structfield>confl_tablespace</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of queries in this database that have been canceled due to
-      dropped tablespaces</entry>
-    </row>
-    <row>
-     <entry><structfield>confl_lock</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of queries in this database that have been canceled due to
-      lock timeouts</entry>
-    </row>
-    <row>
-     <entry><structfield>confl_snapshot</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of queries in this database that have been canceled due to
-      old snapshots</entry>
-    </row>
-    <row>
-     <entry><structfield>confl_bufferpin</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of queries in this database that have been canceled due to
-      pinned buffers</entry>
-    </row>
-    <row>
-     <entry><structfield>confl_deadlock</></entry>
-     <entry><type>bigint</></entry>
-     <entry>Number of queries in this database that have been canceled due to
-      deadlocks</entry>
-    </row>
-   </tbody>
-   </tgroup>
-  </table>
-
-  <para>
-   The <structname>pg_stat_database_conflicts</structname> view will contain
-   one row per database, showing database-wide statistics about
-   query cancels occurring due to conflicts with recovery on standby servers.
-   This view will only contain information on standby servers, since
-   conflicts do not occur on master servers.
+   <structname>pg_stat_user_functions</structname>视图将为每一个被追踪的函数包含一行，该行显示有关该函数执行的统计信息。
+   <xref linkend="guc-track-functions">参数控制到底哪些函数被跟踪。
   </para>
 
  </sect2>
 
  <sect2 id="monitoring-stats-functions">
-  <title>Statistics Functions</title>
+  <title>统计函数</title>
 
   <para>
-   Other ways of looking at the statistics can be set up by writing
-   queries that use the same underlying statistics access functions used by
-   the standard views shown above.  For details such as the functions' names,
-   consult the definitions of the standard views.  (For example, in
-   <application>psql</> you could issue <literal>\d+ pg_stat_activity</>.)
-   The access functions for per-database statistics take a database OID as an
-   argument to identify which database to report on.
-   The per-table and per-index functions take a table or index OID.
-   The functions for per-function statistics take a function OID.
-   Note that only tables, indexes, and functions in the current database
-   can be seen with these functions.
+   其他查看统计信息的方法是直接使用查询，这些查询使用上述标准视图用到的底层统计信息访问函数。
+   如要了解如函数名等细节，可参考标准视图的定义（例如，在<application>psql</application>中你可以发出<literal>\d+ pg_stat_activity</literal>）。
+   针对每一个数据库统计信息的访问函数把一个数据库 OID 作为参数来标识要报告哪个数据库。而针对每个表和每个索引的函数要求表或索引 OID。
+   针对每个函数统计信息的函数用一个函数 OID。注意只有在当前数据库中的表、索引和函数才能被这些函数看到。
   </para>
 
   <para>
-   Additional functions related to statistics collection are listed in <xref
-   linkend="monitoring-stats-funcs-table">.
-  </para>
+   与统计收集器相关的其他功能在<xref linkend="monitoring-stats-funcs-table">中列出。
+</para>
 
   <table id="monitoring-stats-funcs-table">
-   <title>Additional Statistics Functions</title>
+   <title>附加统计函数</title>
 
    <tgroup cols="3">
     <thead>
      <row>
-      <entry>Function</entry>
-      <entry>Return Type</entry>
-      <entry>Description</entry>
+      <entry>函数</entry>
+      <entry>返回类型</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
@@ -1655,87 +1569,56 @@ postgres: <replaceable>user</> <replaceable>database</> <replaceable>host</> <re
        <!-- See also the entry for this in func.sgml -->
       <entry><literal><function>pg_backend_pid()</function></literal></entry>
       <entry><type>integer</type></entry>
-      <entry>
-       Process ID of the server process handling the current session
-      </entry>
+      <entry>处理当前会话的服务器进程的进程 ID</entry>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_get_activity</function>(<type>integer</type>)</literal><indexterm><primary>pg_stat_get_activity</primary></indexterm></entry>
       <entry><type>setof record</type></entry>
-      <entry>
-       Returns a record of information about the backend with the specified PID, or
-       one record for each active backend in the system if <symbol>NULL</symbol> is
-       specified. The fields returned are a subset of those in the
-       <structname>pg_stat_activity</structname> view.
-      </entry>
+      <entry>返回一条记录，包含指定 PID 的后端的信息；如果指定<symbol>NULL</symbol>，则为系统中的每个活动后端返回一条记录。返回字段是<structname>pg_stat_activity</structname>视图字段的子集。</entry>
      </row>
 
-     <row>
+          <row>
       <entry><literal><function>pg_stat_clear_snapshot()</function></literal><indexterm><primary>pg_stat_clear_snapshot</primary></indexterm></entry>
       <entry><type>void</type></entry>
-      <entry>
-       Discard the current statistics snapshot
-      </entry>
+      <entry>丢弃当前统计信息快照</entry>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_reset()</function></literal><indexterm><primary>pg_stat_reset</primary></indexterm></entry>
       <entry><type>void</type></entry>
-      <entry>
-       Reset all statistics counters for the current database to zero
-       (requires superuser privileges)
-      </entry>
+      <entry>将当前数据库的所有统计计数器重置为零（需要超级用户权限）</entry>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_reset_shared</function>(text)</literal><indexterm><primary>pg_stat_reset_shared</primary></indexterm></entry>
       <entry><type>void</type></entry>
-      <entry>
-       Reset some cluster-wide statistics counters to zero, depending on the
-       argument (requires superuser privileges).
-       Calling <literal>pg_stat_reset_shared('bgwriter')</> will zero all the
-       counters shown in the <structname>pg_stat_bgwriter</> view.
-       Calling <literal>pg_stat_reset_shared('archiver')</> will zero all the
-       counters shown in the <structname>pg_stat_archiver</> view.
-      </entry>
+      <entry>根据参数将某些集簇范围的统计计数器重置为零（需要超级用户权限）。调用<literal>pg_stat_reset_shared('bgwriter')</literal>会将<structname>pg_stat_bgwriter</structname>视图中显示的所有计数器清零。调用<literal>pg_stat_reset_shared('archiver')</literal>会将<structname>pg_stat_archiver</structname>视图中显示的所有计数器清零。</entry>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_reset_single_table_counters</function>(oid)</literal><indexterm><primary>pg_stat_reset_single_table_counters</primary></indexterm></entry>
       <entry><type>void</type></entry>
-      <entry>
-       Reset statistics for a single table or index in the current database to
-       zero (requires superuser privileges)
-      </entry>
+      <entry>将当前数据库中单个表或索引的统计信息重置为零（需要超级用户权限）</entry>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_reset_single_function_counters</function>(oid)</literal><indexterm><primary>pg_stat_reset_single_function_counters</primary></indexterm></entry>
       <entry><type>void</type></entry>
-      <entry>
-       Reset statistics for a single function in the current database to
-       zero (requires superuser privileges)
-      </entry>
+      <entry>将当前数据库中单个函数的统计信息重置为零（需要超级用户权限）</entry>
      </row>
     </tbody>
    </tgroup>
   </table>
 
+
   <para>
-   <function>pg_stat_get_activity</function>, the underlying function of
-   the <structname>pg_stat_activity</> view, returns a set of records
-   containing all the available information about each backend process.
-   Sometimes it may be more convenient to obtain just a subset of this
-   information.  In such cases, an older set of per-backend statistics
-   access functions can be used; these are shown in <xref
-   linkend="monitoring-stats-backend-funcs-table">.
-   These access functions use a backend ID number, which ranges from one
-   to the number of currently active backends.
-   The function <function>pg_stat_get_backend_idset</function> provides a
-   convenient way to generate one row for each active backend for
-   invoking these functions.  For example, to show the <acronym>PID</>s and
-   current queries of all backends:
+   <function>pg_stat_get_activity</function>是<structname>pg_stat_activity</structname>视图的底层函数，
+   它返回一个行集合，其中包含有关每个后端进程所有可用的信息。有时只获得该信息的一个子集可能会更方便。
+   在那些情况中，可以使用一组更老的针对每个后端的统计访问函数，这些显示在<xref linkend="monitoring-stats-backend-funcs-table">中。
+   这些访问函数使用一个后端 ID 号，范围从 1 到当前活动后端数目。
+   函数<function>pg_stat_get_backend_idset</function>提供了一种方便的方法为每个活动后端产生一行来调用这些函数。
+   例如，要显示<acronym>PID</acronym>以及所有后端当前的查询：
 
 <programlisting>
 SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
@@ -1745,14 +1628,14 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
   </para>
 
   <table id="monitoring-stats-backend-funcs-table">
-   <title>Per-Backend Statistics Functions</title>
+   <title>按后端统计函数</title>
 
    <tgroup cols="3">
     <thead>
      <row>
-      <entry>Function</entry>
-      <entry>Return Type</entry>
-      <entry>Description</entry>
+      <entry>函数</entry>
+      <entry>返回类型</entry>
+      <entry>描述</entry>
      </row>
     </thead>
 
@@ -1761,68 +1644,73 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
      <row>
       <entry><literal><function>pg_stat_get_backend_idset()</function></literal></entry>
       <entry><type>setof integer</type></entry>
-      <entry>Set of currently active backend ID numbers (from 1 to the
-       number of active backends)</entry>
+      <entry>当前活动后端的 ID 编号集合（从 1 到活动后端数）</entry>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_get_backend_activity(integer)</function></literal></entry>
       <entry><type>text</type></entry>
-      <entry>Text of this backend's most recent query</>
+      <entry>此后端最近查询的文本</>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_get_backend_activity_start(integer)</function></literal></entry>
       <entry><type>timestamp with time zone</type></entry>
-      <entry>Time when the most recent query was started</entry>
+      <entry>最近查询的开始时间</entry>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_get_backend_client_addr(integer)</function></literal></entry>
       <entry><type>inet</type></entry>
-      <entry>IP address of the client connected to this backend</entry>
+      <entry>连接到此后端的客户端的 IP 地址</entry>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_get_backend_client_port(integer)</function></literal></entry>
       <entry><type>integer</type></entry>
-      <entry>TCP port number that the client is using for communication</entry>
+      <entry>客户端用于通信的 TCP 端口号</entry>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_get_backend_dbid(integer)</function></literal></entry>
       <entry><type>oid</type></entry>
-      <entry>OID of the database this backend is connected to</entry>
+      <entry>
+       这个后端连接到的数据库的OID
+      </entry>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_get_backend_pid(integer)</function></literal></entry>
       <entry><type>integer</type></entry>
-      <entry>Process ID of this backend</entry>
+      <entry>
+       这个后端的进程 ID
+      </entry>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_get_backend_start(integer)</function></literal></entry>
       <entry><type>timestamp with time zone</type></entry>
-      <entry>Time when this process was started</entry>
+      <entry>此进程的启动时间</entry>
      </row>
 
      <row>
       <entry><literal><function>pg_stat_get_backend_userid(integer)</function></literal></entry>
       <entry><type>oid</type></entry>
-      <entry>OID of the user logged into this backend</entry>
+      <entry>
+       登录到这个后端的用户的 OID
+      </entry>
      </row>
 
-     <row>
+      <row>
       <entry><literal><function>pg_stat_get_backend_waiting(integer)</function></literal></entry>
       <entry><type>boolean</type></entry>
-      <entry>True if this backend is currently waiting on a lock</entry>
-     </row>
+       <entry>如果此后端当前正在等待一个锁，则为真</entry>
+      </row>
 
      <row>
       <entry><literal><function>pg_stat_get_backend_xact_start(integer)</function></literal></entry>
       <entry><type>timestamp with time zone</type></entry>
-      <entry>Time when the current transaction was started</entry>
+      <entry>当前事务的开始时间</entry>
      </row>
 
     </tbody>
@@ -1833,118 +1721,85 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
  </sect1>
 
  <sect1 id="monitoring-locks">
-  <title>Viewing Locks</title>
+
+  <title>查看锁</title>
 
   <indexterm zone="monitoring-locks">
-   <primary>lock</primary>
-   <secondary>monitoring</secondary>
+   <primary>锁</primary>
+   <secondary>监控</secondary>
   </indexterm>
 
   <para>
-   Another useful tool for monitoring database activity is the
-   <structname>pg_locks</structname> system table.  It allows the
-   database administrator to view information about the outstanding
-   locks in the lock manager. For example, this capability can be used
-   to:
+   监控数据库活动的另外一个有用的工具是<structname>pg_locks</structname>系统表。这样就允许数据库管理员查看锁管理器中当前存在的锁的信息。例如，这个功能可以被用于：
 
    <itemizedlist>
     <listitem>
      <para>
-      View all the locks currently outstanding, all the locks on
-      relations in a particular database, all the locks on a
-      particular relation, or all the locks held by a particular
-      <productname>PostgreSQL</productname> session.
+      查看当前存在的所有锁、在一个特定数据库中的关系上所有的锁、在一个特定关系上所有的锁，或者由一个特定<productname>PostgreSQL</productname>会话持有的所有的锁。
      </para>
     </listitem>
 
     <listitem>
      <para>
-      Determine the relation in the current database with the most
-      ungranted locks (which might be a source of contention among
-      database clients).
+      判断当前数据库中带有最多未授予锁的关系（它可能是数据库客户端之间的竞争来源）。
      </para>
     </listitem>
 
     <listitem>
      <para>
-      Determine the effect of lock contention on overall database
-      performance, as well as the extent to which contention varies
-      with overall database traffic.
+      判断锁竞争给数据库总体性能带来的影响，以及锁竞争随着整个数据库流量的变化范围。
      </para>
     </listitem>
    </itemizedlist>
 
-   Details of the <structname>pg_locks</structname> view appear in
-   <xref linkend="view-pg-locks">.
-   For more information on locking and managing concurrency with
-   <productname>PostgreSQL</productname>, refer to <xref linkend="mvcc">.
+   <structname>pg_locks</structname>视图的细节在<xref linkend="view-pg-locks">中。更多有关<productname>PostgreSQL</productname>的锁和管理并发性的信息，请参考<xref linkend="mvcc">。
   </para>
  </sect1>
 
  <sect1 id="dynamic-trace">
-  <title>Dynamic Tracing</title>
+  <title>动态追踪</title>
 
  <indexterm zone="dynamic-trace">
   <primary>DTrace</primary>
  </indexterm>
 
   <para>
-   <productname>PostgreSQL</productname> provides facilities to support
-   dynamic tracing of the database server. This allows an external
-   utility to be called at specific points in the code and thereby trace
-   execution.
+   <productname>PostgreSQL</productname>提供了功能来支持数据库服务器的动态追踪。这样就允许在代码中的特 定点上调用外部工具来追踪执行过程。
   </para>
 
   <para>
-   A number of probes or trace points are already inserted into the source
-   code. These probes are intended to be used by database developers and
-   administrators. By default the probes are not compiled into
-   <productname>PostgreSQL</productname>; the user needs to explicitly tell
-   the configure script to make the probes available.
+   一些探针或追踪点已经被插入在源代码中。这些探针的目的是被数据库开发者和管理员使用。默认情况下，探针不被编译到<productname>PostgreSQL</productname>中；用户需要显式地告诉配置脚本使得探针可用。
   </para>
 
   <para>
-   Currently, the
-   <ulink url="https://en.wikipedia.org/wiki/DTrace">DTrace</ulink>
-   utility is supported, which, at the time of this writing, is available
-   on Solaris, OS X, FreeBSD, NetBSD, and Oracle Linux.  The
-   <ulink url="http://sourceware.org/systemtap/">SystemTap</ulink> project
-   for Linux provides a DTrace equivalent and can also be used.  Supporting other dynamic
-   tracing utilities is theoretically possible by changing the definitions for
-   the macros in <filename>src/include/utils/probes.h</>.
+   目前，在写本文当时<ulink url="https://en.wikipedia.org/wiki/DTrace">DTrace</ulink>已被支持，它在 Solaris、OS X、FreeBSD、NetBSD 和 Oracle Linux 上可用。
+   Linux 的<ulink url="http://sourceware.org/systemtap/">SystemTap</ulink>项目提供了一种可用的 DTrace 等价物。支持其他动态追踪工具在理论上可以通过改变<filename>src/include/utils/probes.h</filename>中的宏定义实现。
   </para>
 
   <sect2 id="compiling-for-trace">
-   <title>Compiling for Dynamic Tracing</title>
+   <title>为动态追踪编译</title>
 
   <para>
-   By default, probes are not available, so you will need to
-   explicitly tell the configure script to make the probes available
-   in <productname>PostgreSQL</productname>. To include DTrace support
-   specify <option>--enable-dtrace</> to configure.  See <xref
-   linkend="install-procedure"> for further information.
+   默认情况下，探针是不可用的，因此你将需要显式地告诉配置脚本让探针在<productname>PostgreSQL</productname>中可用。要包括 DTrace 支持，在配置时指定<option>--enable-dtrace</option>。更多信息请见<xref linkend="install-procedure">。
   </para>
   </sect2>
 
   <sect2 id="trace-points">
-   <title>Built-in Probes</title>
+   <title>内置探针</title>
 
   <para>
-   A number of standard probes are provided in the source code,
-   as shown in <xref linkend="dtrace-probe-point-table">;
-   <xref linkend="typedefs-table">
-   shows the types used in the probes.  More probes can certainly be
-   added to enhance <productname>PostgreSQL</>'s observability.
+   如<xref linkend="dtrace-probe-point-table">所示，源代码中提供了一些标准探针。<xref linkend="typedefs-table">显示了在探针中使用的类型。当然，可以增加更多探针来增强<productname>PostgreSQL</productname>的可观测性。
   </para>
 
  <table id="dtrace-probe-point-table">
-  <title>Built-in DTrace Probes</title>
+  <title>内置 DTrace 探针</title>
   <tgroup cols="3">
    <thead>
+
     <row>
-     <entry>Name</entry>
-     <entry>Parameters</entry>
-     <entry>Description</entry>
+     <entry>名称</entry>
+     <entry>参数</entry>
+     <entry>描述</entry>
     </row>
    </thead>
 
@@ -1953,421 +1808,290 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
     <row>
      <entry>transaction-start</entry>
      <entry>(LocalTransactionId)</entry>
-     <entry>Probe that fires at the start of a new transaction.
-      arg0 is the transaction ID.</entry>
+     <entry>在一个新事务开始时触发的探针。arg0 是事务 ID。</entry>
     </row>
     <row>
      <entry>transaction-commit</entry>
      <entry>(LocalTransactionId)</entry>
-     <entry>Probe that fires when a transaction completes successfully.
-      arg0 is the transaction ID.</entry>
+     <entry>在一个事务成功完成时触发的探针。arg0 是事务 ID。</entry>
     </row>
     <row>
      <entry>transaction-abort</entry>
      <entry>(LocalTransactionId)</entry>
-     <entry>Probe that fires when a transaction completes unsuccessfully.
-      arg0 is the transaction ID.</entry>
+     <entry>当一个事务失败结束时触发的探针。arg0 是事务 ID。</entry>
     </row>
     <row>
      <entry>query-start</entry>
      <entry>(const char *)</entry>
-     <entry>Probe that fires when the processing of a query is started.
-      arg0 is the query string.</entry>
+     <entry>当一个查询的处理开始时触发的探针。arg0 是查询字符串。</entry>
     </row>
     <row>
      <entry>query-done</entry>
      <entry>(const char *)</entry>
-     <entry>Probe that fires when the processing of a query is complete.
-      arg0 is the query string.</entry>
+     <entry>当一个查询的处理完成时触发的探针。arg0 是查询字符串。</entry>
     </row>
     <row>
      <entry>query-parse-start</entry>
      <entry>(const char *)</entry>
-     <entry>Probe that fires when the parsing of a query is started.
-      arg0 is the query string.</entry>
+     <entry>当一个查询的解析开始时触发的探针。arg0 是查询字符串。</entry>
     </row>
     <row>
      <entry>query-parse-done</entry>
      <entry>(const char *)</entry>
-     <entry>Probe that fires when the parsing of a query is complete.
-      arg0 is the query string.</entry>
+     <entry>当一个查询的解析完成时触发的探针。arg0 是查询字符串。</entry>
     </row>
     <row>
      <entry>query-rewrite-start</entry>
      <entry>(const char *)</entry>
-     <entry>Probe that fires when the rewriting of a query is started.
-      arg0 is the query string.</entry>
+     <entry>当一个查询的重写开始时触发的探针。arg0 是查询字符串。</entry>
     </row>
     <row>
      <entry>query-rewrite-done</entry>
      <entry>(const char *)</entry>
-     <entry>Probe that fires when the rewriting of a query is complete.
-      arg0 is the query string.</entry>
+     <entry>当一个查询的重写完成时触发的探针。arg0 是查询字符串。</entry>
     </row>
     <row>
      <entry>query-plan-start</entry>
      <entry>()</entry>
-     <entry>Probe that fires when the planning of a query is started.</entry>
+     <entry>当一个查询的规划开始时触发的探针。</entry>
     </row>
     <row>
      <entry>query-plan-done</entry>
      <entry>()</entry>
-     <entry>Probe that fires when the planning of a query is complete.</entry>
+     <entry>当一个查询的规划完成时触发的探针。</entry>
     </row>
     <row>
      <entry>query-execute-start</entry>
      <entry>()</entry>
-     <entry>Probe that fires when the execution of a query is started.</entry>
+     <entry>当一个查询的执行开始时触发的探针。</entry>
     </row>
     <row>
      <entry>query-execute-done</entry>
      <entry>()</entry>
-     <entry>Probe that fires when the execution of a query is complete.</entry>
+     <entry>当一个查询的执行完成时触发的探针。</entry>
     </row>
     <row>
      <entry>statement-status</entry>
      <entry>(const char *)</entry>
-     <entry>Probe that fires anytime the server process updates its
-      <structname>pg_stat_activity</>.<structfield>status</>.
-      arg0 is the new status string.</entry>
+     <entry>任何时候当服务器进程更新它的<structname>pg_stat_activity</structname>.<structfield>status</structfield>时触发的探针。arg0 是新的状态字符串。</entry>
     </row>
     <row>
      <entry>checkpoint-start</entry>
      <entry>(int)</entry>
-     <entry>Probe that fires when a checkpoint is started.
-      arg0 holds the bitwise flags used to distinguish different checkpoint
-      types, such as shutdown, immediate or force.</entry>
+     <entry>当一个检查点开始时触发的探针。arg0 传递位标志来区分不同的检查点类型，例如关闭（shutdown）、立即（immediate）或强制（force）。</entry>
     </row>
     <row>
      <entry>checkpoint-done</entry>
      <entry>(int, int, int, int, int)</entry>
-     <entry>Probe that fires when a checkpoint is complete.
-      (The probes listed next fire in sequence during checkpoint processing.)
-      arg0 is the number of buffers written. arg1 is the total number of
-      buffers. arg2, arg3 and arg4 contain the number of xlog file(s) added,
-      removed and recycled respectively.</entry>
+     <entry>当一个检查点完成时触发的探针（下面列出的探针会在检查点处理过程中依次触发）。arg0 是已写入的缓冲区数量。arg1 是缓冲区的总数。arg2、arg3 和 arg4 分别包含了增加、删除和循环回收的 WAL 文件的数量。</entry>
     </row>
     <row>
      <entry>clog-checkpoint-start</entry>
      <entry>(bool)</entry>
-     <entry>Probe that fires when the CLOG portion of a checkpoint is started.
-      arg0 is true for normal checkpoint, false for shutdown
-      checkpoint.</entry>
+     <entry>当一个检查点的 CLOG 部分开始时触发的探针。arg0 为真表示正常检查点，为假表示关闭检查点。</entry>
     </row>
     <row>
      <entry>clog-checkpoint-done</entry>
      <entry>(bool)</entry>
-     <entry>Probe that fires when the CLOG portion of a checkpoint is
-      complete. arg0 has the same meaning as for clog-checkpoint-start.</entry>
+     <entry>当一个检查点的 CLOG 部分完成时触发的探针。arg0 的含义与clog-checkpoint-start中相同。</entry>
     </row>
     <row>
      <entry>subtrans-checkpoint-start</entry>
      <entry>(bool)</entry>
-     <entry>Probe that fires when the SUBTRANS portion of a checkpoint is
-      started.
-      arg0 is true for normal checkpoint, false for shutdown
-      checkpoint.</entry>
+     <entry>当一个检查点的 SUBTRANS 部分开始时触发的探针。arg0 为真表示正常检查点，为假表示关闭检查点。</entry>
     </row>
     <row>
      <entry>subtrans-checkpoint-done</entry>
      <entry>(bool)</entry>
-     <entry>Probe that fires when the SUBTRANS portion of a checkpoint is
-      complete. arg0 has the same meaning as for
-      subtrans-checkpoint-start.</entry>
+     <entry>当一个检查点的 SUBTRANS 部分完成时触发的探针。arg0 的含义与subtrans-checkpoint-start中相同。</entry>
     </row>
     <row>
      <entry>multixact-checkpoint-start</entry>
      <entry>(bool)</entry>
-     <entry>Probe that fires when the MultiXact portion of a checkpoint is
-      started.
-      arg0 is true for normal checkpoint, false for shutdown
-      checkpoint.</entry>
+     <entry>当一个检查点的 MultiXact 部分开始时触发的探针。arg0 为真表示正常检查点，为假表示关闭检查点。</entry>
     </row>
     <row>
      <entry>multixact-checkpoint-done</entry>
      <entry>(bool)</entry>
-     <entry>Probe that fires when the MultiXact portion of a checkpoint is
-      complete. arg0 has the same meaning as for
-      multixact-checkpoint-start.</entry>
+     <entry>当一个检查点的 MultiXact 部分完成时触发的探针。arg0 的含义与multixact-checkpoint-start中相同。</entry>
     </row>
     <row>
      <entry>buffer-checkpoint-start</entry>
      <entry>(int)</entry>
-     <entry>Probe that fires when the buffer-writing portion of a checkpoint
-      is started.
-      arg0 holds the bitwise flags used to distinguish different checkpoint
-      types, such as shutdown, immediate or force.</entry>
+     <entry>当一个检查点的写缓冲区部分开始时触发的探针。arg0 传递位标志来区分不同的检查点类型，例如关闭（shutdown）、立即（immediate）或强制（force）。</entry>
     </row>
     <row>
      <entry>buffer-sync-start</entry>
      <entry>(int, int)</entry>
-     <entry>Probe that fires when we begin to write dirty buffers during
-      checkpoint (after identifying which buffers must be written).
-      arg0 is the total number of buffers.
-      arg1 is the number that are currently dirty and need to be written.</entry>
+     <entry>当我们在检查点期间开始写脏缓冲区时（在标识哪些缓冲区必须被写之后）触发的探针。arg0 是缓冲区总数，arg1 是当前为脏并且需要被写的缓冲区数量。</entry>
     </row>
     <row>
      <entry>buffer-sync-written</entry>
      <entry>(int)</entry>
-     <entry>Probe that fires after each buffer is written during checkpoint.
-      arg0 is the ID number of the buffer.</entry>
+     <entry>在检查点期间当每个缓冲区被写完之后触发的探针。arg0 是缓冲区的 ID。</entry>
     </row>
     <row>
      <entry>buffer-sync-done</entry>
      <entry>(int, int, int)</entry>
-     <entry>Probe that fires when all dirty buffers have been written.
-      arg0 is the total number of buffers.
-      arg1 is the number of buffers actually written by the checkpoint process.
-      arg2 is the number that were expected to be written (arg1 of
-      buffer-sync-start); any difference reflects other processes flushing
-      buffers during the checkpoint.</entry>
+     <entry>当所有脏缓冲区被写之后触发的探针。arg0 是缓冲区总数。arg1 是检查点进程实际写的缓冲区数量。arg2 是期望写的数目（buffer-sync-start的 arg1）；arg1 和 arg2 的任何的不同反映在该检查点期间有其他进程刷写了缓冲区。</entry>
     </row>
     <row>
      <entry>buffer-checkpoint-sync-start</entry>
      <entry>()</entry>
-     <entry>Probe that fires after dirty buffers have been written to the
-      kernel, and before starting to issue fsync requests.</entry>
+     <entry>在脏缓冲区被写入到内核之后并且在开始发出 fsync 请求之前触发的探针。</entry>
     </row>
     <row>
      <entry>buffer-checkpoint-done</entry>
      <entry>()</entry>
-     <entry>Probe that fires when syncing of buffers to disk is
-      complete.</entry>
+     <entry>当同步缓冲区到磁盘完成时触发的探针。</entry>
     </row>
     <row>
      <entry>twophase-checkpoint-start</entry>
      <entry>()</entry>
-     <entry>Probe that fires when the two-phase portion of a checkpoint is
-      started.</entry>
+     <entry>当一个检查点的两阶段部分开始时触发的探针。</entry>
     </row>
     <row>
      <entry>twophase-checkpoint-done</entry>
      <entry>()</entry>
-     <entry>Probe that fires when the two-phase portion of a checkpoint is
-      complete.</entry>
+     <entry>当一个检查点的两阶段部分完成时触发的探针。</entry>
     </row>
     <row>
      <entry>buffer-read-start</entry>
      <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid, int, bool)</entry>
-     <entry>Probe that fires when a buffer read is started.
-      arg0 and arg1 contain the fork and block numbers of the page (but
-      arg1 will be -1 if this is a relation extension request).
-      arg2, arg3, and arg4 contain the tablespace, database, and relation OIDs
-      identifying the relation.
-      arg5 is the ID of the backend which created the temporary relation for a
-      local buffer, or InvalidBackendId (-1) for a shared buffer.
-      arg6 is true for a relation extension request, false for normal
-      read.</entry>
+     <entry>当一次缓冲区读开始时触发的探针。arg0 和 arg1 包含该页的分支号和块号（如果这是一次关系扩展请求，arg1 为 -1）。arg2、arg3 和 arg4 包含表空间、数据库和关系 OID 用以识别该关系。对一个本地缓冲区，arg5 是创建临时关系的后端的 ID；对于一个共享缓冲区，arg5 是 InvalidBackendId（-1）。arg6 为真表示一次关系扩展请求，为假表示正常读。</entry>
     </row>
     <row>
      <entry>buffer-read-done</entry>
      <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid, int, bool, bool)</entry>
-     <entry>Probe that fires when a buffer read is complete.
-      arg0 and arg1 contain the fork and block numbers of the page (if this
-      is a relation extension request, arg1 now contains the block number
-      of the newly added block).
-      arg2, arg3, and arg4 contain the tablespace, database, and relation OIDs
-      identifying the relation.
-      arg5 is the ID of the backend which created the temporary relation for a
-      local buffer, or InvalidBackendId (-1) for a shared buffer.
-      arg6 is true for a relation extension request, false for normal
-      read.
-      arg7 is true if the buffer was found in the pool, false if not.</entry>
+     <entry>当一次缓冲区读完成时触发的探针。arg0 和 arg1 包含该页的分支号和块号（如果这是一次关系扩展请求，arg1 现在包含新增加块的块号）。arg2、arg3 和 arg4 包含表空间、数据库和关系 OID 用以识别该关系。对一个本地缓冲区，arg5 是创建临时关系的后端的 ID；对于一个共享缓冲区，arg5 是 InvalidBackendId（-1）。arg6 为真表示一次关系扩展请求，为假表示正常读。arg7 为真表示在池中找到该缓冲区，为假表示没有找到。</entry>
     </row>
     <row>
      <entry>buffer-flush-start</entry>
      <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid)</entry>
-     <entry>Probe that fires before issuing any write request for a shared
-      buffer.
-      arg0 and arg1 contain the fork and block numbers of the page.
-      arg2, arg3, and arg4 contain the tablespace, database, and relation OIDs
-      identifying the relation.</entry>
+     <entry>在发出对一个共享缓冲区的任意写请求之前触发的探针。arg0 和 arg1 包含该页的分支号和块号。arg2、arg3 和 arg4 包含表空间、数据库和关系 OID 用以识别该关系。</entry>
     </row>
     <row>
      <entry>buffer-flush-done</entry>
      <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid)</entry>
-     <entry>Probe that fires when a write request is complete.  (Note
-      that this just reflects the time to pass the data to the kernel;
-      it's typically not actually been written to disk yet.)
-      The arguments are the same as for buffer-flush-start.</entry>
+     <entry>当一个写请求完成时触发的探针（注意这只反映传递数据给内核的时间，它通常并没有实际地被写入到磁盘）。参数和buffer-flush-start的相同。</entry>
     </row>
     <row>
      <entry>buffer-write-dirty-start</entry>
      <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid)</entry>
-     <entry>Probe that fires when a server process begins to write a dirty
-      buffer.  (If this happens often, it implies that
-      <xref linkend="guc-shared-buffers"> is too
-      small or the bgwriter control parameters need adjustment.)
-      arg0 and arg1 contain the fork and block numbers of the page.
-      arg2, arg3, and arg4 contain the tablespace, database, and relation OIDs
-      identifying the relation.</entry>
+     <entry>当一个服务器进程开始写一个脏缓冲区时触发的探针（如果这经常发生，表示<xref linkend="guc-shared-buffers">太小，或需要调整后台写入器的控制参数）。arg0 和 arg1 包含该页的分支号和块号。arg2、arg3 和 arg4 包含表空间、数据库和关系 OID 用以识别该关系。</entry>
     </row>
     <row>
      <entry>buffer-write-dirty-done</entry>
      <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid)</entry>
-     <entry>Probe that fires when a dirty-buffer write is complete.
-      The arguments are the same as for buffer-write-dirty-start.</entry>
+     <entry>当一次脏缓冲区写完成时触发的探针。参数与buffer-write-dirty-start相同。</entry>
     </row>
     <row>
      <entry>wal-buffer-write-dirty-start</entry>
      <entry>()</entry>
-     <entry>Probe that fires when a server process begins to write a
-      dirty WAL buffer because no more WAL buffer space is available.
-      (If this happens often, it implies that
-      <xref linkend="guc-wal-buffers"> is too small.)</entry>
+     <entry>当一个服务器进程因为没有可用 WAL 缓冲区空间开始写一个脏 WAL 缓冲区时触发的探针（如果这经常发生，表示<xref linkend="guc-wal-buffers">太小）。</entry>
     </row>
     <row>
      <entry>wal-buffer-write-dirty-done</entry>
      <entry>()</entry>
-     <entry>Probe that fires when a dirty WAL buffer write is complete.</entry>
+     <entry>当一次脏 WAL 缓冲区写入完成时触发的探针。</entry>
     </row>
     <row>
      <entry>xlog-insert</entry>
      <entry>(unsigned char, unsigned char)</entry>
-     <entry>Probe that fires when a WAL record is inserted.
-      arg0 is the resource manager (rmid) for the record.
-      arg1 contains the info flags.</entry>
+     <entry>当一个 WAL 记录被插入时触发的探针。arg0 是该记录的资源管理器（rmid）。arg1 包含 info 标志。</entry>
     </row>
     <row>
      <entry>xlog-switch</entry>
      <entry>()</entry>
-     <entry>Probe that fires when a WAL segment switch is requested.</entry>
+     <entry>当请求一次 WAL 段切换时触发的探针。</entry>
     </row>
     <row>
      <entry>smgr-md-read-start</entry>
      <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid, int)</entry>
-     <entry>Probe that fires when beginning to read a block from a relation.
-      arg0 and arg1 contain the fork and block numbers of the page.
-      arg2, arg3, and arg4 contain the tablespace, database, and relation OIDs
-      identifying the relation.
-      arg5 is the ID of the backend which created the temporary relation for a
-      local buffer, or InvalidBackendId (-1) for a shared buffer.</entry>
+     <entry>当开始从一个关系读取一块时触发的探针。arg0 和 arg1 包含该页的分支号和块号。arg2、arg3 和 arg4 包含表空间、数据库和关系 OID 用以识别该关系。对一个本地缓冲区，arg5 是创建临时关系的后端的 ID；对于一个共享缓冲区，arg5 是InvalidBackendId（-1）。</entry>
     </row>
     <row>
      <entry>smgr-md-read-done</entry>
      <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid, int, int, int)</entry>
-     <entry>Probe that fires when a block read is complete.
-      arg0 and arg1 contain the fork and block numbers of the page.
-      arg2, arg3, and arg4 contain the tablespace, database, and relation OIDs
-      identifying the relation.
-      arg5 is the ID of the backend which created the temporary relation for a
-      local buffer, or InvalidBackendId (-1) for a shared buffer.
-      arg6 is the number of bytes actually read, while arg7 is the number
-      requested (if these are different it indicates trouble).</entry>
+     <entry>当一次块读取完成时触发的探针。arg0 和 arg1 包含该页的分支号和块号。arg2、arg3 和 arg4 包含表空间、数据库和关系 OID 用以识别该关系。对一个本地缓冲区，arg5 是创建临时关系的后端的 ID；对于一个共享缓冲区，arg5 是InvalidBackendId（-1）。arg6 是实际读取的字节数，而 arg7 是请求读取的字节数（如果两者不同就意味着麻烦）。</entry>
     </row>
     <row>
      <entry>smgr-md-write-start</entry>
      <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid, int)</entry>
-     <entry>Probe that fires when beginning to write a block to a relation.
-      arg0 and arg1 contain the fork and block numbers of the page.
-      arg2, arg3, and arg4 contain the tablespace, database, and relation OIDs
-      identifying the relation.
-      arg5 is the ID of the backend which created the temporary relation for a
-      local buffer, or InvalidBackendId (-1) for a shared buffer.</entry>
+     <entry>当开始向一个关系中写入一个块时触发的探针。arg0 和 arg1 包含该页的分支号和块号。arg2、arg3 和 arg4 包含表空间、数据库和关系 OID 用以识别该关系。对一个本地缓冲区，arg5 是创建临时关系的后端的 ID；对于一个共享缓冲区，arg5 是InvalidBackendId（-1）。</entry>
     </row>
     <row>
      <entry>smgr-md-write-done</entry>
      <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid, int, int, int)</entry>
-     <entry>Probe that fires when a block write is complete.
-      arg0 and arg1 contain the fork and block numbers of the page.
-      arg2, arg3, and arg4 contain the tablespace, database, and relation OIDs
-      identifying the relation.
-      arg5 is the ID of the backend which created the temporary relation for a
-      local buffer, or InvalidBackendId (-1) for a shared buffer.
-      arg6 is the number of bytes actually written, while arg7 is the number
-      requested (if these are different it indicates trouble).</entry>
+     <entry>当一个块写操作完成时触发的探针。arg0 和 arg1 包含该页的分支号和块号。arg2、arg3和arg4 包含表空间、数据库和关系 OID来标识该关系。对于一个本地缓冲区，arg5 是创建临时关系的后端 ID；对于一个共享缓冲区，arg5 是InvalidBackendId（-1）。arg6 是实际写的字节数，而 arg7 是要求写的字节数（如果这两者不同，则意味着麻烦）。</entry>
     </row>
     <row>
      <entry>sort-start</entry>
      <entry>(int, bool, int, int, bool)</entry>
-     <entry>Probe that fires when a sort operation is started.
-      arg0 indicates heap, index or datum sort.
-      arg1 is true for unique-value enforcement.
-      arg2 is the number of key columns.
-      arg3 is the number of kilobytes of work memory allowed.
-      arg4 is true if random access to the sort result is required.</entry>
+     <entry>当一次排序操作开始时触发的探针。arg0 指示是堆排序、索引排序或 datum 排序。arg1 为真表示强制唯一值。arg2 是键列数。arg3 是允许使用的工作内存大小（以千字节计）。如果要求随机访问排序结果，则 arg4 为真。</entry>
     </row>
     <row>
      <entry>sort-done</entry>
      <entry>(bool, long)</entry>
-     <entry>Probe that fires when a sort is complete.
-      arg0 is true for external sort, false for internal sort.
-      arg1 is the number of disk blocks used for an external sort,
-      or kilobytes of memory used for an internal sort.</entry>
+     <entry>当一次排序完成时触发的探针。arg0 为真表示外部排序，为假表示内排序。arg1 是用于一次外部排序的磁盘块的数目，或用于一次内排序的以千字节计的内存。</entry>
     </row>
     <row>
      <entry>lwlock-acquire</entry>
      <entry>(char *, int, LWLockMode)</entry>
-     <entry>Probe that fires when an LWLock has been acquired.
-      arg0 is the LWLock's tranche.
-      arg1 is the LWLock's offset within its tranche.
-      arg2 is the requested lock mode, either exclusive or shared.</entry>
+     <entry>当成功获得一个 LWLock 时触发的探针。
+      arg0 是该 LWLock 所在的切片（Tranche）。
+      arg1 是该 LWLock 在其切片内的偏移量。
+      arg2 是所请求的锁模式，是排他或共享。</entry>
     </row>
     <row>
      <entry>lwlock-release</entry>
      <entry>(char *, int)</entry>
-     <entry>Probe that fires when an LWLock has been released (but note
-      that any released waiters have not yet been awakened).
-      arg0 is the LWLock's tranche.
-      arg1 is the LWLock's offset within its tranche.</entry>
+     <entry>当一个 LWLock 被释放时（但是注意还没有唤醒任何一个被释放的等待者）触发的探针。
+     arg0 是该 LWLock 所在的切片（Tranche）。</entry>
     </row>
     <row>
      <entry>lwlock-wait-start</entry>
      <entry>(char *, int, LWLockMode)</entry>
-     <entry>Probe that fires when an LWLock was not immediately available and
-      a server process has begun to wait for the lock to become available.
-      arg0 is the LWLock's tranche.
-      arg1 is the LWLock's offset within its tranche.
-      arg2 is the requested lock mode, either exclusive or shared.</entry>
+     <entry>当一个 LWLock不是当即可用并且一个服务器进程因此开始等待该锁变为可用时触发的探针。
+     arg0 是该 LWLock 所在的切片（Tranche）。
+      arg1 是该 LWLock 在其切片内的偏移量。
+      arg2 是所请求的锁模式，是排他或共享。</entry>
     </row>
     <row>
      <entry>lwlock-wait-done</entry>
      <entry>(char *, int, LWLockMode)</entry>
-     <entry>Probe that fires when a server process has been released from its
-      wait for an LWLock (it does not actually have the lock yet).
-      arg0 is the LWLock's tranche.
-      arg1 is the LWLock's offset within its tranche.
-      arg2 is the requested lock mode, either exclusive or shared.</entry>
+     <entry>当一个进程从对一个 LWLock 的等待中被释放时（它实际还没有得到该锁）时触发的探针。arg0 是该 LWLock 所在的切片（Tranche）。
+      arg1 是该 LWLock 在其切片内的偏移量。
+      arg2 是所请求的锁模式，是排他或共享。</entry>
     </row>
     <row>
      <entry>lwlock-condacquire</entry>
      <entry>(char *, int, LWLockMode)</entry>
-     <entry>Probe that fires when an LWLock was successfully acquired when the
-      caller specified no waiting.
-      arg0 is the LWLock's tranche.
-      arg1 is the LWLock's offset within its tranche.
-      arg2 is the requested lock mode, either exclusive or shared.</entry>
+     <entry>当调用者指定无需等待而成功获得一个 LWLock 时触发的探针。arg0 是该 LWLock 所在的切片（Tranche）。
+      arg1 是该 LWLock 在其切片内的偏移量。
+      arg2 是所请求的锁模式，是排他或共享。</entry>
     </row>
     <row>
      <entry>lwlock-condacquire-fail</entry>
      <entry>(char *, int, LWLockMode)</entry>
-     <entry>Probe that fires when an LWLock was not successfully acquired when
-      the caller specified no waiting.
-      arg0 is the LWLock's tranche.
-      arg1 is the LWLock's offset within its tranche.
-      arg2 is the requested lock mode, either exclusive or shared.</entry>
+     <entry>当调用者指定无需等待而没有成功获得一个 LWLock 时触发的探针。arg0 是该 LWLock 所在的切片（Tranche）。
+      arg1 是该 LWLock 在其切片内的偏移量。
+      arg2 是所请求的锁模式，是排他或共享。</entry>
     </row>
     <row>
      <entry>lock-wait-start</entry>
      <entry>(unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, LOCKMODE)</entry>
-     <entry>Probe that fires when a request for a heavyweight lock (lmgr lock)
-      has begun to wait because the lock is not available.
-      arg0 through arg3 are the tag fields identifying the object being
-      locked.  arg4 indicates the type of object being locked.
-      arg5 indicates the lock type being requested.</entry>
+     <entry>当一个重量级锁（lmgr锁）的请求由于锁不可用开始等待时触发的探针。arg0 到 arg3 是标识被锁定对象的标签字段。arg4 指示被锁对象的类型。arg5 表示被请求的锁类型。</entry>
     </row>
     <row>
      <entry>lock-wait-done</entry>
      <entry>(unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, LOCKMODE)</entry>
-     <entry>Probe that fires when a request for a heavyweight lock (lmgr lock)
-      has finished waiting (i.e., has acquired the lock).
-      The arguments are the same as for lock-wait-start.</entry>
+     <entry>当一个重量级锁（lmgr 锁）的请求结束等待时（即已经得到锁）触发的探针。参数与lock-wait-start一样。</entry>
     </row>
     <row>
      <entry>deadlock-found</entry>
      <entry>()</entry>
-     <entry>Probe that fires when a deadlock is found by the deadlock
-      detector.</entry>
+     <entry>当死锁检测器发现死锁时触发的探针。</entry>
     </row>
 
    </tbody>
@@ -2375,12 +2099,13 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
   </table>
 
  <table id="typedefs-table">
-  <title>Defined Types Used in Probe Parameters</title>
+  <title>探针参数中使用的已定义类型</title>
   <tgroup cols="2">
    <thead>
+
     <row>
-     <entry>Type</entry>
-     <entry>Definition</entry>
+     <entry>类型</entry>
+     <entry>定义</entry>
     </row>
    </thead>
 
@@ -2423,12 +2148,11 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
   </sect2>
 
   <sect2 id="using-trace-points">
-   <title>Using Probes</title>
+
+   <title>使用探针</title>
 
   <para>
-   The example below shows a DTrace script for analyzing transaction
-   counts in the system, as an alternative to snapshotting
-   <structname>pg_stat_database</> before and after a performance test:
+   下面的示例展示了一个分析系统中事务计数的 DTrace 脚本，可以用来代替一次性能测试之前和之后的<structname>pg_stat_database</structname>快照：
 <programlisting>
 #!/usr/sbin/dtrace -qs
 
@@ -2451,7 +2175,7 @@ postgresql$1:::transaction-commit
       self->ts=0;
 }
 </programlisting>
-   When executed, the example D script gives output such as:
+   当被执行时，该示例 D 脚本给出这样的输出：
 <screen>
 # ./txn_count.d `pgrep -n postgres` or ./txn_count.d &lt;PID&gt;
 ^C
@@ -2463,104 +2187,91 @@ Total time (ns)                        2312105013
   </para>
 
   <note>
+
    <para>
-    SystemTap uses a different notation for trace scripts than DTrace does,
-    even though the underlying trace points are compatible.  One point worth
-    noting is that at this writing, SystemTap scripts must reference probe
-    names using double underscores in place of hyphens.  This is expected to
-    be fixed in future SystemTap releases.
+    SystemTap 的追踪脚本记法与 DTrace 不同，但底层探针是兼容的。需要注意的一点是，截至本文编写时，SystemTap 脚本必须使用双下划线来代替连字符引用探针名。预计未来的 SystemTap 版本会修复这一点。
    </para>
   </note>
 
   <para>
-   You should remember that DTrace scripts need to be carefully written and
-   debugged, otherwise the trace information collected might
-   be meaningless. In most cases where problems are found it is the
-   instrumentation that is at fault, not the underlying system. When
-   discussing information found using dynamic tracing, be sure to enclose
-   the script used to allow that too to be checked and discussed.
+   你应该记住，DTrace 脚本需要细心地编写和调试，否则被收集的追踪信息可能会毫无意义。在大多数发现问题的情况下，出错的是插桩，而不是底层系统。当讨论使用动态追踪发现的信息时，一定要附上使用的脚本以便其也被检查和讨论。
   </para>
 
   <para>
-   More example scripts can be found in the PgFoundry
-   <ulink url="http://pgfoundry.org/projects/dtrace/">dtrace project</ulink>.
+   更多示例脚本可以在 PgFoundry 的<ulink url="http://pgfoundry.org/projects/dtrace/">dtrace 项目</ulink>中找到。
   </para>
   </sect2>
 
   <sect2 id="defining-trace-points">
-   <title>Defining New Probes</title>
+
+   <title>定义新探针</title>
 
   <para>
-   New probes can be defined within the code wherever the developer
-   desires, though this will require a recompilation. Below are the steps
-   for inserting new probes:
+   开发者可以在代码中任意位置定义新的探针，当然这要重新编译之后才能生效。下面是插入新探针的步骤：
   </para>
 
   <procedure>
    <step>
+
     <para>
-     Decide on probe names and data to be made available through the probes
+     决定探针名称以及要通过探针提供的数据
     </para>
    </step>
 
    <step>
+
     <para>
-     Add the probe definitions to <filename>src/backend/utils/probes.d</>
+     把该探针定义加入到<filename>src/backend/utils/probes.d</filename>
     </para>
    </step>
 
    <step>
+
     <para>
-     Include <filename>pg_trace.h</> if it is not already present in the
-     module(s) containing the probe points, and insert
-     <literal>TRACE_POSTGRESQL</> probe macros at the desired locations
-     in the source code
+     如果<filename>pg_trace.h</filename>尚未被包含该探针点的模块引用，则将它包含进来，并且在源代码中期望的位置插入<literal>TRACE_POSTGRESQL</literal>探针宏
     </para>
    </step>
 
    <step>
+
     <para>
-     Recompile and verify that the new probes are available
+     重新编译并验证新探针是可用的
     </para>
    </step>
   </procedure>
 
   <formalpara>
-   <title>Example:</title>
+
+   <title>示例：</title>
+
    <para>
-    Here is an example of how you would add a probe to trace all new
-    transactions by transaction ID.
+    这里是一个如何增加一个探针来用事务 ID 追踪所有新事务的示例。
    </para>
   </formalpara>
 
   <procedure>
    <step>
+
     <para>
-     Decide that the probe will be named <literal>transaction-start</> and
-     requires a parameter of type LocalTransactionId
+     决定探针将被命名为<literal>transaction-start</literal>并且需要一个LocalTransactionId类型的参数
     </para>
    </step>
 
    <step>
+
     <para>
-     Add the probe definition to <filename>src/backend/utils/probes.d</>:
+     将该探针定义加入到<filename>src/backend/utils/probes.d</filename>：
 <programlisting>
 probe transaction__start(LocalTransactionId);
 </programlisting>
-     Note the use of the double underline in the probe name. In a DTrace
-     script using the probe, the double underline needs to be replaced with a
-     hyphen, so <literal>transaction-start</> is the name to document for
-     users.
+     注意探针名字中双下划线的使用。在一个使用探针的 DTrace 脚本中，双下划线需要被替换为一个连字符，因此，文档中应向用户说明的名称是<literal>transaction-start</literal>。
     </para>
    </step>
 
    <step>
+
     <para>
-     At compile time, <literal>transaction__start</> is converted to a macro
-     called <literal>TRACE_POSTGRESQL_TRANSACTION_START</> (notice the
-     underscores are single here), which is available by including
-     <filename>pg_trace.h</>.  Add the macro call to the appropriate location
-     in the source code.  In this case, it looks like the following:
+     在编译时，<literal>transaction__start</literal>被转换成一个名为<literal>TRACE_POSTGRESQL_TRANSACTION_START</literal>的宏（注意这里是单下划线），可以通过包含头文件<filename>pg_trace.h</filename>获得。将宏调用加入到源代码中的合适位置。在这种情况下，看起来类似：
 
 <programlisting>
 TRACE_POSTGRESQL_TRANSACTION_START(vxid.localTransactionId);
@@ -2569,10 +2280,9 @@ TRACE_POSTGRESQL_TRANSACTION_START(vxid.localTransactionId);
    </step>
 
    <step>
+
     <para>
-     After recompiling and running the new binary, check that your newly added
-     probe is available by executing the following DTrace command.  You
-     should see similar output:
+     在重新编译和运行新的二进制文件之后，通过运行下面的 DTrace 命令来检查新增的探针是否可用。你应该看到类似下面的输出：
 <screen>
 # dtrace -ln transaction-start
    ID    PROVIDER          MODULE           FUNCTION NAME
@@ -2587,44 +2297,32 @@ TRACE_POSTGRESQL_TRANSACTION_START(vxid.localTransactionId);
   </procedure>
 
   <para>
-   There are a few things to be careful about when adding trace macros
-   to the C code:
+   向C代码中添加追踪宏时，有一些事情需要注意：
 
    <itemizedlist>
     <listitem>
      <para>
-      You should take care that the data types specified for a probe's
-      parameters match the data types of the variables used in the macro.
-      Otherwise, you will get compilation errors.
+      需要小心的是，为探针参数指定的数据类型要匹配宏中使用的变量的数据类型，否则会发生编译错误。
      </para>
     </listitem>
 
-
     <listitem>
      <para>
-      On most platforms, if <productname>PostgreSQL</productname> is
-      built with <option>--enable-dtrace</>, the arguments to a trace
-      macro will be evaluated whenever control passes through the
-      macro, <emphasis>even if no tracing is being done</>.  This is
-      usually not worth worrying about if you are just reporting the
-      values of a few local variables.  But beware of putting expensive
-      function calls into the arguments.  If you need to do that,
-      consider protecting the macro with a check to see if the trace
-      is actually enabled:
+      在大多数平台上，如果用<option>--enable-dtrace</option>编译了<productname>PostgreSQL</productname>，无论何时当控制经过一个追踪宏时，都会对该宏的参数求值，<emphasis>即使没有进行追踪也会这样做</emphasis>。如果只是报告少数局部变量的值，通常无需担心这一点。但是要注意不要将开销大的函数调用放入参数中。如果你需要这样做，考虑通过检查追踪是否真的被启用来保护该宏：
 
 <programlisting>
 if (TRACE_POSTGRESQL_TRANSACTION_START_ENABLED())
     TRACE_POSTGRESQL_TRANSACTION_START(some_function(...));
 </programlisting>
 
-      Each trace macro has a corresponding <literal>ENABLED</> macro.
+      每个追踪宏有一个对应的<literal>ENABLED</literal>宏。
      </para>
     </listitem>
    </itemizedlist>
 
   </para>
 
-  </sect2>
+ </sect2>
 
  </sect1>
 
