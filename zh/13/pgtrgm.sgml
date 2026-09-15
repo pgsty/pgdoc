@@ -76,7 +76,10 @@
         <function>similarity</function> ( <type>text</type>, <type>text</type> )
         <returnvalue>real</returnvalue>
        </para>
-       <para>返回一个表示两个参数有多相似的数值。结果范围从 0（表示两个字符串完全不同）到 1（表示两个字符串完全相同）。</para></entry>
+       <para>
+        返回一个数值，表示两个参数的相似程度。
+        结果范围为 0 到 1：0 表示两个字符串完全不相似，1 表示两个字符串完全相同。
+       </para></entry>
       </row>
 
       <row>
@@ -368,49 +371,88 @@ CREATE INDEX trgm_idx ON test_trgm USING GIN (t gin_trgm_ops);
 CREATE INDEX trgm_idx ON test_trgm USING GIST (t gist_trgm_ops(siglen=32));
 </programlisting>
 
-  <para>此时，你已经在<structfield>t</structfield>列上有了一个可用于相似度搜索的索引。典型查询如下：<programlisting>
+  <para>
+   此时，你已经在<structfield>t</structfield>列上建立了一个可用于相似度搜索的索引。
+   典型查询如下：
+<programlisting>
 SELECT t, similarity(t, '<replaceable>word</replaceable>') AS sml
   FROM test_trgm
   WHERE t % '<replaceable>word</replaceable>'
   ORDER BY sml DESC, t;
-</programlisting>这将返回文本列中所有与以下词足够相似的值：<replaceable>word</replaceable>，按从最佳匹配到最差匹配的顺序排序。即使在非常大的数据集上，索引也会让这一操作保持高效。</para>
+</programlisting>
+   这会返回文本列中所有与<replaceable>word</replaceable>足够相似的值，并按从最佳匹配到最差匹配的顺序排序。
+   即使在非常大的数据集上，索引也会让这一操作保持高效。
+  </para>
 
-  <para>上述查询的一种变体是：<programlisting>
+  <para>
+   上述查询的一个变体是
+<programlisting>
 SELECT t, t &lt;-&gt; '<replaceable>word</replaceable>' AS dist
   FROM test_trgm
   ORDER BY dist LIMIT 10;
-</programlisting>GiST 索引可以相当高效地实现这一点，但 GIN 索引不能。当只需要少量最接近的匹配项时，它通常会优于第一种写法。</para>
+</programlisting>
+   GiST 索引可以相当高效地实现这一点，但 GIN 索引不能。
+   当只需要少量最接近的匹配项时，它通常会优于第一种写法。
+  </para>
 
-  <para>还可以使用<structfield>t</structfield>列上的索引进行单词相似度或严格单词相似度查询。典型查询如下：<programlisting>
+  <para>
+   还可以把<structfield>t</structfield>列上的索引用于词相似度或严格词相似度搜索。
+   典型查询如下：
+<programlisting>
 SELECT t, word_similarity('<replaceable>word</replaceable>', t) AS sml
   FROM test_trgm
   WHERE '<replaceable>word</replaceable>' &lt;% t
   ORDER BY sml DESC, t;
-</programlisting>以及<programlisting>
+</programlisting>
+   以及
+<programlisting>
 SELECT t, strict_word_similarity('<replaceable>word</replaceable>', t) AS sml
   FROM test_trgm
   WHERE '<replaceable>word</replaceable>' &lt;&lt;% t
   ORDER BY sml DESC, t;
-</programlisting>这会返回文本列中所有满足以下条件的值：在其对应的有序三字符组集合中，存在一个连续区段，与以下词的三字符组集合足够相似：<replaceable>word</replaceable>，按从最佳匹配到最差匹配的顺序排序。即使在非常大的数据集上，索引也会让这一操作保持高效。</para>
+</programlisting>
+   这会返回文本列中所有满足以下条件的值：在其对应的有序三字符组集合中，存在一个连续区段与<replaceable>word</replaceable>的三字符组集合足够相似。
+   结果按从最佳匹配到最差匹配的顺序排序。
+   即使在非常大的数据集上，索引也会让这一操作保持高效。
+  </para>
 
-  <para>上述查询的可能变体还有：<programlisting>
+  <para>
+   上述查询的可能变体还有：
+<programlisting>
 SELECT t, '<replaceable>word</replaceable>' &lt;&lt;-&gt; t AS dist
   FROM test_trgm
   ORDER BY dist LIMIT 10;
-</programlisting>以及<programlisting>
+</programlisting>
+   以及
+<programlisting>
 SELECT t, '<replaceable>word</replaceable>' &lt;&lt;&lt;-&gt; t AS dist
   FROM test_trgm
   ORDER BY dist LIMIT 10;
-</programlisting>GiST 索引可以非常高效地实现这一查询，但 GIN 索引不能。</para>
+</programlisting>
+   GiST 索引可以相当高效地实现这一点，但 GIN 索引不能。
+  </para>
 
 
-  <para>从<productname>PostgreSQL</productname>9.1 起，这些索引类型还支持以下操作的索引搜索：<literal>LIKE</literal>以及<literal>ILIKE</literal>，例如：<programlisting>
+  <para>
+   从<productname>PostgreSQL</productname> 9.1 起，这些索引类型还支持<literal>LIKE</literal>和<literal>ILIKE</literal>的索引搜索，例如
+<programlisting>
 SELECT * FROM test_trgm WHERE t LIKE '%foo%bar';
-</programlisting>索引搜索的工作方式是从搜索字符串中提取三字符组，然后在索引中查找这些三字符组。搜索字符串中包含的三字符组越多，索引搜索就越有效。与基于 B-树的搜索不同，搜索字符串不需要在左端锚定。</para>
+</programlisting>
+   索引搜索的工作方式是从搜索字符串中提取三字符组，然后在索引中查找这些三字符组。
+   搜索字符串中包含的三字符组越多，索引搜索就越有效。
+   与基于 B-树的搜索不同，搜索字符串不需要在左端锚定。
+  </para>
 
-  <para>从<productname>PostgreSQL</productname>9.3 起，这些索引类型还支持正则表达式匹配的索引搜索（<literal>~</literal>以及<literal>~*</literal>操作符），例如：<programlisting>
+  <para>
+   从<productname>PostgreSQL</productname> 9.3 起，这些索引类型还支持正则表达式匹配
+   （<literal>~</literal>和<literal>~*</literal>操作符）的索引搜索，例如
+<programlisting>
 SELECT * FROM test_trgm WHERE t ~ '(foo|bar)';
-</programlisting>索引搜索的工作方式是从正则表达式中提取三字符组，然后在索引中查找这些三字符组。能从正则表达式中提取出的三字符组越多，索引搜索就越有效。与基于 B-树的搜索不同，搜索字符串不需要在左端锚定。</para>
+</programlisting>
+   索引搜索的工作方式是从正则表达式中提取三字符组，然后在索引中查找这些三字符组。
+   能从正则表达式中提取出的三字符组越多，索引搜索就越有效。
+   与基于 B-树的搜索不同，搜索字符串不需要在左端锚定。
+  </para>
 
   <para>
    对于<literal>LIKE</literal>和正则表达式搜索，都要记住：无法提取出三字符组的模式会退化为全索引扫描。
@@ -422,7 +464,7 @@ SELECT * FROM test_trgm WHERE t ~ '(foo|bar)';
  </sect2>
 
  <sect2>
-  <title>文本检索集成</title>
+  <title>全文检索集成</title>
 
   <para>
    与全文索引结合使用时，三字符组匹配是非常有用的工具。
@@ -430,7 +472,7 @@ SELECT * FROM test_trgm WHERE t ~ '(foo|bar)';
   </para>
 
   <para>
-   第一步是生成一个辅助表，其中包含文档中的全部唯一词：
+   第一步是生成一个辅助表，其中包含文档中的所有不重复的词：
 
 <programlisting>
 CREATE TABLE words AS SELECT word FROM
