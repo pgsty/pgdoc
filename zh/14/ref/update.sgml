@@ -31,8 +31,7 @@ UPDATE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ] [ 
         } [, ...]
     [ FROM <replaceable class="parameter">from_item</replaceable> [, ...] ]
     [ WHERE <replaceable class="parameter">condition</replaceable> | WHERE CURRENT OF <replaceable class="parameter">cursor_name</replaceable> ]
-    [ RETURNING [ WITH ( { OLD | NEW } AS <replaceable class="parameter">output_alias</replaceable> [, ...] ) ]
-                { * | <replaceable class="parameter">output_expression</replaceable> [ [ AS ] <replaceable class="parameter">output_name</replaceable> ] } [, ...] ]
+    [ RETURNING { * | <replaceable class="parameter">output_expression</replaceable> [ [ AS ] <replaceable class="parameter">output_name</replaceable> ] } [, ...] ]
 </synopsis>
  </refsynopsisdiv>
 
@@ -55,8 +54,8 @@ UPDATE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ] [ 
   <para>
    可选的<literal>RETURNING</literal>子句使<command>UPDATE</command>
    基于每个实际更新的行计算并返回一个或多个值。可以计算任何使用该表列和/或
-   <literal>FROM</literal>中提到的其他表列的表达式。默认使用该
-   表列的新值（更新后值），但也可以请求旧值（更新前值）。
+   <literal>FROM</literal>中提到的其他表列的表达式。使用该
+   表列的新值（更新后值）。
    <literal>RETURNING</literal>列表的语法与<command>SELECT</command>
    的输出列表相同。
   </para>
@@ -206,25 +205,7 @@ UPDATE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ] [ 
    </listitem>
   </varlistentry>
 
-   <varlistentry id="zh18-auto-update-varlistentry-11">
-    <term><replaceable class="parameter">output_alias</replaceable></term>
-    <listitem>
-     <para>
-      在<literal>RETURNING</literal>列表中为<literal>OLD</literal>或
-      <literal>NEW</literal>行指定的可选替代名称。
-     </para>
 
-     <para>
-      默认情况下，可通过写
-      <literal>OLD.<replaceable class="parameter">column_name</replaceable></literal>
-      或<literal>OLD.*</literal>返回目标表旧值，通过写
-      <literal>NEW.<replaceable class="parameter">column_name</replaceable></literal>
-      或<literal>NEW.*</literal>返回新值。提供别名后，这些名称会被隐藏，
-      必须使用别名来引用旧行或新行。例如
-      <literal>RETURNING WITH (OLD AS o, NEW AS n) o.*, n.*</literal>。
-     </para>
-    </listitem>
-   </varlistentry>
 
    <varlistentry id="zh18-auto-update-varlistentry-12">
     <term><replaceable class="parameter">output_expression</replaceable></term>
@@ -236,13 +217,7 @@ UPDATE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ] [ 
       命名的表或<literal>FROM</literal>中列出的表中的任何列名。写成
       <literal>*</literal>可返回所有列。
      </para>
-     <para>
-      列名或<literal>*</literal>可以用<literal>OLD</literal>或
-      <literal>NEW</literal>来限定，也可以用它们对应的
-      <replaceable class="parameter">output_alias</replaceable>来限定，
-      以返回旧值或新值。未限定的列名或<literal>*</literal>，以及使用
-      目标表名或别名限定的列名或<literal>*</literal>，都会返回新值。
-     </para>
+
     </listitem>
    </varlistentry>
 
@@ -305,7 +280,7 @@ UPDATE <replaceable class="parameter">count</replaceable>
 
   <para>
    对于分区表，更新一行可能会导致它不再满足其所在分区的分区约束。
-   在这种情况下，如果在分区树中存在另一个满足该行分区约束的分区，
+   在这种情况下，如果在分区树中存在另一个分区，且该行满足它的分区约束，
    则该行会被移动到那个分区。如果不存在这样的分区，则会报错。在幕
    后，行移动实际上是一次<command>DELETE</command>和一次
    <command>INSERT</command>操作。
@@ -329,11 +304,7 @@ UPDATE <replaceable class="parameter">count</replaceable>
    器支持元组路由），但不能从外部表分区移动到另一个分区。
   </para>
 
-  <para>
-   如果发现某个外键直接引用了源分区的某个祖先，并且这个祖先与
-   <command>UPDATE</command>查询中提到的祖先不是同一个，那么尝试把
-   一行从一个分区移动到另一个分区将会失败。
-  </para>
+
  </refsect1>
 
  <refsect1>
@@ -360,12 +331,12 @@ UPDATE weather SET temp_lo = temp_lo+1, temp_hi = temp_lo+15, prcp = DEFAULT
   </para>
 
   <para>
-   执行同样的操作，并返回更新后的各项以及旧的降水值：
+   执行同样的操作，并返回更新后的各项：
 
 <programlisting>
 UPDATE weather SET temp_lo = temp_lo+1, temp_hi = temp_lo+15, prcp = DEFAULT
   WHERE city = 'San Francisco' AND date = '2003-07-03'
-  RETURNING temp_lo, temp_hi, prcp, old.prcp AS old_prcp;
+  RETURNING temp_lo, temp_hi, prcp;
 </programlisting>
   </para>
 
@@ -395,27 +366,15 @@ UPDATE employees SET sales_count = sales_count + 1 WHERE id =
 </programlisting>
   </para>
 
-  <para>
-   更新<structname>accounts</structname>表中的联系人姓名，使其与当前
-   分配的销售人员保持一致：
-<programlisting>
+  <para>更新账户表中的联系人姓名，使其与当前分配的销售人员保持一致：<programlisting>
 UPDATE accounts SET (contact_first_name, contact_last_name) =
-    (SELECT first_name, last_name FROM employees
-     WHERE employees.id = accounts.sales_person);
-</programlisting>
-   使用连接也可以得到类似结果：
-<programlisting>
+    (SELECT first_name, last_name FROM salesmen
+     WHERE salesmen.id = accounts.sales_id);
+</programlisting>使用连接也可以得到类似结果：<programlisting>
 UPDATE accounts SET contact_first_name = first_name,
                     contact_last_name = last_name
-  FROM employees WHERE employees.id = accounts.sales_person;
-</programlisting>
-   但是，如果<structname>employees</structname>.<structfield>id</structfield>不是唯一键，
-   第二个查询可能会给出意外结果；而如果存在多个
-   <structfield>id</structfield>匹配，第一个查询则保证会报错。此外，
-   如果某个特定的<structname>accounts</structname>.<structfield>sales_person</structfield>
-   条目没有匹配项，第一个查询会把相应的姓名字段设为<literal>NULL</literal>，
-   而第二个查询则根本不会更新该行。
-  </para>
+  FROM salesmen WHERE salesmen.id = accounts.sales_id;
+</programlisting>但是，第二个查询可能会给出意外结果，如果 <structname>salesmen</structname>.<structfield>id</structfield> 不是唯一键的话；而第一个查询在存在多个 <structfield>id</structfield> 匹配时保证会报错。此外，如果某个特定的 <structname>accounts</structname>.<structfield>sales_id</structfield> 条目没有匹配项，第一个查询会把相应的姓名字段设为 NULL，而第二个查询则根本不会更新该行。</para>
 
   <para>
    更新汇总表中的统计数据以匹配当前数据：
@@ -451,38 +410,7 @@ UPDATE films SET kind = 'Dramatic' WHERE CURRENT OF c_films;
 </programlisting>
   </para>
 
-  <para id="update-limit">
-   影响很多行的更新可能对系统性能产生负面影响，例如表膨胀、复制延
-   迟增加以及锁争用加剧。在这类场景中，将操作分成较小批次来执行可
-   能更有意义，并且可以在各批次之间对该表执行<command>VACUUM</command>。
-   虽然<command>UPDATE</command>没有<literal>LIMIT</literal>子句，
-   但可以通过<link linkend="queries-with">公共表表达式</link>和自连
-   接获得类似效果。对于标准的<productname>PostgreSQL</productname>
-   表访问方法，基于系统列<link linkend="ddl-system-columns-ctid">ctid</link>
-   的自连接非常高效：
-<programlisting>
-WITH exceeded_max_retries AS (
-  SELECT w.ctid FROM work_item AS w
-    WHERE w.status = 'active' AND w.num_retries &gt; 10
-    ORDER BY w.retry_timestamp
-    FOR UPDATE
-    LIMIT 5000
-)
-UPDATE work_item SET status = 'failed'
-  FROM exceeded_max_retries AS emr
-  WHERE work_item.ctid = emr.ctid;
-</programlisting>
-   该命令需要重复执行，直到没有剩余行需要更新。
-   （这里使用<structfield>ctid</structfield>之所以安全，仅仅是因为查
-   询会重复运行，从而避免了<structfield>ctid</structfield>发生变化带
-   来的问题。）
-   使用<literal>ORDER BY</literal>子句可以让命令优先更新哪些行；如果
-   其他更新操作也使用相同的顺序，它还可以防止死锁。如果担心锁争
-   用，可以在<acronym>CTE</acronym>中加入<literal>SKIP LOCKED</literal>，
-   以防多个命令更新同一行。不过，这样仍需要在最后执行一次不带
-   <literal>SKIP LOCKED</literal>或<literal>LIMIT</literal>的
-   <command>UPDATE</command>，以确保没有遗漏任何匹配行。
-  </para>
+
  </refsect1>
 
  <refsect1>
