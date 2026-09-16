@@ -1,27 +1,21 @@
 <!-- doc/src/sgml/mvcc.sgml -->
 
  <chapter id="mvcc">
-  <title>Concurrency Control</title>
+  <title>并发控制</title>
 
   <indexterm>
-   <primary>concurrency</primary>
+   <primary>并发</primary>
   </indexterm>
 
   <para>
-   This chapter describes the behavior of the
-   <productname>PostgreSQL</productname> database system when two or
-   more sessions try to access the same data at the same time.  The
-   goals in that situation are to allow efficient access for all
-   sessions while maintaining strict data integrity.  Every developer
-   of database applications should be familiar with the topics covered
-   in this chapter.
-  </para>
+   本章描述 <productname>PostgreSQL</productname> 数据库系统在两个或更多会话试图同时访问同一数据时的行为。在这种情况下，目标是在保持严格数据完整性的同时，为所有会话提供高效访问。每一个数据库应用开发者都应该熟悉本章涉及的主题。
+   </para>
 
   <sect1 id="mvcc-intro">
-   <title>Introduction</title>
+   <title>介绍</title>
 
    <indexterm>
-    <primary>Multiversion Concurrency Control</primary>
+    <primary>多版本并发控制</primary>
    </indexterm>
 
    <indexterm>
@@ -29,7 +23,7 @@
    </indexterm>
 
    <indexterm>
-    <primary>Serializable Snapshot Isolation</primary>
+    <primary>可串行化快照隔离</primary>
    </indexterm>
 
    <indexterm>
@@ -37,290 +31,218 @@
    </indexterm>
 
    <para>
-    <productname>PostgreSQL</productname> provides a rich set of tools
-    for developers to manage concurrent access to data.  Internally,
-    data consistency is maintained by using a multiversion
-    model (Multiversion Concurrency Control, <acronym>MVCC</acronym>).
-    This means that while querying a database each transaction sees
-    a snapshot of data (a <firstterm>database version</firstterm>)
-    as it was some
-    time ago, regardless of the current state of the underlying data.
-    This protects the transaction from viewing inconsistent data that
-    could be caused by (other) concurrent transaction updates on the same
-    data rows, providing <firstterm>transaction isolation</firstterm>
-    for each database session.  <acronym>MVCC</acronym>, by eschewing
-    the locking methodologies of traditional database systems,
-    minimizes lock contention in order to allow for reasonable
-    performance in multiuser environments.
+    <productname>PostgreSQL</productname> 为开发者提供了一组丰富的工具来管理对数据的并发访问。在内部，数据一致性是通过使用多版本模型（多版本并发控制，<acronym>MVCC</acronym>）来维护的。这意味着，在查询数据库时，每个事务看到的都是某个较早时刻的数据快照（即一个<firstterm>数据库版本</firstterm>），而不受底层数据当前状态的影响。这样可以保护事务不看到由（其他）并发事务在同一数据行上执行更新所可能导致的不一致数据，从而为每个数据库会话提供<firstterm>事务隔离</firstterm>。<acronym>MVCC</acronym> 摒弃了传统数据库系统的加锁方法，尽量减少锁争用，以便在多用户环境中获得合理的性能。
    </para>
 
    <para>
-    The main advantage of using the <acronym>MVCC</acronym> model of
-    concurrency control rather than locking is that in
-    <acronym>MVCC</acronym> locks acquired for querying (reading) data
-    do not conflict with locks acquired for writing data, and so
-    reading never blocks writing and writing never blocks reading.
-    <productname>PostgreSQL</productname> maintains this guarantee
-    even when providing the strictest level of transaction
-    isolation through the use of an innovative <firstterm>Serializable
-    Snapshot Isolation</firstterm> (<acronym>SSI</acronym>) level.
+    使用 <acronym>MVCC</acronym> 并发控制模型而不是加锁的主要优点在于，在
+    <acronym>MVCC</acronym> 中，为查询（读取）数据而获得的锁不会与为写入数据而获得的锁冲突，因此读取不会阻塞写入，写入也不会阻塞读取。
+    <productname>PostgreSQL</productname> 甚至在通过创新性的<firstterm>可串行化快照隔离</firstterm>
+    （<acronym>SSI</acronym>）级别提供最严格的事务隔离时，也保持了这一保证。
    </para>
 
    <para>
-    Table- and row-level locking facilities are also available in
-    <productname>PostgreSQL</productname> for applications which don't
-    generally need full transaction isolation and prefer to explicitly
-    manage particular points of conflict.  However, proper
-    use of <acronym>MVCC</acronym> will generally provide better
-    performance than locks.  In addition, application-defined advisory
-    locks provide a mechanism for acquiring locks that are not tied
-    to a single transaction.
+    <productname>PostgreSQL</productname> 也提供表级和行级锁设施，供那些通常不需要完整事务隔离、并且倾向于显式管理特定冲突点的应用使用。不过，正确使用 <acronym>MVCC</acronym> 通常会比加锁提供更好的性能。此外，由应用定义的咨询锁还提供了一种获取不依附于单个事务的锁的机制。
    </para>
   </sect1>
 
   <sect1 id="transaction-iso">
-   <title>Transaction Isolation</title>
+   <title>事务隔离</title>
 
    <indexterm>
-    <primary>transaction isolation</primary>
+    <primary>事务隔离</primary>
    </indexterm>
 
    <para>
-    The <acronym>SQL</acronym> standard defines four levels of
-    transaction isolation.  The most strict is Serializable,
-    which is defined by the standard in a paragraph which says that any
-    concurrent execution of a set of Serializable transactions is guaranteed
-    to produce the same effect as running them one at a time in some order.
-    The other three levels are defined in terms of phenomena, resulting from
-    interaction between concurrent transactions, which must not occur at
-    each level.  The standard notes that due to the definition of
-    Serializable, none of these phenomena are possible at that level.  (This
-    is hardly surprising -- if the effect of the transactions must be
-    consistent with having been run one at a time, how could you see any
-    phenomena caused by interactions?)
+    <acronym>SQL</acronym> 标准定义了四个事务隔离级别。最严格的是可串行化，
+    标准将它定义为：一组可串行化事务的任意并发执行，都保证与按照某种顺序一次只运行一个事务的效果相同。
+    其他三个级别则按现象定义，这些现象源自并发事务之间的相互作用，而在各自级别上这些现象不得发生。
+    标准指出，由于可串行化的定义，这些现象在该级别下都不可能出现。
+    （这并不奇怪，如果事务的效果必须与一次只运行一个事务保持一致，又怎么可能看到由相互作用引起的任何现象呢？）
    </para>
 
    <para>
-    The phenomena which are prohibited at various levels are:
+    在各个级别上被禁止的现象有：
 
     <variablelist>
      <varlistentry>
       <term>
-       dirty read
-       <indexterm><primary>dirty read</primary></indexterm>
+       脏读
+       <indexterm><primary>脏读</primary></indexterm>
       </term>
      <listitem>
-      <para>
-        A transaction reads data written by a concurrent uncommitted transaction.
+       <para>
+        一个事务读取了由另一个并发未提交事务写入的数据。
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
       <term>
-       nonrepeatable read
-       <indexterm><primary>nonrepeatable read</primary></indexterm>
+       不可重复读
+       <indexterm><primary>不可重复读</primary></indexterm>
       </term>
      <listitem>
-      <para>
-        A transaction re-reads data it has previously read and finds that data
-        has been modified by another transaction (that committed since the
-        initial read).
+       <para>
+        一个事务重新读取它之前读过的数据，发现这些数据已经被另一个事务修改（且该事务已在初次读取之后提交）。
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
       <term>
-       phantom read
-       <indexterm><primary>phantom read</primary></indexterm>
+       幻读
+       <indexterm><primary>幻读</primary></indexterm>
       </term>
      <listitem>
-      <para>
-        A transaction re-executes a query returning a set of rows that satisfy a
-        search condition and finds that the set of rows satisfying the condition
-        has changed due to another recently-committed transaction.
+       <para>
+        一个事务重新执行一个返回满足某个搜索条件的一组行的查询，却发现由于另一个最近提交的事务，满足该条件的行集已经发生了变化。
        </para>
       </listitem>
      </varlistentry>
-    </variablelist>
+
+         </variablelist>
    </para>
 
    <para>
     <indexterm>
-     <primary>transaction isolation level</primary>
+     <primary>事务隔离级别</primary>
     </indexterm>
-    The four transaction isolation levels and the corresponding
-    behaviors are described in <xref linkend="mvcc-isolevel-table">.
+    四种事务隔离级别及其对应行为见 <xref linkend="mvcc-isolevel-table">。
    </para>
 
     <table tocentry="1" id="mvcc-isolevel-table">
-     <title>Standard <acronym>SQL</acronym> Transaction Isolation Levels</title>
+     <title>标准 <acronym>SQL</acronym> 事务隔离级别</title>
      <tgroup cols="4">
       <thead>
        <row>
         <entry>
-         Isolation Level
+         隔离级别
         </entry>
         <entry>
-         Dirty Read
+         脏读
         </entry>
         <entry>
-         Nonrepeatable Read
+         不可重复读
         </entry>
         <entry>
-         Phantom Read
+         幻读
         </entry>
        </row>
       </thead>
       <tbody>
        <row>
         <entry>
-         Read uncommitted
+         读未提交
         </entry>
         <entry>
-         Possible
+         可能
         </entry>
         <entry>
-         Possible
+         可能
         </entry>
         <entry>
-         Possible
+         可能
         </entry>
-       </row>
+        </row>
 
        <row>
         <entry>
-         Read committed
+         读已提交
         </entry>
         <entry>
-         Not possible
+         不可能
         </entry>
         <entry>
-         Possible
+         可能
         </entry>
         <entry>
-         Possible
+         可能
         </entry>
-       </row>
+        </row>
 
        <row>
         <entry>
-         Repeatable read
+         可重复读
         </entry>
         <entry>
-         Not possible
+         不可能
         </entry>
         <entry>
-         Not possible
+         不可能
         </entry>
         <entry>
-         Possible
+         可能
         </entry>
-       </row>
+        </row>
 
        <row>
         <entry>
-         Serializable
+         可串行化
         </entry>
         <entry>
-         Not possible
+         不可能
         </entry>
         <entry>
-         Not possible
+         不可能
         </entry>
         <entry>
-         Not possible
+         不可能
         </entry>
-       </row>
+        </row>
       </tbody>
      </tgroup>
     </table>
 
    <para>
-    In <productname>PostgreSQL</productname>, you can request any of the
-    four standard transaction isolation levels.  But internally, there are
-    only three distinct isolation levels, which correspond to the levels Read
-    Committed, Repeatable Read, and Serializable.  When you select the level Read
-    Uncommitted you really get Read Committed, and phantom reads are not possible
-    in the <productname>PostgreSQL</productname> implementation of Repeatable
-    Read, so the actual
-    isolation level might be stricter than what you select.  This is
-    permitted by the SQL standard: the four isolation levels only
-    define which phenomena must not happen, they do not define which
-    phenomena must happen.  The reason that <productname>PostgreSQL</>
-    only provides three isolation levels is that this is the only
-    sensible way to map the standard isolation levels to the multiversion
-    concurrency control architecture.  The behavior of the available
-    isolation levels is detailed in the following subsections.
+    在 <productname>PostgreSQL</productname> 中，你可以请求四种标准事务隔离级别中的任意一种。但在内部，实际上只有三种不同的隔离级别，分别对应读已提交、可重复读和可串行化这几个级别。当你选择读未提交级别时，实际得到的是读已提交；而在 <productname>PostgreSQL</productname> 的可重复读实现中，幻读是不可能发生的，因此实际的隔离级别可能比你选择的更严格。这是 SQL 标准所允许的：这四个隔离级别只定义了哪些现象不允许发生，并没有定义哪些现象必须发生。<productname>PostgreSQL</productname> 之所以只提供三种隔离级别，是因为要把标准隔离级别映射到多版本并发控制架构上，这是唯一合理的做法。可用隔离级别的行为将在下面各小节中详细说明。
    </para>
 
    <para>
-    To set the transaction isolation level of a transaction, use the
-    command <xref linkend="sql-set-transaction">.
-   </para>
+    要设置事务的事务隔离级别，请使用命令 <xref linkend="sql-set-transaction">。
+  </para>
 
   <sect2 id="xact-read-committed">
-   <title>Read Committed Isolation Level</title>
+   <title>读已提交隔离级别</title>
 
    <indexterm>
-    <primary>transaction isolation level</primary>
-    <secondary>read committed</secondary>
+    <primary>事务隔离级别</primary>
+    <secondary>读已提交</secondary>
    </indexterm>
 
    <indexterm>
-    <primary>read committed</primary>
+    <primary>读已提交</primary>
    </indexterm>
 
    <para>
-    <firstterm>Read Committed</firstterm> is the default isolation
-    level in <productname>PostgreSQL</productname>.  When a transaction
-    uses this isolation level, a <command>SELECT</command> query
-    (without a <literal>FOR UPDATE/SHARE</> clause) sees only data
-    committed before the query began; it never sees either uncommitted
-    data or changes committed during query execution by concurrent
-    transactions.  In effect, a <command>SELECT</command> query sees
-    a snapshot of the database as of the instant the query begins to
-    run.   However, <command>SELECT</command> does see the effects
-    of previous updates executed within its own transaction, even
-    though they are not yet committed.  Also note that two successive
-    <command>SELECT</command> commands can see different data, even
-    though they are within a single transaction, if other transactions
-    commit changes during execution of the first <command>SELECT</command>.
+    <firstterm>读已提交</firstterm>是 <productname>PostgreSQL</productname> 中默认的隔离级别。
+    当事务使用这一隔离级别时，<command>SELECT</command> 查询（不带
+    <literal>FOR UPDATE/SHARE</literal> 子句）只能看到查询开始之前已经提交的数据；
+    它既看不到未提交的数据，也看不到查询执行期间并发事务提交的更改。
+    实际上，<command>SELECT</command> 查询看到的是该查询开始运行瞬间的数据库快照。
+    不过，<command>SELECT</command> 能看到其自身事务中先前执行的更新效果，即使这些更新尚未提交。
+    还要注意，即使两个连续的 <command>SELECT</command> 命令位于同一个事务中，
+    如果其他事务在第一个 <command>SELECT</command> 执行期间提交了更改，这两个命令也可能看到不同的数据。
    </para>
 
    <para>
-    <command>UPDATE</command>, <command>DELETE</command>, <command>SELECT
-    FOR UPDATE</command>, and <command>SELECT FOR SHARE</command> commands
-    behave the same as <command>SELECT</command>
-    in terms of searching for target rows: they will only find target rows
-    that were committed as of the command start time.  However, such a target
-    row might have already been updated (or deleted or locked) by
-    another concurrent transaction by the time it is found.  In this case, the
-    would-be updater will wait for the first updating transaction to commit or
-    roll back (if it is still in progress).  If the first updater rolls back,
-    then its effects are negated and the second updater can proceed with
-    updating the originally found row.  If the first updater commits, the
-    second updater will ignore the row if the first updater deleted it,
-    otherwise it will attempt to apply its operation to the updated version of
-    the row.  The search condition of the command (the <literal>WHERE</> clause) is
-    re-evaluated to see if the updated version of the row still matches the
-    search condition.  If so, the second updater proceeds with its operation
-    using the updated version of the row.  In the case of
-    <command>SELECT FOR UPDATE</command> and <command>SELECT FOR
-    SHARE</command>, this means it is the updated version of the row that is
-    locked and returned to the client.
+    <command>UPDATE</command>、<command>DELETE</command>、<command>SELECT FOR UPDATE</command>
+    和 <command>SELECT FOR SHARE</command> 命令在搜索目标行时的行为与 <command>SELECT</command> 相同：
+    它们只会找到在命令开始时已经提交的目标行。不过，当找到这样的目标行时，
+    它可能已经被其他并发事务更新、删除或者锁定。在这种情况下，即将执行更新的事务会等待第一个更新事务提交或回滚
+    （如果它仍在进行中）。如果第一个更新事务回滚，那么它的作用将被撤销，第二个更新事务就可以继续更新最初找到的行。
+    如果第一个更新事务提交了，那么若该行已被第一个更新者删除，第二个更新事务就会忽略该行；
+    否则，第二个更新者将尝试在该行的已更新版本上应用自己的操作。
+    该命令的搜索条件（<literal>WHERE</literal> 子句）会被重新计算，以判断该行的已更新版本是否仍然符合搜索条件。
+    如果符合，则第二个更新者会基于该行的已更新版本继续执行操作。
+    对于 <command>SELECT FOR UPDATE</command> 和 <command>SELECT FOR SHARE</command>，
+    这意味着被锁住并返回给客户端的是该行的已更新版本。
    </para>
 
-   <para>
-    Because of the above rule, it is possible for an updating command to see an
-    inconsistent snapshot: it can see the effects of concurrent updating
-    commands on the same rows it is trying to update, but it
-    does not see effects of those commands on other rows in the database.
-    This behavior makes Read Committed mode unsuitable for commands that
-    involve complex search conditions; however, it is just right for simpler
-    cases.  For example, consider updating bank balances with transactions
-    like:
+         <para>
+    由于上述规则，更新命令可能看到一个不一致的快照：它能够看到并发更新命令在它试图更新的同一行上的效果，
+    却看不到这些命令对数据库中其他行的影响。这种行为使得读已提交模式不适合涉及复杂搜索条件的命令；
+    不过，对于较简单的场景它恰到好处。例如，考虑以如下事务更新银行余额：
 
 <screen>
 BEGIN;
@@ -329,436 +251,287 @@ UPDATE accounts SET balance = balance - 100.00 WHERE acctnum = 7534;
 COMMIT;
 </screen>
 
-    If two such transactions concurrently try to change the balance of account
-    12345, we clearly want the second transaction to start with the updated
-    version of the account's row.  Because each command is affecting only a
-    predetermined row, letting it see the updated version of the row does
-    not create any troublesome inconsistency.
+    如果两个这样的事务并发地尝试更改账户 12345 的余额，我们显然希望第二个事务从该账户行的已更新版本开始。
+    因为每个命令只影响一个预先确定的行，让它看到该行的已更新版本不会造成任何麻烦的不一致。
    </para>
 
    <para>
-    More complex usage can produce undesirable results in Read Committed
-    mode.  For example, consider a <command>DELETE</command> command
-    operating on data that is being both added and removed from its
-    restriction criteria by another command, e.g., assume
-    <literal>website</literal> is a two-row table with
-    <literal>website.hits</literal> equaling <literal>9</literal> and
-    <literal>10</literal>:
+    在读已提交模式下，更复杂的用法可能产生不理想的结果。例如，考虑一个
+    <command>DELETE</command> 命令，另一个命令正在修改数据，使某些行开始满足其筛选条件、另一些行不再满足。
+    假设 <literal>website</literal> 是一个有两行的表，其中
+    <literal>website.hits</literal> 分别等于 <literal>9</literal> 和
+    <literal>10</literal>：
 
 <screen>
 BEGIN;
 UPDATE website SET hits = hits + 1;
--- run from another session:  DELETE FROM website WHERE hits = 10;
+-- 从另一个会话运行：  DELETE FROM website WHERE hits = 10;
 COMMIT;
 </screen>
 
-    The <command>DELETE</command> will have no effect even though
-    there is a <literal>website.hits = 10</literal> row before and
-    after the <command>UPDATE</command>. This occurs because the
-    pre-update row value <literal>9</> is skipped, and when the
-    <command>UPDATE</command> completes and <command>DELETE</command>
-    obtains a lock, the new row value is no longer <literal>10</> but
-    <literal>11</>, which no longer matches the criteria.
+    该 <command>DELETE</command> 将不会产生任何效果，即使在
+    <command>UPDATE</command> 之前和之后都存在一行
+    <literal>website.hits = 10</literal>。这是因为更新前值为
+    <literal>9</literal> 的那一行被跳过了，而当 <command>UPDATE</command>
+    完成并且 <command>DELETE</command> 获得锁时，新行值已经不再是
+    <literal>10</literal> 而是 <literal>11</literal>，因此不再匹配条件。
    </para>
 
    <para>
-    Because Read Committed mode starts each command with a new snapshot
-    that includes all transactions committed up to that instant,
-    subsequent commands in the same transaction will see the effects
-    of the committed concurrent transaction in any case.  The point
-    at issue above is whether or not a <emphasis>single</> command
-    sees an absolutely consistent view of the database.
+    因为在读已提交模式中，每个命令都从一个新快照开始，而该快照包含截至当时已提交的所有事务，
+    所以同一事务中的后续命令无论如何都会看到并发事务已提交的效果。上面真正的问题在于，
+    <emphasis>单个</emphasis>命令是否能看到数据库的绝对一致视图。
    </para>
 
    <para>
-    The partial transaction isolation provided by Read Committed mode
-    is adequate for many applications, and this mode is fast and simple
-    to use;  however, it is not sufficient for all cases.  Applications
-    that do complex queries and updates might require a more rigorously
-    consistent view of the database than Read Committed mode provides.
+    读已提交模式所提供的部分事务隔离对于许多应用来说已经足够，而且这种模式既快速又容易使用。
+    不过，它并不能满足所有场景。执行复杂查询和更新的应用，可能需要比读已提交模式所提供的更严格一致的数据库视图。
    </para>
   </sect2>
 
   <sect2 id="xact-repeatable-read">
-   <title>Repeatable Read Isolation Level</title>
+   <title>可重复读隔离级别</title>
 
    <indexterm>
-    <primary>transaction isolation level</primary>
-    <secondary>repeatable read</secondary>
+    <primary>事务隔离级别</primary>
+    <secondary>可重复读</secondary>
    </indexterm>
 
    <indexterm>
-    <primary>repeatable read</primary>
+    <primary>可重复读</primary>
    </indexterm>
 
    <para>
-    The <firstterm>Repeatable Read</firstterm> isolation level only sees
-    data committed before the transaction began; it never sees either
-    uncommitted data or changes committed during transaction execution
-    by concurrent transactions.  (However, the query does see the
-    effects of previous updates executed within its own transaction,
-    even though they are not yet committed.)  This is a stronger
-    guarantee than is required by the <acronym>SQL</acronym> standard
-    for this isolation level, and prevents all of the phenomena described
-    in <xref linkend="mvcc-isolevel-table">.  As mentioned above, this is
-    specifically allowed by the standard, which only describes the
-    <emphasis>minimum</emphasis> protections each isolation level must
-    provide.
+    <firstterm>可重复读</firstterm>隔离级别只能看到事务开始前已提交的数据；它看不到未提交的数据，
+    也看不到事务执行期间并发事务提交的更改。（不过，每个查询都能看到其自身事务中先前执行的更新效果，
+    即使这些更新尚未提交。）这比 <acronym>SQL</acronym> 标准对该隔离级别的要求更强，能够防止
+    <xref linkend="mvcc-isolevel-table"> 中描述的所有现象。正如前面提到的，
+    这正是标准明确允许的，因为标准只描述每个隔离级别必须提供的<emphasis>最低</emphasis>保护。
    </para>
 
    <para>
-    This level is different from Read Committed in that a query in a
-    repeatable read transaction sees a snapshot as of the start of the
-    <emphasis>transaction</>, not as of the start
-    of the current query within the transaction.  Thus, successive
-    <command>SELECT</command> commands within a <emphasis>single</>
-    transaction see the same data, i.e., they do not see changes made by
-    other transactions that committed after their own transaction started.
+    这一点与读已提交不同：在可重复读事务中，查询看到的是该<emphasis>事务</emphasis>开始时的快照，
+    而不是事务中当前查询开始时的快照。因此，在<emphasis>单个</emphasis>事务中的连续
+    <command>SELECT</command> 命令会看到相同的数据，也就是说，它们不会看到在自身事务开始后由其他事务提交的更改。
    </para>
 
    <para>
-    Applications using this level must be prepared to retry transactions
-    due to serialization failures.
+    使用这一隔离级别的应用必须准备好在发生串行化失败时重试事务。
    </para>
 
    <para>
-    <command>UPDATE</command>, <command>DELETE</command>, <command>SELECT
-    FOR UPDATE</command>, and <command>SELECT FOR SHARE</command> commands
-    behave the same as <command>SELECT</command>
-    in terms of searching for target rows: they will only find target rows
-    that were committed as of the transaction start time.  However, such a
-    target row might have already been updated (or deleted or locked) by
-    another concurrent transaction by the time it is found.  In this case, the
-    repeatable read transaction will wait for the first updating transaction to commit or
-    roll back (if it is still in progress).  If the first updater rolls back,
-    then its effects are negated and the repeatable read transaction can proceed
-    with updating the originally found row.  But if the first updater commits
-    (and actually updated or deleted the row, not just locked it)
-    then the repeatable read transaction will be rolled back with the message
+    <command>UPDATE</command>，<command>DELETE</command>，<command>SELECT FOR UPDATE</command>，
+    和<command>SELECT FOR SHARE</command>命令
+    在搜索目标行方面与<command>SELECT</command>相同：
+    它们只会找到在事务开始时已提交的目标行。
+    然而，这样的目标行可能在找到时已被另一个并发事务更新（或删除或锁定）。
+    在这种情况下，可重复读事务将等待第一个更新事务提交或回滚（如果仍在进行）。
+    如果第一个更新者回滚，则其效果将被取消，可重复读事务可以继续更新最初找到的行。
+    但如果第一个更新者提交了（并实际更新或删除了行，而不仅仅是锁定了它），
+    那么可重复读事务将被回滚，并显示以下消息：
 
 <screen>
 ERROR:  could not serialize access due to concurrent update
 </screen>
 
-    because a repeatable read transaction cannot modify or lock rows changed by
-    other transactions after the repeatable read transaction began.
+    因为可重复读事务不能修改或锁定在其开始之后已被其他事务更改的行。
    </para>
 
    <para>
-    When an application receives this error message, it should abort
-    the current transaction and retry the whole transaction from
-    the beginning.  The second time through, the transaction will see the
-    previously-committed change as part of its initial view of the database,
-    so there is no logical conflict in using the new version of the row
-    as the starting point for the new transaction's update.
+    当应用收到这条错误消息时，应当中止当前事务，并从头重试整个事务。
+    第二次执行时，该事务会把先前已提交的更改视为其初始数据库视图的一部分，
+    因此以该行的新版本作为新事务更新的起点时，就不存在逻辑冲突。
    </para>
 
    <para>
-    Note that only updating transactions might need to be retried; read-only
-    transactions will never have serialization conflicts.
+    注意，只有更新事务才可能需要重试；只读事务永远不会发生串行化冲突。
    </para>
 
    <para>
-    The Repeatable Read mode provides a rigorous guarantee that each
-    transaction sees a completely stable view of the database.  However,
-    this view will not necessarily always be consistent with some serial
-    (one at a time) execution of concurrent transactions of the same level.
-    For example, even a read only transaction at this level may see a
-    control record updated to show that a batch has been completed but
-    <emphasis>not</emphasis> see one of the detail records which is logically
-    part of the batch because it read an earlier revision of the control
-    record.  Attempts to enforce business rules by transactions running at
-    this isolation level are not likely to work correctly without careful use
-    of explicit locks to block conflicting transactions.
+    可重复读模式提供了严格的保证，即每个事务都看到数据库的一个完全稳定的视图。
+    不过，这个视图并不一定总能与同一级别并发事务的某种串行（一次一个）执行保持一致。
+    例如，即使是该级别的只读事务，也可能看到一条表明某批次已完成的控制记录，却<emphasis>看不到</emphasis>逻辑上属于该批次的某条明细记录，因为创建该明细记录的事务读取了控制记录的较早版本。如果不仔细使用显式锁来阻塞冲突事务，
+    试图依靠运行在这一隔离级别的事务来强制业务规则，往往无法正确工作。
    </para>
 
-   <note>
+      <note>
     <para>
-     Prior to <productname>PostgreSQL</productname> version 9.1, a request
-     for the Serializable transaction isolation level provided exactly the
-     same behavior described here.  To retain the legacy Serializable
-     behavior, Repeatable Read should now be requested.
+     在 <productname>PostgreSQL</productname> 9.1 之前，请求可串行化事务隔离级别会得到与这里描述完全相同的行为。
+     若要保留旧式的可串行化行为，现在应请求可重复读。
     </para>
    </note>
   </sect2>
 
   <sect2 id="xact-serializable">
-   <title>Serializable Isolation Level</title>
+   <title>可串行化隔离级别</title>
 
    <indexterm>
-    <primary>transaction isolation level</primary>
-    <secondary>serializable</secondary>
+    <primary>事务隔离级别</primary>
+    <secondary>可串行化</secondary>
    </indexterm>
 
    <indexterm>
-    <primary>serializable</primary>
+    <primary>可串行化</primary>
    </indexterm>
 
    <indexterm>
-    <primary>predicate locking</primary>
+    <primary>谓词锁</primary>
    </indexterm>
 
    <indexterm>
-    <primary>serialization anomaly</primary>
+    <primary>串行化异常</primary>
    </indexterm>
 
    <para>
-    The <firstterm>Serializable</firstterm> isolation level provides the strictest transaction
-    isolation.  This level emulates serial transaction execution,
-    as if transactions had been executed one after another, serially,
-    rather than concurrently.  However, like the Repeatable Read level,
-    applications using this level must
-    be prepared to retry transactions due to serialization failures.
-    In fact, this isolation level works exactly the same as Repeatable
-    Read except that it monitors for conditions which could make
-    execution of a concurrent set of serializable transactions behave
-    in a manner inconsistent with all possible serial (one at a time)
-    executions of those transactions.  This monitoring does not
-    introduce any blocking beyond that present in repeatable read, but
-    there is some overhead to the monitoring, and detection of the
-    conditions which could cause a
-    <firstterm>serialization anomaly</firstterm> will trigger a
-    <firstterm>serialization failure</firstterm>.
+    <firstterm>可串行化</firstterm>隔离级别提供最严格的事务隔离。
+    该级别模拟串行事务执行；也就是说，效果就像这些事务不是并发执行，而是一个接一个地串行执行一样。
+    不过，与可重复读级别一样，使用该级别的应用必须准备好在发生串行化失败时重试事务。
+    实际上，这个隔离级别的工作方式与可重复读完全相同，只是它还会监视那些可能使一组并发可串行化事务的执行结果，
+    与这些事务任何可能的串行（一次一个）执行都不一致的条件。
+    这种监视不会引入超出可重复读已有阻塞之外的任何阻塞，但会带来一定开销；
+    一旦检测到可能导致<firstterm>串行化异常</firstterm>的条件，就会触发<firstterm>串行化失败</firstterm>。
    </para>
 
-   <para>
-    As an example,
-    consider a table <structname>mytab</>, initially containing:
-<screen>
+   <para>例如，考虑表<structname>mytab</structname>，它最初包含以下内容：<screen>
  class | value 
 -------+-------
      1 |    10
      1 |    20
      2 |   100
      2 |   200
-</screen>
-    Suppose that serializable transaction A computes:
-<screen>
+</screen>假设可串行化事务 A 执行以下计算：<screen>
 SELECT SUM(value) FROM mytab WHERE class = 1;
-</screen>
-    and then inserts the result (30) as the <structfield>value</> in a
-    new row with <structfield>class</><literal> = 2</>.  Concurrently, serializable
-    transaction B computes:
-<screen>
+</screen>然后将结果（30）作为新行的<structfield>value</structfield>插入，且该行满足<structfield>class</structfield><literal> = 2</>。与此同时，可串行化事务 B 执行以下计算：<screen>
 SELECT SUM(value) FROM mytab WHERE class = 2;
-</screen>
-    and obtains the result 300, which it inserts in a new row with
-    <structfield>class</><literal> = 1</>.  Then both transactions try to commit.
-    If either transaction were running at the Repeatable Read isolation level,
-    both would be allowed to commit; but since there is no serial order of execution
-    consistent with the result, using Serializable transactions will allow one
-    transaction to commit and will roll the other back with this message:
-
-<screen>
+</screen>得到结果 300，并将它插入一个新行，该行满足<structfield>class</structfield><literal> = 1</>。然后两个事务都尝试提交。如果任一事务运行在可重复读隔离级别，两个事务都可以提交；但由于不存在与该结果一致的串行执行顺序，使用可串行化事务时，只会允许一个事务提交，另一个则会被回滚，并收到以下消息：<screen>
 ERROR:  could not serialize access due to read/write dependencies among transactions
-</screen>
+</screen>这是因为，如果 A 在 B 之前执行，B 算出的总和应该是 330，而不是 300；同样，按另一种顺序执行，A 算出的总和也会不同。</para>
 
-    This is because if A had
-    executed before B, B would have computed the sum 330, not 300, and
-    similarly the other order would have resulted in a different sum
-    computed by A.
+   <para>
+    为了保证真正的可串行性，<productname>PostgreSQL</productname> 使用了<firstterm>谓词锁</firstterm>，
+    也就是说，系统会保留一些锁，以便判断某个写操作如果先发生，是否会影响并发事务先前读取的结果。
+    在 <productname>PostgreSQL</productname> 中，这些锁不会造成任何阻塞，因此<emphasis>不</emphasis>会参与形成死锁。
+    它们用于识别并标记并发可串行化事务之间的依赖关系，而这些依赖在某些组合下可能导致串行化异常。
+    相比之下，想要保证数据一致性的读已提交或可重复读事务，可能需要在整张表上加锁，
+    这会阻塞其他试图使用该表的用户；或者它可能需要使用 <literal>SELECT FOR UPDATE</literal> 或
+    <literal>SELECT FOR SHARE</literal>，而这些做法不仅可能阻塞其他事务，还会造成磁盘访问。
    </para>
 
    <para>
-    To guarantee true serializability <productname>PostgreSQL</productname>
-    uses <firstterm>predicate locking</>, which means that it keeps locks
-    which allow it to determine when a write would have had an impact on
-    the result of a previous read from a concurrent transaction, had it run
-    first.  In <productname>PostgreSQL</productname> these locks do not
-    cause any blocking and therefore can <emphasis>not</> play any part in
-    causing a deadlock.  They are used to identify and flag dependencies
-    among concurrent serializable transactions which in certain combinations
-    can lead to serialization anomalies.  In contrast, a Read Committed or
-    Repeatable Read transaction which wants to ensure data consistency may
-    need to take out a lock on an entire table, which could block other
-    users attempting to use that table, or it may use <literal>SELECT FOR
-    UPDATE</literal> or <literal>SELECT FOR SHARE</literal> which not only
-    can block other transactions but cause disk access.
+    与大多数其他数据库系统一样，<productname>PostgreSQL</productname> 中的谓词锁以事务实际访问的数据为基础。
+    这些锁会出现在<link linkend="view-pg-locks"><structname>pg_locks</structname></link>系统视图中，
+    其 <literal>mode</literal> 为 <literal>SIReadLock</literal>。查询执行期间获取的具体锁取决于查询所使用的计划，
+    并且在事务过程中，多个更细粒度的锁（如元组锁）可能会合并成较少的粗粒度锁（如页锁），
+    以防耗尽用于跟踪锁的内存。如果某个 <literal>READ ONLY</literal> 事务检测到不再可能发生会导致串行化异常的冲突，
+    它可以在完成前释放其 SIRead 锁。事实上，<literal>READ ONLY</literal> 事务通常在启动时就能确定这一点，
+    从而避免获取任何谓词锁。如果你显式请求一个 <literal>SERIALIZABLE READ ONLY DEFERRABLE</literal> 事务，
+    它会阻塞，直到能够确立这一事实为止。（这是<emphasis>唯一</emphasis>一种可串行化事务会阻塞而可重复读事务不会阻塞的情况。）
+    另一方面，SIRead 锁往往需要保留到事务提交之后，直到与之重叠的读写事务完成。
    </para>
 
    <para>
-    Predicate locks in <productname>PostgreSQL</productname>, like in most
-    other database systems, are based on data actually accessed by a
-    transaction.  These will show up in the
-    <link linkend="view-pg-locks"><structname>pg_locks</structname></link>
-    system view with a <literal>mode</> of <literal>SIReadLock</>.  The
-    particular locks
-    acquired during execution of a query will depend on the plan used by
-    the query, and multiple finer-grained locks (e.g., tuple locks) may be
-    combined into fewer coarser-grained locks (e.g., page locks) during the
-    course of the transaction to prevent exhaustion of the memory used to
-    track the locks.  A <literal>READ ONLY</> transaction may be able to
-    release its SIRead locks before completion, if it detects that no
-    conflicts can still occur which could lead to a serialization anomaly.
-    In fact, <literal>READ ONLY</> transactions will often be able to
-    establish that fact at startup and avoid taking any predicate locks.
-    If you explicitly request a <literal>SERIALIZABLE READ ONLY DEFERRABLE</>
-    transaction, it will block until it can establish this fact.  (This is
-    the <emphasis>only</> case where Serializable transactions block but
-    Repeatable Read transactions don't.)  On the other hand, SIRead locks
-    often need to be kept past transaction commit, until overlapping read
-    write transactions complete.
+    统一采用可串行化事务可以简化开发。任何一组并发可串行化事务，都保证与把它们一次一个运行的效果相同；这意味着，如果你能够证明某个事务在单独运行时会做正确的事，那么即使不了解其他事务会做什么，也可以相信它在任何可串行化事务的混合执行中也会做正确的事。重要的是，采用这种技术的环境应当有一套通用机制来处理串行化失败（其 SQLSTATE 值总是 '40001'），因为很难准确预测究竟哪些事务会对读/写依赖关系有贡献，并因此需要被回滚来防止串行化异常。监视读/写依赖关系会带来开销，被串行化失败中止的事务重新启动也会带来开销；但在把这些开销与显式锁以及 <literal>SELECT FOR UPDATE</literal> 或 <literal>SELECT FOR SHARE</literal> 所涉及的成本和阻塞进行权衡之后，可串行化事务在某些环境中仍然是性能最佳的选择。
    </para>
 
    <para>
-    Consistent use of Serializable transactions can simplify development.
-    The guarantee that any set of concurrent serializable transactions will
-    have the same effect as if they were run one at a time means that if
-    you can demonstrate that a single transaction, as written, will do the
-    right thing when run by itself, you can have confidence that it will
-    do the right thing in any mix of serializable transactions, even without
-    any information about what those other transactions might do.  It is
-    important that an environment which uses this technique have a
-    generalized way of handling serialization failures (which always return
-    with a SQLSTATE value of '40001'), because it will be very hard to
-    predict exactly which transactions might contribute to the read/write
-    dependencies and need to be rolled back to prevent serialization
-    anomalies.  The monitoring of read/write dependencies has a cost, as does
-    the restart of transactions which are terminated with a serialization
-    failure, but balanced against the cost and blocking involved in use of
-    explicit locks and <literal>SELECT FOR UPDATE</> or <literal>SELECT FOR
-    SHARE</>, Serializable transactions are the best performance choice
-    for some environments.
-   </para>
-
-   <para>
-    For optimal performance when relying on Serializable transactions for
-    concurrency control, these issues should be considered:
+    当依赖可串行化事务进行并发控制时，为了获得最佳性能，应考虑以下问题：
 
     <itemizedlist>
      <listitem>
       <para>
-       Declare transactions as <literal>READ ONLY</> when possible.
+       在可能时声明事务为<literal>READ ONLY</literal>。
       </para>
      </listitem>
      <listitem>
       <para>
-       Control the number of active connections, using a connection pool if
-       needed.  This is always an important performance consideration, but
-       it can be particularly important in a busy system using Serializable
-       transactions.
+       控制活动连接的数量，并在需要时使用连接池。这始终是重要的性能考量，但在使用可串行化事务的繁忙系统中尤为重要。
       </para>
      </listitem>
      <listitem>
       <para>
-       Don't put more into a single transaction than needed for integrity
-       purposes.
+       单个事务中只包含为保证完整性所必需的内容。
       </para>
      </listitem>
      <listitem>
       <para>
-       Don't leave connections dangling <quote>idle in transaction</quote>
-       longer than necessary.
+       不要让连接不必要地<quote>闲置在事务中</quote>。
       </para>
      </listitem>
      <listitem>
       <para>
-       Eliminate explicit locks, <literal>SELECT FOR UPDATE</>, and
-       <literal>SELECT FOR SHARE</> where no longer needed due to the
-       protections automatically provided by Serializable transactions.
+       在那些已经由可串行化事务自动提供保护的地方，消除不再需要的显式锁、<literal>SELECT FOR UPDATE</literal> 和 <literal>SELECT FOR SHARE</literal>。
       </para>
      </listitem>
      <listitem>
       <para>
-       When the system is forced to combine multiple page-level predicate
-       locks into a single relation-level predicate lock because the predicate
-       lock table is short of memory, an increase in the rate of serialization
-       failures may occur.  You can avoid this by increasing
-       <xref linkend="guc-max-pred-locks-per-transaction">.
+       当系统因谓词锁表内存不足而被迫把多个页级谓词锁合并为单个关系级谓词锁时，串行化失败的比例可能会上升。你可以通过增加 <xref linkend="guc-max-pred-locks-per-transaction"> 来避免这种情况。
       </para>
      </listitem>
      <listitem>
       <para>
-       A sequential scan will always necessitate a relation-level predicate
-       lock.  This can result in an increased rate of serialization failures.
-       It may be helpful to encourage the use of index scans by reducing
-       <xref linkend="guc-random-page-cost"> and/or increasing
-       <xref linkend="guc-cpu-tuple-cost">.  Be sure to weigh any decrease
-       in transaction rollbacks and restarts against any overall change in
-       query execution time.
+       顺序扫描总是需要关系级谓词锁。这可能导致串行化失败的比例上升。通过降低 <xref linkend="guc-random-page-cost"> 和/或提高 <xref linkend="guc-cpu-tuple-cost"> 来鼓励使用索引扫描，可能对此有所帮助。务必在事务回滚和重启次数减少所带来的收益，与查询执行时间整体变化之间进行权衡。
       </para>
      </listitem>
     </itemizedlist>
    </para>
-  </sect2>
+
+     </sect2>
  </sect1>
 
   <sect1 id="explicit-locking">
-   <title>Explicit Locking</title>
+   <title>显式锁定</title>
 
    <indexterm>
-    <primary>lock</primary>
+    <primary>锁</primary>
    </indexterm>
 
    <para>
-    <productname>PostgreSQL</productname> provides various lock modes
-    to control concurrent access to data in tables.  These modes can
-    be used for application-controlled locking in situations where
-    <acronym>MVCC</acronym> does not give the desired behavior.  Also,
-    most <productname>PostgreSQL</productname> commands automatically
-    acquire locks of appropriate modes to ensure that referenced
-    tables are not dropped or modified in incompatible ways while the
-    command executes.  (For example, <command>TRUNCATE</> cannot safely be
-    executed concurrently with other operations on the same table, so it
-    obtains an exclusive lock on the table to enforce that.)
+    <productname>PostgreSQL</productname> 提供了多种锁模式，用于控制对表中数据的并发访问。
+    在 <acronym>MVCC</acronym> 无法给出期望行为的场景中，这些模式可用于由应用自行控制的加锁。
+    此外，大多数 <productname>PostgreSQL</productname> 命令也会自动获取适当模式的锁，
+    以确保在命令执行期间，被引用的表不会以不兼容的方式被删除或修改。
+    （例如，<command>TRUNCATE</command> 无法安全地与同一张表上的其他操作并发执行，
+    因此它会在该表上获取独占锁来强制实现这一点。）
    </para>
 
    <para>
-    To examine a list of the currently outstanding locks in a database
-    server, use the
-    <link linkend="view-pg-locks"><structname>pg_locks</structname></link>
-    system view. For more information on monitoring the status of the lock
-    manager subsystem, refer to <xref linkend="monitoring">.
+    要查看数据库服务器中当前尚未释放的锁列表，可以使用 <link linkend="view-pg-locks"><structname>pg_locks</structname></link> 系统视图。有关监控锁管理器子系统状态的更多信息，请参见 <xref linkend="monitoring">。
    </para>
 
   <sect2 id="locking-tables">
-   <title>Table-level Locks</title>
+   <title>表级锁</title>
 
    <indexterm zone="locking-tables">
     <primary>LOCK</primary>
    </indexterm>
 
    <para>
-    The list below shows the available lock modes and the contexts in
-    which they are used automatically by
-    <productname>PostgreSQL</productname>.  You can also acquire any
-    of these locks explicitly with the command <xref
-    linkend="sql-lock">.
-    Remember that all of these lock modes are table-level locks,
-    even if the name contains the word
-    <quote>row</quote>; the names of the lock modes are historical.
-    To some extent the names reflect the typical usage of each lock
-    mode &mdash; but the semantics are all the same.  The only real difference
-    between one lock mode and another is the set of lock modes with
-    which each conflicts (see <xref linkend="table-lock-compatibility">).
-    Two transactions cannot hold locks of conflicting
-    modes on the same table at the same time.  (However, a transaction
-    never conflicts with itself.  For example, it might acquire
-    <literal>ACCESS EXCLUSIVE</literal> lock and later acquire
-    <literal>ACCESS SHARE</literal> lock on the same table.)  Non-conflicting
-    lock modes can be held concurrently by many transactions.  Notice in
-    particular that some lock modes are self-conflicting (for example,
-    an <literal>ACCESS EXCLUSIVE</literal> lock cannot be held by more than one
-    transaction at a time) while others are not self-conflicting (for example,
-    an <literal>ACCESS SHARE</literal> lock can be held by multiple transactions).
+    下面的列表给出了可用的锁模式，以及它们在 <productname>PostgreSQL</productname> 中被自动使用的场景。
+    你也可以通过命令 <xref linkend="sql-lock"> 显式获取其中任意一种锁。
+    请记住，这些锁模式全部都是表级锁，即使名称中包含 <quote>row</quote> 一词；这些名称只是历史遗留。
+    在某种程度上，这些名称反映了各锁模式的典型用途 &mdash; 但它们的语义是完全相同的。
+    一个锁模式与另一个锁模式真正的区别，只在于它与哪些锁模式冲突（见 <xref linkend="table-lock-compatibility">）。
+    两个事务不能在同一时刻在同一张表上持有相互冲突模式的锁。
+    （不过，事务永远不会与自己冲突。例如，它可能先获取 <literal>ACCESS EXCLUSIVE</literal> 锁，
+    随后又在同一张表上获取 <literal>ACCESS SHARE</literal> 锁。）
+    不冲突的锁模式可以被多个事务同时持有。特别要注意，有些锁模式与自身冲突
+    （例如，一次只能有一个事务持有 <literal>ACCESS EXCLUSIVE</literal> 锁），
+    而另一些锁模式并不与自身冲突（例如，可以有多个事务持有 <literal>ACCESS SHARE</literal> 锁）。
    </para>
 
      <variablelist>
-      <title>Table-level Lock Modes</title>
+      <title>表级锁模式</title>
       <varlistentry>
        <term>
         <literal>ACCESS SHARE</literal>
        </term>
        <listitem>
         <para>
-         Conflicts with the <literal>ACCESS EXCLUSIVE</literal> lock
-         mode only.
+         只与 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。
         </para>
 
         <para>
-         The <command>SELECT</command> command acquires a lock of this mode on
-         referenced tables.  In general, any query that only <emphasis>reads</> a table
-         and does not modify it will acquire this lock mode.
+         <command>SELECT</command> 命令会在被引用的表上获取这种模式的锁。通常，任何只<emphasis>读取</emphasis>表而不修改它的查询都会获取这种锁模式。
         </para>
        </listitem>
       </varlistentry>
@@ -769,18 +542,10 @@ ERROR:  could not serialize access due to read/write dependencies among transact
        </term>
        <listitem>
         <para>
-         Conflicts with the <literal>EXCLUSIVE</literal> and
-         <literal>ACCESS EXCLUSIVE</literal> lock modes.
+         与 <literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。
         </para>
 
-        <para>
-         The <command>SELECT FOR UPDATE</command> and
-         <command>SELECT FOR SHARE</command> commands acquire a
-         lock of this mode on the target table(s) (in addition to
-         <literal>ACCESS SHARE</literal> locks on any other tables
-         that are referenced but not selected
-         <option>FOR UPDATE/FOR SHARE</option>).
-        </para>
+        <para><command>SELECT FOR UPDATE</command> 和 <command>SELECT FOR SHARE</command> 命令会在目标表上获取这种模式的锁（此外，对于引用到但没有用 <option>FOR UPDATE/FOR SHARE</option> 选取的其他表，还会获取 <literal>ACCESS SHARE</literal> 锁）。</para>
        </listitem>
       </varlistentry>
 
@@ -790,18 +555,11 @@ ERROR:  could not serialize access due to read/write dependencies among transact
        </term>
        <listitem>
         <para>
-         Conflicts with the <literal>SHARE</literal>, <literal>SHARE ROW
-         EXCLUSIVE</literal>, <literal>EXCLUSIVE</literal>, and
-         <literal>ACCESS EXCLUSIVE</literal> lock modes.
+         与<literal>SHARE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal>和<literal>ACCESS EXCLUSIVE</literal>锁模式冲突。
         </para>
 
         <para>
-         The commands <command>UPDATE</command>,
-         <command>DELETE</command>, and <command>INSERT</command>
-         acquire this lock mode on the target table (in addition to
-         <literal>ACCESS SHARE</literal> locks on any other referenced
-         tables).  In general, this lock mode will be acquired by any
-         command that <emphasis>modifies data</> in a table.
+         <command>UPDATE</command>、<command>DELETE</command> 和 <command>INSERT</command> 命令会在目标表上获取这种锁模式（此外，对任何其他被引用的表还会获取 <literal>ACCESS SHARE</literal> 锁）。通常，任何<emphasis>修改表中数据</emphasis>的命令都会获取这种锁模式。
         </para>
        </listitem>
       </varlistentry>
@@ -812,19 +570,10 @@ ERROR:  could not serialize access due to read/write dependencies among transact
        </term>
        <listitem>
         <para>
-         Conflicts with the <literal>SHARE UPDATE EXCLUSIVE</literal>,
-         <literal>SHARE</literal>, <literal>SHARE ROW
-         EXCLUSIVE</literal>, <literal>EXCLUSIVE</literal>, and
-         <literal>ACCESS EXCLUSIVE</literal> lock modes.
-         This mode protects a table against
-         concurrent schema changes and <command>VACUUM</> runs.
+         与 <literal>SHARE UPDATE EXCLUSIVE</literal>、<literal>SHARE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。这种模式用于保护表不受并发模式更改和 <command>VACUUM</command> 运行的影响。
         </para>
 
-        <para>
-         Acquired by <command>VACUUM</command> (without <option>FULL</option>),
-         <command>ANALYZE</>, <command>CREATE INDEX CONCURRENTLY</>, and
-         some forms of <command>ALTER TABLE</command>.
-        </para>
+        <para>由 <command>VACUUM</command>（不带 <option>FULL</option>）、<command>ANALYZE</command>、<command>CREATE INDEX CONCURRENTLY</command> 以及某些形式的 <command>ALTER TABLE</command> 获取。</para>
        </listitem>
       </varlistentry>
 
@@ -834,16 +583,11 @@ ERROR:  could not serialize access due to read/write dependencies among transact
        </term>
        <listitem>
         <para>
-         Conflicts with the <literal>ROW EXCLUSIVE</literal>,
-         <literal>SHARE UPDATE EXCLUSIVE</literal>, <literal>SHARE ROW
-         EXCLUSIVE</literal>, <literal>EXCLUSIVE</literal>, and
-         <literal>ACCESS EXCLUSIVE</literal> lock modes.
-         This mode protects a table against concurrent data changes.
+         与 <literal>ROW EXCLUSIVE</literal>、<literal>SHARE UPDATE EXCLUSIVE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。这种模式用于保护表不受并发数据更改的影响。
         </para>
 
         <para>
-         Acquired by <command>CREATE INDEX</command>
-         (without <option>CONCURRENTLY</option>).
+         由 <command>CREATE INDEX</command>（不带 <option>CONCURRENTLY</option>）获取。
         </para>
        </listitem>
       </varlistentry>
@@ -854,19 +598,10 @@ ERROR:  could not serialize access due to read/write dependencies among transact
        </term>
        <listitem>
         <para>
-         Conflicts with the <literal>ROW EXCLUSIVE</literal>,
-         <literal>SHARE UPDATE EXCLUSIVE</literal>,
-         <literal>SHARE</literal>, <literal>SHARE ROW
-         EXCLUSIVE</literal>, <literal>EXCLUSIVE</literal>, and
-         <literal>ACCESS EXCLUSIVE</literal> lock modes.
-         This mode protects a table against concurrent data changes, and
-         is self-exclusive so that only one session can hold it at a time.
+         与 <literal>ROW EXCLUSIVE</literal>、<literal>SHARE UPDATE EXCLUSIVE</literal>、<literal>SHARE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。这种模式用于保护表不受并发数据更改的影响，并且是自排他的，因此同一时刻只能有一个会话持有它。
         </para>
 
-        <para>
-         This lock mode is not automatically acquired by any
-         <productname>PostgreSQL</productname> command.
-        </para>
+        <para>这种锁模式不会被任何 <productname>PostgreSQL</productname> 命令自动获取。</para>
        </listitem>
       </varlistentry>
 
@@ -876,19 +611,11 @@ ERROR:  could not serialize access due to read/write dependencies among transact
        </term>
        <listitem>
         <para>
-         Conflicts with the <literal>ROW SHARE</literal>, <literal>ROW
-         EXCLUSIVE</literal>, <literal>SHARE UPDATE
-         EXCLUSIVE</literal>, <literal>SHARE</literal>, <literal>SHARE
-         ROW EXCLUSIVE</literal>, <literal>EXCLUSIVE</literal>, and
-         <literal>ACCESS EXCLUSIVE</literal> lock modes.
-         This mode allows only concurrent <literal>ACCESS SHARE</literal> locks,
-         i.e., only reads from the table can proceed in parallel with a
-         transaction holding this lock mode.
+         与 <literal>ROW SHARE</literal>、<literal>ROW EXCLUSIVE</literal>、<literal>SHARE UPDATE EXCLUSIVE</literal>、<literal>SHARE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。这种模式只允许并发的 <literal>ACCESS SHARE</literal> 锁，也就是说，只有对该表的读操作可以与持有这种锁模式的事务并行执行。
         </para>
 
         <para>
-         This lock mode is not automatically acquired on tables by any
-         <productname>PostgreSQL</productname> command.
+         没有任何 <productname>PostgreSQL</productname> 命令会自动在表上获取这种锁模式。
         </para>
        </listitem>
       </varlistentry>
@@ -899,23 +626,14 @@ ERROR:  could not serialize access due to read/write dependencies among transact
        </term>
        <listitem>
         <para>
-         Conflicts with locks of all modes (<literal>ACCESS
-         SHARE</literal>, <literal>ROW SHARE</literal>, <literal>ROW
-         EXCLUSIVE</literal>, <literal>SHARE UPDATE
-         EXCLUSIVE</literal>, <literal>SHARE</literal>, <literal>SHARE
-         ROW EXCLUSIVE</literal>, <literal>EXCLUSIVE</literal>, and
-         <literal>ACCESS EXCLUSIVE</literal>).
-         This mode guarantees that the
-         holder is the only transaction accessing the table in any way.
+         与所有模式的锁冲突（<literal>ACCESS SHARE</literal>、<literal>ROW SHARE</literal>、<literal>ROW EXCLUSIVE</literal>、<literal>SHARE UPDATE EXCLUSIVE</literal>、<literal>SHARE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal>）。这种模式保证持有者是以任何方式访问该表的唯一事务。
         </para>
 
         <para>
-         Acquired by the <command>ALTER TABLE</>, <command>DROP TABLE</>,
-         <command>TRUNCATE</command>, <command>REINDEX</command>,
-         <command>CLUSTER</command>, and <command>VACUUM FULL</command>
-         commands.
-         This is also the default lock mode for <command>LOCK TABLE</command>
-         statements that do not specify a mode explicitly.
+         由 <command>ALTER TABLE</command>、<command>DROP TABLE</command>、<command>TRUNCATE</command>、
+         <command>REINDEX</command>、<command>CLUSTER</command> 和 <command>VACUUM FULL</command>
+         命令获取。这也是未显式指定模式的 <command>LOCK TABLE</command>
+         语句的默认锁模式。
         </para>
        </listitem>
       </varlistentry>
@@ -923,34 +641,24 @@ ERROR:  could not serialize access due to read/write dependencies among transact
 
      <tip>
       <para>
-       Only an <literal>ACCESS EXCLUSIVE</literal> lock blocks a
-       <command>SELECT</command> (without <option>FOR UPDATE/SHARE</option>)
-       statement.
+       只有 <literal>ACCESS EXCLUSIVE</literal> 锁才会阻塞 <command>SELECT</command>（不带 <option>FOR UPDATE/SHARE</option>）语句。
       </para>
      </tip>
 
    <para>
-    Once acquired, a lock is normally held till end of transaction.  But if a
-    lock is acquired after establishing a savepoint, the lock is released
-    immediately if the savepoint is rolled back to.  This is consistent with
-    the principle that <command>ROLLBACK</> cancels all effects of the
-    commands since the savepoint.  The same holds for locks acquired within a
-    <application>PL/pgSQL</> exception block: an error escape from the block
-    releases locks acquired within it.
+    锁一旦被获取，通常会一直持有到事务结束。但是，如果锁是在建立保存点之后才获取的，那么在回滚到该保存点时，这个锁会立即释放。这与 <command>ROLLBACK</command> 会取消保存点之后所有命令效果的原则是一致的。相同的原则也适用于在 <application>PL/pgSQL</application> 异常块中获取的锁：从该块中因错误跳出时，会释放在块中获取的锁。
    </para>
 
-
-
     <table tocentry="1" id="table-lock-compatibility">
-     <title> Conflicting Lock Modes</title>
+     <title>冲突的锁模式</title>
      <tgroup cols="9">
       <colspec colnum="2" colname="lockst">
       <colspec colnum="9" colname="lockend">
       <spanspec namest="lockst" nameend="lockend" spanname="lockreq">
       <thead>
        <row>
-        <entry morerows="1">Requested Lock Mode</entry>
-        <entry spanname="lockreq">Current Lock Mode</entry>
+        <entry morerows="1">请求的锁模式</entry>
+        <entry spanname="lockreq">当前的锁模式</entry>
        </row>
        <row>
         <entry>ACCESS SHARE</entry>
@@ -1058,479 +766,279 @@ ERROR:  could not serialize access due to read/write dependencies among transact
    </sect2>
 
    <sect2 id="locking-rows">
-    <title>Row-level Locks</title>
+    <title>行级锁</title>
 
     <para>
-     In addition to table-level locks, there are row-level locks, which
-     can be exclusive or shared locks.  An exclusive row-level lock on a
-     specific row is automatically acquired when the row is updated or
-     deleted.  The lock is held until the transaction commits or rolls
-     back, just like table-level locks.  Row-level locks do
-     not affect data querying; they block only <emphasis>writers to the same
-     row</emphasis>.
+     除了表级锁之外，还有行级锁，它可以是排他锁或共享锁。当某一行被更新或删除时，会自动获取该行上的排他行级锁。与表级锁一样，该锁会被持有到事务提交或回滚为止。行级锁不会影响数据查询；它们只会阻塞对同一行的<emphasis>写入者</emphasis>。
     </para>
 
     <para>
-     To acquire an exclusive row-level lock on a row without actually
-     modifying the row, select the row with <command>SELECT FOR
-     UPDATE</command>.  Note that once the row-level lock is acquired,
-     the transaction can update the row multiple times without
-     fear of conflicts.
+     要在不实际修改某一行的情况下获取该行上的排他行级锁，可以使用<command>SELECT FOR
+     UPDATE</command>选择该行。请注意，一旦获取了行级锁，事务就可以多次更新该行而不必担心冲突。
     </para>
 
     <para>
-     To acquire a shared row-level lock on a row, select the row with
-     <command>SELECT FOR SHARE</command>.  A shared lock does not prevent
-     other transactions from acquiring the same shared lock.  However,
-     no transaction is allowed to update, delete, or exclusively lock a
-     row on which any other transaction holds a shared lock.  Any attempt
-     to do so will block until the shared lock(s) have been released.
+     要获取某一行上的共享行级锁，可以使用<command>SELECT FOR SHARE</command>选择该行。共享锁不会阻止其他事务获取相同的共享锁。但是，任何事务都不允许更新、删除或排他锁定其他事务持有共享锁的行。任何这样的尝试都会被阻塞，直到共享锁被释放。
     </para>
 
-    <para>
-     <productname>PostgreSQL</productname> doesn't remember any
-     information about modified rows in memory, so there is no limit on
-     the number of rows locked at one time.  However, locking a row
-     might cause a disk write, e.g., <command>SELECT FOR
-     UPDATE</command> modifies selected rows to mark them locked, and so
-     will result in disk writes.
+         <para>
+     <productname>PostgreSQL</productname> 不会在内存中保存任何关于已修改行的信息，因此一次加锁的行数没有限制。不过，锁定一行可能会导致一次磁盘写；例如，<command>SELECT FOR UPDATE</command> 会修改被选中的行以标记它们已被锁定，因此会产生磁盘写入。
     </para>
 
-    <para>
-     In addition to table and row locks, page-level share/exclusive locks are
-     used to control read/write access to table pages in the shared buffer
-     pool.  These locks are released immediately after a row is fetched or
-     updated.  Application developers normally need not be concerned with
-     page-level locks, but they are mentioned here for completeness.
+         <para>
+     除了表级锁和行级锁之外，还使用页级共享/排他锁来控制对共享缓冲池中表页面的读写访问。这些锁会在取出或更新某一行后立即释放。应用开发者通常不需要关心页级锁，这里提到它们只是为了完整性。
     </para>
 
    </sect2>
 
    <sect2 id="locking-deadlocks">
-    <title>Deadlocks</title>
+    <title>死锁</title>
 
     <indexterm zone="locking-deadlocks">
-     <primary>deadlock</primary>
+     <primary>死锁</primary>
     </indexterm>
 
     <para>
-     The use of explicit locking can increase the likelihood of
-     <firstterm>deadlocks</>, wherein two (or more) transactions each
-     hold locks that the other wants.  For example, if transaction 1
-     acquires an exclusive lock on table A and then tries to acquire
-     an exclusive lock on table B, while transaction 2 has already
-     exclusive-locked table B and now wants an exclusive lock on table
-     A, then neither one can proceed.
-     <productname>PostgreSQL</productname> automatically detects
-     deadlock situations and resolves them by aborting one of the
-     transactions involved, allowing the other(s) to complete.
-     (Exactly which transaction will be aborted is difficult to
-     predict and should not be relied upon.)
+     使用显式锁可能会增加<firstterm>死锁</firstterm>的发生概率。所谓死锁，是指两个（或更多）事务各自持有对方想要的锁。例如，如果事务 1 在表 A 上获得了排他锁，然后试图再获取表 B 上的排他锁，而事务 2 已经持有表 B 上的排他锁，现在又想获取表 A 上的排他锁，那么两者都无法继续进行。<productname>PostgreSQL</productname> 会自动检测死锁，并通过中止其中一个事务来解决这个问题，使其他事务得以继续完成。（具体会中止哪个事务很难预测，也不应依赖这种预测。）
     </para>
 
     <para>
-     Note that deadlocks can also occur as the result of row-level
-     locks (and thus, they can occur even if explicit locking is not
-     used). Consider the case in which two concurrent
-     transactions modify a table. The first transaction executes:
+     还要注意，死锁也可能由于行级锁而发生（因此，即使没有使用显式锁，它们也可能出现）。考虑下面这种情况：两个并发事务都在修改一个表。第一个事务执行：
 
 <screen>
 UPDATE accounts SET balance = balance + 100.00 WHERE acctnum = 11111;
 </screen>
 
-     This acquires a row-level lock on the row with the specified
-     account number. Then, the second transaction executes:
+     这会在指定账号的那一行上获取一个行级锁。然后第二个事务执行：
 
 <screen>
 UPDATE accounts SET balance = balance + 100.00 WHERE acctnum = 22222;
 UPDATE accounts SET balance = balance - 100.00 WHERE acctnum = 11111;
 </screen>
 
-     The first <command>UPDATE</command> statement successfully
-     acquires a row-level lock on the specified row, so it succeeds in
-     updating that row. However, the second <command>UPDATE</command>
-     statement finds that the row it is attempting to update has
-     already been locked, so it waits for the transaction that
-     acquired the lock to complete. Transaction two is now waiting on
-     transaction one to complete before it continues execution. Now,
-     transaction one executes:
+     第一条 <command>UPDATE</command> 语句成功地在指定行上获取了一个行级锁，因此它成功更新了那一行。然而，第二条 <command>UPDATE</command> 语句发现它试图更新的行已经被锁住了，于是它等待持有该锁的事务结束。此时，事务二正在等待事务一结束之后才能继续执行。现在，事务一执行：
 
 <screen>
 UPDATE accounts SET balance = balance - 100.00 WHERE acctnum = 22222;
 </screen>
 
-     Transaction one attempts to acquire a row-level lock on the
-     specified row, but it cannot: transaction two already holds such
-     a lock. So it waits for transaction two to complete. Thus,
-     transaction one is blocked on transaction two, and transaction
-     two is blocked on transaction one: a deadlock
-     condition. <productname>PostgreSQL</productname> will detect this
-     situation and abort one of the transactions.
+     事务一试图在指定行上获取一个行级锁，但它做不到，因为事务二已经持有了这个锁。于是它必须等待事务二完成。这样一来，事务一被事务二阻塞，而事务二又被事务一阻塞：死锁条件形成了。<productname>PostgreSQL</productname> 会检测到这种情况，并中止其中一个事务。
     </para>
 
     <para>
-     The best defense against deadlocks is generally to avoid them by
-     being certain that all applications using a database acquire
-     locks on multiple objects in a consistent order. In the example
-     above, if both transactions
-     had updated the rows in the same order, no deadlock would have
-     occurred. One should also ensure that the first lock acquired on
-     an object in a transaction is the most restrictive mode that will be
-     needed for that object.  If it is not feasible to verify this in
-     advance, then deadlocks can be handled on-the-fly by retrying
-     transactions that abort due to deadlocks.
+     防止死锁的最好办法通常是避免它们出现，也就是确保所有使用同一数据库的应用都以一致的顺序在多个对象上获取锁。在上面的例子中，如果两个事务都是按相同顺序更新这些行，就不会发生死锁。还应确保事务在某个对象上获取的第一个锁，就是该对象所需的最严格锁模式。如果事先无法验证这一点，那么就应通过重试因死锁而中止的事务来动态处理死锁。
     </para>
 
     <para>
-     So long as no deadlock situation is detected, a transaction seeking
-     either a table-level or row-level lock will wait indefinitely for
-     conflicting locks to be released.  This means it is a bad idea for
-     applications to hold transactions open for long periods of time
-     (e.g., while waiting for user input).
+     只要没有检测到死锁，寻求表级锁或行级锁的事务就会无限期等待冲突锁被释放。这意味着让应用长时间保持事务打开并不是好主意（例如等待用户输入时）。
     </para>
    </sect2>
 
    <sect2 id="advisory-locks">
-    <title>Advisory Locks</title>
+    <title>咨询锁</title>
 
     <indexterm zone="advisory-locks">
-     <primary>advisory lock</primary>
+     <primary>咨询锁</primary>
     </indexterm>
 
     <indexterm zone="advisory-locks">
-     <primary>lock</primary>
-     <secondary>advisory</secondary>
+     <primary>锁</primary>
+     <secondary>咨询</secondary>
     </indexterm>
 
     <para>
-     <productname>PostgreSQL</productname> provides a means for
-     creating locks that have application-defined meanings.  These are
-     called <firstterm>advisory locks</>, because the system does not
-     enforce their use &mdash; it is up to the application to use them
-     correctly.  Advisory locks can be useful for locking strategies
-     that are an awkward fit for the MVCC model.
-     For example, a common use of advisory locks is to emulate pessimistic
-     locking strategies typical of so-called <quote>flat file</> data
-     management systems.
-     While a flag stored in a table could be used for the same purpose,
-     advisory locks are faster, avoid table bloat, and are automatically
-     cleaned up by the server at the end of the session.
+     <productname>PostgreSQL</productname> 提供了一种创建由应用自行定义含义的锁的方法。这类锁被称为<firstterm>咨询锁</firstterm>，因为系统并不强制要求使用它们 &mdash; 是否正确使用完全取决于应用。咨询锁对于那些与 MVCC 模型不太契合的加锁策略非常有用。例如，咨询锁的一个常见用途是模拟所谓 <quote>平面文件</quote> 数据管理系统中典型的悲观锁策略。虽然也可以通过在表中存储一个标志位来达到相同目的，但咨询锁速度更快，可以避免表膨胀，并且会在会话结束时由服务器自动清理。
     </para>
 
     <para>
-     There are two ways to acquire an advisory lock in
-     <productname>PostgreSQL</productname>: at session level or at
-     transaction level.
-     Once acquired at session level, an advisory lock is held until
-     explicitly released or the session ends.  Unlike standard lock requests,
-     session-level advisory lock requests do not honor transaction semantics:
-     a lock acquired during a transaction that is later rolled back will still
-     be held following the rollback, and likewise an unlock is effective even
-     if the calling transaction fails later.  A lock can be acquired multiple
-     times by its owning process; for each completed lock request there must
-     be a corresponding unlock request before the lock is actually released.
-     Transaction-level lock requests, on the other hand, behave more like
-     regular lock requests: they are automatically released at the end of the
-     transaction, and there is no explicit unlock operation.  This behavior
-     is often more convenient than the session-level behavior for short-term
-     usage of an advisory lock.
-     Session-level and transaction-level lock requests for the same advisory
-     lock identifier will block each other in the expected way.
-     If a session already holds a given advisory lock, additional requests by
-     it will always succeed, even if other sessions are awaiting the lock; this
-     statement is true regardless of whether the existing lock hold and new
-     request are at session level or transaction level.
+     在 <productname>PostgreSQL</productname> 中获取咨询锁有两种方式：会话级和事务级。
+     会话级咨询锁一旦获取，就会一直保持到显式释放或会话结束。不同于标准锁请求，
+     会话级咨询锁请求不遵守事务语义：在随后回滚的事务中获取的锁，回滚后仍会保持；
+     同样，即使发出解锁请求的事务后来失败，解锁依然有效。一个进程可以多次获取同一个锁；
+     每成功一次加锁请求，都必须有对应的解锁请求，锁才会真正释放。
+     另一方面，事务级锁请求更像普通锁请求：它们会在事务结束时自动释放，而且没有显式解锁操作。
+     对于短期使用咨询锁，这种行为通常比会话级行为更方便。针对同一咨询锁标识符的会话级和事务级锁请求，
+     会按预期相互阻塞。如果某个会话已经持有给定的咨询锁，那么它发出的附加请求总会成功，
+     即使其他会话正在等待该锁；无论现有锁和新请求属于会话级还是事务级，都是如此。
     </para>
 
     <para>
-     Like all locks in
-     <productname>PostgreSQL</productname>, a complete list of advisory locks
-     currently held by any session can be found in the <link
-     linkend="view-pg-locks"><structname>pg_locks</structname></link> system
-     view.
+     和 <productname>PostgreSQL</productname> 中的所有锁一样，任何会话当前持有的咨询锁完整列表，
+     都可以在<link linkend="view-pg-locks"><structname>pg_locks</structname></link>系统视图中找到。
     </para>
 
     <para>
-     Both advisory locks and regular locks are stored in a shared memory
-     pool whose size is defined by the configuration variables
-     <xref linkend="guc-max-locks-per-transaction"> and
-     <xref linkend="guc-max-connections">.
-     Care must be taken not to exhaust this
-     memory or the server will be unable to grant any locks at all.
-     This imposes an upper limit on the number of advisory locks
-     grantable by the server, typically in the tens to hundreds of thousands
-     depending on how the server is configured.
+     咨询锁和普通锁都存储在一个共享内存池中，其大小由配置变量 <xref linkend="guc-max-locks-per-transaction"> 和 <xref linkend="guc-max-connections"> 定义。必须小心不要耗尽这部分内存，否则服务器将根本无法再授予任何锁。这也为服务器可授予的咨询锁数量设定了上限，具体通常在数万到数十万个之间，取决于服务器的配置。
     </para>
 
     <para>
-     In certain cases using advisory locking methods, especially in queries
-     involving explicit ordering and <literal>LIMIT</> clauses, care must be
-     taken to control the locks acquired because of the order in which SQL
-     expressions are evaluated.  For example:
+     在某些使用咨询锁的方法中，特别是涉及显式排序和 <literal>LIMIT</literal> 子句的查询，
+     必须注意控制由于 SQL 表达式求值顺序而获取的锁。例如：
 <screen>
-SELECT pg_advisory_lock(id) FROM foo WHERE id = 12345; -- ok
-SELECT pg_advisory_lock(id) FROM foo WHERE id &gt; 12345 LIMIT 100; -- danger!
+SELECT pg_advisory_lock(id) FROM foo WHERE id = 12345; -- 可以
+SELECT pg_advisory_lock(id) FROM foo WHERE id &gt; 12345 LIMIT 100; -- 危险！
 SELECT pg_advisory_lock(q.id) FROM
 (
   SELECT id FROM foo WHERE id &gt; 12345 LIMIT 100
-) q; -- ok
+) q; -- 可以
 </screen>
-     In the above queries, the second form is dangerous because the
-     <literal>LIMIT</> is not guaranteed to be applied before the locking
-     function is executed.  This might cause some locks to be acquired
-     that the application was not expecting, and hence would fail to release
-     (until it ends the session).
-     From the point of view of the application, such locks
-     would be dangling, although still viewable in
-     <structname>pg_locks</structname>.
+     在上面的查询中，第二种形式是危险的，因为不能保证在执行加锁函数之前先应用 <literal>LIMIT</literal>。
+     这可能导致获取了一些应用并未预期的锁，因此应用也不会去释放它们（直到会话结束）。
+     从应用的角度看，这类锁会变成悬而未清的锁，尽管仍然可以在 <structname>pg_locks</structname> 中看到。
     </para>
 
     <para>
-     The functions provided to manipulate advisory locks are described in
-     <xref linkend="functions-advisory-locks">.
+     用于操作咨询锁的函数见 <xref linkend="functions-advisory-locks">。
     </para>
    </sect2>
 
   </sect1>
 
   <sect1 id="applevel-consistency">
-   <title>Data Consistency Checks at the Application Level</title>
+   <title>应用级别的数据一致性检查</title>
 
    <para>
-    It is very difficult to enforce business rules regarding data integrity
-    using Read Committed transactions because the view of the data is
-    shifting with each statement, and even a single statement may not
-    restrict itself to the statement's snapshot if a write conflict occurs.
+    用读已提交事务强制执行有关数据完整性的业务规则非常困难，因为数据视图会随每条语句而变化，
+    而且一旦发生写冲突，即使是单条语句也未必局限于该语句自己的快照。
    </para>
 
    <para>
-    While a Repeatable Read transaction has a stable view of the data
-    throughout its execution, there is a subtle issue with using
-    <acronym>MVCC</acronym> snapshots for data consistency checks, involving
-    something known as <firstterm>read/write conflicts</firstterm>.
-    If one transaction writes data and a concurrent transaction attempts
-    to read the same data (whether before or after the write), it cannot
-    see the work of the other transaction.  The reader then appears to have
-    executed first regardless of which started first or which committed
-    first.  If that is as far as it goes, there is no problem, but
-    if the reader also writes data which is read by a concurrent transaction
-    there is now a transaction which appears to have run before either of
-    the previously mentioned transactions.  If the transaction which appears
-    to have executed last actually commits first, it is very easy for a
-    cycle to appear in a graph of the order of execution of the transactions.
-    When such a cycle appears, integrity checks will not work correctly
-    without some help.
+    虽然可重复读事务在整个执行期间都具有稳定的数据视图，但在使用 <acronym>MVCC</acronym> 快照进行数据一致性检查时，还存在一个微妙问题，即所谓的<firstterm>读/写冲突</firstterm>。如果一个事务写入数据，而并发事务试图读取相同的数据（无论是在写入之前还是之后），它都看不到另一个事务的工作。于是，读取者看起来就像是先执行的一方，而不管究竟是谁先启动，也不管谁先提交。如果事情只停留在这一步，就没有问题；但如果读取者还写入了数据，而这些数据又被另一个并发事务读取，那么现在就会有一个事务看起来像是在前面提到的任一事务之前执行。如果看起来最后执行的事务实际上最先提交，就很容易在事务执行顺序图中形成一个环。一旦出现这样的环，不借助额外机制，完整性检查就无法正确工作。
    </para>
 
    <para>
-    As mentioned in <xref linkend="xact-serializable">, Serializable
-    transactions are just Repeatable Read transactions which add
-    non-blocking monitoring for dangerous patterns of read/write conflicts.
-    When a pattern is detected which could cause a cycle in the apparent
-    order of execution, one of the transactions involved is rolled back to
-    break the cycle.
+    正如 <xref linkend="xact-serializable"> 中提到的，可串行化事务其实就是在可重复读事务的基础上，增加了对危险读/写冲突模式的非阻塞监控。当检测到某种模式可能在表面执行顺序中形成一个环时，其中一个相关事务就会被回滚，以打破这个环。
    </para>
 
    <sect2 id="serializable-consistency">
-    <title>Enforcing Consistency With Serializable Transactions</title>
+    <title>用可串行化事务强制一致性</title>
 
     <para>
-     If the Serializable transaction isolation level is used for all writes
-     and for all reads which need a consistent view of the data, no other
-     effort is required to ensure consistency.  Software from other
-     environments which is written to use serializable transactions to
-     ensure consistency should <quote>just work</quote> in this regard in
-     <productname>PostgreSQL</productname>.
+     如果对所有写操作，以及所有需要一致数据视图的读操作都使用可串行化事务隔离级别，
+     那么不需要额外工作就能确保一致性。从其他环境移植而来、按使用可串行化事务来保证一致性而编写的软件，
+     在这方面应当能够在 <productname>PostgreSQL</productname> 中<quote>正常工作</quote>。
     </para>
 
     <para>
-     When using this technique, it will avoid creating an unnecessary burden
-     for application programmers if the application software goes through a
-     framework which automatically retries transactions which are rolled
-     back with a serialization failure.  It may be a good idea to set
-     <literal>default_transaction_isolation</> to <literal>serializable</>.
-     It would also be wise to take some action to ensure that no other
-     transaction isolation level is used, either inadvertently or to
-     subvert integrity checks, through checks of the transaction isolation
-     level in triggers.
+     使用这种技术时，如果应用软件通过某个框架运行，并由该框架自动重试因串行化失败而回滚的事务，就可以避免给应用程序员带来不必要的负担。把 <literal>default_transaction_isolation</literal> 设置为 <literal>serializable</literal> 可能是个好主意。通过在触发器中检查事务隔离级别来采取某些措施，以确保不会因为疏忽或为了绕过完整性检查而使用其他事务隔离级别，也是明智的。
     </para>
 
     <para>
-     See <xref linkend="xact-serializable"> for performance suggestions.
+     性能方面的建议见 <xref linkend="xact-serializable">。
     </para>
 
     <warning>
      <para>
-      This level of integrity protection using Serializable transactions
-      does not yet extend to hot standby mode (<xref linkend="hot-standby">).
-      Because of that, those using hot standby may want to use Repeatable
-      Read and explicit locking on the master.
+      利用可串行化事务提供的这一层完整性保护，尚未扩展到热备模式（<xref linkend="hot-standby">）。
+      因此，使用热备的用户可能希望在主库上使用可重复读和显式锁定。
      </para>
     </warning>
    </sect2>
 
    <sect2 id="non-serializable-consistency">
-    <title>Enforcing Consistency With Explicit Blocking Locks</title>
+    <title>使用显式阻塞锁强制一致性</title>
 
     <para>
-     When non-serializable writes are possible,
-     to ensure the current validity of a row and protect it against
-     concurrent updates one must use <command>SELECT FOR UPDATE</command>,
-     <command>SELECT FOR SHARE</command>, or an appropriate <command>LOCK
-     TABLE</command> statement.  (<command>SELECT FOR UPDATE</command>
-     and <command>SELECT FOR SHARE</command> lock just the
-     returned rows against concurrent updates, while <command>LOCK
-     TABLE</command> locks the whole table.)  This should be taken into
-     account when porting applications to
-     <productname>PostgreSQL</productname> from other environments.
+     当存在非可串行化写入时，要确保某一行当前仍然有效，并保护它不受并发更新影响，
+     就必须使用 <command>SELECT FOR UPDATE</command>、<command>SELECT FOR SHARE</command>
+     或适当的 <command>LOCK TABLE</command> 语句。
+     （<command>SELECT FOR UPDATE</command> 和 <command>SELECT FOR SHARE</command>
+     只锁定返回的行以防止并发更新，而 <command>LOCK TABLE</command> 会锁住整张表。）
+     从其他环境向 <productname>PostgreSQL</productname> 迁移应用时，应当考虑这一点。
     </para>
 
     <para>
-     Also of note to those converting from other environments is the fact
-     that <command>SELECT FOR UPDATE</command> does not ensure that a
-     concurrent transaction will not update or delete a selected row.
-     To do that in <productname>PostgreSQL</productname> you must actually
-     update the row, even if no values need to be changed.
-     <command>SELECT FOR UPDATE</command> <emphasis>temporarily blocks</emphasis>
-     other transactions from acquiring the same lock or executing an
-     <command>UPDATE</command> or <command>DELETE</command> which would
-     affect the locked row, but once the transaction holding this lock
-     commits or rolls back, a blocked transaction will proceed with the
-     conflicting operation unless an actual <command>UPDATE</command> of
-     the row was performed while the lock was held.
+     对于从其他环境迁移而来的用户，还需要注意：<command>SELECT FOR UPDATE</command>
+     并不能保证并发事务不会更新或删除被选中的行。要在 <productname>PostgreSQL</productname>
+     中做到这一点，必须真正去更新该行，即使没有任何值需要改变。
+     <command>SELECT FOR UPDATE</command> 只是<emphasis>临时阻塞</emphasis>其他事务，
+     使它们不能获取同样的锁，也不能执行会影响被锁定行的 <command>UPDATE</command> 或
+     <command>DELETE</command>；但是一旦持有该锁的事务提交或回滚，被阻塞的事务就会继续执行冲突操作，
+     除非在持锁期间已经对该行执行了实际的 <command>UPDATE</command>。
     </para>
 
     <para>
-     Global validity checks require extra thought under
-     non-serializable <acronym>MVCC</acronym>.
-     For example, a banking application might wish to check that the sum of
-     all credits in one table equals the sum of debits in another table,
-     when both tables are being actively updated.  Comparing the results of two
-     successive <literal>SELECT sum(...)</literal> commands will not work reliably in
-     Read Committed mode, since the second query will likely include the results
-     of transactions not counted by the first.  Doing the two sums in a
-     single repeatable read transaction will give an accurate picture of only the
-     effects of transactions that committed before the repeatable read transaction
-     started &mdash; but one might legitimately wonder whether the answer is still
-     relevant by the time it is delivered.  If the repeatable read transaction
-     itself applied some changes before trying to make the consistency check,
-     the usefulness of the check becomes even more debatable, since now it
-     includes some but not all post-transaction-start changes.  In such cases
-     a careful person might wish to lock all tables needed for the check,
-     in order to get an indisputable picture of current reality.  A
-     <literal>SHARE</> mode (or higher) lock guarantees that there are no
-     uncommitted changes in the locked table, other than those of the current
-     transaction.
+     在非可串行化的 <acronym>MVCC</acronym> 环境下，全局有效性检查需要额外考虑。
+     例如，一个银行应用可能希望检查一个表中的贷方金额总和等于另一个表中的借方金额总和，
+     而这两个表都在被活跃更新。在读已提交模式下，比较两个连续的 <literal>SELECT sum(...)</literal>
+     命令的结果并不可靠，因为第二个查询很可能会包含第一个查询没有统计到的事务提交结果。
+     在单个可重复读事务中完成这两次求和，只能准确反映在该可重复读事务开始之前已提交事务的效果
+     &mdash; 但等到结果交付时，人们完全可能合理地怀疑这个答案是否仍然相关。
+     如果可重复读事务本身在尝试进行一致性检查之前已经应用了某些更改，那么这种检查的意义就更加值得商榷，
+     因为此时它包含了事务开始后的一部分而不是全部更改。在这种情况下，谨慎的做法可能是锁定执行检查所需的所有表，
+     以获得当前真实状态的无可争议图景。<literal>SHARE</literal> 模式（或更高）的锁能够保证，
+     在被锁定的表中，除了当前事务自身的更改之外，没有其他未提交更改。
     </para>
 
     <para>
-     Note also that if one is relying on explicit locking to prevent concurrent
-     changes, one should either use Read Committed mode, or in Repeatable Read
-     mode be careful to obtain
-     locks before performing queries.  A lock obtained by a
-     repeatable read transaction guarantees that no other transactions modifying
-     the table are still running, but if the snapshot seen by the
-     transaction predates obtaining the lock, it might predate some now-committed
-     changes in the table.  A repeatable read transaction's snapshot is actually
-     frozen at the start of its first query or data-modification command
-     (<literal>SELECT</>, <literal>INSERT</>,
-     <literal>UPDATE</>, or <literal>DELETE</>), so
-     it is possible to obtain locks explicitly before the snapshot is
-     frozen.
+     注意，如果依赖显式锁定来防止并发更改，就应当使用读已提交模式，
+     或者在可重复读模式下小心地在执行查询之前先获取锁。
+     可重复读事务获得的锁能够保证没有其他修改该表的事务仍在运行，
+     但如果该事务看到的快照早于获取锁的时刻，那么它看到的快照也可能早于表中某些现在已经提交的更改。
+     可重复读事务的快照实际上是在其第一条查询或数据修改命令
+     （<literal>SELECT</literal>、<literal>INSERT</literal>、<literal>UPDATE</literal>、
+     <literal>DELETE</literal>）开始时被冻结的，
+     因此可以在快照冻结之前显式获取锁。
     </para>
    </sect2>
   </sect1>
 
   <sect1 id="mvcc-caveats">
-   <title>Caveats</title>
+   <title>注意事项</title>
 
    <para>
-    Some DDL commands, currently only <xref linkend="sql-truncate"> and the
-    table-rewriting forms of <xref linkend="sql-altertable">, are not
-    MVCC-safe.  This means that after the truncation or rewrite commits, the
-    table will appear empty to concurrent transactions, if they are using a
-    snapshot taken before the DDL command committed.  This will only be an
-    issue for a transaction that did not access the table in question
-    before the DDL command started &mdash; any transaction that has done so
-    would hold at least an <literal>ACCESS SHARE</literal> table lock,
-    which would block the DDL command until that transaction completes.
-    So these commands will not cause any apparent inconsistency in the
-    table contents for successive queries on the target table, but they
-    could cause visible inconsistency between the contents of the target
-    table and other tables in the database.
+    一些 DDL 命令（目前只有 <xref linkend="sql-truncate"> 和会重写表的 <xref linkend="sql-altertable"> 形式）不是 MVCC 安全的。这意味着在截断或重写提交之后，如果并发事务使用的是在该 DDL 命令提交之前取得的快照，那么该表对它们来说会表现为空表。这只会对那些在 DDL 命令开始前没有访问过相关表的事务造成问题 &mdash; 任何在 DDL 命令开始前访问过该表的事务，都会持有至少一个 <literal>ACCESS SHARE</literal> 表锁，从而阻塞该 DDL 命令直到该事务完成。因此，这些命令不会在针对目标表的连续查询中造成明显的表内容不一致，但它们可能会导致目标表内容与数据库中其他表内容之间出现可见的不一致。
    </para>
 
    <para>
-    Support for the Serializable transaction isolation level has not yet
-    been added to Hot Standby replication targets (described in
-    <xref linkend="hot-standby">).  The strictest isolation level currently
-    supported in hot standby mode is Repeatable Read.  While performing all
-    permanent database writes within Serializable transactions on the
-    master will ensure that all standbys will eventually reach a consistent
-    state, a Repeatable Read transaction run on the standby can sometimes
-    see a transient state that is inconsistent with any serial execution
-    of the transactions on the master.
+    对可串行化事务隔离级别的支持尚未添加到热备复制目标（见 <xref linkend="hot-standby">）。
+    当前热备模式下支持的最严格隔离级别是可重复读。
+    虽然在主库上把所有永久数据库写操作都放在可串行化事务中执行，能够确保所有备库最终达到一致状态，但在备库上运行的可重复读事务，有时仍可能看到一种瞬态状态，而这种状态与主库上事务的任何串行执行都不一致。
    </para>
-  </sect1>
+
+     </sect1>
 
   <sect1 id="locking-indexes">
-   <title>Locking and Indexes</title>
+   <title>锁定和索引</title>
 
    <indexterm zone="locking-indexes">
-    <primary>index</primary>
-    <secondary>locks</secondary>
+    <primary>索引</primary>
+    <secondary>锁</secondary>
    </indexterm>
 
    <para>
-    Though <productname>PostgreSQL</productname>
-    provides nonblocking read/write access to table
-    data, nonblocking read/write access is not currently offered for every
-    index access method implemented
-    in <productname>PostgreSQL</productname>.
-    The various index types are handled as follows:
+    尽管 <productname>PostgreSQL</productname> 为表数据提供了非阻塞的读写访问，但 <productname>PostgreSQL</productname> 当前实现的索引访问方法并不是每一种都能提供非阻塞的读写访问。各种索引类型的处理方式如下：
 
     <variablelist>
      <varlistentry>
       <term>
-       B-tree and <acronym>GiST</acronym> indexes
+       B-树和 <acronym>GiST</acronym> 索引
       </term>
       <listitem>
        <para>
-        Short-term share/exclusive page-level locks are used for
-        read/write access. Locks are released immediately after each
-        index row is fetched or inserted.  These index types provide
-        the highest concurrency without deadlock conditions.
+        读写访问使用短期的页级共享/排他锁。每个索引行在被取出或插入之后，锁都会立即释放。这些索引类型提供最高的并发性，并且不会产生死锁。
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
       <term>
-       Hash indexes
+       Hash 索引
       </term>
       <listitem>
        <para>
-        Share/exclusive hash-bucket-level locks are used for read/write
-        access.  Locks are released after the whole bucket is processed.
-        Bucket-level locks provide better concurrency than index-level
-        ones, but deadlock is possible since the locks are held longer
-        than one index operation.
+        读写访问使用的是 Hash 桶级共享/排他锁。锁会在整个 Hash 桶处理完成后释放。桶级锁比索引级锁具有更好的并发性，但也可能产生死锁，因为它们的持有时间比一次索引操作更长。
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
       <term>
-       <acronym>GIN</acronym> indexes
+       <acronym>GIN</acronym> 索引
       </term>
       <listitem>
        <para>
-        Short-term share/exclusive page-level locks are used for
-        read/write access. Locks are released immediately after each
-        index row is fetched or inserted. But note that insertion of a
-        GIN-indexed value usually produces several index key insertions
-        per row, so GIN might do substantial work for a single value's
-        insertion.
+        读写访问使用短期的页级共享/排他锁。每个索引行在被取出或插入之后，锁都会立即释放。但要注意，插入一个使用 GIN 索引的值通常会导致每行产生多个索引键插入，因此 GIN 可能为了插入单个值而做大量工作。
        </para>
       </listitem>
      </varlistentry>
@@ -1538,12 +1046,7 @@ SELECT pg_advisory_lock(q.id) FROM
    </para>
 
    <para>
-    Currently, B-tree indexes offer the best performance for concurrent
-    applications; since they also have more features than hash
-    indexes, they are the recommended index type for concurrent
-    applications that need to index scalar data. When dealing with
-    non-scalar data, B-trees are not useful, and GiST or GIN indexes should
-    be used instead.
+    目前，B-树索引为并发应用提供了最佳性能；由于它们还比 Hash 索引拥有更多特性，因此对于需要为标量数据建立索引的并发应用，推荐使用 B-树索引类型。处理非标量数据时，B-树就不再适用，此时应改用 GiST 或 GIN 索引。
    </para>
   </sect1>
  </chapter>
