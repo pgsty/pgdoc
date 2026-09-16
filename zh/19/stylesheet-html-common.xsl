@@ -290,6 +290,11 @@ set       toc,title
 <xsl:template name="object.id">
   <xsl:param name="object" select="."/>
   <xsl:choose>
+    <!-- %S and %s have distinct source IDs.  Preserve the former so the
+         legacy uppercase HTML anchors do not collide. -->
+    <xsl:when test="$object/@id = 'app-psql-prompting-S'">
+      <xsl:value-of select="$object/@id"/>
+    </xsl:when>
     <xsl:when test="$object/@id">
       <xsl:value-of select="translate($object/@id, &lowercase;, &uppercase;)"/>
     </xsl:when>

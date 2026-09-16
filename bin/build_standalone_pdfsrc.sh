@@ -547,6 +547,10 @@ fi
 
 (cd "${work_tree}" && XSLTPROCFLAGS="${xslprocflags_extra}" "${MAKE_CMD}" -C doc/src/sgml DOC_LANG="${lang}" "postgres-${paper}.fo" >/dev/null)
 
+if [[ "${lang}" == "zh" ]]; then
+  python3 "${SCRIPT_DIR}/prepare_chinese_pdf.py" "${fo_path}" --cjk-family "${pdf_cjk_family}"
+fi
+
 echo "Rendering PDF (${lang} ${version}, ${paper}) ..."
 export FOP_OPTS="${FOP_OPTS:--Xmx1500m}"
 
