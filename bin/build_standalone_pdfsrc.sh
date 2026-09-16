@@ -449,6 +449,11 @@ if [[ "${lang}" != "en" ]]; then
     "${work_tree}/doc/src/sgml/Makefile"
 fi
 
+# PG <= 9.1 doc makefiles lack the include-xslt-index marked section and the
+# widened SDATA entity fixup in the SGML->XML step (both needed for an
+# index-bearing, accent-clean postgres.xml).  Backport them; no-op for PG >= 9.2.
+python3 "${SCRIPT_DIR}/patch_legacy_xsl_pipeline.py" "${work_tree}/doc/src/sgml"
+
 # Incremental generated-text overlays are kept with each Chinese source.
 # Generate from the selected upstream inputs before applying exact-hash edits.
 if [[ "${lang}" == "zh" && -f "${doc_src_root}/localize-generated.py" ]]; then
