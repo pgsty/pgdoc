@@ -1255,25 +1255,47 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
   <title>架构</title>
 
   <para>
-   逻辑复制首先复制发布端数据库中数据的快照。完成后，发布端的变更会随着发生实时发送给订阅端。订阅端按照发布端提交的顺序应用数据，因此对于单个订阅中的发布，可以保证事务一致性。
+   逻辑复制首先复制发布者数据库上的数据快照。完成后，发布者上的变更会在发生时
+   实时发送给订阅者。订阅者会按照发布者上提交的顺序应用数据，因此对于单个订阅
+   中的任何发布，可以保证事务一致性。
   </para>
 
   <para>
-   逻辑复制采用类似于物理流复制的架构（见<xref linkend="streaming-replication"/>）。它由<quote>walsender</quote>和<quote>apply</quote>进程实现。walsender 进程启动 WAL 的逻辑解码（见<xref linkend="logicaldecoding"/>），并加载标准逻辑解码输出插件（<literal>pgoutput</literal>）。该插件将从 WAL 读取的变更转换为逻辑复制协议（见<xref linkend="protocol-logical-replication"/>），并根据发布规范过滤数据。然后使用流复制协议将数据持续传输给 应用工作进程，该工作进程将数据映射到本地表，并按正确的事务顺序逐一应用每个变更。
+   逻辑复制采用了与物理流复制类似的架构（见
+   <xref linkend="streaming-replication"/>）。它由 <literal>walsender</literal>
+   和 <literal>apply</literal> 进程实现。<literal>walsender</literal> 进程会对 WAL
+   执行逻辑解码（见 <xref linkend="logicaldecoding"/>），并装载标准逻辑解码输出插件
+   （<literal>pgoutput</literal>）。该插件会把从 WAL 中读取到的变更转换为逻辑复制协议
+   （见 <xref linkend="protocol-logical-replication"/>），并按照发布规范过滤数据。
+   然后，数据会通过流复制协议持续传输给应用工作进程，由它把数据映射到本地表，
+   并在收到时按正确的事务顺序应用各项变更。
   </para>
 
   <para>
-   订阅端数据库上的 应用进程总是在<link linkend="guc-session-replication-role"><varname>session_replication_role</varname></link>设置为<literal>replica</literal>的情况下运行。这意味着默认情况下，触发器和规则不会在订阅端触发。用户可以选择使用<link linkend="sql-altertable"><command>ALTER TABLE</command></link>命令和<literal>ENABLE TRIGGER</literal>及<literal>ENABLE RULE</literal>子句在表上启用触发器和规则。
+   订阅端数据库上的应用进程始终在
+   <link linkend="guc-session-replication-role"><varname>session_replication_role</varname></link>
+   设置为 <literal>replica</literal> 的情况下运行。这意味着默认情况下，触发器和规则
+   不会在订阅端触发。用户可以选择使用
+   <link linkend="sql-altertable"><command>ALTER TABLE</command></link> 命令以及
+   <literal>ENABLE TRIGGER</literal> 和 <literal>ENABLE RULE</literal> 子句，
+   在表上启用触发器和规则。
   </para>
 
   <para>
-   逻辑复制的应用进程目前只触发行触发器，不触发语句触发器。但初始表同步的实现方式类似于<command>COPY</command>命令，因此会触发<command>INSERT</command>的行触发器和语句触发器。
+   逻辑复制应用进程目前只会触发行触发器，不会触发语句触发器。不过，初始表同步的
+   实现方式类似于 <command>COPY</command> 命令，因此会为
+   <command>INSERT</command> 同时触发行触发器和语句触发器。
   </para>
 
   <sect2 id="logical-replication-snapshot">
     <title>初始快照</title>
     <para>
-     已订阅表中的初始数据由一种特殊的应用进程的并行实例建立快照并复制。该进程将创建自己的复制槽并复制现有数据。一旦复制完成，表的内容就对其他后端可见了。现有数据复制完成后，工作进程进入同步模式，通过使用标准逻辑复制流式传输初始数据复制期间发生的所有变更，确保该表与主应用进程同步。在此同步阶段，变更会按照在发布端发生的顺序被应用和提交。同步完成后，该表的复制控制权交还给主应用进程，此后复制照常继续。
+     对现有订阅表中的初始数据，会取快照并由一种特殊应用进程的一个并行实例来复制。
+     该进程会创建自己的复制槽，并复制现有数据。复制一完成，该表内容就会对其他后端可见。
+     现有数据复制完成后，工作进程会进入同步模式，通过标准逻辑复制流式发送在初始数据
+     复制期间发生的任何变更，使该表与主应用进程达到同步状态。在这一同步阶段，
+     变更会按照它们在发布端发生的顺序被应用和提交。同步完成后，该表的复制控制权
+     会交还给主应用进程，之后复制将照常继续。
     </para>
    <note>
      <para>
