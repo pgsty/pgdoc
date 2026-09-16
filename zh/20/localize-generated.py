@@ -26,7 +26,7 @@ def main():
             raise ValueError(f'{name}: regenerated PG20 input hash mismatch')
         text = data.decode()
         for edit in record['edits']:
-            if text.count(edit['english']) != 1:
+            if text.count(edit['english']) != edit.get('expected_count', 1):
                 raise ValueError(f'{name}: generated translation boundary mismatch')
             text = text.replace(edit['english'], edit['chinese'])
         if digest(text.encode()) != record['output_sha256']:

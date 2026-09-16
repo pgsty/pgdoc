@@ -1,329 +1,49 @@
-# PG10—PG20 统一校准：总结与续作交接
+# PG10—PG20 校准交接：当前续作入口
 
-交接时间：2026-09-16T08:07:37+08:00。本次按用户要求暂停校准、整理交接；**全书任务没有完成**。
+更新于 2026-09-16。**任务正在继续，正文尚未全部闭合，最终构建未完成。** 本文替代旧的事务草稿断点；不要按旧交接重新做已完成工作。
 
-**2026-09-16 存储清理更新：** outputs 从 293.42 GiB 降至 97.92 GiB，减少 195.50 GiB。168 个旧 checkpoint 的大型解析缓存已压缩归档并逐文件校验，233 个源码展开工作区已删除；当前 checkpoint、源文快照、阅读证据和未应用草稿保留。旧脚本若依赖散装节点缓存，先按 [清理记录与恢复方法](/Users/vonng/pgsty/pgdoc/docs/calibration-outputs-cleanup-20260916.md) 取回所需文件；本交接的校准进度不变。
+## 用户当前要求
 
-## 最新执行断点：2026-09-16 晚间，回归测试章完成
+从 PG18 按顺序核对当前中英文。发现任何问题，立即核对另外十版各自英文，修复全部适用位置并保留版本差异。继续完成正文、跨版本一致性检查及最终构建。**不扫描 Git 历史、不追索提交归属、不重建历史过程台账。** Git 仅用于当前状态／差异检查、保护共享修改和已经授权的阶段提交。
 
-本节覆盖下文原交接中的旧状态；任务正在继续，全书与最终构建尚未完成。
+工作目录 `/Users/vonng/pgsty/pgdoc`。读取 [AGENTS.md](/Users/vonng/pgsty/pgdoc/AGENTS.md) 和 [译风规范](/Users/vonng/pgsty/pgdoc/tmp/ref/style.md)；术语优先级：`tmp/ref/exclude.tsv` > `tmp/ref/glossary.tsv` > 译风规范 > 既有译文。逐条语境规则在 `tmp/ref/glossary.rules.tsv`。最初要求仍可查 [PROMPT.md](/Users/vonng/.codex/worktrees/c22a/pgdoc/plans/pg10-20-calibration-20260911/PROMPT.md)，按用户最新范围纠偏执行。
 
-- 本阶段已补完 PG18 的 DDL、XML、配置、角色管理、监控、WAL、回归测试的原剩余范围，以及书框架／逻辑复制的最后空白和闭合标签；保留此前实际完成范围。
-- 事务／`pg_resetwal` 草稿已核对当前正文后落地。每项发现均按 PG10—20 同版英文横向核对，保留版本边界。
-- 本阶段修订 **74 个不同的中文正文文件**，词表与规则新增第 655／656 条。修订文件数量不等于全篇阅读数量。详见 [本阶段记录](/Users/vonng/pgsty/pgdoc/docs/calibration-sequential-20260916.md)。
-- 最近十一版整书 SGML／DocBook 解析全部通过、诊断 0，结果为 `outputs/pg18-sequential-20260916/sequential-through-regress-validation.json`。最终 HTML／A4 PDF／US PDF 验收仍为 **0／33**。
-- **下一处：PG18 `logicaldecoding.sgml` 的章引言和示例，以及流复制协议接口起至章末。** 此前完整的概念部分保留；随后继续参考页、内部机制和附录剩余内容。
-- 轻量记录：`outputs/pg18-sequential-20260916/progress.jsonl` 与各 `.patch`；读取当前同版英中文即可续作，不需扫描历史或恢复大型缓存。共享工作区其他任务的改动保留。
+## 到哪里了
 
-## 执行纠偏：以正文顺序校对为主线
+- 原先 131 个待续 PG18 文件中，**125 个已补齐剩余范围**。258 个此前完整范围候选保留。文件大小不同，此数不能换算成语义完成百分比。
+- 原剩余 SQL 与应用参考页已经全部核对；逻辑解码、回归测试、DDL／XML／配置／监控等原缺口已补齐。
+- 日期时间附录已由前一专门批次完成，见 [日期附录记录](/Users/vonng/pgsty/pgdoc/docs/calibration-datetime-appendix-20260916.md)。旧 `pg18-through-manageag.json` 尚未计入这一批，不能据此误判 datetime.sgml 未读。
+- **当前正在核对 `en/18.6/features.sgml` 与 `zh/18/features.sgml`。** 其英文尾部及生成的 supported／unsupported 特性表仍须核对，尚未记完成。
+- 其余待续：`release-18.sgml`、`sources.sgml`、`nls.sgml`、`docguide.sgml`、`glossary.sgml`。release-18 很大，应逐节记录断点。
+- 本轮顺序续作修复涉及 404 个不同中文 SGML 文件及 41 个生成相关文件；具体问题和十一版边界见 [阶段记录](/Users/vonng/pgsty/pgdoc/docs/calibration-sequential-20260916.md)。事务／pg_resetwal 修订以及规则 655／656 已经应用，不再是草稿。
 
-2026-09-16 用户明确重申：本任务是按顺序校对。以当前固定英文和现行规范为准，从 PG18 按目录顺序逐章、逐段对照中文；每发现一类问题，立即检查 PG10—PG20 的对应内容，修复所有适用位置并保留版本差异。当前章处理后继续下一章，同时补齐其他版本独有内容，最后完成一致性检查与十一版 HTML／A4 PDF／US PDF 验收。
+## 当前证据与工具
 
-Git 用于确认当前输入、保护共享工作、检查本次差异及执行已授权的阶段提交。**不把 Git 历史扫描、旧提交归属追索、过程台账重建作为校对任务或继续校对的前置条件。** 下文的历史统计保留为交接背景，不是新任务。旧问题记录仅提供线索，是否仍有问题直接核对当前同版英中文正文。
+轻量工作目录：`/Users/vonng/pgsty/pgdoc/outputs/pg18-sequential-20260916/`。
 
-保留已完成的实际修复和阅读范围，先将当前已读但未应用的事务／pg_resetwal 修订核对后落地，再按 PG18 目录顺序补齐尚未完整校对的章节。进度只需明确记录校对到哪里、发现和修复了什么、十一版适用情况及剩余工作；检查和证据应服务于正文修复，不另扩展成独立的历史审计工程。
+- `progress.jsonl`：已读范围、问题、十一版结论；各 `.patch` 为精确修改。`current-summary.json` 是当前数量口径。
+- `review.py`：按 SGML ID 提取正文、记录已读范围、精确写入补丁。已有补丁名不能重复应用。
+- `validate_current.py`：临时目录中整书原生解析并清理。最新 `appendix-generated-localization-validation.json`：十一版全部退出码 0、诊断 0。
+- `refresh_generated.py`：从固定本版源码读取两个必要输入，以当前生成器重建关键词／错误码表，先验证原始产物再本地化；不扫描 Git，不解包整套源树。
+- `generated-localization-checks.json`：20 个表的标记和受保护标识符保留；哈希／次数异常均在写入前拒绝。
+- `xact-resetwal-applied.json`：前批 28 个正文修复，不包含在 progress 的 fix 行中；去重统计已合并它。
 
-## 先看这里
+PG14／15 关键词生成配置混入 SQL:2023 已恢复为自身的 SQL:2011／2016，相关本版输入补齐。十一版 `localize-generated.py`、`generated-translations.json` 用于持久化生成表译文，现有构建入口会调用；PG19／20 原有其他映射已保留。后续改动不得以更新哈希掩盖实际输入差异。
 
-- 工作目录：`/Users/vonng/pgsty/pgdoc`，当前分支 `main`。本次统计时 HEAD：`d0ac90d2aaf472269ad6dd9657d8e7aa763b6bec`。
-- 本任务最近一笔完成验收并提交的正文批次：日期与时间附录，`09799bc1a8233430dd5186efc4112a91d8d6bc01`。其后 `b6b6911`、`ad0b645`、`d0ac90d` 是其他工作产生的提交，已保留，不计入本任务的修复数量。
-- **已核对当前 HEAD 祖先关系的 65 笔阶段提交，累计修改过 1,779 个不同的 PG10—PG20 中文 SGML 文件**，按批次重复计数为 2,679 文件次。这个数字说明提交涉及的文件范围，不说明每个文件都已完整通读。
-- 十一版原始中英文 SGML 扫描清单共 **8,523 个文件**。这也不是语义通读完成数量。
-- 当前进行中的事务／`pg_resetwal` 批次：**16 个完整文件、624 个完整关联范围，共 640 个范围，涉及 182 个中文文件**。完整正文和全部候选译文已读，28 个正文文件有修订草稿；**尚未写入正文、尚未提交、尚未完成本批证明和新解析**。
-- 当前生效规范仍为 **654 条**。`epoch → 纪元`、`subcommitted → 已子提交` 是第 655、656 条草稿，未应用。
-- 旧过程台账的历史统计为 **221／2466**，另有 **2245** 条未对账记录。这不是当前正文缺陷数，也不作为继续校对的前置任务；当前问题以同版英中文核对为准。
-- 最终中文验收仍为 **0／33**：11 版 HTML + 11 版 A4 PDF + 11 版 US PDF。本任务没有推送或发布。
+固定版本：10.23、11.22、12.22、13.23、14.24、15.19、16.15、17.11、18.6、19beta3、PG20 固定源码目录 `tmp/pg20-from-18.6/20260909-085948-37d573/upstream-pg20`。PG19／20 函数按 `func/func-*.sgml` 拆分。
 
-## 执行要求与固定输入
+## 验收和提交边界
 
-先完整读取 [原始 PROMPT](/Users/vonng/.codex/worktrees/c22a/pgdoc/plans/pg10-20-calibration-20260911/PROMPT.md)、[执行 TODO](/Users/vonng/pgsty/pgdoc/outputs/pg10-20-calibration-20260911-134417/TODO.md)、[执行 PROGRESS](/Users/vonng/pgsty/pgdoc/outputs/pg10-20-calibration-20260911-134417/PROGRESS.md)，再读现行 [译风规范](/Users/vonng/pgsty/pgdoc/tmp/ref/style.md)、[不翻译词表](/Users/vonng/pgsty/pgdoc/tmp/ref/exclude.tsv)、[术语表](/Users/vonng/pgsty/pgdoc/tmp/ref/glossary.tsv) 和 [逐条语境规则](/Users/vonng/pgsty/pgdoc/tmp/ref/glossary.rules.tsv)。优先级为 exclude > glossary > style > 既有译文。
+原生解析已通过，**最终构建仍为 0／33**：十一版 HTML、A4 PDF、US PDF。正文完成后，使用同一源码快照执行现有构建入口，保存命令／退出状态／日志／产物摘要，并检查实际页面、PDF 渲染及重要链接。`check-deps` 只检查依赖。
 
-英文固定为：PG10=10.23、PG11=11.22、PG12=12.22、PG13=13.23、PG14=14.24、PG15=15.19、PG16=16.15、PG17=17.11、PG18=18.6、PG19=19beta3；PG20 为提交 `86f7c82cf1023e3599f40f939727791a7090cd44`。在 `zh/<大版本>/` 原目录更新，从 PG18 完整阅读切入，每发现一类问题就横向核对十一版；相同英文复用译文，保留各版自己的功能、代码、SGML、链接、默认值和限制。
+根 Makefile 批量默认仅 PG14—18，必须显式传入 PG10—20。单版 `make zh ZH_VERSION=18`；PDF `make zh-pdf ZH_VERSION=18 PAPER=A4`。先阅读实际脚本确定固定源码、输出路径及本机依赖。OpenSP 在 `tmp/pg10-13-from-14/20260909-150220/agents/archive_build/deps`，FOP 在 `.cache/tools/fop-2.11/fop/fop`。PDF 视觉验收时使用 PDF skill。
 
-必须区分机器信号、实际读过的完整范围、源码修复、新快照解析、提交、最终构建。不得把匹配数量、结构计数或高覆盖百分比当作逐句语义验收。
+首阶段提交 `3f4eb05be99543d929403f79c26d5e014826e630` 已完成。共享主分支会由其他任务推进，只看当前状态和本批明确路径；不要 `git add .`、回退或覆盖他人修改。当前 PG9.3 工作属于其他任务。本任务没有推送或发布。
 
-## 已修复内容
+## 保留事项
 
-原始 **F-001—F-026** 已逐版处理，包含“修复／原已正确／不适用／项目例外”的明确区分。完整十一版矩阵、每项结论及原报告更正在 [阶段总报告](/Users/vonng/pgsty/pgdoc/docs/calibration-20260914-status.md)；原始状态索引在 [status.json](/Users/vonng/pgsty/pgdoc/outputs/pg10-20-calibration-20260911-134417/zcode-followup/status.json)。主要修复包括：
-
-- 遗漏的 xref/link/glossterm、引导句、函数表行、参数说明、例子和完整小节。
-- 旧版混入未来版本的功能、表格行列、函数、协议参数与示例；按每版英文恢复适用边界。
-- 锁表容量公式、复制引言、SQL/JSON 数据模型、文件函数权限、备份控制和 WAL 文件名换算。
-- PG14 协议清单、PG15 配置缺段、并行受限项目、RECHECK、SHOW 区域变量、文档指南和 NLS 缺文。
-- `polygon(circle)` 的损坏输出、负数 `to_hex` 示例、libpq 参数状态、PG15 `pg_walinspect` 函数集合。
-- 后续完整范围校准还覆盖文本检索、数据类型与函数、libpq、ECPG、协议、大对象、查询／DML／DDL、COPY 与转储恢复、权限维护、规则与视图、目录与信息模式、性能、存储与大量扩展模块。具体范围以各批报告和证书为准，不代表这些主题的所有关联文件都已全篇闭合。
-
-原清单并非全部判断都正确：例如对象标识引导句十一版原本都有；`pg_get_acl` 示例缺口实际涉及 PG18/20；纯文本输出小节实际在 PG10—16 存在；`scram_iterations` 缺口实际涉及 PG16—18。已在执行报告中更正，不回写原独立审查材料。
-
-最近完成并提交的批次如下。“正文文件”是该批修订数量，各批之间有重复，不能相加作为去重总数。
-
-| 批次 | 完整主文件 | 关联范围 | 修订正文文件 | 新解析配对节点／范围提示 | 提交 |
-| --- | ---: | ---: | ---: | --- | --- |
-| 并行查询 | 11 | — | 11 | 1299／0 | `16c3a21c` |
-| pageinspect | 11 | 29 | 12 | 2541／14，全部核准 | `39f647f6` |
-| 规划器统计信息 | 11 | 147 | 50 | 1279／6，全部核准 | `b9748805` |
-| 本地化与字符集 | 11 | 103 | 16 | 14280／46，全部核准 | `62b31b02` |
-| 数据库管理与表空间 | 44 | 513 | 33 | 3647／62，全部核准 | `52f4c64f` |
-| 日期与时间附录 | 11 | 297 | 44 | 3559／0 | `09799bc1` |
-
-日期与时间附录最后修复了：回拨日两次 1:30AM 的时间关系、转换前后实际采用的 UTC 偏移、PG10—16 缩写由配置文件提供的说明、PG14—16 混入的未来 IANA 优先级内容、儒略日与时区缩写术语。`text search` 短称“文本检索”疑报已经撤回，不能把它批量替换成“全文检索”。见 [该批完整报告](/Users/vonng/pgsty/pgdoc/docs/calibration-datetime-appendix-20260916.md)。
-
-### 文件数量口径
-
-以下按版本、实际文件路径去重。英文和中文文件数包含 SGML 包含文件、参考页等，不等于章节数；“已提交修改过”不等于全文件已读。
-
-| 版本 | 英文 SGML | 中文 SGML | 本任务已提交修改过的不同中文 SGML |
-| --- | ---: | ---: | ---: |
-| PG10 | 362 | 363 | 152 |
-| PG11 | 368 | 369 | 159 |
-| PG12 | 370 | 371 | 157 |
-| PG13 | 374 | 375 | 161 |
-| PG14 | 378 | 379 | 167 |
-| PG15 | 385 | 386 | 169 |
-| PG16 | 385 | 386 | 165 |
-| PG17 | 386 | 387 | 158 |
-| PG18 | 389 | 390 | 157 |
-| PG19 | 430 | 431 | 168 |
-| PG20 | 429 | 430 | 166 |
-
-计算依据：[当前统计及全部提交／文件清单](/Users/vonng/pgsty/pgdoc/outputs/pg10-20-calibration-20260911-134417/zcode-followup/handoff-current-statistics-20260916.json)。所有计入提交已检查为统计时 HEAD 的祖先。另有旧 FDW handler 回执记录 `962932f5faf0a7d9b09c6f9216895faf6f0f0f2c`，当前不是 HEAD 祖先，**本次保守统计已排除**。不再为统计追索其等价提交；该主题是否需要修复，直接核对当前英中文正文。
-
-## 精确断点：事务与 pg_resetwal，正文尚未写入
-
-当前读写证据目录统一为：
-
-```text
-/Users/vonng/pgsty/pgdoc/outputs/pg10-20-calibration-20260911-134417/zcode-followup
-/Users/vonng/pgsty/pgdoc/outputs/pg10-20-calibration-20260911-134417/scripts
-```
-
-前缀：`xact-full` 为事务阅读清单；`resetwal-full` 为工具参考页阅读清单；**`xact-resetwal-full-reviewed` 为合并修订草稿**。不要与历史 `datetime-full`（日期时间函数）或已经闭合的 `datetime-appendix-full` 混淆。
-
-已实际阅读并保存断点：
-
-- PG16—20 共 5 份完整 `xact.sgml`：PG18 的 5 个完整分块、2 种完整英文变体及全部中文候选。PG10—15 无该文件，包含链缺席证明还需正式落证据。
-- 十一版完整 `ref/pg_resetwal.sgml`：PG18 的 21 个分块、6 种完整英文变体和全部中文差异。
-- **权威关联清单为 v3**：603 范围、103 组全部读完。v1、v2 是废弃路由，不可用它们宣称实际阅读。
-- 手工绑定：13 范围、4 组；补查扩展探针：8 范围、2 组；合计 624 个相关范围。
-- 另实际读过 PG17/18/19 的 3 行生成式 `virtualxid` 等待事件和 2 处非渲染源码注释。生成行的英文来自固定源码生成产物，不能当作原始 `monitoring.sgml` 中存在的文本。
-- 1851 个主要检索命中、52 个补充命中已用于定位；最终逐命中闭合证明尚未写出。
-- 草稿含 927 个叶子段落、49 个嵌套父段、181 个原始块。12 组最终新增文本已全部复读，组 2、3 在去掉“处于 已子提交”的残余空格后再次复读。
-- 同源检查：142 组正文、8 组父段、134 组其他文本；跨标记与常规冲突均已消除，仅保留一类既有 `xmin` 行内标签差异。
-
-### 本批确认问题和草稿修复
-
-| ID | 问题及草稿动作 | 适用版本 |
-| --- | --- | --- |
-| XA001 | GID 引言中的 `xid` 恢复本版 `<type>` 标签 | 16 |
-| XA002 | 普通事务计数说明中的 epoch 统一为“纪元” | 16—20 |
-| XA003 | subcommitted 译为“已子提交”，保留其不等于最终持久提交的限定 | 16—20 |
-| XA004 | 日志文件创建时间“纪元”改为明确的“纪元时间戳” | 10—20 |
-| XA005 | 发布说明明确 epoch 或 infinity 不能与其他日期时间字段组合 | 16；其余版本已在关联扫描中核对 |
-| RW001 | 恢复旧版四段描述，移除未来选项解释、额外数据目录说明条目、8 kB 注解及新增 WAL 段用途；恢复旧版警告前提 | 描述等 14—16；警告前提 11—16 |
-| RW002 | “部分已提交的事务”改为“仅部分提交的事务” | 11—20；10 原本正确 |
-| RW003 | WAL 段大小选项恢复本版顺序 | 14—17 |
-| RW004 | 清理未来版本非渲染注释；PG20 注释乘数恢复本版 32768 | 清理 10—16；乘数 20 |
-
-注意：RW001 删除的是 PG17 才新增的**说明条目／段落**，不是声称 `-D` 或 `--pgdata` 选项在 PG17 才引入；旧版命令概要已经包含它们。
-
-### 已读例外与待完成的证明
-
-- 181 原始块均未改动。与英文逐字不完全相同的 35 块分为：33 块合法 Result 行注释译文（其中 PG10—12 各一块还有既有空行差异）、PG14 一块输出表头行尾空格差异、PG20 一块 `cmdsynopsis` 标签间空白差异。8 组不同的完整差异都已实际查看。不得把 `synraw` 的 34 个信号直接等同于缺陷；它会忽略那一块行尾空格差异。
-- 受保护元素的 11 个信号：PG14—16 三处普通 `xmin` 加 `<literal>` 的既有标记、PG13—20 八处匿名词条 `Epoch → 纪元`。已实际核对，需精确的上下文例外证明，不能全局放宽。
-- PG19 `pg_resetwal` 16 个既有本地 ID、PG14—20 `epoch` 条目各 1 个既有本地 ID 应保留。草稿没有增删现有 ID、链接属性。
-- 上游疑点 SQ001：`xact` 说 GID 最长 200 字节，十一版 PREPARE 参考页说少于 200 字节。两处分别忠实翻译并单列，不能擅自统一数值。
-- 上游疑点 SQ002：`xact` 的“后续唯一命令”可能被读成会话限制。PG18 PREPARE 参考页的“任何会话”和“执行后无活动当前事务”两段刚读过，**尚未纳入完整横向范围**；继续时补读并绑定其他十版，再决定是否仅作为上游表述疑点记录。
-- 上游疑点 SQ003：PG16—20 `buffer-extend-start/done` 英文原型的参数数量与说明中的编号数量不一致；五版完整行已读，旧版无相同探针行。保留本版英文对应译文并记录，不自行改参数。
-
-### 直接续作顺序
-
-1. 读取现行规范、当前工作区差异和事务／pg_resetwal 草稿。保留已实际读过的范围，不重复初始化，也不直接重跑已有准备脚本；写入前检查原文是否被其他会话修改。
-2. 补齐本批确实尚未读完的内容，尤其是 SQ002 在十一版 PREPARE 参考页中的对应说明；按每版当前英文确认草稿中的版本边界、术语、代码和链接。
-3. 将核准的修改写入中文正文；必要的术语规则变更同步处理。保留简明的问题与十一版适用性记录，运行本批必要的 SGML、链接、术语和差异检查，修复检查发现的实际问题。无需先重建旧过程台账或凑齐一套特定命名的证明文件。
-4. 更新已校对章节、实际修复与剩余范围；按 PG18 目录顺序继续尚未完整校对的章节。每个新问题随即横向核对十一版，全部正文完成后执行最终一致性检查与 33 项构建验收。
-
-当前事务／pg_resetwal 仍为未应用草稿，尚未完成本批实际解析检查。已有 `file-plans`、阅读范围和草稿用于接续正文工作；没有生成的 `reread-proof`、`matrix`、`certificate` 等文件不再分别作为独立任务。实际未读内容、版本差异和验证失败仍必须处理，不能把简化过程记录当作跳过校对或验收。
-
-本批计划时发现其他会话的新 DDL 提交，PG10—16 的 `ddl.sgml` 已改变。本批完整阅读范围仍逐字不变，已通过等值区间重新绑定；详见 `xact-resetwal-full-reviewed-baseline-adapters.json`，保留了外部修改。原始扫描坐标与重绑定坐标不同，最终命中证明应使用原始输入和 `read_chinese_before_offsets`，不能把旧偏移直接套到现文件。
-
-## 剩余工作
-
-### 全书阅读与覆盖缺口
-
-截至数据库管理批次的 PG18 导航清单是 **389 个英文文件、257 个完整覆盖候选**。之后日期附录整篇闭合，可确认为新增 1 个候选，因此交接导航为 **258 个完整覆盖候选、131 个待补读或补证文件**。其中 `xact.sgml` 和 `ref/pg_resetwal.sgml` 的完整阅读已经完成，但本批尚未写入、证明和解析；其他文件可能已经部分读过，甚至主体已读完但边角范围还没补齐，不能统称“完全没读”。这只是 PG18 导航口径，不能乘以 11 推算其他版本的完成度，也不是最终验收比例。
-
-原导航证据：[PG18 逐文件范围](/Users/vonng/pgsty/pgdoc/outputs/pg10-20-calibration-20260911-134417/coverage-routing-20260916/pg18-through-manageag.json)、[其摘要](/Users/vonng/pgsty/pgdoc/outputs/pg10-20-calibration-20260911-134417/coverage-routing-20260916/through-manageag-summary.json)。下一轮应重新生成带新批次的全版本精确覆盖清单，不覆盖旧结果。
-
-30 个主文件／包含入口待补读或补证（以下相对 `en/18.6/`）：
-
-```text
-appendix-obsolete-default-roles.sgml
-appendix-obsolete-pgreceivexlog.sgml
-appendix-obsolete-pgresetxlog.sgml
-appendix-obsolete-pgxlogdump.sgml
-appendix-obsolete-recovery-config.sgml
-appendix-obsolete.sgml
-bloom.sgml
-config.sgml
-dblink.sgml
-ddl.sgml
-docguide.sgml
-errcodes.sgml
-features.sgml
-filelist.sgml
-func.sgml
-glossary.sgml
-indextypes.sgml
-keywords.sgml
-logical-replication.sgml
-logicaldecoding.sgml
-monitoring.sgml
-nls.sgml
-postgres.sgml
-regress.sgml
-release-18.sgml
-release.sgml
-sources.sgml
-user-manag.sgml
-wal.sgml
-xact.sgml
-```
-
-101 个参考页待补读或补证（以下相对 `en/18.6/`）：
-
-```text
-ref/abort.sgml
-ref/alter_aggregate.sgml
-ref/alter_conversion.sgml
-ref/alter_domain.sgml
-ref/alter_function.sgml
-ref/alter_large_object.sgml
-ref/alter_policy.sgml
-ref/alter_procedure.sgml
-ref/alter_routine.sgml
-ref/alter_schema.sgml
-ref/alter_sequence.sgml
-ref/alter_server.sgml
-ref/alter_statistics.sgml
-ref/alter_subscription.sgml
-ref/alter_tsconfig.sgml
-ref/alter_tsdictionary.sgml
-ref/alter_tstemplate.sgml
-ref/alter_type.sgml
-ref/alter_user_mapping.sgml
-ref/call.sgml
-ref/checkpoint.sgml
-ref/close.sgml
-ref/comment.sgml
-ref/create_aggregate.sgml
-ref/create_cast.sgml
-ref/create_collation.sgml
-ref/create_conversion.sgml
-ref/create_function.sgml
-ref/create_procedure.sgml
-ref/create_schema.sgml
-ref/create_sequence.sgml
-ref/create_server.sgml
-ref/create_statistics.sgml
-ref/create_subscription.sgml
-ref/create_table_as.sgml
-ref/create_transform.sgml
-ref/create_tsconfig.sgml
-ref/create_tsdictionary.sgml
-ref/create_type.sgml
-ref/create_user_mapping.sgml
-ref/createdb.sgml
-ref/declare.sgml
-ref/discard.sgml
-ref/do.sgml
-ref/drop_aggregate.sgml
-ref/drop_cast.sgml
-ref/drop_collation.sgml
-ref/drop_conversion.sgml
-ref/drop_database.sgml
-ref/drop_domain.sgml
-ref/drop_foreign_table.sgml
-ref/drop_function.sgml
-ref/drop_group.sgml
-ref/drop_policy.sgml
-ref/drop_procedure.sgml
-ref/drop_publication.sgml
-ref/drop_role.sgml
-ref/drop_routine.sgml
-ref/drop_schema.sgml
-ref/drop_sequence.sgml
-ref/drop_server.sgml
-ref/drop_statistics.sgml
-ref/drop_subscription.sgml
-ref/drop_table.sgml
-ref/drop_transform.sgml
-ref/drop_tsconfig.sgml
-ref/drop_tsdictionary.sgml
-ref/drop_tsparser.sgml
-ref/drop_tstemplate.sgml
-ref/drop_type.sgml
-ref/drop_user.sgml
-ref/drop_user_mapping.sgml
-ref/dropdb.sgml
-ref/dropuser.sgml
-ref/fetch.sgml
-ref/import_foreign_schema.sgml
-ref/listen.sgml
-ref/load.sgml
-ref/move.sgml
-ref/notify.sgml
-ref/pg_checksums.sgml
-ref/pg_config-ref.sgml
-ref/pg_controldata.sgml
-ref/pg_isready.sgml
-ref/pg_receivewal.sgml
-ref/pg_resetwal.sgml
-ref/pg_rewind.sgml
-ref/pg_waldump.sgml
-ref/pgarchivecleanup.sgml
-ref/pgtestfsync.sgml
-ref/pgtesttiming.sgml
-ref/pgupgrade.sgml
-ref/reset.sgml
-ref/security_label.sgml
-ref/select_into.sgml
-ref/set.sgml
-ref/set_constraints.sgml
-ref/show.sgml
-ref/truncate.sgml
-ref/unlisten.sgml
-ref/values.sgml
-```
-
-上面含 `bloom`、`dblink`、`config`、`func` 等接近完整覆盖的文件；应先查具体缺口，不从头重复整批工作。其他大版本还需核对本版独有文件、被拆分的包含文件、发行说明和适用边界。
-
-### 旧台账背景与当前一致性检查
-
-2026-09-15 的旧过程对账记录在 [summary.json](/Users/vonng/pgsty/pgdoc/outputs/pg10-20-calibration-20260911-134417/historical-pending-explicit-adapters-20260915/summary.json)：221 条已对账，2245 条未对账。这些条目描述旧记录与当时阅读范围之间的对应关系，不能直接计为当前正文缺陷或未校对段落。
-
-该记录保留供必要时定位，不要求续作会话补完历史对账、重跑 reconcile 脚本或追溯提交。正文校对中遇到具体疑点时，直接核对当前固定英文、中文及必要上下文；确有问题才修复。最终一致性与覆盖检查针对最终正文及实际已读范围，按原任务要求完成。
-
-### 最终构建
-
-本任务最终验收仍为 0／33，已有分批原生解析不代替 HTML/PDF 构建。最后应冻结一个相同源码快照，全部十一版分别生成 HTML、A4 PDF、US PDF，保存命令、退出状态、日志、产物哈希，并抽查 PDF 实际渲染和关键页面／链接。
-
-根 [Makefile](/Users/vonng/pgsty/pgdoc/Makefile) 默认批量版本只有 PG14—18，**必须显式指定十一版**。单版中文目标是 `make zh ZH_VERSION=18`，PDF 为 `make zh-pdf ZH_VERSION=18 PAPER=A4`；批量 PDF 可指定 `ZH_VERSIONS="10 11 12 13 14 15 16 17 18 19 20" PAPERS="A4 US"`。实际执行前读每版 Makefile，正确提供本机依赖；这些是入口说明，不是已运行的构建记录。`check-deps` 仅检查依赖。
-
-可用工具链线索：
-
-- OpenSP 依赖：`/Users/vonng/pgsty/pgdoc/tmp/pg10-13-from-14/20260909-150220/agents/archive_build/deps`；PG10 原生解析使用 `NSGMLS`、`OSX`、`SGML_CATALOG_FILES`、`SP_ENCODING=UTF-8`、`SP_CHARSET_FIXED=YES`。
-- FOP：`/Users/vonng/pgsty/pgdoc/.cache/tools/fop-2.11/fop/fop`；此前使用 AlibabaPuHuiTi3 字体。
-- 现有字体配置：`/Users/vonng/pgsty/pgdoc/.cache/work/standalone-pdf-zh-18.6.GRnjqP/doc/src/sgml/fop-local.xconf`，续作时验证仍存在。
-- PDF skill 已在本任务读取，路径 `/Users/vonng/.codex/skills/pdf/SKILL.md`；最终应使用 Poppler 渲染核验。
-
-## 保留事项与易错点
-
-- 本工作目录由多个会话共享；PG9.3、PG9.4 等任务也会推进，HEAD 会变化。只提交本批明确路径，不能 `git add .`、回退或覆盖他人改动。
-- PG10—20 规范的九项用户回退保持：B-树、默认B-树操作符类、以先提交者为准、以先更新者为准、整页镜像、首部数据、连接类型和方式、百分位点、插入值。
-- `text search` 短称“文本检索”与 `Full-Text Search`“全文检索”有意区分；此前广义检索的 2285 个信号已撤回，不是缺陷或全文阅读证明。
-- `NULL`、实际字段／函数／参数／状态常量和代码依规范保留。普通英文概念是否翻译以完整上下文决定，不能按标签类型或字面量扫描统一放宽。
-- 日期函数旧 `prepare_datetime_full.py` 曾被误执行，只重建了六份中间清单，没有修改正文。后来从不可变原审定输入确定性重建，1386 历史单元的编号与哈希匹配。记录在 `datetime-function-inventory-recovery-20260916/receipt.json`；它是确定性重建，不是原字节备份。不要再次运行该旧脚本。
-- 本任务的重要证据在 `outputs/`，通常不受 Git 跟踪。同一台机器的新会话必须直接使用上述绝对目录；新建 worktree 或克隆不会自动获得这些证据，不能仅看提交中的报告就跳过它们。
-- 没有运行文档中的数据库修改命令或 `pg_resetwal` 实例；那些仅是被阅读、对比的示例。
-
-建议下一个会话的首条指令：**“读取 docs/calibration-handoff-20260916.md 的执行纠偏和当前断点，按现行规范先核对并落实已读但未应用的事务／pg_resetwal 修订；随后按 PG18 目录顺序逐章逐段中英校对，每个问题横向检查并修复十一版适用位置，最后完成一致性检查与 33 项构建。保留共享工作，不把 Git 历史扫描或旧过程台账对账作为前置任务。”**
+- `sequence`、datum／Datum 等遵循排除词表；行级安全、美元引用、shell 类型、预备事务、直方图依现行规范。保留用户九项既有术语回退；不要将短称“文本检索”机械改为“全文检索”。
+- 当前固定英文自身疑点只记录，不能暗改：GID 长度表述、动态探针参数编号、逻辑解码示例 `(4 row)` 等。`VALUES` 关于 FROM 后 AS 的说明也按固定英文保留。
+- outputs 清理已完成：293.42 → 97.92 GiB，释放 195.50 GiB；见 [清理记录](/Users/vonng/pgsty/pgdoc/docs/calibration-outputs-cleanup-20260916.md)。不要为了续作重新解压大型缓存；阅读当前正文即可。
+- 原 F-001—F-026 已逐版处理，原误报和边界记录在 [前期问题总结](/Users/vonng/pgsty/pgdoc/docs/calibration-20260914-status.md)。不必重新追索其历史归属。
+- outputs 不受 Git 跟踪；同机任务使用绝对路径续作，其他 checkout 不会自动拥有这些记录。
