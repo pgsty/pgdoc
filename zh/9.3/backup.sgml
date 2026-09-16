@@ -27,11 +27,11 @@
 <synopsis>
 pg_dump <replaceable class="parameter">dbname</replaceable> &gt; <replaceable class="parameter">dumpfile</replaceable>
 </synopsis>
-   如前所示，<application>pg_dump</application>把结果写到标准输出。稍后我们会看到这一点有何用处。虽然上述命令会创建一个文本文件，但<application>pg_dump</application>也可以创建其他格式的文件，从而支持并行处理以及对对象恢复进行更细粒度的控制。
+   如前所示，<application>pg_dump</application>把结果写到标准输出。稍后我们会看到这一点有何用处。
   </para>
 
   <para>
-   <application>pg_dump</application>是一个普通的<productname>PostgreSQL</productname>客户端应用程序（尽管它实现得相当巧妙）。这意味着你可以从任何能够访问该数据库的远程主机执行这种备份过程。但请记住，<application>pg_dump</application>并不会以特殊权限运行。特别是，它必须对你想要备份的所有表具有读权限，因此若要备份整个数据库，几乎总是必须以数据库超级用户身份运行它。（如果你没有足够权限备份整个数据库，仍然可以使用诸如<option>-n <replaceable>schema</replaceable></option>或<option>-t <replaceable>table</replaceable></option>的选项来备份你有权访问的那部分数据库。）
+   <application>pg_dump</application>是一个普通的<productname>PostgreSQL</productname>客户端应用程序（尽管它实现得相当巧妙）。这意味着你可以从任何能够访问该数据库的远程主机执行这种备份过程。但请记住，<application>pg_dump</application>并不会以特殊权限运行。特别是，它必须对你想要备份的所有表具有读权限，因此若要备份整个数据库，几乎总是必须以数据库超级用户身份运行它。
   </para>
 
   <para>
@@ -50,12 +50,18 @@ pg_dump <replaceable class="parameter">dbname</replaceable> &gt; <replaceable cl
    由<application>pg_dump</application>创建的转储在内部是一致的，也就是说，该转储表示的是<application>pg_dump</application>开始运行时的数据库快照。<application>pg_dump</application>在工作期间不会阻塞数据库上的其他操作。（例外是那些需要独占锁的操作，例如大多数形式的<command>ALTER TABLE</command>。）
   </para>
 
+  <important>
+   <para>
+    如果你的数据库模式依赖 OID（例如作为外键），必须让<application>pg_dump</application>把 OID 一并转储出来。为此，请使用命令行选项<option>-o</option>。
+   </para>
+  </important>
+
   <sect2 id="backup-dump-restore">
    <title>恢复转储</title>
 
    <para>由 <application>pg_dump</application> 创建的文本文件供 <application>psql</application> 程序读取。恢复转储的通用命令格式是<synopsis>
 psql <replaceable class="parameter">dbname</replaceable> &lt; <replaceable class="parameter">dumpfile</replaceable>
-</synopsis>其中，<replaceable class="parameter">dumpfile</replaceable> 是由 <application>pg_dump</application> 命令输出的文件。数据库 <replaceable class="parameter">dbname</replaceable> 不会由此命令创建，因此必须自行基于 <literal>template0</literal> 创建它，再执行 <application>psql</application>（例如使用 <literal>createdb -T template0 <replaceable class="parameter">dbname</replaceable></literal>）。  <application>psql</application> 支持与 <application>pg_dump</application> 类似的选项，用于指定要连接的数据库服务器及所用的用户名。更多信息参见 <xref linkend="app-psql"> 参考页面。非文本格式的转储使用 <xref linkend="app-pgrestore"> 工具恢复。</para>
+</synopsis>其中，<replaceable class="parameter">dumpfile</replaceable> 是由 <application>pg_dump</application> 命令输出的文件。数据库 <replaceable class="parameter">dbname</replaceable> 不会由此命令创建，因此必须自行基于 <literal>template0</literal> 创建它，再执行 <application>psql</application>（例如使用 <literal>createdb -T template0 <replaceable class="parameter">dbname</replaceable></literal>）。  <application>psql</application> 支持与 <application>pg_dump</application> 类似的选项，用于指定要连接的数据库服务器及所用的用户名。更多信息参见 <xref linkend="app-psql"> 参考页面。</para>
 
    <para>
     在恢复 SQL 转储之前，所有拥有对象或者在被转储数据库中曾被授予对象权限的用户都必须已经存在。否则，恢复将无法以原有所有权和/或权限重新创建这些对象。（有时这正是你想要的，但通常不是。）
@@ -106,9 +112,7 @@ psql -f <replaceable class="parameter">dumpfile</replaceable> postgres
     <application>pg_dumpall</application>的工作方式是先发出重新创建角色、表空间和空数据库的命令，然后针对每个数据库调用<application>pg_dump</application>。这意味着每个数据库本身都是内部一致的，但不同数据库的快照并不同步。
    </para>
 
-   <para>
-    集簇范围的数据也可以单独使用<application>pg_dumpall</application>的<option>--globals-only</option>选项进行转储。如果你对各个数据库分别运行<application>pg_dump</application>命令，而又希望对整个集簇进行完整备份，这一步就是必需的。
-   </para>
+   
   </sect2>
 
   <sect2 id="backup-dump-large">
@@ -310,7 +314,7 @@ tar -cf backup.tar /usr/local/pgsql/data
     在归档 WAL 数据时，我们需要在每个段文件写满后捕获其内容，并在该段文件被回收重用之前把数据保存到某处。根据应用场景和可用硬件的不同，<quote>把数据保存到某处</quote>可以有很多不同的方法：可以把段文件复制到另一台机器上的 NFS 挂载目录，把它们写到磁带机中（确保你有办法识别每个文件的原始文件名），把它们批量打包后刻录到 CD 上，或者采用完全不同的方式。为了给数据库管理员提供灵活性，<productname>PostgreSQL</productname>尽量不对归档方式作任何假设。相反，<productname>PostgreSQL</productname>允许管理员指定一个 shell 命令，以便把已完成的段文件复制到它应去的地方。该命令可以只是一次简单的<literal>cp</literal>调用，也可以调用一个复杂的 shell 脚本，全由你决定。
    </para>
 
-   <para>要启用 WAL 归档，请将 <xref linkend="guc-wal-level"> 配置参数设为 <literal>archive</literal> 或更高值，将 <xref linkend="guc-archive-mode"> 设为 <literal>on</literal>，并在 <xref
+   <para>要启用 WAL 归档，请将 <xref linkend="guc-wal-level"> 配置参数设为 <literal>archive</literal>（或 <literal>hot_standby</literal>），将 <xref linkend="guc-archive-mode"> 设为 <literal>on</literal>，并在 <xref
     linkend="guc-archive-command"> 配置参数中指定要执行的 shell 命令。实际使用中，这些设置始终放在 <filename>postgresql.conf</filename> 文件中。对于 <varname>archive_command</varname>，
     <literal>%p</literal> 会被替换为要归档文件的路径名，而 <literal>%f</literal> 只会被替换为文件名。（路径名相对于当前工作目录，即集簇的数据目录。）使用 <literal>%%</literal> 可以在命令中嵌入实际的 <literal>%</literal> 字符。最简单的可用命令类似于：<programlisting>
 archive_command = 'test ! -f /mnt/server/archivedir/%f &amp;&amp; cp %p /mnt/server/archivedir/%f'  # Unix
@@ -430,9 +434,7 @@ SELECT pg_stop_backup();
     不过，备份中应省略集簇<filename>pg_xlog/</filename>子目录内的文件。这个小调整很值得，因为它能降低恢复时出错的风险。如果<filename>pg_xlog/</filename>是一个指向集簇目录外某处的符号链接，就很容易做到这一点，而出于性能原因，这本来也是一种常见配置。你也可能想排除<filename>postmaster.pid</filename>和<filename>postmaster.opts</filename>，它们记录的是正在运行的<application>postmaster</application>的信息，而不是最终使用此备份的<application>postmaster</application>的信息。（这些文件可能会让<application>pg_ctl</application>感到困惑。）
    </para>
 
-   <para>
-    通常也最好省略集簇<filename>pg_replslot/</filename>目录中的文件，以免主库上的复制槽成为备份的一部分。否则，之后用该备份创建备库时，可能导致该备库上的 WAL 文件无限期保留；如果启用了热备反馈，也可能导致主库膨胀，因为使用这些复制槽的客户端仍会连接到并更新主库上的槽，而不是备库上的槽。即使该备份只是用来创建新的主库，复制这些复制槽通常也没有多大意义，因为等新主库上线时，这些槽的内容很可能已经严重过时。
-   </para>
+   
 
    <para>
     另外值得一提的是，<function>pg_start_backup</function>函数会在数据库集簇目录中创建一个名为<filename>backup_label</filename>的文件，该文件会被<function>pg_stop_backup</function>删除。该文件当然也会作为备份转储文件的一部分被归档。备份标签文件包含你提供给<function>pg_start_backup</function>的标签字符串、执行<function>pg_start_backup</function>的时间以及起始 WAL 文件的名称。因此，在发生混淆时，可以查看备份文件内容，精确确定该备份文件来自哪一次备份会话。不过，该文件不仅仅是给你参考；它的存在及其内容对于系统恢复过程的正确运行至关重要。
@@ -498,11 +500,7 @@ restore_command = 'cp /mnt/server/archivedir/%f %p'
 </programlisting>这会复制先前归档的 WAL 段，来源目录为 <filename>/mnt/server/archivedir</filename>。当然，也可以使用复杂得多的命令，甚至可以使用要求操作人员挂载相应磁带的 shell 脚本。</para>
 
    <para>
-    重要的是，该命令在失败时必须返回非零退出状态。系统<emphasis>会</emphasis>调用该命令来请求归档中不存在的文件；遇到这种情况时，它必须返回非零值。这不是一种错误情况。例外是，如果该命令被信号终止（用于数据库服务器关闭的<systemitem>SIGTERM</systemitem>除外），或者因 shell 错误（如命令未找到）而失败，那么恢复将中止，服务器也不会启动。
-   </para>
-
-   <para>
-    被请求的文件并不全都是 WAL 段文件；你还应预期会收到对带有<literal>.history</literal>后缀文件的请求。另外请注意，<literal>%p</literal>路径的文件名部分会与<literal>%f</literal>不同；不要指望它们可以互换使用。
+    重要的是，该命令在失败时必须返回非零退出状态。系统<emphasis>会</emphasis>调用该命令来请求归档中不存在的文件；遇到这种情况时，它必须返回非零值。这不是一种错误情况。被请求的文件并不全都是 WAL 段文件；你还应预期会收到对带有<literal>.history</literal>后缀文件的请求。另外请注意，<literal>%p</literal>路径的文件名部分会与<literal>%f</literal>不同；不要指望它们可以互换使用。
    </para>
 
    <para>
@@ -513,7 +511,7 @@ restore_command = 'cp /mnt/server/archivedir/%f %p'
     通常，恢复会处理完所有可用的 WAL 段，从而把数据库恢复到当前时间点（或者在可用 WAL 段所允许的情况下尽可能接近当前时间点）。因此，一次正常恢复会以一条<quote>file not found</quote>消息结束，具体错误文本取决于你选择的<varname>restore_command</varname>。在恢复开始时，你也可能看到一条针对类似<filename>00000001.history</filename>文件的错误消息。这同样是正常的，在简单恢复场景中并不表示有问题；相关讨论见<xref linkend="backup-timelines">。
    </para>
 
-   <para>如果希望恢复到过去的某个时间点（例如初级 DBA 删除主要事务表之前），只需在 <filename>recovery.conf</filename> 中指定所需的<link linkend="recovery-target-settings">停止点</link>。这个停止点称为<quote>恢复目标</quote>，可以通过日期/时间、命名恢复点，或某个特定事务 ID 的完成来指定。撰写本文时，只有日期/时间和命名恢复点这两种方式比较实用，因为还没有工具能帮助你准确确定应使用哪个事务 ID。</para>
+   <para>如果希望恢复到过去的某个时间点（例如初级 DBA 删除主要事务表之前），只需在 <filename>recovery.conf</filename> 中指定所需的停止点。这个停止点称为<quote>恢复目标</quote>，可以通过日期/时间、命名恢复点，或某个特定事务 ID 的完成来指定。撰写本文时，只有日期/时间和命名恢复点这两种方式比较实用，因为还没有工具能帮助你准确确定应使用哪个事务 ID。</para>
 
    <note>
      <para>
@@ -563,7 +561,7 @@ restore_command = 'cp /mnt/server/archivedir/%f %p'
       和基础备份一样，生成独立热备份最简单的方法是使用<xref linkend="app-pgbasebackup">工具。如果在调用它时包含<literal>-X</literal>参数，使用该备份所需的全部事务日志都会自动包含在备份中，恢复该备份时也不需要额外动作。
      </para>
 
-     <para>如果复制备份文件时需要更大的灵活性，也可以使用更低级的流程制作独立热备份。要准备低级独立热备份，将 <varname>wal_level</varname> 设为 <literal>archive</literal> 或更高值，将 <varname>archive_mode</varname> 设为 <literal>on</literal>，并配置一个 <varname>archive_command</varname>，使其仅在<emphasis>开关文件</emphasis>存在时执行归档。例如：<programlisting>
+     <para>如果复制备份文件时需要更大的灵活性，也可以使用更低级的流程制作独立热备份。要准备低级独立热备份，将 <varname>wal_level</varname> 设为 <literal>archive</literal>（或 <literal>hot_standby</literal>），将 <varname>archive_mode</varname> 设为 <literal>on</literal>，并配置一个 <varname>archive_command</varname>，使其仅在<emphasis>开关文件</emphasis>存在时执行归档。例如：<programlisting>
 archive_command = 'test ! -f /var/lib/pgsql/backup_in_progress || (test ! -f /var/lib/pgsql/archive/%f &amp;&amp; cp %p /var/lib/pgsql/archive/%f)'
 </programlisting>当 <filename>/var/lib/pgsql/backup_in_progress</filename> 存在时，这条命令会执行归档；否则会静默地返回零退出状态（允许 <productname>PostgreSQL</productname> 回收不需要的 WAL 文件）。</para>
 
