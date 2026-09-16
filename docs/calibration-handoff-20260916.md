@@ -2,6 +2,8 @@
 
 交接时间：2026-09-16T08:07:37+08:00。本次按用户要求暂停校准、整理交接；**全书任务没有完成**。
 
+**2026-09-16 存储清理更新：** outputs 从 293.42 GiB 降至 97.92 GiB，减少 195.50 GiB。168 个旧 checkpoint 的大型解析缓存已压缩归档并逐文件校验，233 个源码展开工作区已删除；当前 checkpoint、源文快照、阅读证据和未应用草稿保留。旧脚本若依赖散装节点缓存，先按 [清理记录与恢复方法](/Users/vonng/pgsty/pgdoc/docs/calibration-outputs-cleanup-20260916.md) 取回所需文件；本交接的校准进度不变。
+
 ## 先看这里
 
 - 工作目录：`/Users/vonng/pgsty/pgdoc`，当前分支 `main`。本次统计时 HEAD：`d0ac90d2aaf472269ad6dd9657d8e7aa763b6bec`。
