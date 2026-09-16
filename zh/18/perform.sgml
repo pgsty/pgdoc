@@ -44,15 +44,12 @@
     查询计划的结构是一棵由<firstterm>计划节点</firstterm>组成的树。树的最底层是扫描节点，它们从表中返回原始行。不同的表访问方法对应不同类型的扫描节点，例如顺序扫描、索引扫描和位图索引扫描。也有一些并非表的行来源，例如<literal>VALUES</literal>子句和<literal>FROM</literal>中的返回集合函数，它们也各自有对应的扫描节点类型。如果查询需要对原始行执行连接、聚合、排序或其他操作，那么扫描节点之上还会出现额外的节点来完成这些操作。同样，这些操作通常不止一种实现方式，因此这里也会出现不同的节点类型。<command>EXPLAIN</command>会为计划树中的每个节点输出一行，显示基本节点类型以及规划器对该计划节点执行代价的估计值。还可能出现相对节点摘要行缩进的附加行，用来显示该节点的更多属性。第一行，也就是最顶层节点的摘要行，给出了整个计划的估计总执行代价；规划器力图最小化的正是这个数字。
    </para>
 
-   <para>
-    下面是一个简单的示例，仅用于展示输出的样子：式：
-
-<screen>
+   <para>下面是一个简单的示例，仅用于展示输出的样子：<screen>
 EXPLAIN SELECT * FROM tenk1;
 
                          QUERY PLAN
 -------------------------------------------------------------
- Seq Scan on tenk1  (cost=0.00..445.00 rows=10000 width=244)
+ Seq Scan on tenk1  (cost=0.00..458.00 rows=10000 width=244)
 </screen>
    </para>
 
@@ -156,23 +153,17 @@ EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 100;
     这里规划器决定采用两步计划：子计划节点访问索引，找出满足索引条件的行位置，然后上层计划节点再从表中实际取回这些行。单独取回行比顺序读取昂贵得多，但因为不必访问表中的所有页面，这样仍然比顺序扫描便宜。（之所以采用两层计划，是因为上层计划节点会在读取前先将索引识别出的行位置按物理顺序整理，从而尽量降低零散取页的代价。节点名称中的<quote>位图</quote>就是完成这种整理的机制。）
    </para>
 
-   <para>
-    现在给<literal>WHERE</literal>子句再增加一个条件：
-
-<screen>
+   <para>现在向<literal>WHERE</literal>子句添加另一个条件：<screen>
 EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 100 AND stringu1 = 'xxx';
 
                                   QUERY PLAN
 -------------------------------------------------------------------&zwsp;-----------
- Bitmap Heap Scan on tenk1  (cost=5.04..225.20 rows=1 width=244)
+ Bitmap Heap Scan on tenk1  (cost=5.04..229.43 rows=1 width=244)
    Recheck Cond: (unique1 &lt; 100)
    Filter: (stringu1 = 'xxx'::name)
-   -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=100 width=0)
+   -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=101 width=0)
          Index Cond: (unique1 &lt; 100)
-</screen>
-
-    新增的条件<literal>stringu1 = 'xxx'</literal>降低了估计输出行数，但没有降低代价，因为仍然需要访问同一批行。这是因为<literal>stringu1</literal>子句不能作为索引条件使用，毕竟这个索引只建立在<literal>unique1</literal>列上。它只能作为对通过索引取回行的过滤条件。因此，为了反映这项额外检查，代价实际上略微上升了一点。
-   </para>
+</screen>新增的条件<literal>stringu1 = 'xxx'</literal>降低了估计输出行数，却没有降低代价，因为仍然必须访问同一组行。注意，<literal>stringu1</literal>子句不能用作索引条件，因为该索引只建立在<literal>unique1</literal>列上。它只能作为过滤条件，应用到通过索引取出的行上。因此，代价实际上略有增加，以反映这项额外检查。</para>
 
    <para>
     在某些情况下，规划器会更倾向于采用一个<quote>简单</quote>索引扫描计划：
@@ -189,33 +180,23 @@ EXPLAIN SELECT * FROM tenk1 WHERE unique1 = 42;
     在这种计划里，表中的行按索引顺序被取回，因此读取代价会更高；但由于涉及的行数很少，为行位置额外排序反而不值得。最常见到这种计划类型的场景，是只取回单行的查询。它也常用于带有与索引顺序相匹配的<literal>ORDER BY</literal>条件的查询，因为这样就不需要额外的排序步骤来满足<literal>ORDER BY</literal>。在这个示例中，如果加上<literal>ORDER BY unique1</literal>，仍会使用同一个计划，因为该索引已经隐式提供了所需顺序。
    </para>
 
-   <para>
-     规划器可以用多种方式实现<literal>ORDER BY</literal>子句。上面的示例表明，这种排序子句可以被隐式满足。规划器也可能显式增加一个<literal>Sort</literal>步骤：
-
-<screen>
+   <para>规划器可以用多种方式实现<literal>ORDER BY</literal>子句。上例表明，这样的排序子句可以隐式实现。规划器也可以添加一个显式的<literal>sort</literal>步骤：<screen>
 EXPLAIN SELECT * FROM tenk1 ORDER BY unique1;
                             QUERY PLAN
 -------------------------------------------------------------------
  Sort  (cost=1109.39..1134.39 rows=10000 width=244)
    Sort Key: unique1
    ->  Seq Scan on tenk1  (cost=0.00..445.00 rows=10000 width=244)
-</screen>
-
-    如果计划中的某一部分已经保证了所需排序键前缀的顺序，规划器也可能改用<literal>Incremental Sort</literal>步骤：
-
-<screen>
-EXPLAIN SELECT * FROM tenk1 ORDER BY hundred, ten LIMIT 100;
+</screen>如果计划中的某个部分保证了数据按所需排序键的前缀有序，规划器也可能改用一个<literal>incremental sort</literal>步骤：<screen>
+EXPLAIN SELECT * FROM tenk1 ORDER BY four, ten LIMIT 100;
                                               QUERY PLAN
--------------------------------------------------------------------&zwsp;-----------------------------
- Limit  (cost=19.35..39.49 rows=100 width=244)
-   -&gt;  Incremental Sort  (cost=19.35..2033.39 rows=10000 width=244)
-         Sort Key: hundred, ten
-         Presorted Key: hundred
-         -&gt;  Index Scan using tenk1_hundred on tenk1  (cost=0.29..1574.20 rows=10000 width=244)
-</screen>
-
-    与常规排序相比，增量排序允许在整个结果集完全排好序之前就返回元组，这对于<literal>LIMIT</literal>查询尤其有利。它还可能减少内存使用以及排序溢写到磁盘的概率，但代价是把结果集拆分成多个排序批次所带来的额外开销。
-   </para>
+-------------------------------------------------------------------&zwsp;-----------------------------------
+ Limit  (cost=521.06..538.05 rows=100 width=244)
+   ->  Incremental Sort  (cost=521.06..2220.95 rows=10000 width=244)
+         Sort Key: four, ten
+         Presorted Key: four
+         ->  Index Scan using index_tenk1_on_four on tenk1  (cost=0.29..1510.08 rows=10000 width=244)
+</screen>与常规排序相比，增量排序允许在整个结果集排序完成前就返回元组，尤其有利于优化带有<literal>LIMIT</literal>的查询。它还可能减少内存用量，以及排序溢写到磁盘的可能性，但代价是把结果集拆成多个排序批次带来的额外开销。</para>
 
    <para>
     如果<literal>WHERE</literal>中引用的多个列各自都有独立索引，规划器可能会选择对这些索引做 AND 或 OR 组合：
@@ -277,7 +258,7 @@ WHERE t1.unique1 &lt; 10 AND t1.unique2 = t2.unique2;
    </para>
 
    <para>
-    在这个计划中，有一个嵌套循环连接节点，它的两个输入，也就是两个子节点，都是表扫描。节点摘要行的缩进反映了计划树结构。连接的第一个子节点，也就是<quote>外侧</quote>子节点，是一个与前面见过的位图扫描类似的节点。它的代价和行计数与<literal>SELECT ... WHERE unique1 &lt; 10</literal>得到的结果相同，因为<literal>WHERE</literal>子句<literal>unique1 &lt; 10</literal>正是在该节点上应用的。<literal>t1.unique2 = t2.unique2</literal>子句此时还无关，因此不会影响外侧扫描的行计数。嵌套循环连接节点会对从外侧子节点得到的每一行执行一次第二个，也就是<quote>内侧</quote>子节点。当前外侧行中的列值可以代入内侧扫描；这里外侧行的<literal>t1.unique2</literal>值可用，因此得到的计划和代价与前面看到的简单<literal>SELECT ... WHERE t2.unique2 = <replaceable>constant</replaceable></literal>情形类似。（由于预期在对<literal>t2</literal>反复执行索引扫描期间会发生缓存命中，估计代价实际上比前面看到的略低一些。）随后，循环节点的代价建立在外侧扫描代价之上，再加上每个外侧行都要执行一次内侧扫描的代价（这里是 10 * 7.90），以及少量连接处理的 CPU 时间。
+    在这个计划中，有一个嵌套循环连接节点，它的两个输入，也就是两个子节点，都是表扫描。节点摘要行的缩进反映了计划树结构。连接的第一个子节点，也就是<quote>外侧</quote>子节点，是一个与前面见过的位图扫描类似的节点。它的代价和行计数与<literal>SELECT ... WHERE unique1 &lt; 10</literal>得到的结果相同，因为<literal>WHERE</literal>子句<literal>unique1 &lt; 10</literal>正是在该节点上应用的。<literal>t1.unique2 = t2.unique2</literal>子句此时还无关，因此不会影响外侧扫描的行计数。嵌套循环连接节点会对从外侧子节点得到的每一行执行一次第二个，也就是<quote>内侧</quote>子节点。当前外侧行中的列值可以代入内侧扫描；这里外侧行的<literal>t1.unique2</literal>值可用，因此得到的计划和代价与前面看到的简单<literal>SELECT ... WHERE t2.unique2 = <replaceable>constant</replaceable></literal>情形类似。（由于预期在对<literal>t2</literal>反复执行索引扫描期间会发生缓存命中，估计代价实际上比前面看到的略低一些。）随后，循环节点的代价建立在外侧扫描代价之上，再加上每个外侧行都要执行一次内侧扫描的代价（这里是 10 * 7.91），以及少量连接处理的 CPU 时间。
    </para>
 
    <para>
