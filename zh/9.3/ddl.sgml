@@ -273,39 +273,7 @@ CREATE TABLE products (
     需要注意的是，当检查表达式的值为真或空值时，检查约束就被视为满足。由于当任一操作数为空时，大多数表达式都会计算为空值，所以检查约束不会阻止受约束列中出现空值。要确保某列不包含空值，可以使用下一节介绍的非空约束。
    </para>
 
-   <note>
-    <para>
-     <productname>PostgreSQL</productname>不支持引用除了正在检查的新行或更新行之外的表数据的<literal>CHECK</literal>约束。
-     虽然违反此规则的<literal>CHECK</literal>约束在简单测试中可能有效，但无法保证数据库不会达到约束条件为假的状态
-     （由于其他行的后续更改）。这将导致数据库转储和恢复失败。即使完整的数据库状态与约束一致，恢复也可能失败，
-     因为行未按满足约束的顺序加载。如果可能的话，使用<literal>UNIQUE</literal>、<literal>EXCLUDE</literal>或
-     <literal>FOREIGN KEY</literal>约束来表示跨行和跨表的限制。
-</para>
-
-    <para>
-     如果你需要的是在插入行时针对其他行做一次性检查，而不是持续维护一致性保证，
-     可以使用自定义<link linkend="triggers">触发器</link>来实现。（这种方法避免了
-     转储/恢复问题，因为<application>pg_dump</application>在恢复数据之后才重新安装触发器，
-     因此在转储/恢复期间不会强制执行检查。）
-    </para>
-   </note>
-
-   <note>
-    <para>
-     <productname>PostgreSQL</productname>假定<literal>CHECK</literal>约束的条件是不可变的，也就是说，对于同一输入行它们始终会给出相同的结果。
-     正是这个假设，才使得只需要在插入或更新行时检查<literal>CHECK</literal>约束，而不必在其他时间检查。
-     （上面关于不引用其他表数据的警告实际上是此限制的特殊情况。）
-    </para>
-
-    <para>
-     一种常见的破坏这种假设的方式，是在<literal>CHECK</literal>表达式中引用用户定义函数，
-     然后改变该函数的行为。<productname>PostgreSQL</productname>不会禁止这样做，
-     但它不会注意到表中是否有行现在违反了<literal>CHECK</literal>约束。
-     这将导致后续的数据库转储和恢复操作失败。
-     处理这种变化的推荐方法是删除约束（使用<command>ALTER TABLE</command>），
-     调整函数定义，然后重新添加约束，从而重新检查所有表行。
-</para>
-   </note>
+   
   </sect2>
 
   <sect2>
@@ -781,7 +749,7 @@ CREATE TABLE circles (
 
    <para>
     命令标识符也是 32 位的量。这为单个事务中的<acronym>SQL</acronym>命令数设置了一个硬上限：
-    2<superscript>32</superscript>（40 亿）。在实践中，这个限制并不是问题 &mdash; 注意，这里限制的是<acronym>SQL</acronym>命令的数量，而不是处理的行数。另外，只有真正修改数据库内容的命令才会消耗命令标识符。
+    2<superscript>32</superscript>（40 亿）。在实践中，这个限制并不是问题 &mdash; 注意，这里限制的是<acronym>SQL</acronym>命令的数量，而不是处理的行数。另外，从<productname>PostgreSQL</productname> 8.3 开始，只有真正修改数据库内容的命令才会消耗命令标识符。
    </para>
  </sect1>
 
@@ -1336,33 +1304,30 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
    </para>
 
    <para>
-    由于系统表名以<literal>pg_</literal>开头，因此最好避免使用这样的名称，以免将来某个版本定义出与你的表同名的系统表。系统表会继续遵循以<literal>pg_</literal>开头的约定，因此只要用户避免使用<literal>pg_</literal>前缀，它们就不会与未经限定的用户表名发生冲突。
+    在<productname>PostgreSQL</productname> 7.3 之前的版本中，以<literal>pg_</literal>开头的表名是保留的。现在情况已不再如此：如果愿意，你可以在任何非系统模式中创建这样的表名。不过，最好还是继续避免这样的名称，以确保将来某个版本定义出与你的表同名的系统表时，你不会遭遇冲突。（在默认搜索路径下，对你的表名的非限定引用届时会被解析为系统表。）系统表会继续遵循以<literal>pg_</literal>开头的约定，因此只要用户避免使用<literal>pg_</literal>前缀，它们就不会与未经限定的用户表名发生冲突。
    </para>
   </sect2>
 
   <sect2 id="ddl-schemas-patterns">
    <title>使用方式</title>
 
-   <para>模式可以用多种方式组织数据。<firstterm>模式的安全使用方式</firstterm>可防止不受信任的用户改变其他用户查询的行为。如果数据库未采用安全的模式使用方式，希望安全查询该数据库的用户应在每个会话开始时采取保护措施。具体而言，应在每个会话开始时将<varname>search_path</varname>设为空字符串，或者以其他方式移除非超级用户可写的模式，使它们不再出现在以下路径中：<varname>search_path</varname>。默认配置很容易支持以下几种使用方式：<itemizedlist>
+   <para>模式可以用多种方式组织数据。默认配置可以轻松支持以下几种使用方式，其中只有一种在数据库用户互不信任时是足够的：<itemizedlist>
      <listitem>
       <!-- "DROP SCHEMA public" is inferior to this REVOKE, because pg_dump
-           doesn't preserve that DROP.
-
-           A database owner can attack the database's users via "CREATE SCHEMA
-           trojan; ALTER DATABASE $mydb SET search_path = trojan, public;".  A
-           CREATEROLE user can issue "GRANT $dbowner TO $me" and then use the
-           database owner attack. -->
-      <para>将普通用户限制在各自私有的模式中。为此，执行<literal>REVOKE CREATE ON SCHEMA public FROM PUBLIC</literal>，并为每个用户创建一个与其同名的模式。请记住，默认搜索路径以<literal>$user</literal>开头，它会解析为用户名。因此，如果每个用户都有单独的模式，他们默认访问的就是自己的模式。在已经有不受信任用户登录过的数据库中采用这种方式后，应考虑检查 public 模式中是否存在与<literal>pg_catalog</literal>模式中的对象同名的对象。除非不受信任的用户是数据库拥有者或持有<literal>CREATEROLE</literal>权限，否则这是一种安全的模式使用方式；如果存在上述情况，则没有安全的模式使用方式。</para>
-      <para>
-      </para>
+           doesn't preserve that DROP. -->
+      <para>将普通用户限制在各自私有的模式中。为此，执行<literal>REVOKE CREATE ON SCHEMA public FROM PUBLIC</literal>，并为每个用户创建一个与其同名的模式。如果受影响的用户在此之前曾登录过，应考虑检查 public 模式中是否存在与<literal>pg_catalog</literal>模式中的对象同名的对象。请记住，默认搜索路径以<literal>$user</literal>开头，它会解析为用户名。因此，如果每个用户都有单独的模式，他们默认访问的就是自己的模式。</para>
      </listitem>
 
      <listitem>
-      <para>通过修改<link linkend="config-setting-configuration-file"><filename>postgresql.conf</filename></link>，或执行<literal>ALTER ROLE ALL SET search_path = "$user"</literal>，将 public 模式从默认搜索路径中移除。每个人仍可在 public 模式中创建对象，但只有限定名才会选中这些对象。虽然限定的表引用没有问题，但调用 public 模式中的函数<link linkend="typeconv-func">会不安全或不可靠</link>。如果要在 public 模式中创建函数或扩展，请改用第一种方式。否则，它和第一种方式一样，除非不受信任的用户是数据库拥有者或持有<literal>CREATEROLE</literal>权限，否则就是安全的。</para>
+      <para>使用<literal>ALTER ROLE <replaceable>user</replaceable> SET search_path = "$user"</literal>，将 public 模式从每个用户的默认搜索路径中移除。每个人仍可在 public 模式中创建对象，但只有限定名才会选中这些对象。虽然限定的表引用没有问题，但调用 public 模式中的函数<link linkend="typeconv-func">会不安全或不可靠</link>。此外，持有<literal>CREATEROLE</literal>权限的用户可以撤销这一设置，并以依赖该设置的用户身份执行任意查询。如果要在 public 模式中创建函数或扩展，或者把<literal>CREATEROLE</literal>授予不值得赋予这种近乎超级用户能力的用户，请改用第一种方式。</para>
      </listitem>
 
      <listitem>
-      <para>保持默认设置。所有用户都会隐式访问 public 模式。这模拟了根本没有模式可用的情况，使从不支持模式的环境迁移过来时更加平滑。不过，这绝不是一种安全的方式。它只适用于数据库只有单个用户，或只有少数彼此信任的用户的场景。</para>
+      <para>通过修改<link linkend="config-setting-configuration-file"><filename>postgresql.conf</filename></link>，将 public 模式从<varname>search_path</varname>中移除。由此产生的用户体验与上一种方式相同。除了该方式对函数和<literal>CREATEROLE</literal>的影响之外，这种方式还像信任<literal>CREATEROLE</literal>一样信任数据库拥有者。如果要在 public 模式中创建函数或扩展，或者把<literal>CREATEROLE</literal>权限、<literal>CREATEDB</literal>权限或单个数据库的拥有权授予不值得赋予近乎超级用户访问权限的用户，请改用第一种方式。</para>
+     </listitem>
+
+     <listitem>
+      <para>保持默认设置。所有用户都会隐式访问 public 模式。这模拟了根本没有模式可用的情况，使从不支持模式的环境迁移过来时更加平滑。不过，任何用户都可以以未选择单独保护自己的任何用户的身份执行任意查询。这种方式只有当数据库只有一个用户或少数几个相互信任的用户时才可接受。</para>
      </listitem>
     </itemizedlist>
    </para>
@@ -1556,7 +1521,7 @@ VALUES ('New York', NULL, NULL, 'NY');
    <xref linkend="sql-altertable">会把列的数据定义或检查约束上的任何变化沿着继承层次向下传播。同样，删除被其他表依赖的列只能使用<literal>CASCADE</literal>选项。对于同名列的合并与拒绝，<command>ALTER TABLE</command>遵循与<command>CREATE TABLE</command>相同的规则。
   </para>
 
-  <para>注意表访问权限是如何处理的。查询父表可以自动访问子表中的数据，而无需进一步的访问权限检查。这保持了数据（也）在父表中的外观。但是，直接访问子表并不会被自动允许，需要授予进一步的权限。这条规则的两个例外是<command>TRUNCATE</command>和<command>LOCK TABLE</command>：无论是直接处理子表，还是通过对父表执行这些命令递归地处理子表，都会检查子表上的权限。</para>
+  <para>注意表访问权限是如何处理的。查询父表可以自动访问子表中的数据，而无需进一步的访问权限检查。这保持了数据（也）在父表中的外观。但是，直接访问子表并不会被自动允许，需要授予进一步的权限。</para>
 
      <sect2 id="ddl-inherit-caveats">
   <title>注意事项</title>
