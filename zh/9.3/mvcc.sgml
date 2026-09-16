@@ -597,7 +597,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
          与 <literal>SHARE UPDATE EXCLUSIVE</literal>、<literal>SHARE</literal>、<literal>SHARE ROW EXCLUSIVE</literal>、<literal>EXCLUSIVE</literal> 和 <literal>ACCESS EXCLUSIVE</literal> 锁模式冲突。这种模式用于保护表不受并发模式更改和 <command>VACUUM</command> 运行的影响。
         </para>
 
-        <para>由 <command>VACUUM</command>（不带 <option>FULL</option>）、<command>ANALYZE</command>、<command>CREATE INDEX CONCURRENTLY</command>、<command>ALTER TABLE VALIDATE</command> 和其他 <command>ALTER TABLE</command> 变体获取（完整细节见 <xref linkend="SQL-ALTERTABLE">）。</para>
+        <para>由 <command>VACUUM</command>（不带 <option>FULL</option>）、<command>ANALYZE</command>、<command>CREATE INDEX CONCURRENTLY</command> 以及某些形式的 <command>ALTER TABLE</command> 获取。</para>
        </listitem>
       </varlistentry>
 
@@ -639,7 +639,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
         </para>
 
         <para>
-         由 <command>REFRESH MATERIALIZED VIEW CONCURRENTLY</command> 获取。
+         这种锁模式不会被任何 <productname>PostgreSQL</productname> 命令在表上自动获取。
         </para>
        </listitem>
       </varlistentry>
@@ -654,12 +654,12 @@ ERROR:  could not serialize access due to read/write dependencies among transact
         </para>
 
         <para>
-         由 <command>DROP TABLE</command>、<command>TRUNCATE</command>、
-         <command>REINDEX</command>、<command>CLUSTER</command>、
-         <command>VACUUM FULL</command> 和不带 <option>CONCURRENTLY</option> 的
-         <command>REFRESH MATERIALIZED VIEW</command> 命令获取。
-         多种形式的 <command>ALTER TABLE</command>
-         也会获取这一层级的锁（见 <xref linkend="SQL-ALTERTABLE">）。这也是未显式指定模式的 <command>LOCK TABLE</command>
+         由 <command>ALTER TABLE</command>、<command>DROP TABLE</command>、
+         <command>TRUNCATE</command>、<command>REINDEX</command>、
+         <command>CLUSTER</command>、<command>VACUUM FULL</command> 和不带
+         <option>CONCURRENTLY</option> 的
+         <command>REFRESH MATERIALIZED VIEW</command>
+         命令获取。这也是未显式指定模式的 <command>LOCK TABLE</command>
          语句的默认锁模式。
         </para>
        </listitem>
@@ -798,128 +798,30 @@ ERROR:  could not serialize access due to read/write dependencies among transact
     <title>行级锁</title>
 
     <para>
-     除了表级锁之外，还有行级锁。下面列出了这些锁，以及 <productname>PostgreSQL</productname> 会在哪些场景下自动使用它们。行级锁的完整冲突表见 <xref linkend="row-lock-compatibility">。请注意，一个事务可以在同一行上持有彼此冲突的锁，甚至可以出现在不同子事务中；除此之外，两个事务不可能在同一行上持有彼此冲突的锁。行级锁不会影响数据查询；它们只会阻塞对同一行的<emphasis>写入者和加锁者</emphasis>。
+     除了表级锁之外，还有行级锁，它可以是排他锁或共享锁。当更新或删除某个特定行时，会自动获取该行的排他行级锁。与表级锁一样，该锁会被保持到事务提交或回滚为止。行级锁不影响数据查询；它们只阻塞对同一行的<emphasis>写入者</emphasis>。
     </para>
 
-     <variablelist>
-      <title>行级锁模式</title>
-      <varlistentry>
-       <term>
-        <literal>FOR UPDATE</literal>
-       </term>
-       <listitem>
-        <para>
-         <literal>FOR UPDATE</literal> 会导致 <command>SELECT</command> 语句检索到的行像将要被更新一样被锁定。这会阻止它们在当前事务结束之前被其他事务锁定、修改或删除。也就是说，其他尝试对这些行执行 <command>UPDATE</command>、<command>DELETE</command>、<command>SELECT FOR UPDATE</command>、<command>SELECT FOR NO KEY UPDATE</command>、<command>SELECT FOR SHARE</command> 或 <command>SELECT FOR KEY SHARE</command> 的事务，都会被阻塞直到当前事务结束。反过来，<command>SELECT FOR UPDATE</command> 也会等待已经在同一行上执行过上述任一命令的并发事务，并随后锁定并返回更新后的那一行（或者不返回任何行，因为该行可能已被删除）。不过，在 <literal>REPEATABLE READ</literal> 或 <literal>SERIALIZABLE</literal> 事务中，如果要锁定的行自事务开始以来已经发生变化，就会抛出错误。进一步讨论见 <xref linkend="applevel-consistency">。
-        </para>
-        <para>
-         <literal>FOR UPDATE</literal> 锁模式也会被对某一行的任何 <command>DELETE</command> 获取，
-         以及会修改某些列值的 <command>UPDATE</command> 获取。目前，就 <command>UPDATE</command> 而言，
-         这里考虑的列是指其上存在可供外键使用的唯一索引的列
-         （因此不考虑部分索引和表达式索引），但这在将来可能会变化。
-        </para>
-       </listitem>
-      </varlistentry>
+    <para>
+     要在不实际修改行的情况下获取某一行的排他行级锁，可以使用<command>SELECT FOR UPDATE</command>选择该行。注意，一旦获取了行级锁，事务就可以多次更新该行而不必担心冲突。
+    </para>
 
-      <varlistentry>
-       <term>
-        <literal>FOR NO KEY UPDATE</literal>
-       </term>
-       <listitem>
-        <para>
-         其行为类似于 <literal>FOR UPDATE</literal>，但获取的锁较弱：这种锁不会阻塞试图在同一行上获取锁的
-         <literal>SELECT FOR KEY SHARE</literal> 命令。凡是不会获得 <literal>FOR UPDATE</literal>
-         锁的 <command>UPDATE</command>，都会获得这种锁模式。
-        </para>
-       </listitem>
-      </varlistentry>
+    <para>
+     要获取某一行的共享行级锁，可以使用<command>SELECT FOR SHARE</command>选择该行。共享锁不会阻止其他事务获取相同的共享锁。但是，任何事务都不能更新、删除或排他锁定其他事务持有共享锁的行。任何此类尝试都将阻塞，直到共享锁被释放。
+    </para>
 
-      <varlistentry>
-       <term>
-        <literal>FOR SHARE</literal>
-       </term>
-       <listitem>
-        <para>
-         行为与 <literal>FOR NO KEY UPDATE</literal> 类似，不过它在每个检索到的行上获取的是共享锁而不是排他锁。共享锁会阻塞其他事务在这些行上执行 <command>UPDATE</command>、<command>DELETE</command>、<command>SELECT FOR UPDATE</command> 或 <command>SELECT FOR NO KEY UPDATE</command>，但不会阻止它们执行 <command>SELECT FOR SHARE</command> 或 <command>SELECT FOR KEY SHARE</command>。
-        </para>
-       </listitem>
-      </varlistentry>
-
-      <varlistentry>
-       <term>
-        <literal>FOR KEY SHARE</literal>
-       </term>
-       <listitem>
-        <para>
-         行为与 <literal>FOR SHARE</literal> 类似，不过锁更弱：<literal>SELECT FOR UPDATE</literal> 会被阻塞，但 <literal>SELECT FOR NO KEY UPDATE</literal> 不会。键共享锁会阻塞其他事务执行 <command>DELETE</command> 或任何会修改键值的 <command>UPDATE</command>，但不会阻塞其他 <command>UPDATE</command>，也不会阻止 <command>SELECT FOR NO KEY UPDATE</command>、<command>SELECT FOR SHARE</command> 或 <command>SELECT FOR KEY SHARE</command>。
-        </para>
-       </listitem>
-      </varlistentry>
-     </variablelist>
+     
 
     <para>
      <productname>PostgreSQL</productname> 不会在内存中保存任何关于已修改行的信息，因此一次加锁的行数没有限制。不过，锁定一行可能会导致一次磁盘写；例如，<command>SELECT FOR UPDATE</command> 会修改被选中的行以标记它们已被锁定，因此会产生磁盘写入。
     </para>
 
-    <table tocentry="1" id="row-lock-compatibility">
-     <title>冲突的行级锁</title>
-     <tgroup cols="5">
-      <colspec colnum="2" colname="lockst">
-      <colspec colnum="5" colname="lockend">
-      <spanspec namest="lockst" nameend="lockend" spanname="lockreq">
-      <thead>
-       <row>
-        <entry morerows="1">请求的锁模式</entry>
-        <entry spanname="lockreq">当前的锁模式</entry>
-       </row>
-       <row>
-        <entry>FOR KEY SHARE</entry>
-        <entry>FOR SHARE</entry>
-        <entry>FOR NO KEY UPDATE</entry>
-        <entry>FOR UPDATE</entry>
-       </row>
-      </thead>
-      <tbody>
-       <row>
-        <entry>FOR KEY SHARE</entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center">X</entry>
-       </row>
-       <row>
-        <entry>FOR SHARE</entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-       </row>
-       <row>
-        <entry>FOR NO KEY UPDATE</entry>
-        <entry align="center"></entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-       </row>
-       <row>
-        <entry>FOR UPDATE</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-       </row>
-      </tbody>
-     </tgroup>
-    </table>
-   </sect2>
-
-   <sect2 id="locking-pages">
-    <title>页级锁</title>
-
-    <para>
-     除了表级锁和行级锁之外，还使用页级共享/排他锁来控制对共享缓冲池中表页面的读写访问。这些锁会在取出或更新某一行后立即释放。应用开发者通常不需要关心页级锁，这里提到它们只是为了完整性。
+    
+       <para>
+     除表级锁和行级锁之外，还使用页级共享/排他锁来控制对共享缓冲区池中表页的读写访问。这些锁在行被取出或更新之后立即释放。应用开发者通常不需要关心页级锁，但这里为了完整起见对其进行说明。
     </para>
+</sect2>
 
-   </sect2>
+   
 
    <sect2 id="locking-deadlocks">
     <title>死锁</title>
