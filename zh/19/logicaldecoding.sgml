@@ -783,12 +783,11 @@ CREATE TABLE another_catalog_table(data text) WITH (user_catalog_table = true);
     <para>
      输出插件回调几乎可以用任意格式向消费者传递数据。对于某些用例，例如通过
      SQL 查看更改，把数据返回为能够容纳任意数据的数据类型（例如
-     <type>bytea</type>）会很笨拙。如果输出插件只输出服务器编码中的文本数
-     据，它可以把 <literal>OutputPluginOptions.output_type</literal> 设置为
+     <type>bytea</type>）会很不方便。如果输出插件只输出采用服务器编码的文本数据，
+     它可以在<link linkend="logicaldecoding-output-plugin-startup">启动回调</link>中，
+     将 <literal>OutputPluginOptions.output_type</literal> 设置为
      <literal>OUTPUT_PLUGIN_TEXTUAL_OUTPUT</literal> 而不是
-     <literal>OUTPUT_PLUGIN_BINARY_OUTPUT</literal>，并在
-     <link linkend="logicaldecoding-output-plugin-startup">启动回调</link>
-     中声明这一点。在这种情况下，所有数据都必须采用服务器编码，这样才能装入 <type>text</type>
+     <literal>OUTPUT_PLUGIN_BINARY_OUTPUT</literal>，以声明这一点。在这种情况下，所有数据都必须采用服务器编码，这样才能装入 <type>text</type>
      datum。断言开启的构建会检查这一点。
     </para>
    </sect2>
@@ -808,19 +807,18 @@ CREATE TABLE another_catalog_table(data text) WITH (user_catalog_table = true);
      调，那么使用 <command>PREPARE TRANSACTION</command> 为两阶段提交准备的
      事务也会被解码。当前正在被解码的预备事务，也可能会被
      <command>ROLLBACK PREPARED</command> 命令并发中止。在这种情况下，该事务
-     的逻辑解码也会中止。一旦检测到中止并调用 <function>prepare_cb</function>
-     回调，这类事务的所有更改都会被跳过。因此，即便发生并发中止，一旦后续解
-     码到 <command>ROLLBACK PREPARED</command>，仍会向输出插件提供足够的信
-     息，使其能够正确处理它。
+     的逻辑解码也会中止。一旦检测到中止，就会跳过该事务的所有更改，并调用
+     <function>prepare_cb</function> 回调。因此，即便发生并发中止，输出插件仍会
+     获得足够的信息，以便在后续解码到 <command>ROLLBACK PREPARED</command> 时
+     正确处理它。
     </para>
 
     <note>
      <para>
-      只有已经安全刷写到磁盘的事务才会被解码。这可能导致
-      <command>COMMIT</command> 在紧随其后的
-      <literal>pg_logical_slot_get_changes()</literal> 调用中不会立即被解
-      码，当 <varname>synchronous_commit</varname> 被设置为
-      <literal>off</literal> 时尤其如此。
+      只有已经安全刷写到磁盘的事务才会被解码。因此，当
+      <varname>synchronous_commit</varname> 设置为 <literal>off</literal> 时，
+      <command>COMMIT</command> 可能不会在紧随其后的
+      <literal>pg_logical_slot_get_changes()</literal> 调用中立即被解码。
      </para>
     </note>
 
@@ -868,7 +866,7 @@ typedef struct OutputPluginOptions
      <para>
       当一个此前处于活动状态的复制槽不再使用时，就会调用可选的
       <function>shutdown_cb</function> 回调。它可用于释放输出插件私有的资
-      源。此时未必是在删除该槽，也可能只是停止流式传输。
+      源。此时只是停止流式传输，并不一定删除该槽。
 <programlisting>
 typedef void (*LogicalDecodeShutdownCB) (struct LogicalDecodingContext *ctx);
 </programlisting>
@@ -933,10 +931,9 @@ typedef void (*LogicalDecodeChangeCB) (struct LogicalDecodingContext *ctx,
 
      <note>
       <para>
-       只有用户定义表中既不是不记录 WAL 的（见
-       <xref linkend="sql-createtable-unlogged"/>），也不是临时的（见
-       <xref linkend="sql-createtable-temporary"/>）更改，才能通过逻辑解码提
-       取出来。
+       只有用户定义表中的更改才能通过逻辑解码提取，而且这些表不能是不记录 WAL 的表（见
+       <xref linkend="sql-createtable-unlogged"/>），也不能是临时表（见
+       <xref linkend="sql-createtable-temporary"/>）。
       </para>
      </note>
     </sect3>
@@ -1011,8 +1008,7 @@ typedef void (*LogicalDecodeMessageCB) (struct LogicalDecodingContext *ctx,
       实际消息，其大小为 <parameter>message_size</parameter>。
      </para>
      <para>
-      应特别注意，确保输出插件视为有意义的消息前缀具有唯一性。使用扩展名或输
-      出插件自身的名称通常是一个不错的选择。
+      应特别注意，确保输出插件视为有意义的消息前缀具有唯一性。使用扩展的名称或输出插件自身的名称通常是一个不错的选择。
      </para>
     </sect3>
 
@@ -1021,7 +1017,7 @@ typedef void (*LogicalDecodeMessageCB) (struct LogicalDecodingContext *ctx,
 
      <para>
        可选的 <function>filter_prepare_cb</function> 回调用于判定，当前两阶段
-       提交事务中的数据，应当在本次 prepare 阶段解码，还是等到
+       提交事务中的数据，应当在本次预备阶段解码，还是等到
        <command>COMMIT PREPARED</command> 时作为常规单阶段事务再解码。若要
        表示应跳过解码，则返回 <literal>true</literal>；否则返回
        <literal>false</literal>。如果该回调未定义，则默认视为
@@ -1307,10 +1303,10 @@ OutputPluginWrite(ctx, true);
     <title>注意事项</title>
 
     <para>
-     在同步复制设置中，如果事务对 [user] 目录表持有排他锁，就可能发生死锁。
+     在同步复制设置中，如果事务对 目录表（包括用户目录表）持有排他锁，就可能发生死锁。
      关于用户目录表的信息，见 <xref linkend="logicaldecoding-capabilities"/>。
      这是因为事务的逻辑解码在访问这些目录表时也可能对其加锁。为了避免这种情
-     况，用户必须避免对 [user] 目录表获取排他锁。这可能通过以下方式发生：
+     况，用户必须避免对 目录表（包括用户目录表）获取排他锁。这可能通过以下方式发生：
 
      <itemizedlist>
       <listitem>
@@ -1346,7 +1342,7 @@ OutputPluginWrite(ctx, true);
 
       <listitem>
        <para>
-        在事务中对 [user] 目录表执行 <command>TRUNCATE</command>。
+        在事务中对 目录表（包括用户目录表）执行 <command>TRUNCATE</command>。
        </para>
       </listitem>
      </itemizedlist>
@@ -1508,7 +1504,7 @@ commit_prepared_cb(...);  &lt;-- commit of the prepared transaction
     <itemizedlist>
      <listitem>
       <para>
-       如果预备事务对 [user] 目录表持有排他锁，那么解码 PREPARE 可能会阻塞，
+       如果预备事务对 目录表（包括用户目录表）持有排他锁，那么解码 PREPARE 可能会阻塞，
        直到主事务提交为止。
       </para>
      </listitem>
@@ -1516,7 +1512,7 @@ commit_prepared_cb(...);  &lt;-- commit of the prepared transaction
      <listitem>
       <para>
        使用这一特性构建分布式两阶段提交的逻辑复制方案时，如果预备事务对
-       [user] 目录表持有排他锁，就可能发生死锁。为了避免这种情况，用户必须避
+       目录表（包括用户目录表）持有排他锁，就可能发生死锁。为了避免这种情况，用户必须避
        免在这类事务中对目录表加锁（例如显式执行 <command>LOCK</command> 命
        令）。详见 <xref linkend="logicaldecoding-synchronous-caveats"/>。
       </para>
