@@ -399,7 +399,7 @@ protocol to make nodes agree on a serializable transactional order.
    </para>
 
    <para>
-    如果想使用流复制，就需要在主库上配置认证，以允许来自备库的复制连接；也就是说，创建一个角色，并在 <filename>pg_hba.conf</filename> 中添加一个或多个把数据库字段设置为 <literal>replication</literal> 的合适项。还要确保主库配置文件中的 <varname>max_wal_senders</varname> 被设置为足够大的值。如果要使用复制槽，还应确保 <varname>max_replication_slots</varname> 也设置得足够高。
+    如果想使用流复制，就需要在主库上配置认证，以允许来自备库的复制连接；也就是说，创建一个角色，并在 <filename>pg_hba.conf</filename> 中添加一个或多个把数据库字段设置为 <literal>replication</literal> 的合适项。还要确保主库配置文件中的 <varname>max_wal_senders</varname> 被设置为足够大的值。
    </para>
 
    <para>
@@ -457,7 +457,11 @@ archive_cleanup_command = 'pg_archivecleanup /path/to/archive %r'
    </para>
 
    <para>
-    如果你使用流复制，但没有启用基于文件的持续归档，服务器可能会在备库收到旧的 WAL 段之前就把它们回收掉。如果发生这种情况，备库就需要重新通过新的基础备份进行初始化。可以通过把 <varname>wal_keep_segments</varname> 设置得足够大，以确保 WAL 段不会过早被回收，或者为备库配置一个复制槽，从而避免这种情况。如果配置了一个备库可访问的 WAL 归档，就不需要这些方案，因为只要归档保留了足够多的段，备库始终可以利用归档追赶上来。
+    如果你使用流复制，但没有启用基于文件的持续归档，就必须把主库上的
+    <varname>wal_keep_segments</varname> 设置为一个足够大的值，以确保旧的 WAL
+    段不会在备库还需要它们追赶时就被过早回收。如果备库落后得太多，就需要通过新的
+    基础备份重新初始化。如果配置了一个备库可访问的 WAL 归档，则不需要
+    <varname>wal_keep_segments</varname>，因为备库始终可以利用归档追赶上来。
    </para>
 
    <para>要使用流复制，请先按 <xref linkend="warm-standby"> 所述配置基于文件的日志传送备库。将这种备库转为流复制备库的关键步骤，是在 <filename>recovery.conf</filename> 文件中设置 <varname>primary_conninfo</varname>，使其指向主库。在主库上设置 <xref linkend="guc-listen-addresses"> 和认证选项（参见 <filename>pg_hba.conf</filename>），使备库能够连接主库的 <literal>replication</literal> 伪数据库（参见 <xref linkend="streaming-replication-authentication">）。</para>
@@ -825,11 +829,7 @@ if (!triggered)
        插件和扩展：<command>LOAD</command>
       </para>
      </listitem>
-     <listitem>
-      <para>
-       <command>UNLISTEN</command>
-      </para>
-     </listitem>
+
     </itemizedlist>
    </para>
 
@@ -909,14 +909,14 @@ if (!triggered)
      </listitem>
      <listitem>
       <para>
-       <command>LISTEN</command>、<command>NOTIFY</command>
+       <command>LISTEN</command>、<command>UNLISTEN</command>、<command>NOTIFY</command>
       </para>
      </listitem>
     </itemizedlist>
    </para>
 
    <para>
-    在正常运行中，<quote>只读</quote>事务允许使用<command>LISTEN</command>和<command>NOTIFY</command>，因此热备会话受到的限制要比普通只读会话稍微更严格一些。将来的版本中，这些限制中的某些可能会被放宽。
+    在正常运行中，<quote>只读</quote>事务允许使用<command>LISTEN</command>、<command>UNLISTEN</command>和<command>NOTIFY</command>，因此热备会话受到的限制要比普通只读会话稍微更严格一些。将来的版本中，这些限制中的某些可能会被放宽。
    </para>
 
    <para>
@@ -1003,7 +1003,7 @@ if (!triggered)
    </para>
 
    <para>
-    如果备库查询被取消的次数多得令人无法接受，也存在补救办法。第一种选择是设置<varname>hot_standby_feedback</varname>参数，它会阻止<command>VACUUM</command>移除最近死亡的行，因此不会发生清理冲突。如果这样做，你应当注意这会延迟主库上死行的清理，从而可能导致不希望出现的表膨胀。不过，清理情况不会比直接在主库上运行这些备库查询更糟，而且你仍然可以获得把执行卸载到备库上的好处。如果备库经常连接又断开，你可能还需要进行一些调整，以应对无法提供<varname>hot_standby_feedback</varname>反馈的那段时间。例如，可以考虑增大<varname>max_standby_archive_delay</varname>，使查询在断开期间不会因为 WAL 归档文件中的冲突而被迅速取消。你也应考虑增大<varname>max_standby_streaming_delay</varname>，以避免重新连接后由于新到达的流式 WAL 条目而被快速取消。
+    如果备库查询被取消的次数多得令人无法接受，也存在补救办法。第一种选择是设置<varname>hot_standby_feedback</varname>参数，它会阻止<command>VACUUM</command>移除最近死亡的行，因此不会发生清理冲突。如果这样做，你应当注意这会延迟主库上死行的清理，从而可能导致不希望出现的表膨胀。不过，清理情况不会比直接在主库上运行这些备库查询更糟，而且你仍然可以获得把执行卸载到备库上的好处。在这种情况下必须保持较大的 <varname>max_standby_archive_delay</varname>，因为延迟的 WAL 文件中可能已经包含与所需备库查询相冲突的条目。
    </para>
 
    <para>另一种选择是增大主库上的 <xref linkend="guc-vacuum-defer-cleanup-age">，使死行不会像通常那样很快被清理。这样，无需将 <varname>max_standby_streaming_delay</varname> 设得很大，就能让备库查询在被取消前有更多执行时间。不过，这种方法难以保证具体的执行时间窗口，因为 <varname>vacuum_defer_cleanup_age</varname> 是按主库上执行的事务数来衡量的。</para>
@@ -1023,7 +1023,7 @@ LOG:  entering standby mode
 
 LOG:  consistent recovery state reached
 LOG:  database system is ready to accept read only connections
-</programlisting>主库每次检查点都会记录一致性信息。如果主库的 <varname>wal_level</varname> 未设为 <literal>replica</literal> 或 <literal>logical</literal>，则读取这一期间写入的 WAL 时不能启用热备。如果同时满足以下两个条件，达到一致状态也可能延迟：<itemizedlist>
+</programlisting>主库每次检查点都会记录一致性信息。如果主库的 <varname>wal_level</varname> 未设为 <literal>hot_standby</literal>，则读取这一期间写入的 WAL 时不能启用热备。如果同时满足以下两个条件，达到一致状态也可能延迟：<itemizedlist>
        <listitem>
         <para>
          某个写事务包含超过 64 个子事务
@@ -1052,11 +1052,7 @@ LOG:  database system is ready to accept read only connections
          <varname>max_locks_per_transaction</varname>
         </para>
        </listitem>
-       <listitem>
-        <para>
-         <varname>max_worker_processes</varname>
-        </para>
-       </listitem>
+       
       </itemizedlist>
    </para>
 
