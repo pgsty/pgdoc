@@ -317,9 +317,18 @@ fi
 # html target to the XSL pipeline (xslthtml-stamp, osx -> postgres.xml ->
 # xsltproc chunked HTML) that those makefiles already provide, matching what
 # PG10+ do natively.  The guard is a no-op for PG10 and later.
+# PG <= 9.2 only provide the xslthtml target (no xslthtml-stamp variant);
+# backport the 9.4-recipe xslthtml-stamp (index marked section, SDATA entity
+# fixup, css copy) first, then the stamp branch below takes over.  The
+# backport is a no-op for PG >= 9.3.
+python3 "${SCRIPT_DIR}/patch_legacy_xsl_pipeline.py" "${work_tree}/doc/src/sgml"
 if grep -q '^xslthtml-stamp:' "${work_tree}/doc/src/sgml/Makefile"; then
   sed -i.bak \
     -e 's/^html: html-stamp$/html: xslthtml-stamp/' \
+    "${work_tree}/doc/src/sgml/Makefile"
+elif grep -q '^xslthtml:' "${work_tree}/doc/src/sgml/Makefile"; then
+  sed -i.bak \
+    -e 's/^html: html-stamp$/html: xslthtml/' \
     "${work_tree}/doc/src/sgml/Makefile"
 fi
 
@@ -343,6 +352,13 @@ fi
 # --- Build HTML ---
 echo "Building HTML docs (${lang} ${version}) ..."
 (cd "${work_tree}" && "${MAKE_CMD}" -C doc/src/sgml DOC_LANG="${lang}" html)
+
+# PG <= 9.2 reroutes html to the xslthtml target, which lacks the
+# stylesheet.css copy that xslthtml-stamp (9.3+) performs.  Copy it here so
+# the chunked output always references a real CSS file (no-op for 9.3+).
+if [[ -f "${work_tree}/doc/src/sgml/stylesheet.css" && ! -f "${work_tree}/doc/src/sgml/html/stylesheet.css" ]]; then
+  cp "${work_tree}/doc/src/sgml/stylesheet.css" "${work_tree}/doc/src/sgml/html/stylesheet.css"
+fi
 
 # --- Copy output ---
 mkdir -p "${build_out}"
