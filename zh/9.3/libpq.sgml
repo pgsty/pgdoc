@@ -87,12 +87,11 @@ PGconn *PQconnectdbParams(const char * const *keywords,
 
       <para>
        传入的数组可以为空以使用全部默认参数，也可以包含一个或多个参数设置。
-       两个数组的长度应当相同。处理会在 <literal>keywords</literal> 数组的
-       第一个 <symbol>NULL</symbol> 元素处停止。
+       两个数组的长度应当相同。处理会在 <literal>keywords</literal> 数组的最后一个非 <symbol>NULL</symbol> 元素处停止。
       </para>
 
       <para>
-       如果任何参数为 <symbol>NULL</symbol> 或空字符串，则会检查相应的环境变量
+       如果有参数未指定，则会检查相应的环境变量
        （见<xref linkend="libpq-envars">）。如果环境变量也未设置，则使用所示的
        内置默认值。
       </para>
@@ -544,7 +543,7 @@ PGPing PQping(const char *conninfo);
    <para>
     几个<application>libpq</>函数解析用户指定的字符串以获取连接参数。
     这些字符串有两种被接受的格式：普通的<literal>keyword = value</literal>字符串和
-    <ulink url="https://tools.ietf.org/html/rfc3986">RFC
+    <ulink url="http://www.ietf.org/rfc/rfc3986.txt">RFC
     3986</ulink> URI。
 </para>
 
@@ -982,10 +981,10 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       <term><literal>krbsrvname</literal></term>
       <listitem>
        <para>
-        使用 GSSAPI 认证时所用的 Kerberos 服务名。
-        这必须与服务器配置中指定的Kerberos认证服务名称匹配，才能成功进行认证。
-        （另请参见<xref linkend="gssapi-auth">。）
-        </para>
+        使用 Kerberos 5 或 GSSAPI 认证时所用的 Kerberos 服务名。
+        这必须与服务器配置中指定的 Kerberos 认证服务名称匹配，才能成功进行认证。
+        （另请参见<xref linkend="kerberos-auth">和<xref linkend="gssapi-auth">。）
+       </para>
       </listitem>
      </varlistentry>
 
@@ -1170,6 +1169,15 @@ PGTransactionStatusType PQtransactionStatus(const PGconn *conn);
 
        该状态可能是<literal>PQTRANS_IDLE</literal>（当前空闲）、<literal>PQTRANS_ACTIVE</literal>（一个命令运行中）、<literal>PQTRANS_INTRANS</literal>（空闲，处于一个有效的事务块中）或者<literal>PQTRANS_INERROR</literal>（空闲，处于一个失败的事务块中）。如果该连接异常，将会报告<literal>PQTRANS_UNKNOWN</literal>。只有当一个查询已经被发送给服务器并且还没有完成时，才会报告<literal>PQTRANS_ACTIVE</literal>。
       </para>
+
+      <caution>
+       <para>
+        当使用 <productname>PostgreSQL</productname> 7.3 服务器且其
+        <literal>autocommit</literal> 参数被设为 off 时，
+        <function>PQtransactionStatus</function> 会给出不正确的结果。
+        服务器端的 autocommit 特性已被废弃，在之后的服务器版本中已不存在。
+       </para>
+      </caution>
      </listitem>
     </varlistentry>
 
@@ -4798,7 +4806,7 @@ ldap://ldap.acme.com/cn=dbserver,cn=hosts?pgconnectinfo?base?(objectclass=*)
      <row>
       <entry><literal>verify-ca</literal></entry>
       <entry>是</entry>
-      <entry>取决于 CA 策略</entry>
+      <entry>取决于 <literal>CA</literal> 策略</entry>
       <entry>我想要对数据加密，并且我接受因此带来的负荷。我想要确保我连接到的是我信任的服务器。
       </entry>
      </row>
@@ -5290,10 +5298,6 @@ main(int argc, char **argv)
  *
  *   INSERT INTO TESTLIBPQ2.TBL1 VALUES (10);
  */
-
-#ifdef WIN32
-#include <windows.h>
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5343,7 +5347,7 @@ main(int argc, char **argv)
         exit_nicely(conn);
     }
 
-    /* Set always-secure search path, so malicious users can't take control. */
+    /* Set always-secure search path, so malicous users can't take control. */
     res = PQexec(conn,
                  "SELECT pg_catalog.set_config('search_path', '', false)");
     if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -5406,7 +5410,6 @@ main(int argc, char **argv)
                     notify->relname, notify->be_pid);
             PQfreemem(notify);
             nnotifies++;
-            PQconsumeInput(conn);
         }
     }
 
@@ -5454,17 +5457,11 @@ main(int argc, char **argv)
  *  t = (8 bytes) 'ho there'
  *  b = (5 bytes) \004\003\002\001\000
  */
-
-#ifdef WIN32
-#include <windows.h>
-#endif
-
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <string.h>
 #include <sys/types.h>
-#include "libpq-fe.h"
+#include <libpq-fe.h>
 
 /* for ntohl/htonl */
 #include <netinet/in.h>
@@ -5570,7 +5567,7 @@ main(int argc, char **argv)
         exit_nicely(conn);
     }
 
-    /* Set always-secure search path, so malicious users can't take control. */
+    /* Set always-secure search path, so malicous users can't take control. */
     res = PQexec(conn, "SET search_path = testlibpq3");
     if (PQresultStatus(res) != PGRES_COMMAND_OK)
     {
@@ -5585,10 +5582,10 @@ main(int argc, char **argv)
      * out-of-line parameters, as well as binary transmission of data.
      *
      * This first example transmits the parameters as text, but receives the
-     * results in binary format.  By using out-of-line parameters we can avoid
-     * a lot of tedious mucking about with quoting and escaping, even though
-     * the data is text.  Notice how we don't have to do anything special with
-     * the quote mark in the parameter value.
+     * results in binary format.  By using out-of-line parameters we can
+     * avoid a lot of tedious mucking about with quoting and escaping, even
+     * though the data is text.  Notice how we don't have to do anything
+     * special with the quote mark in the parameter value.
      */
 
     /* Here is our out-of-line parameter value */
@@ -5615,8 +5612,8 @@ main(int argc, char **argv)
     PQclear(res);
 
     /*
-     * In this second example we transmit an integer parameter in binary form,
-     * and again retrieve the results in binary form.
+     * In this second example we transmit an integer parameter in binary
+     * form, and again retrieve the results in binary form.
      *
      * Although we tell PQexecParams we are letting the backend deduce
      * parameter type, we really force the decision by casting the parameter

@@ -86,9 +86,7 @@ SELECT clean_emp();
 </screen>
     </para>
 
-    <note>
-     <para>SQL 函数的整个函数体都会先经过解析，然后才开始执行。虽然 SQL 函数可以包含修改系统目录的命令（例如 <command>CREATE TABLE</command>），但在对函数中的后续命令进行解析分析时，这些命令的效果还不可见。因此，例如将 <literal>CREATE TABLE foo (...); INSERT INTO foo VALUES(...);</literal> 打包到同一个 SQL 函数中，就不会按预期工作，因为 <structname>foo</structname> 在解析 <command>INSERT</command> 命令时还不存在。在这类情况下，建议使用 <application>PL/pgSQL</application> 而不是 SQL 函数。</para>
-   </note>
+    
 
    <para>
     <command>CREATE FUNCTION</command> 命令的语法要求把函数体写成一个字符串常量。对于字符串常量，通常使用美元引用最方便（见<xref linkend="sql-syntax-dollar-quoting">）。如果你选择使用常规的单引号字符串常量语法，那么必须在函数体中将单引号（<literal>'</literal>）和反斜线（<literal>\</literal>）写成双份（假定使用转义字符串语法，见<xref linkend="sql-syntax-strings">）。
@@ -2382,21 +2380,21 @@ retcomposite(PG_FUNCTION_ARGS)
     TupleDesc            tupdesc;
     AttInMetadata       *attinmeta;
 
-    /* 仅在函数的第一次调用时执行的操作 */
+    /* stuff done only on the first call of the function */
     if (SRF_IS_FIRSTCALL())
     {
         MemoryContext   oldcontext;
 
-        /* 为跨调用持久性创建函数上下文 */
+        /* create a function context for cross-call persistence */
         funcctx = SRF_FIRSTCALL_INIT();
 
-        /* 切换到适合多次函数调用的内存上下文 */
+        /* switch to memory context appropriate for multiple function calls */
         oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
-        /* 要返回的元组总数 */
+        /* total number of tuples to be returned */
         funcctx->max_calls = PG_GETARG_UINT32(0);
 
-        /* 为我们的结果类型构建一个元组描述符 */
+        /* Build a tuple descriptor for our result type */
         if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
             ereport(ERROR,
                     (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -2404,7 +2402,8 @@ retcomposite(PG_FUNCTION_ARGS)
                             "that cannot accept type record")));
 
         /*
-         * 生成后续从原始C字符串生成元组所需的属性元数据
+         * generate attribute metadata needed later to produce tuples from raw
+         * C strings
          */
         attinmeta = TupleDescGetAttInMetadata(tupdesc);
         funcctx->attinmeta = attinmeta;
@@ -2412,22 +2411,23 @@ retcomposite(PG_FUNCTION_ARGS)
         MemoryContextSwitchTo(oldcontext);
     }
 
-    /* 每次函数调用时执行的操作 */
+    /* stuff done on every call of the function */
     funcctx = SRF_PERCALL_SETUP();
 
     call_cntr = funcctx->call_cntr;
     max_calls = funcctx->max_calls;
     attinmeta = funcctx->attinmeta;
 
-    if (call_cntr < max_calls)    /* 当还有更多要发送时执行 */
+    if (call_cntr < max_calls)    /* do when there is more left to send */
     {
         char       **values;
         HeapTuple    tuple;
         Datum        result;
 
         /*
-         * 为构建返回的元组准备一个值数组。
-         * 这应该是一个由后续类型输入函数处理的C字符串数组。
+         * Prepare a values array for building the returned tuple.
+         * This should be an array of C strings which will
+         * be processed later by the type input functions.
          */
         values = (char **) palloc(3 * sizeof(char *));
         values[0] = (char *) palloc(16 * sizeof(char));
@@ -2438,13 +2438,13 @@ retcomposite(PG_FUNCTION_ARGS)
         snprintf(values[1], 16, "%d", 2 * PG_GETARG_INT32(1));
         snprintf(values[2], 16, "%d", 3 * PG_GETARG_INT32(1));
 
-        /* 构建一个元组 */
+        /* build a tuple */
         tuple = BuildTupleFromCStrings(attinmeta, values);
 
-        /* 将元组转换为 datum */
+        /* make the tuple into a datum */
         result = HeapTupleGetDatum(tuple);
 
-        /* 清理（这实际上并不是必要的） */
+        /* clean up (this is not really necessary) */
         pfree(values[0]);
         pfree(values[1]);
         pfree(values[2]);
@@ -2452,7 +2452,7 @@ retcomposite(PG_FUNCTION_ARGS)
 
         SRF_RETURN_NEXT(funcctx, result);
     }
-    else    /* 当没有更多要发送时执行 */
+    else    /* do when there is no more left */
     {
         SRF_RETURN_DONE(funcctx);
     }
