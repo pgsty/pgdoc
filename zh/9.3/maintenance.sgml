@@ -291,35 +291,17 @@
      <secondary>事务 ID 的</secondary>
     </indexterm>
 
-   <para><productname>PostgreSQL</productname> 的 <link linkend="mvcc-intro">MVCC</link> 事务语义依赖于比较事务 ID（<acronym>XID</acronym>）的大小：如果某个行版本的插入 XID 大于当前事务的 XID，它就处于<quote>未来</quote>，不应对当前事务可见。但是，事务 ID 的大小有限（32 位），长期运行的集簇（超过 40 亿个事务）会遇到<firstterm>事务 ID 回卷</firstterm>：XID 计数器回到零，原本处于过去的事务突然看起来处于未来 &mdash; 这意味着它们的结果变得不可见。也就是灾难性的数据丢失。（数据其实还在，但如果无法访问，也无济于事。）为避免这种情况，必须至少每经过 20 亿个事务，就清理一次每个数据库中的每个表。</para>
+   <para><productname>PostgreSQL</productname> 的 MVCC 事务语义依赖于能够比较事务 ID（<acronym>XID</acronym>）数值：如果某个行版本的插入 XID 大于当前事务的 XID，它就处于<quote>未来</quote>，不应对当前事务可见。但是，事务 ID 的大小有限（32 位），长期运行的集簇（超过 40 亿个事务）会遇到<firstterm>事务 ID 回卷</firstterm>：XID 计数器回到零，原本处于过去的事务突然看起来处于未来 &mdash; 这意味着它们的结果变得不可见。也就是灾难性的数据丢失。（数据其实还在，但如果无法访问，也无济于事。）为避免这种情况，必须至少每经过 20 亿个事务，就清理一次每个数据库中的每个表。</para>
 
-   <para>定期清理之所以能解决这一问题，是因为 <command>VACUUM</command> 会将行标记为<emphasis>冻结</emphasis>，表示插入这些行的事务早已提交，足以保证该插入事务的影响对当前及未来的所有事务都可见。普通 XID 使用模 2<superscript>32</superscript> 算术进行比较。这意味着，对每个普通 XID，都有 20 亿个 XID 比它<quote>更老</quote>，另有 20 亿个 XID 比它<quote>更新</quote>；换句话说，普通 XID 空间是一个没有端点的环。因此，用某个普通 XID 创建行版本后，无论该 XID 是多少，在接下来的 20 亿个事务中，该行版本都会被视为处于<quote>过去</quote>。如果经过超过 20 亿个事务后它仍然存在，就会突然被视为处于未来。为避免这种情况，<productname>PostgreSQL</productname> 保留了一个特殊 XID：<literal>FrozenTransactionId</literal>。它不遵循普通 XID 的比较规则，始终被视为比所有普通 XID 都老。冻结行版本的处理方式相当于其插入 XID 是 <literal>FrozenTransactionId</literal>，因此无论是否发生回卷，对所有普通事务而言，它们都处于<quote>过去</quote>。所以，这类行版本在被删除之前始终有效，无论存在多久。</para>
-
-   <note>
-    <para>
-     在 9.4 之前的 <productname>PostgreSQL</productname> 版本中，冻结是通过实际把一行的插入 XID
-     替换为 <literal>FrozenTransactionId</literal> 实现的，这一点可以在该行的
-     <structname>xmin</structname> 系统列中看到。较新的版本只是设置一个标志位，
-     同时保留行原始的 <structname>xmin</structname> 以供可能的取证用途。不过，
-     在从 9.4 之前版本通过 <application>pg_upgrade</application> 升级得到的数据库中，
-     仍然可能发现 <structname>xmin</structname> 等于
-     <literal>FrozenTransactionId</literal> (2) 的行。
-    </para>
-    <para>
-     此外，系统目录中可能包含 <structname>xmin</structname> 等于
-     <literal>BootstrapTransactionId</literal> (1) 的行，这表示它们是在
-     <application>initdb</application> 的第一阶段插入的。和
-     <literal>FrozenTransactionId</literal> 一样，这个特殊 XID 也被视为比所有普通 XID 都更老。
-    </para>
-   </note>
+   <para>定期清理之所以能解决这一问题，是因为 <productname>PostgreSQL</productname> 保留了一个特殊的 XID，即 <literal>FrozenXID</literal>。这个 XID 不遵循普通的 XID 比较规则，它始终被视为比所有普通 XID 都老。普通 XID 使用模 2<superscript>32</superscript> 算术进行比较。这意味着，对每个普通 XID，都有 20 亿个 XID 比它<quote>更老</quote>，另有 20 亿个 XID 比它<quote>更新</quote>；换句话说，普通 XID 空间是一个没有端点的环。因此，用某个普通 XID 创建行版本后，无论该 XID 是多少，在接下来的 20 亿个事务中，该行版本都会被视为处于<quote>过去</quote>。如果经过超过 20 亿个事务后它仍然存在，就会突然被视为处于未来。为避免这种情况，必须在旧行版本达到 20 亿事务这一界限之前，把它们的 XID 重新赋值为 <literal>FrozenXID</literal>。一旦被赋值为这个特殊的 XID，无论是否发生回卷问题，它们对所有普通事务而言都处于<quote>过去</quote>，因此这样的行版本在被删除之前始终有效，无论存在多久。旧 XID 的这种重新赋值由 <command>VACUUM</command> 完成。</para>
 
    <para>
     <xref linkend="guc-vacuum-freeze-min-age">
-    控制某个 XID 值需要达到多老，其对应的行才会被冻结。如果那些本来会被冻结的行很快又会被修改，
-    增大这个设置可以避免不必要的工作；而减小这个设置，则会增加在表必须再次被清理之前可以流逝的事务数量。
+    控制某个 XID 值需要达到多老，它才会被替换为 <literal>FrozenXID</literal>。
+    增大这个设置可以更长时间地保留事务信息，而减小这个设置，则会增加在表必须再次被清理之前可以流逝的事务数量。
    </para>
 
-   <para><command>VACUUM</command> 通常会跳过没有死行版本的页面，但这些页面中可能仍有 XID 值很旧的行版本。要确保所有旧行版本都已被冻结，就需要对整个表进行一次扫描。<xref linkend="guc-vacuum-freeze-table-age"> 控制 <command>VACUUM</command> 何时执行这种操作：如果该表在 <varname>vacuum_freeze_table_age</varname> 减去 <varname>vacuum_freeze_min_age</varname> 个事务内未曾被完整扫描，就会强制进行一次全表扫描。将其设为 0 会强制 <command>VACUUM</command> 始终扫描所有页面，实际上是忽略可见性映射。</para>
+   <para><command>VACUUM</command> 通常会跳过没有死行版本的页面，但这些页面中可能仍有 XID 值很旧的行版本。要确保所有旧 XID 都已被替换为 <literal>FrozenXID</literal>，就需要对整个表进行一次扫描。<xref linkend="guc-vacuum-freeze-table-age"> 控制 <command>VACUUM</command> 何时执行这种操作：如果该表在 <varname>vacuum_freeze_table_age</varname> 减去 <varname>vacuum_freeze_min_age</varname> 个事务内未曾被完整扫描，就会强制进行一次全表扫描。将其设为 0 会强制 <command>VACUUM</command> 始终扫描所有页面，实际上是忽略可见性映射。</para>
 
    <para>一个表可以不清理的最长时间，是 20 亿个事务减去 <command>VACUUM</command> 上次扫描全表时的 <varname>vacuum_freeze_min_age</varname> 值。超过这个期限仍不清理，就可能丢失数据。为确保不会发生这种情况，对于可能包含未冻结行、且其 XID 年龄大于配置参数 <xref linkend="guc-autovacuum-freeze-max-age"> 所指定年龄的任何表，都会调用自动清理。（即使禁用了自动清理，也会如此。）</para>
 
@@ -350,8 +332,8 @@
 
    <para>
     减小 <varname>vacuum_freeze_min_age</varname> 的一个缺点是，它可能导致
-    <command>VACUUM</command> 做无用功：如果某个行版本随后不久就被修改
-    （因而获得新的 XID），冻结它就是浪费时间。因此，该设置应足够大，
+    <command>VACUUM</command> 做无用功：如果某个表行随后不久就被修改
+    （因而获得新的 XID），把它的 XID 改为 <literal>FrozenXID</literal> 就是浪费时间。因此，该设置应足够大，
     使得行在不太可能再次发生变化之前不会被冻结。
    </para>
 
@@ -359,8 +341,8 @@
     为了跟踪数据库中最老未冻结 XID 的年龄，<command>VACUUM</command> 会在系统表
     <structname>pg_class</structname> 和 <structname>pg_database</structname>
     中存储 XID 统计信息。具体来说，某个表在 <structname>pg_class</structname> 中对应行的
-    <structfield>relfrozenxid</structfield> 列，记录了 <command>VACUUM</command> 上次扫描全表时所使用的冻结截止 XID。所有由 XID 早于此截止值的事务
-    插入的行都保证已被冻结。类似地，某个数据库在
+    <structfield>relfrozenxid</structfield> 列，记录了 <command>VACUUM</command> 上次扫描全表时所使用的冻结截止 XID。所有早于此截止值的普通 XID 都保证已在该表内被替换为
+    <literal>FrozenXID</literal>。类似地，某个数据库在
     <structname>pg_database</structname> 中对应行的 <structfield>datfrozenxid</structfield> 列，
     是出现在该数据库中的未冻结 XID 的下界，它就是该数据库内各表
     <structfield>relfrozenxid</structfield> 值的最小值。查看这些信息的一种方便方式是执行如下查询：
@@ -516,21 +498,7 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
     都不会被纳入这个均衡算法。
    </para>
 
-   <para>
-    自动清理工作进程通常不会阻塞其他命令。如果某个进程试图获取与自动清理持有的
-    <literal>SHARE UPDATE EXCLUSIVE</literal> 锁冲突的锁，那么该加锁操作会中断自动清理。
-    关于冲突锁模式，见 <xref linkend="table-lock-compatibility">。但是，如果自动清理正在运行，
-    其目的是防止事务 ID 回卷（也就是说，在 <structname>pg_stat_activity</structname>
-    视图中，自动清理查询名以 <literal>(to prevent wraparound)</literal> 结尾），
-    则自动清理不会被自动中断。
-   </para>
-
-   <warning>
-    <para>
-     定期运行需要获取与 <literal>SHARE UPDATE EXCLUSIVE</literal> 锁冲突的锁的命令
-     （例如 ANALYZE），实际上可能会使自动清理永远无法完成。
-    </para>
-   </warning>
+   
   </sect2>
  </sect1>
 
@@ -634,7 +602,7 @@ pg_ctl start | rotatelogs /var/log/pgsql_log 86400
   </para>
 
   <para>
-   <ulink url="https://pgbadger.darold.net/"><productname>pgBadger</productname></ulink>
+   <ulink url="http://dalibo.github.io/pgbadger/"><productname>pgBadger</productname></ulink>
    是一个进行复杂日志文件分析的外部项目。
    <ulink
    url="https://bucardo.org/check_postgres/"><productname>check_postgres</productname></ulink>
