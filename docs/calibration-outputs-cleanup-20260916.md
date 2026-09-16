@@ -63,4 +63,4 @@ zstd -dc '/Users/vonng/pgsty/pgdoc/outputs/cleanup-20260916/archives/checkpoint-
 - [224 个正常工作区删除清单](/Users/vonng/pgsty/pgdoc/outputs/cleanup-20260916/deleted-workspaces.json)、[9 个失败／中断工作区删除清单](/Users/vonng/pgsty/pgdoc/outputs/cleanup-20260916/deleted-failed-workspaces.json)、[失败工作区原始来源记录](/Users/vonng/pgsty/pgdoc/outputs/cleanup-20260916/failed-workspace-provenance.json)。
 - [原校准交接文档](/Users/vonng/pgsty/pgdoc/docs/calibration-handoff-20260916.md)。
 
-本次是存储清理，不改变原校准完成度。全书余项、历史对账、事务／pg_resetwal 草稿证明及 33 项最终构建仍按交接文档续作。归档和逐文件清单仍位于被 Git 忽略的 outputs；另建 worktree 或克隆不会自动带走它们。
+本次是存储清理，不改变原校准完成度。正文校对余项、事务／pg_resetwal 草稿修复及 33 项最终构建按交接文档中最新的执行纠偏续作。归档和逐文件清单仍位于被 Git 忽略的 outputs；另建 worktree 或克隆不会自动带走它们。

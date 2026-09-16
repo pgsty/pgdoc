@@ -96,7 +96,30 @@ PG14—19 中文源文完成 1,895 个定点原子修改、321 个文件：1,626
 ## 2026-09-16 PG10—PG20 日期与时间附录校准
 
 新增第 654 条 time zone abbreviation → 时区缩写，沿用数据类型、配置和附录的稳定译法，统一系统目录总览中的时区简写。按十一版自身英文核对空格、连字符和复数形式，保留实际时区名称、缩写值、标识符和代码。同步按既有 Julian Date → 儒略日 规则统一格式模板和日期输入示例标签，区分儒略历。词表与规则各 654 条，九项用户回退不变。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/datetime-appendix-full-reviewed-*；全书及 33 最终构建继续。
+- 2026-09-16 zh/16 精校收官批（内部模块 98 文件 + release-16 + 4 小文件）：零新缺陷，无新术语、无术语变更；B-01~B-08 修复均沿用既有术语表条目。
+- 2026-09-16 zh/14 精校批次 14c（ref 组 3：create_foreign_table→discard，36 文件 1039 对）：6 项未来内容修复，无新术语。create_function 恢复 PG14/15「8.3 之前」SET 子句段（删 createrole_self_grant PG16+ 污染）；create_sequence 删 UNLOGGED synopsis+条目（PG15+）；create_statistics 删「如果给定了名称」前缀与「必须提供统计对象名称」句（PG16+，zh/10-15 六版）；create_subscription conninfo 还原 PG14 母本句式；create_transform plpython3u→plpythonu（PG15+ 更名，zh/14）；declare 删活动游标唯一名句（PG16+，zh/10-15 六版）。提交 a972f5e + 5cc2765；make -C zh/14 html exit 0（1080 文件）。
+- 2026-09-16 zh/14 精校批次 14d（ref 组 4：do→values 全部 SQL 命令页，83 文件约 2400 对）：3 项未来内容修复，无新术语。drop_role 删「并且已被授予该角色上的 ADMIN OPTION」句（PG16+，zh/14+15）；drop_transform plpython3u→plpythonu（PG15+ 更名，zh/14）；set 还原「有些参数需要超级用户权限才能更改」母本措辞（PG15+ 参数级 SET 权限，zh/14）。提交 dc90132；make -C zh/14 html exit 0（1080 文件）。
+
+## 2026-09-16 zh/15 全量精校（tmp/final15 程序收官）
+
+对照 en/15.19，468 单元 + 1 na（pgdoccn-notes）全部完成。共 6 个修复提交：
+
+- **86ebffe** ddl 常量默认值 tip 补「从 PostgreSQL 11 开始」限定语（zh/14-17 四版同修，86 版式）
+- **bebb4fe** 未来内容清理：features/declare/pg_waldump（zh/14+15；zh/14 pg_waldump 另删 6 处 PG15 起选项）
+- **f0a9d61** monitoring tup_returned 补「该数据库中」限定语（M-01，zh/15/16/17/18/20 五版同修）+ regress 两处 PG16+ 前向污染还原（make check 输出 193/==== 格式、float4 平台示例 HP-UX 10）
+- **de51eca** logicaldecoding 可选回调列表删 message_cb（PG16+ 前向污染；zh/14 同修）
+- **399970e** pgupgrade 删空 note 残留元素
+- **6ca2dee** create_statistics 删 PG16+ 可选名称句（zh/14 同修）
+
+横向波及：M-01（5 版）、86ebffe 限定语（4 版）、bebb4fe/de51eca/6ca2dee（zh/14 同修）。构建验证：zh/15 html 1088 页 / pdf A4 2816 页 / US 2980 页，全部 exit 0 零 error。
+- 2026-09-16 zh/14 精校批次 14e（ref 客户端应用：clusterdb→vacuumdb 22 文件约 1300 对）：4 项未来内容修复，无新术语。dropuser 删 PG16+ ADMIN OPTION 权限句（与 drop_role 同族，zh/14+15）；pg_receivewal 删 PG15+ READ_REPLICATION_SLOT 起始位置项、还原 -Z/--compress=level 压缩条目（PG15+ method 形式，zh/14）、删 PG16+ SIGTERM 措辞（zh/14+15）。--restrict-key/\restrict 经核为 en/14.24 含有的 2025 安全回移项，非污染。提交 af2de8f；make -C zh/14 html exit 0（1080 文件）。
+- 2026-09-16 zh/14 精校批次 14f（ref 服务器应用：initdb→postmaster 13 文件约 377 对）：3 项未来内容修复，无新术语。pg_checksums 还原「集簇中的每个文件都会被原地重写」措辞（PG15+ 改为按块重写，zh/12-14）；pg_waldump 删「可以多次指定该选项以选择多个资源管理器」句（PG15+，zh/14）与「可以用十进制或十六进制指定」时间线句（PG16+，zh/14+15）。提交 4a1d0fc；make -C zh/14 html exit 0（1080 文件）。
+- 2026-09-16 zh/14 精校批次 14g（arch-dev 45 对 + catalogs 2078 对 + protocol 全文）：零缺陷，无改动。protocol 段落计数差（EN 685/zh 625）经逐节结构探针定性为两类既有惯例（EN 嵌套 para 包裹 variablelist、zh 过渡句 para 包裹），82 消息条目字段逐一核对完整；证据见 findings/catalogs-protocol.md。
 
 ## 2026-09-16 PG10—PG20 事务内部机制与 pg_resetwal 校准
 
 新增第 655 条 epoch → 纪元和第 656 条 subcommitted → 已子提交。前者沿用现有术语章、协议与函数译法，区分事务纪元计数和时间基准；EXTRACT 字段、输入值及代码标识符保持英文。后者明确子事务状态，不与最终持久提交或预备事务混淆。十一版完整相关上下文已核对；词表与规则各 656 条，九项用户回退不变。证据见 outputs/pg10-20-calibration-20260911-134417/zcode-followup/xact-resetwal-full-reviewed-*；全书及 33 最终构建继续。
+- 2026-09-16 zh/14 精校批次 14h-1（服务器编程残留 + 索引方法 + 内部细节 18 文件约 940 对）：3 项未来内容修复（均在 nls）。还原 nls.mk/AVAIL_LANGUAGES 新翻译工作指引（PG16+ 改为 po/LINGUAS）、删除 procedure 中 PG16+ "Add a file po/LINGUAS" step、合并还原 PG14 PO 编辑器段（PG16+ 拆段并新增专用编辑器句）；母本=zh/13。tableam 段落粒度差（9/10）定性为 zh 拆段惯例，内容完整。提交 807ebae；make -C zh/14 html exit 0（1080 文件）。
+- 2026-09-16 zh/14 精校批次 14h-2（附录区 6 文件 151 对 + release-14 全文 2349 对）：零缺陷，无改动。release-14 采证：pairdump 2349=2349 平价；结构多重集全等（sect1=25/sect2=52/sect3=13/listitem=1215/itemizedlist=52）；全对标识符+数字保真探针（两轮去噪后仅剩已译英文复合形容词如 out-of-bounds/row-level）；长度离群全量核查为正常中文压缩；零 LONG 离群（无未来内容）。
+- 2026-09-16 zh/14 精校批次 14i（附录杂项 16 单元：indexam/external-projects/sourcerepo/docguide/limits/acronyms 81/glossary 200/color/appendix-obsolete×7/biblio）：零缺陷，无改动。证据见 tmp/final14/findings/appendix-misc.md。
+- 2026-09-16 zh/14 精校批次 14i-contrib（contrib 区 49 单元 1753 对三组全量精读）：零缺陷，无改动。三重探针全过：平价断言；标识符保真（flag 项全为已译复数缩写/复合形容词/全角括号边缘标点，真缺失为零）；长度离群 SHORT 全量核实为完整中文压缩、LONG 为零（无未来内容）。pgcrypto CVE-2026-14663 ignore-cipher-failure、contrib-spi PG20 移除句均经核为 en/14.24 含有的 2025 上游回移，非污染。证据见 tmp/final14/findings/contrib-review.md。
