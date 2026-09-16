@@ -34,7 +34,7 @@ PostgreSQL documentation
 <synopsis>
 [ WITH [ RECURSIVE ] <replaceable class="parameter">with_query</replaceable> [, ...] ]
 SELECT [ ALL | DISTINCT [ ON ( <replaceable class="parameter">expression</replaceable> [, ...] ) ] ]
-    [ * | <replaceable class="parameter">expression</replaceable> [ [ AS ] <replaceable class="parameter">output_name</replaceable> ] [, ...] ]
+    * | <replaceable class="parameter">expression</replaceable> [ [ AS ] <replaceable class="parameter">output_name</replaceable> ] [, ...] ]
     [ FROM <replaceable class="parameter">from_item</replaceable> [, ...] ]
     [ WHERE <replaceable class="parameter">condition</replaceable> ]
     [ GROUP BY <replaceable class="parameter">expression</replaceable> [, ...] ]
@@ -53,11 +53,8 @@ SELECT [ ALL | DISTINCT [ ON ( <replaceable class="parameter">expression</replac
     [ LATERAL ] ( <replaceable class="parameter">select</replaceable> ) [ AS ] <replaceable class="parameter">alias</replaceable> [ ( <replaceable class="parameter">column_alias</replaceable> [, ...] ) ]
     <replaceable class="parameter">with_query_name</replaceable> [ [ AS ] <replaceable class="parameter">alias</replaceable> [ ( <replaceable class="parameter">column_alias</replaceable> [, ...] ) ] ]
     [ LATERAL ] <replaceable class="parameter">function_name</replaceable> ( [ <replaceable class="parameter">argument</replaceable> [, ...] ] )
-                [ WITH ORDINALITY ] [ [ AS ] <replaceable class="parameter">alias</replaceable> [ ( <replaceable class="parameter">column_alias</replaceable> [, ...] ) ] ]
     [ LATERAL ] <replaceable class="parameter">function_name</replaceable> ( [ <replaceable class="parameter">argument</replaceable> [, ...] ] ) [ AS ] <replaceable class="parameter">alias</replaceable> ( <replaceable class="parameter">column_definition</replaceable> [, ...] )
     [ LATERAL ] <replaceable class="parameter">function_name</replaceable> ( [ <replaceable class="parameter">argument</replaceable> [, ...] ] ) AS ( <replaceable class="parameter">column_definition</replaceable> [, ...] )
-    [ LATERAL ] ROWS FROM( <replaceable class="parameter">function_name</replaceable> ( [ <replaceable class="parameter">argument</replaceable> [, ...] ] ) [ AS ( <replaceable class="parameter">column_definition</replaceable> [, ...] ) ] [, ...] )
-                [ WITH ORDINALITY ] [ [ AS ] <replaceable class="parameter">alias</replaceable> [ ( <replaceable class="parameter">column_alias</replaceable> [, ...] ) ] ]
     <replaceable class="parameter">from_item</replaceable> [ NATURAL ] <replaceable class="parameter">join_type</replaceable> <replaceable class="parameter">from_item</replaceable> [ ON <replaceable class="parameter">join_condition</replaceable> | USING ( <replaceable class="parameter">join_column</replaceable> [, ...] ) ]
 
 <phrase>而<replaceable class="parameter">with_query</replaceable>为：</phrase>
@@ -340,7 +337,6 @@ TABLE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ]
        </para>
 
        <para>
-        多个函数调用可以通过用<literal>ROWS FROM( ... )</literal>括起来，
         合并成单个<literal>FROM</literal>子句项。这样一个项的输出会先拼接每个
         函数的第一行，再拼接每个函数的第二行，依此类推。如果某些函数产生
         的行数少于其他函数，则会用 NULL 替代缺失的数据，以确保返回的总行数
@@ -356,16 +352,11 @@ TABLE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ]
        </para>
 
        <para>
-        当使用<literal>ROWS FROM( ... )</literal>语法时，如果其中某个函数需要
-        列定义列表，最好将该列定义列表放在<literal>ROWS FROM( ... )</literal>
         内部、紧跟在函数调用之后。只有在只有一个函数且没有
         <literal>WITH ORDINALITY</literal>子句时，才能把列定义列表放在
-        <literal>ROWS FROM( ... )</literal>结构之后。
        </para>
 
        <para>
-        要在列定义列表中使用<literal>ORDINALITY</literal>，必须使用<literal>ROWS FROM( ... )</literal>语法，
-        并将列定义列表放在<literal>ROWS FROM( ... )</literal>内部。
 </para>
       </listitem>
      </varlistentry>
@@ -543,16 +534,7 @@ GROUP BY <replaceable class="parameter">expression</replaceable> [, ...]
    </para>
 
    <para>
-    记住所有的聚合函数都是在<literal>HAVING</literal>子句或者
-    <literal>SELECT</literal>列表中的任何<quote>标量</quote>表达式之前被计算。
-    这意味着<literal>CASE</literal>表达式不能被用来跳过聚合表达式的
-    计算，见<xref linkend="syntax-express-eval">。
-   </para>
-
-   <para>
-    当前，<literal>FOR NO KEY UPDATE</literal>、<literal>FOR UPDATE</literal>、
-    <literal>FOR SHARE</literal>和<literal>FOR KEY SHARE</literal>不能和
-    <literal>GROUP BY</literal>一起指定。
+    当存在<literal>GROUP BY</literal>子句时，<command>SELECT</command>列表表达式不能引用非分组列，除非是在聚合函数内部，或者该非分组列函数依赖于分组列，因为否则对于一个非分组列可能会有多个可返回的值。如果分组列（或其子集）是包含该非分组列的表的主键，则存在函数依赖。
    </para>
   </refsect2>
 
@@ -1079,7 +1061,19 @@ KEY SHARE
    </para>
 
    <para>
-    更多关于每一种行级锁模式的信息可见<xref linkend="locking-rows">。
+    <literal>FOR UPDATE</literal>导致由<command>SELECT</command>语句检索到的行被锁定，就像要更新它们一样。这可以防止它们被其他事务修改或删除，直到当前事务结束。也就是说，其他事务中试图对这些行执行<command>UPDATE</command>、<command>DELETE</command>、<command>SELECT FOR UPDATE</command>、<command>SELECT FOR NO KEY UPDATE</command>、<command>SELECT FOR SHARE</command>或<command>SELECT FOR KEY SHARE</command>的操作将被阻塞，直到当前事务结束。<literal>FOR UPDATE</literal>锁模式也会被任何针对行的<command>DELETE</command>以及修改某些列上值的<command>UPDATE</command>所获取。当前，针对<command>UPDATE</command>情况被考虑的列集合是那些其上存在可用于外键的唯一索引的列（因此部分索引和表达式索引不被考虑），但这一点将来可能改变。此外，如果来自另一个事务的<command>UPDATE</command>、<command>DELETE</command>或<command>SELECT FOR UPDATE</command>已经锁定了被选中的行或某些行，<command>SELECT FOR UPDATE</command>将等待该其他事务完成，然后锁定并返回更新后的行（如果该行已被删除则不返回行）。但是，在<literal>REPEATABLE READ</literal>或<literal>SERIALIZABLE</literal>事务中，如果要锁定的行在事务开始后发生过变化，则会抛出错误。更多讨论见<xref linkend="mvcc">。
+   </para>
+
+   <para>
+    <literal>FOR NO KEY UPDATE</literal>的行为类似，但获取的锁较弱：该锁不会阻塞试图对相同行获取锁的<literal>SELECT FOR KEY SHARE</literal>命令。任何没有获取<literal>FOR UPDATE</literal>锁的<command>UPDATE</command>也会获取这种锁模式。
+   </para>
+
+   <para>
+    <literal>FOR SHARE</literal>的行为类似，但它在每个被检索的行上获取共享锁而非排他锁。共享锁阻塞其他事务对这些行执行<command>UPDATE</command>、<command>DELETE</command>、<command>SELECT FOR UPDATE</command>或<command>SELECT FOR NO KEY UPDATE</command>，但不阻止它们执行<command>SELECT FOR SHARE</command>或<command>SELECT FOR KEY SHARE</command>。
+   </para>
+
+   <para>
+    <literal>FOR KEY SHARE</literal>的行为与<literal>FOR SHARE</literal>类似，但锁较弱：<literal>SELECT FOR UPDATE</literal>会被阻塞，而<literal>SELECT FOR NO KEY UPDATE</literal>不会。键共享锁阻塞其他事务执行<command>DELETE</command>或任何更改键值的<command>UPDATE</command>，但不阻塞其他<command>UPDATE</command>，也不阻止<command>SELECT FOR NO KEY UPDATE</command>、<command>SELECT FOR SHARE</command>或<command>SELECT FOR KEY SHARE</command>。
    </para>
 
    <para>
@@ -1603,7 +1597,6 @@ SELECT distributors.* WHERE distributors.name = 'Westward';
    </para>
 
    <para>
-    <literal>ROWS FROM( ... )</literal>是 SQL 标准的扩展。
    </para>
   </refsect2>
 
