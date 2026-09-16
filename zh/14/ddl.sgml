@@ -772,7 +772,7 @@ CREATE TABLE order_items (
    
    <para>限制删除和级联删除是最常见的两种选项。<literal>RESTRICT</literal>阻止删除被引用的行。<literal>NO ACTION</literal>表示检查约束时若仍存在引用行，就会报错；未指定任何选项时，这是默认行为。（这两种选项的根本区别在于，<literal>NO ACTION</literal>允许将检查延迟到事务稍后进行，而<literal>RESTRICT</literal>不允许。）<literal>CASCADE</literal>指定当被引用行被删除时，引用它的行也应自动删除。另有两个选项：<literal>SET NULL</literal>和<literal>SET DEFAULT</literal>。它们会在被引用行删除时，分别把引用行中的引用列设为空值或其默认值。注意，这并不能让你免于遵守其他约束。例如，如果某个动作指定了<literal>SET DEFAULT</literal>，但默认值本身不满足外键约束，则该操作仍会失败。</para>
 <para>
-    与<literal>ON DELETE</literal>类似，还有<literal>ON UPDATE</literal>，当被引用列发生变化（更新）时就会触发。可用动作与<literal>ON DELETE</literal>相同，只是<literal>SET NULL</literal>和<literal>SET DEFAULT</literal>不能指定列列表。在这种情况下，<literal>CASCADE</literal>表示应把被引用列更新后的值复制到引用行中。
+    与<literal>ON DELETE</literal>类似，还有<literal>ON UPDATE</literal>，当被引用列发生变化（更新）时就会触发。可用动作与<literal>ON DELETE</literal>相同。在这种情况下，<literal>CASCADE</literal>表示应把被引用列更新后的值复制到引用行中。
    </para>
 
    <para>
@@ -2324,12 +2324,13 @@ SELECT 3 OPERATOR(pg_catalog.+) 4;
 
    <para>
     默认情况下，用户无法访问他们不拥有的模式中的任何对象。要允许这样做，模式的所有者必须授予该模式上的<literal>USAGE</literal>权限。
-    默认情况下，每个人在模式<literal>public</literal>上都有该权限。要允许用户使用模式中的对象，可能需要授予其他权限，适用于该对象。
+    要允许用户使用模式中的对象，可能需要授予其他权限，适用于该对象。
 </para>
 
    <para>
     用户还可以被允许在别人的模式中创建对象。为了允许这样做，需要授予模式上的<literal>CREATE</literal>权限。
-    在从<productname>PostgreSQL</productname> 14 或更早版本升级而来的数据库中，每个人都拥有模式<literal>public</literal>上的该权限。
+    注意，默认情况下，每个人都拥有模式<literal>public</literal>上的<literal>CREATE</literal>和<literal>USAGE</literal>权限。
+    这使所有能够连接到某个数据库的用户都可以在该数据库的<literal>public</literal>模式中创建对象。
     某些<link linkend="ddl-schemas-patterns">使用方式</link>要求撤销该权限：
 <programlisting>
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
@@ -2370,29 +2371,26 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
     下面有几种在默认配置下容易支持的使用方式：
     <itemizedlist>
      <listitem>
+      <!-- "DROP SCHEMA public" is inferior to this REVOKE, because pg_dump
+           doesn't preserve that DROP.
 
-      <para>
-       将普通用户限制在各自私有的模式中。
-       要实现这种模式，首先要确保没有任何模式向<literal>PUBLIC</literal>授予<literal>CREATE</literal>权限。
-       然后，对每个需要创建非临时对象的用户，创建一个与该用户同名的模式，例如
-       <literal>CREATE SCHEMA alice AUTHORIZATION alice</literal>。
-       （请记住，默认搜索路径以<literal>$user</literal>开头，它会解析为用户名。
-       因此，如果每个用户都有一个单独的模式，那么他们默认访问的就是自己的模式。）
-       这种模式属于模式的安全使用方式，除非某个不受信任的用户是数据库所有者，
-       或者在相关角色上拥有<literal>ADMIN OPTION</literal>；一旦出现这种情况，就不存在模式的安全使用方式了。
-      </para>
-      <!-- A database owner can attack the database's users via "CREATE SCHEMA
+           A database owner can attack the database's users via "CREATE SCHEMA
            trojan; ALTER DATABASE $mydb SET search_path = trojan, public;".  A
            CREATEROLE user can issue "GRANT $dbowner TO $me" and then use the
            database owner attack. -->
-
       <para>
-       在<productname>PostgreSQL</productname> 15 及更高版本中，默认配置支持这种使用方式。
-       在更早版本中，或者数据库是从更早版本升级而来时，你需要从<literal>public</literal>模式撤销面向<literal>PUBLIC</literal>的<literal>CREATE</literal>权限（执行<literal>REVOKE CREATE ON SCHEMA public FROM PUBLIC</literal>）。
-       然后还应考虑审查<literal>public</literal>模式中那些与<literal>pg_catalog</literal>模式内对象同名的对象。
+       将普通用户限制在各自私有的模式中。
+       要实现这种模式，可执行<literal>REVOKE CREATE ON SCHEMA public FROM PUBLIC</literal>，
+       并为每个用户创建一个与该用户同名的模式。
+       请记住，默认搜索路径以<literal>$user</literal>开头，它会解析为用户名。
+       因此，如果每个用户都有一个单独的模式，那么他们默认访问的就是自己的模式。
+       在已有不受信任用户登录过的数据库中采用这种模式之后，
+       应考虑审查<literal>public</literal>模式中那些与<literal>pg_catalog</literal>模式内对象同名的对象。
+       这种模式属于模式的安全使用方式，除非某个不受信任的用户是数据库所有者，
+       或者拥有<literal>CREATEROLE</literal>权限；一旦出现这种情况，就不存在模式的安全使用方式了。
       </para>
-      <!-- "DROP SCHEMA public" is inferior to this REVOKE, because pg_dump
-           doesn't preserve that DROP. -->
+      <para>
+      </para>
      </listitem>
 
      <listitem>
@@ -2400,22 +2398,22 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
       <para>
        通过修改<link linkend="config-setting-configuration-file"><filename>postgresql.conf</filename></link>，
        或执行<literal>ALTER ROLE ALL SET search_path = "$user"</literal>，
-       将<literal>public</literal>模式从默认搜索路径中移除。然后，再授予在<literal>public</literal>模式中创建对象的权限。
-       这样，只有使用限定名时才会选中<literal>public</literal>模式中的对象。虽然限定表引用没有问题，但调用<literal>public</literal>模式中的函数
+       将<literal>public</literal>模式从默认搜索路径中移除。
+       每个人仍能在<literal>public</literal>模式中创建对象，但只有限定名才会选中这些对象。
+       虽然限定表引用没有问题，但调用<literal>public</literal>模式中的函数
        <link linkend="typeconv-func">可能不安全或不可靠</link>。
        如果你要在<literal>public</literal>模式中创建函数或扩展，请改用第一种模式。
        除此之外，它和第一种模式一样，除非某个不受信任的用户是数据库所有者，
-       或者在相关角色上拥有<literal>ADMIN OPTION</literal>，否则这种模式就是安全的。
+       或者拥有<literal>CREATEROLE</literal>权限，否则这种模式就是安全的。
       </para>
      </listitem>
 
      <listitem>
 
       <para>
-       保持默认搜索路径，并授予在<literal>public</literal>模式中创建对象的权限。所有用户都会隐式访问<literal>public</literal>模式。
+       保持默认设置。所有用户都会隐式访问<literal>public</literal>模式。
        这模拟了根本没有模式可用的情况，使从不支持模式的环境迁移过来时更加平滑。
        不过，这绝不是一种安全的方式。它只适用于数据库只有单个用户，或只有少数彼此信任的用户的场景。
-       对于从<productname>PostgreSQL</productname> 14 或更早版本升级而来的数据库，这就是默认设置。
       </para>
      </listitem>
     </itemizedlist>
