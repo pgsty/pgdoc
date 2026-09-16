@@ -1,289 +1,137 @@
 <!-- $PostgreSQL: pgsql/doc/src/sgml/indices.sgml,v 1.81.2.1 2010/08/17 04:37:16 petere Exp $ -->
 
 <chapter id="indexes">
- <title>Indexes</title>
+ <title>索引</title>
 
  <indexterm zone="indexes">
-  <primary>index</primary>
+  <primary>索引</primary>
  </indexterm>
 
  <para>
-  Indexes are a common way to enhance database performance.  An index
-  allows the database server to find and retrieve specific rows much
-  faster than it could do without an index.  But indexes also add
-  overhead to the database system as a whole, so they should be used
-  sensibly.
+  索引是增强数据库性能的一种常见方式。索引允许数据库服务器比没有索引时更快地找到并检索特定行。但索引也会给整个数据库系统带来额外开销，因此应当合理使用。
  </para>
 
 
  <sect1 id="indexes-intro">
-  <title>Introduction</title>
+  <title>简介</title>
 
   <para>
-   Suppose we have a table similar to this:
+   假设我们有一个类似如下的表：
 <programlisting>
 CREATE TABLE test1 (
     id integer,
     content varchar
 );
 </programlisting>
-   and the application issues many queries of the form:
+   并且应用会发出很多如下形式的查询：
 <programlisting>
 SELECT content FROM test1 WHERE id = <replaceable>constant</replaceable>;
 </programlisting>
-   With no advance preparation, the system would have to scan the entire
-   <structname>test1</structname> table, row by row, to find all
-   matching entries.  If there are many rows in
-   <structname>test1</structname> and only a few rows (perhaps zero
-   or one) that would be returned by such a query, this is clearly an
-   inefficient method.  But if the system has been instructed to maintain an
-   index on the <structfield>id</structfield> column, it can use a more
-   efficient method for locating matching rows.  For instance, it
-   might only have to walk a few levels deep into a search tree.
+   如果没有预先准备，系统就必须逐行扫描整个<structname>test1</structname>表，以找出所有匹配项。如果<structname>test1</structname>中有很多行，而这种查询只会返回很少几行（甚至可能一行也没有，或者只有一行），这显然是低效的办法。但是如果系统被要求维护一个基于<structfield>id</structfield>列的索引，它就可以用更高效的方法定位匹配行。例如，它可能只需要在一棵搜索树中向下走几层。
   </para>
 
   <para>
-   A similar approach is used in most non-fiction books:  terms and
-   concepts that are frequently looked up by readers are collected in
-   an alphabetic index at the end of the book.  The interested reader
-   can scan the index relatively quickly and flip to the appropriate
-   page(s), rather than having to read the entire book to find the
-   material of interest.  Just as it is the task of the author to
-   anticipate the items that readers are likely to look up,
-   it is the task of the database programmer to foresee which indexes
-   will be useful.
+   大多数非虚构类书籍也采用了类似的方法：读者经常查找的术语和概念会被收集到书末按字母顺序排列的索引中。感兴趣的读者可以相对快速地浏览索引并翻到相应页面，而不必通读整本书才能找到自己感兴趣的内容。正如作者需要预判读者可能查找哪些条目一样，数据库程序员也需要预见哪些索引会有用。
   </para>
 
   <para>
-   The following command can be used to create an index on the
-   <structfield>id</structfield> column, as discussed:
+   如前所述，下列命令可用于在<structfield>id</structfield>列上创建索引：
 <programlisting>
 CREATE INDEX test1_id_index ON test1 (id);
 </programlisting>
-   The name <structname>test1_id_index</structname> can be chosen
-   freely, but you should pick something that enables you to remember
-   later what the index was for.
+   <structname>test1_id_index</structname>这个名字可以自由选择，但最好选一个以后仍能让你记住该索引用途的名字。
   </para>
 
   <para>
-   To remove an index, use the <command>DROP INDEX</command> command.
-   Indexes can be added to and removed from tables at any time.
+   要删除索引，使用<command>DROP INDEX</command>命令。索引可以在任何时候添加到表上，也可以在任何时候从表上删除。
   </para>
 
   <para>
-   Once an index is created, no further intervention is required: the
-   system will update the index when the table is modified, and it will
-   use the index in queries when it thinks doing so would be more efficient
-   than a sequential table scan.  But you might have to run the
-   <command>ANALYZE</command> command regularly to update
-   statistics to allow the query planner to make educated decisions.
-   See <xref linkend="performance-tips"> for information about
-   how to find out whether an index is used and when and why the
-   planner might choose <emphasis>not</emphasis> to use an index.
+   一旦创建了索引，就无需再进行额外干预：系统会在表被修改时更新索引，并且会在它认为这样做比顺序扫描表更高效时，在查询中使用该索引。不过，你可能仍需要定期运行<command>ANALYZE</command>命令来更新统计信息，以便查询规划器作出更有根据的决策。关于如何判断某个索引是否被使用，以及规划器何时和为何可能选择<emphasis>不</emphasis>使用索引，可参见<xref linkend="performance-tips">。
   </para>
 
   <para>
-   Indexes can also benefit <command>UPDATE</command> and
-   <command>DELETE</command> commands with search conditions.
-   Indexes can moreover be used in join searches.  Thus,
-   an index defined on a column that is part of a join condition can
-   also significantly speed up queries with joins.
+   索引还可以让带有搜索条件的<command>UPDATE</command>和<command>DELETE</command>命令受益。索引也可以用于连接搜索。因此，定义在连接条件组成列上的索引也能显著加速带连接的查询。
   </para>
 
   <para>
-   Creating an index on a large table can take a long time.  By default,
-   <productname>PostgreSQL</productname> allows reads (<command>SELECT</command> statements) to occur
-   on the table in parallel with index creation, but writes (<command>INSERT</command>,
-   <command>UPDATE</command>, <command>DELETE</command>) are blocked until the index build is finished.
-   In production environments this is often unacceptable.
-   It is possible to allow writes to occur in parallel with index
-   creation, but there are several caveats to be aware of &mdash;
-   for more information see <xref linkend="SQL-CREATEINDEX-CONCURRENTLY"
-   endterm="SQL-CREATEINDEX-CONCURRENTLY-title">.
+   在大表上创建索引可能需要很长时间。默认情况下，<productname>PostgreSQL</productname>允许在创建索引期间并行执行读取（<command>SELECT</command>语句），但写入（<command>INSERT</command>、<command>UPDATE</command>、<command>DELETE</command>）会被阻塞，直到索引构建完成。在生产环境中，这往往不可接受。可以允许在创建索引时并行写入，但有若干注意事项需要了解，详见<xref linkend="SQL-CREATEINDEX-CONCURRENTLY"
+   endterm="SQL-CREATEINDEX-CONCURRENTLY-title">。
   </para>
 
   <para>
-   After an index is created, the system has to keep it synchronized with the
-   table.  This adds overhead to data manipulation operations.
-   Therefore indexes that are seldom or never used in queries
-   should be removed.
+   索引创建之后，系统还必须使其与表保持同步。这会给数据操作增加开销。因此，那些在查询中很少使用或从不使用的索引应当被移除。
   </para>
  </sect1>
 
 
  <sect1 id="indexes-types">
-  <title>Index Types</title>
+  <title>索引类型</title>
+
+  <para><productname>PostgreSQL</productname>提供了多种索引类型：B-树、Hash、GiST 和 GIN。每种索引类型都采用不同的算法，分别最适合不同类型的查询。默认情况下，<command>CREATE INDEX</command>命令创建的是 B-树索引，它适用于最常见的场景。</para>
+
+  <para><indexterm> <primary>索引</primary> <secondary>B-树</secondary> </indexterm> <indexterm> <primary>B-树</primary> <see>索引</see> </indexterm> 
+   B-树能够处理可以按某种顺序排序的数据上的等值查询和范围查询。特别是，只要已索引列参与了下列任一操作符的比较，<productname>PostgreSQL</productname>查询规划器就会考虑使用 B-树索引：
+
+<simplelist> <member><literal>&lt;</literal></member> <member><literal>&lt;=</literal></member> <member><literal>=</literal></member> <member><literal>&gt;=</literal></member> <member><literal>&gt;</literal></member> </simplelist>
+
+   与这些操作符组合等价的构造，例如<literal>BETWEEN</literal>和<literal>IN</literal>，也可以通过 B-树索引搜索来实现。此外，索引列上的<literal>IS NULL</literal>或<literal>IS NOT
+   NULL</literal>条件也可以配合 B-树索引使用。
+  </para>
 
   <para>
-   <productname>PostgreSQL</productname> provides several index types:
-   B-tree, Hash, GiST and GIN.  Each index type uses a different
-   algorithm that is best suited to different types of queries.
-   By default, the <command>CREATE INDEX</command> command creates
-   B-tree indexes, which fit the most common situations.
+   <emphasis>如果</emphasis>模式是常量，并且锚定在字符串起始位置，优化器也可以对涉及模式匹配操作符<literal>LIKE</literal>和<literal>~</literal>的查询使用 B-树索引，例如<literal>col LIKE
+   'foo%'</literal>或<literal>col ~ '^foo'</literal>，但不能用于<literal>col LIKE '%bar'</literal>。不过，如果你的数据库没有使用 C 区域设置，就需要以一个特殊操作符类来创建该索引，才能支持模式匹配查询的索引化，详见下文<xref linkend="indexes-opclass">。B-树索引也可以用于<literal>ILIKE</literal>和<literal>~*</literal>，但前提是模式以非字母字符开头，也就是不会受到大小写转换影响的字符。
   </para>
 
   <para>
    <indexterm>
-    <primary>index</primary>
-    <secondary>B-tree</secondary>
-   </indexterm>
-   <indexterm>
-    <primary>B-tree</primary>
-    <see>index</see>
-   </indexterm>
-   B-trees can handle equality and range queries on data that can be sorted
-   into some ordering.
-   In particular, the <productname>PostgreSQL</productname> query planner
-   will consider using a B-tree index whenever an indexed column is
-   involved in a comparison using one of these operators:
-
-   <simplelist>
-    <member><literal>&lt;</literal></member>
-    <member><literal>&lt;=</literal></member>
-    <member><literal>=</literal></member>
-    <member><literal>&gt;=</literal></member>
-    <member><literal>&gt;</literal></member>
-   </simplelist>
-
-   Constructs equivalent to combinations of these operators, such as
-   <literal>BETWEEN</> and <literal>IN</>, can also be implemented with
-   a B-tree index search.  Also, an <literal>IS NULL</> or <literal>IS NOT
-   NULL</> condition on an index column can be used with a B-tree index.
-  </para>
-
-  <para>
-   The optimizer can also use a B-tree index for queries involving the
-   pattern matching operators <literal>LIKE</> and <literal>~</literal>
-   <emphasis>if</emphasis> the pattern is a constant and is anchored to
-   the beginning of the string &mdash; for example, <literal>col LIKE
-   'foo%'</literal> or <literal>col ~ '^foo'</literal>, but not
-   <literal>col LIKE '%bar'</literal>. However, if your database does not
-   use the C locale you will need to create the index with a special
-   operator class to support indexing of pattern-matching queries; see
-   <xref linkend="indexes-opclass"> below. It is also possible to use
-   B-tree indexes for <literal>ILIKE</literal> and
-   <literal>~*</literal>, but only if the pattern starts with
-   non-alphabetic characters, i.e., characters that are not affected by
-   upper/lower case conversion.
-  </para>
-
-
-  <para>
-   <indexterm>
-    <primary>index</primary>
+    <primary>索引</primary>
     <secondary>hash</secondary>
    </indexterm>
    <indexterm>
     <primary>hash</primary>
-    <see>index</see>
-   </indexterm>
-   Hash indexes can only handle simple equality comparisons.
-   The query planner will consider using a hash index whenever an
-   indexed column is involved in a comparison using the
-   <literal>=</literal> operator.
-   The following command is used to create a hash index:
-<synopsis>
+    <see>索引</see>
+   </indexterm>Hash 索引只能处理简单的等值比较。只要已索引列参与的是使用<literal>=</literal>操作符的比较，查询规划器就会考虑使用 Hash 索引。使用以下命令创建 Hash 索引：<synopsis>
 CREATE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable> USING hash (<replaceable>column</replaceable>);
 </synopsis>
   </para>
 
   <caution>
    <para>
-    Hash index operations are not presently WAL-logged,
-    so hash indexes might need to be rebuilt with <command>REINDEX</>
-    after a database crash if there were unwritten changes.
-    Also, changes to hash indexes are not replicated over streaming or
-    file-based replication after the initial base backup, so they
-    give wrong answers to queries that subsequently use them.
-    For these reasons, hash index use is presently discouraged.
+    哈希索引操作目前不会写入 WAL 日志，因此如果发生过未写入的更改，数据库崩溃后可能需要用<command>REINDEX</command>重建哈希索引。此外，在初始基础备份之后，哈希索引的更改不会通过流复制或基于文件的复制进行复制，因此它们会对随后使用它们的查询给出错误的答案。由于这些原因，目前不建议使用哈希索引。
    </para>
   </caution>
 
-  <para>
-   <indexterm>
-    <primary>index</primary>
-    <secondary>GiST</secondary>
-   </indexterm>
-   <indexterm>
-    <primary>GiST</primary>
-    <see>index</see>
-   </indexterm>
-   GiST indexes are not a single kind of index, but rather an infrastructure
-   within which many different indexing strategies can be implemented.
-   Accordingly, the particular operators with which a GiST index can be
-   used vary depending on the indexing strategy (the <firstterm>operator
-   class</>).  As an example, the standard distribution of
-   <productname>PostgreSQL</productname> includes GiST operator classes
-   for several two-dimensional geometric data types, which support indexed
-   queries using these operators:
+  <para><indexterm> <primary>索引</primary> <secondary>GiST</secondary> </indexterm> <indexterm> <primary>GiST</primary> <see>索引</see> </indexterm> 
+   GiST 索引并不是某一种单独的索引，而是一种基础设施，可在其中实现许多不同的索引策略。因此，GiST 索引可使用哪些具体操作符，取决于所采用的索引策略（即<firstterm>操作符类</firstterm>）。例如，<productname>PostgreSQL</productname>标准发布版中包含了若干二维几何数据类型的 GiST 操作符类，它们支持使用下列操作符的索引化查询：
 
-   <simplelist>
-    <member><literal>&lt;&lt;</literal></member>
-    <member><literal>&amp;&lt;</literal></member>
-    <member><literal>&amp;&gt;</literal></member>
-    <member><literal>&gt;&gt;</literal></member>
-    <member><literal>&lt;&lt;|</literal></member>
-    <member><literal>&amp;&lt;|</literal></member>
-    <member><literal>|&amp;&gt;</literal></member>
-    <member><literal>|&gt;&gt;</literal></member>
-    <member><literal>@&gt;</literal></member>
-    <member><literal>&lt;@</literal></member>
-    <member><literal>~=</literal></member>
-    <member><literal>&amp;&amp;</literal></member>
-   </simplelist>
+<simplelist> <member><literal>&lt;&lt;</literal></member> <member><literal>&amp;&lt;</literal></member> <member><literal>&amp;&gt;</literal></member> <member><literal>&gt;&gt;</literal></member> <member><literal>&lt;&lt;|</literal></member> <member><literal>&amp;&lt;|</literal></member> <member><literal>|&amp;&gt;</literal></member> <member><literal>|&gt;&gt;</literal></member> <member><literal>@&gt;</literal></member> <member><literal>&lt;@</literal></member> <member><literal>~=</literal></member> <member><literal>&amp;&amp;</literal></member> </simplelist>
 
-   (See <xref linkend="functions-geometry"> for the meaning of
-   these operators.)
-   Many other GiST operator
-   classes are available in the <literal>contrib</> collection or as separate
-   projects.  For more information see <xref linkend="GiST">.
+   （这些操作符的含义见<xref linkend="functions-geometry">。）还有许多其他 GiST 操作符类可在<literal>contrib</literal>集合或独立项目中获得。更多信息见<xref linkend="GiST">。
   </para>
-  <para>
-   <indexterm>
-    <primary>index</primary>
-    <secondary>GIN</secondary>
-   </indexterm>
-   <indexterm>
-    <primary>GIN</primary>
-    <see>index</see>
-   </indexterm>
-   GIN indexes are inverted indexes which can handle values that contain more
-   than one key, arrays for example. Like GiST, GIN can support
-   many different user-defined indexing strategies and the particular
-   operators with which a GIN index can be used vary depending on the
-   indexing strategy.
-   As an example, the standard distribution of
-   <productname>PostgreSQL</productname> includes GIN operator classes
-   for one-dimensional arrays, which support indexed
-   queries using these operators:
 
-   <simplelist>
-    <member><literal>&lt;@</literal></member>
-    <member><literal>@&gt;</literal></member>
-    <member><literal>=</literal></member>
-    <member><literal>&amp;&amp;</literal></member>
-   </simplelist>
+  <para><indexterm> <primary>索引</primary> <secondary>GIN</secondary> </indexterm> <indexterm> <primary>GIN</primary> <see>索引</see> </indexterm> 
+   GIN 索引是倒排索引，可以处理包含多个键的值，例如数组。与 GiST 一样，GIN 也能支持多种不同的用户定义索引策略，GIN 索引可使用哪些具体操作符同样取决于索引策略。例如，<productname>PostgreSQL</productname>标准发布版中包含用于一维数组的 GIN 操作符类，它们支持使用下列操作符的索引化查询：
 
-   (See <xref linkend="functions-array"> for the meaning of
-   these operators.)
-   Many other GIN operator
-   classes are available in the <literal>contrib</> collection or as separate
-   projects.  For more information see <xref linkend="GIN">.
+<simplelist> <member><literal>&lt;@</literal></member> <member><literal>@&gt;</literal></member> <member><literal>=</literal></member> <member><literal>&amp;&amp;</literal></member> </simplelist>
+
+   （这些操作符的含义见<xref linkend="functions-array">。）还有许多其他 GIN 操作符类可在<literal>contrib</literal>集合或独立项目中获得。更多信息见<xref linkend="GIN">。
   </para>
- </sect1>
+
+   </sect1>
 
 
  <sect1 id="indexes-multicolumn">
-  <title>Multicolumn Indexes</title>
+  <title>多列索引</title>
 
   <indexterm zone="indexes-multicolumn">
-   <primary>index</primary>
-   <secondary>multicolumn</secondary>
+   <primary>索引</primary>
+   <secondary>多列</secondary>
   </indexterm>
 
   <para>
-   An index can be defined on more than one column of a table.  For example, if
-   you have a table of this form:
+   一个索引可以定义在表的多个列上。例如，如果你有一个如下形式的表：
 <programlisting>
 CREATE TABLE test2 (
   major int,
@@ -291,404 +139,214 @@ CREATE TABLE test2 (
   name varchar
 );
 </programlisting>
-   (say, you keep your <filename class="directory">/dev</filename>
-   directory in a database...) and you frequently issue queries like:
+   （假设你把<filename class="directory">/dev</filename>目录保存在数据库里……）并且经常发出如下查询：
 <programlisting>
 SELECT name FROM test2 WHERE major = <replaceable>constant</replaceable> AND minor = <replaceable>constant</replaceable>;
 </programlisting>
-   then it might be appropriate to define an index on the columns
-   <structfield>major</structfield> and
-   <structfield>minor</structfield> together, e.g.:
+   那么将<structfield>major</structfield>和<structfield>minor</structfield>两列一起建一个索引可能是合适的，例如：
 <programlisting>
 CREATE INDEX test2_mm_idx ON test2 (major, minor);
 </programlisting>
   </para>
 
+  <para>当前，只有 B-树、GiST 和 GIN 索引类型支持多列索引。最多可以指定 32 列。（这个限制可以在构建 <productname>PostgreSQL</productname> 时修改；参见文件 <filename>pg_config_manual.h</filename>。）</para>
+
+  <para>多列 B-树索引可以用于涉及索引任意列子集的查询条件，但当对前导（最左）列存在约束时，索引效率最高。精确的规则是：对前导列的等值约束，再加上第一个没有等值约束的列上的任何不等约束，会被用来限制索引扫描的范围。这些列右侧列上的约束会在索引中进行检查，因此可以减少访问表本体的次数，但不会缩小必须扫描的索引范围。例如，给定一个 <literal>(a, b, c)</literal> 上的索引和查询条件 <literal>WHERE a = 5 AND b &gt;= 42 AND c &lt; 77</literal>，索引必须从第一个 <literal>a</literal> = 5 且 <literal>b</literal> = 42 的条目扫描到最后一个 <literal>a</literal> = 5 的条目。<literal>c</literal> &gt;= 77 的索引项会被排除，但仍然必须扫描这些项。原则上，这个索引也可以用于只对 <literal>b</literal> 和/或 <literal>c</literal> 有约束、而对 <literal>a</literal> 没有约束的查询，但必须扫描整个索引，因此在大多数情况下，规划器会倾向于顺序扫描表，而不是使用该索引。</para>
+
   <para>
-   Currently, only the B-tree, GiST and GIN index types support multicolumn
-   indexes.  Up to 32 columns can be specified.  (This limit can be
-   altered when building <productname>PostgreSQL</productname>; see the
-   file <filename>pg_config_manual.h</filename>.)
+   多列 GiST 索引可以用于涉及索引任意列子集的查询条件。附加列上的条件会限制索引返回的项，但决定索引需要扫描多少内容的，最重要的仍是第一列上的条件。如果第一列只有很少几个非重复值，即使其他列有很多非重复值，GiST 索引也会相对低效。
   </para>
 
   <para>
-   A multicolumn B-tree index can be used with query conditions that
-   involve any subset of the index's columns, but the index is most
-   efficient when there are constraints on the leading (leftmost) columns.
-   The exact rule is that equality constraints on leading columns, plus
-   any inequality constraints on the first column that does not have an
-   equality constraint, will be used to limit the portion of the index
-   that is scanned.  Constraints on columns to the right of these columns
-   are checked in the index, so they save visits to the table proper, but
-   they do not reduce the portion of the index that has to be scanned.
-   For example, given an index on <literal>(a, b, c)</literal> and a
-   query condition <literal>WHERE a = 5 AND b &gt;= 42 AND c &lt; 77</>,
-   the index would have to be scanned from the first entry with
-   <literal>a</> = 5 and <literal>b</> = 42 up through the last entry with
-   <literal>a</> = 5.  Index entries with <literal>c</> &gt;= 77 would be
-   skipped, but they'd still have to be scanned through.
-   This index could in principle be used for queries that have constraints
-   on <literal>b</> and/or <literal>c</> with no constraint on <literal>a</>
-   &mdash; but the entire index would have to be scanned, so in most cases
-   the planner would prefer a sequential table scan over using the index.
+   多列 GIN 索引可以用于涉及索引任意列子集的查询条件。与 B-树或 GiST 不同，无论查询条件使用的是哪些索引列，GIN 的索引搜索效果都一样。
+  </para>
+
+    <para>
+   当然，每一列都必须配合适合该索引类型的操作符使用；涉及其他操作符的子句不会被考虑。
   </para>
 
   <para>
-   A multicolumn GiST index can be used with query conditions that
-   involve any subset of the index's columns. Conditions on additional
-   columns restrict the entries returned by the index, but the condition on
-   the first column is the most important one for determining how much of
-   the index needs to be scanned.  A GiST index will be relatively
-   ineffective if its first column has only a few distinct values, even if
-   there are many distinct values in additional columns.
-  </para>
-
-  <para>
-   A multicolumn GIN index can be used with query conditions that
-   involve any subset of the index's columns. Unlike B-tree or GiST,
-   index search effectiveness is the same regardless of which index column(s)
-   the query conditions use.
-  </para>
-
-  <para>
-   Of course, each column must be used with operators appropriate to the index
-   type; clauses that involve other operators will not be considered.
-  </para>
-
-  <para>
-   Multicolumn indexes should be used sparingly.  In most situations,
-   an index on a single column is sufficient and saves space and time.
-   Indexes with more than three columns are unlikely to be helpful
-   unless the usage of the table is extremely stylized.  See also
-   <xref linkend="indexes-bitmap-scans"> for some discussion of the
-   merits of different index configurations.
+   多列索引应谨慎使用。在大多数情况下，单列索引已经足够，而且更省空间、也更省时间。除非表的使用方式极其程式化，否则超过三列的索引通常不会有帮助。关于不同索引配置优缺点的讨论，还可参见<xref linkend="indexes-bitmap-scans">。
   </para>
  </sect1>
 
 
  <sect1 id="indexes-ordering">
-  <title>Indexes and <literal>ORDER BY</></title>
+  <title>索引和<literal>ORDER BY</literal></title>
 
   <indexterm zone="indexes-ordering">
-   <primary>index</primary>
-   <secondary>and <literal>ORDER BY</></secondary>
+   <primary>索引</primary>
+   <secondary>与 <literal>ORDER BY</literal></secondary>
   </indexterm>
 
   <para>
-   In addition to simply finding the rows to be returned by a query,
-   an index may be able to deliver them in a specific sorted order.
-   This allows a query's <literal>ORDER BY</> specification to be honored
-   without a separate sorting step.  Of the index types currently
-   supported by <productname>PostgreSQL</productname>, only B-tree
-   can produce sorted output &mdash; the other index types return
-   matching rows in an unspecified, implementation-dependent order.
+   除了简单地找到查询要返回的行之外，索引还可能能够以某种特定排序顺序交付这些行。这使得查询中的<literal>ORDER BY</literal>要求无需额外排序步骤即可满足。在<productname>PostgreSQL</productname>当前支持的索引类型中，只有 B-树 能产生有序输出，其他索引类型返回匹配行的顺序则未指定，并且依赖具体实现。
   </para>
 
   <para>
-   The planner will consider satisfying an <literal>ORDER BY</> specification
-   either by scanning an available index that matches the specification,
-   or by scanning the table in physical order and doing an explicit
-   sort.  For a query that requires scanning a large fraction of the
-   table, an explicit sort is likely to be faster than using an index
-   because it requires
-   less disk I/O due to following a sequential access pattern.  Indexes are
-   more useful when only a few rows need be fetched.  An important
-   special case is <literal>ORDER BY</> in combination with
-   <literal>LIMIT</> <replaceable>n</>: an explicit sort will have to process
-   all the data to identify the first <replaceable>n</> rows, but if there is
-   an index matching the <literal>ORDER BY</>, the first <replaceable>n</>
-   rows can be retrieved directly, without scanning the remainder at all.
+   规划器在满足<literal>ORDER BY</literal>要求时，会考虑两种方案：扫描一个与该要求匹配的可用索引，或者按物理顺序扫描表再显式排序。对于需要扫描表中很大一部分内容的查询，显式排序通常会比使用索引更快，因为它遵循顺序访问模式，需要的磁盘 I/O 更少。只需取出少量行时，索引更有价值。一个重要的特例是<literal>ORDER BY</literal>与<literal>LIMIT</literal> <replaceable>n</replaceable>组合使用：显式排序必须处理所有数据才能找出最前面的<replaceable>n</replaceable>行，而如果有一个与<literal>ORDER BY</literal>匹配的索引，就可以直接取回前<replaceable>n</replaceable>行，而完全不必扫描剩余数据。
   </para>
 
   <para>
-   By default, B-tree indexes store their entries in ascending order
-   with nulls last.  This means that a forward scan of an index on
-   column <literal>x</> produces output satisfying <literal>ORDER BY x</>
-   (or more verbosely, <literal>ORDER BY x ASC NULLS LAST</>).  The
-   index can also be scanned backward, producing output satisfying
-   <literal>ORDER BY x DESC</>
-   (or more verbosely, <literal>ORDER BY x DESC NULLS FIRST</>, since
-   <literal>NULLS FIRST</> is the default for <literal>ORDER BY DESC</>).
+   默认情况下，B-树索引按升序存储其项，并将空值放在最后。这意味着，对列<literal>x</literal>上的索引进行前向扫描，会产生满足<literal>ORDER BY x</literal>的输出（更完整地说，是<literal>ORDER BY x ASC NULLS LAST</literal>）。索引也可以反向扫描，从而产生满足<literal>ORDER BY x DESC</literal>的输出（更完整地说，是<literal>ORDER BY x DESC NULLS FIRST</literal>，因为<literal>NULLS FIRST</literal>是<literal>ORDER BY DESC</literal>的默认行为）。
   </para>
 
   <para>
-   You can adjust the ordering of a B-tree index by including the
-   options <literal>ASC</>, <literal>DESC</>, <literal>NULLS FIRST</>,
-   and/or <literal>NULLS LAST</> when creating the index; for example:
+   你可以在创建 B-树索引时通过指定<literal>ASC</literal>、<literal>DESC</literal>、<literal>NULLS FIRST</literal>和/或<literal>NULLS LAST</literal>选项来调整索引的排序方式，例如：
 <programlisting>
 CREATE INDEX test2_info_nulls_low ON test2 (info NULLS FIRST);
 CREATE INDEX test3_desc_index ON test3 (id DESC NULLS LAST);
 </programlisting>
-   An index stored in ascending order with nulls first can satisfy
-   either <literal>ORDER BY x ASC NULLS FIRST</> or
-   <literal>ORDER BY x DESC NULLS LAST</> depending on which direction
-   it is scanned in.
+   一个按升序且空值在前存储的索引，根据扫描方向不同，可以满足<literal>ORDER BY x ASC NULLS FIRST</literal>或<literal>ORDER BY x DESC NULLS LAST</literal>。
   </para>
 
   <para>
-   You might wonder why bother providing all four options, when two
-   options together with the possibility of backward scan would cover
-   all the variants of <literal>ORDER BY</>.  In single-column indexes
-   the options are indeed redundant, but in multicolumn indexes they can be
-   useful.  Consider a two-column index on <literal>(x, y)</>: this can
-   satisfy <literal>ORDER BY x, y</> if we scan forward, or
-   <literal>ORDER BY x DESC, y DESC</> if we scan backward.
-   But it might be that the application frequently needs to use
-   <literal>ORDER BY x ASC, y DESC</>.  There is no way to get that
-   ordering from a plain index, but it is possible if the index is defined
-   as <literal>(x ASC, y DESC)</> or <literal>(x DESC, y ASC)</>.
+   你可能会疑惑，既然借助两个选项再加上反向扫描的可能性就能覆盖所有<literal>ORDER BY</literal>变体，为什么还要提供四个选项。对于单列索引，这些选项确实是冗余的，但对于多列索引它们就可能很有用。考虑一个<literal>(x, y)</literal>上的两列索引：前向扫描时它能满足<literal>ORDER BY x, y</literal>，反向扫描时能满足<literal>ORDER BY x DESC, y DESC</literal>。但应用也可能经常需要<literal>ORDER BY x ASC, y DESC</literal>。普通索引无法产生这种顺序，而如果把索引定义成<literal>(x ASC, y DESC)</literal>或<literal>(x DESC, y ASC)</literal>，就可以做到。
   </para>
 
   <para>
-   Obviously, indexes with non-default sort orderings are a fairly
-   specialized feature, but sometimes they can produce tremendous
-   speedups for certain queries.  Whether it's worth maintaining such an
-   index depends on how often you use queries that require a special
-   sort ordering.
+   显然，具有非默认排序方式的索引是一项相当专门的特性，但在某些查询上它们有时能带来巨大的加速。是否值得维护这样的索引，取决于你需要这种特殊排序的查询出现得有多频繁。
   </para>
  </sect1>
 
 
  <sect1 id="indexes-bitmap-scans">
-  <title>Combining Multiple Indexes</title>
+  <title>组合多个索引</title>
 
   <indexterm zone="indexes-bitmap-scans">
-   <primary>index</primary>
-   <secondary>combining multiple indexes</secondary>
+   <primary>索引</primary>
+   <secondary>组合多个索引</secondary>
   </indexterm>
 
   <indexterm zone="indexes-bitmap-scans">
-   <primary>bitmap scan</primary>
+   <primary>位图扫描</primary>
   </indexterm>
 
   <para>
-   A single index scan can only use query clauses that use the index's
-   columns with operators of its operator class and are joined with
-   <literal>AND</>.  For example, given an index on <literal>(a, b)</literal>
-   a query condition like <literal>WHERE a = 5 AND b = 6</> could
-   use the index, but a query like <literal>WHERE a = 5 OR b = 6</> could not
-   directly use the index.
+   单次索引扫描只能利用那些在索引列上使用了该索引操作符类中操作符、并且彼此以<literal>AND</literal>连接的查询子句。例如，给定一个<literal>(a, b)</literal>上的索引，查询条件<literal>WHERE a = 5 AND b = 6</literal>可以使用该索引，而<literal>WHERE a = 5 OR b = 6</literal>这样的查询就不能直接使用该索引。
   </para>
 
   <para>
-   Fortunately,
-   <productname>PostgreSQL</> has the ability to combine multiple indexes
-   (including multiple uses of the same index) to handle cases that cannot
-   be implemented by single index scans.  The system can form <literal>AND</>
-   and <literal>OR</> conditions across several index scans.  For example,
-   a query like <literal>WHERE x = 42 OR x = 47 OR x = 53 OR x = 99</>
-   could be broken down into four separate scans of an index on <literal>x</>,
-   each scan using one of the query clauses.  The results of these scans are
-   then ORed together to produce the result.  Another example is that if we
-   have separate indexes on <literal>x</> and <literal>y</>, one possible
-   implementation of a query like <literal>WHERE x = 5 AND y = 6</> is to
-   use each index with the appropriate query clause and then AND together
-   the index results to identify the result rows.
+   幸运的是，<productname>PostgreSQL</productname>能够组合多个索引（包括同一个索引的多次使用），以处理单次索引扫描无法实现的情况。系统可以在多个索引扫描之间形成<literal>AND</literal>和<literal>OR</literal>条件。例如，<literal>WHERE x = 42 OR x = 47 OR x = 53 OR x = 99</literal>这样的查询，可以拆分成对<literal>x</literal>上的一个索引进行四次独立扫描，每次扫描使用一个查询子句。然后将这些扫描的结果做 OR 运算以得到最终结果。另一个例子是，如果我们在<literal>x</literal>和<literal>y</literal>上分别有索引，那么<literal>WHERE x = 5 AND y = 6</literal>这样的查询，其一种可能实现方式就是分别用两个索引处理相应条件，然后将索引结果做 AND 运算，以确定结果行。
   </para>
 
   <para>
-   To combine multiple indexes, the system scans each needed index and
-   prepares a <firstterm>bitmap</> in memory giving the locations of
-   table rows that are reported as matching that index's conditions.
-   The bitmaps are then ANDed and ORed together as needed by the query.
-   Finally, the actual table rows are visited and returned.  The table rows
-   are visited in physical order, because that is how the bitmap is laid
-   out; this means that any ordering of the original indexes is lost, and
-   so a separate sort step will be needed if the query has an <literal>ORDER
-   BY</> clause.  For this reason, and because each additional index scan
-   adds extra time, the planner will sometimes choose to use a simple index
-   scan even though additional indexes are available that could have been
-   used as well.
+   为了组合多个索引，系统会扫描每个所需索引，并在内存中准备一个<firstterm>位图</firstterm>，给出满足该索引条件的表行位置。然后按查询需要对这些位图进行 AND 和 OR 运算。最后，再访问并返回实际的表行。表行是按物理顺序访问的，因为位图就是这样布局的；这意味着原始索引中的任何排序都会丢失，所以如果查询带有<literal>ORDER
+   BY</literal>子句，就需要单独的排序步骤。也正因为如此，再加上每多一次索引扫描都会增加额外时间，规划器有时会选择使用简单的单一索引扫描，即使还有其他本来也可以利用的索引。
   </para>
 
   <para>
-   In all but the simplest applications, there are various combinations of
-   indexes that might be useful, and the database developer must make
-   trade-offs to decide which indexes to provide.  Sometimes multicolumn
-   indexes are best, but sometimes it's better to create separate indexes
-   and rely on the index-combination feature.  For example, if your
-   workload includes a mix of queries that sometimes involve only column
-   <literal>x</>, sometimes only column <literal>y</>, and sometimes both
-   columns, you might choose to create two separate indexes on
-   <literal>x</> and <literal>y</>, relying on index combination to
-   process the queries that use both columns.  You could also create a
-   multicolumn index on <literal>(x, y)</>.  This index would typically be
-   more efficient than index combination for queries involving both
-   columns, but as discussed in <xref linkend="indexes-multicolumn">, it
-   would be almost useless for queries involving only <literal>y</>, so it
-   should not be the only index.  A combination of the multicolumn index
-   and a separate index on <literal>y</> would serve reasonably well.  For
-   queries involving only <literal>x</>, the multicolumn index could be
-   used, though it would be larger and hence slower than an index on
-   <literal>x</> alone.  The last alternative is to create all three
-   indexes, but this is probably only reasonable if the table is searched
-   much more often than it is updated and all three types of query are
-   common.  If one of the types of query is much less common than the
-   others, you'd probably settle for creating just the two indexes that
-   best match the common types.
+   除了最简单的应用之外，通常会有多种可能有用的索引组合，数据库开发者必须权衡决定提供哪些索引。有时多列索引最好，但有时创建独立索引并依赖索引组合功能会更合适。例如，如果你的工作负载包含一组查询：有时只涉及列<literal>x</literal>，有时只涉及列<literal>y</literal>，有时同时涉及两列，那么你可以选择分别在<literal>x</literal>和<literal>y</literal>上创建两个独立索引，并依赖索引组合来处理同时使用两列的查询。你也可以创建一个<literal>(x, y)</literal>上的多列索引。对于同时涉及两列的查询，这个索引通常会比索引组合更高效，但正如<xref linkend="indexes-multicolumn">中所讨论的，它对于只涉及<literal>y</literal>的查询几乎没有用处，因此不应只创建这一个索引。将这个多列索引与一个单独的<literal>y</literal>索引组合起来，能够取得相当好的效果。对于只涉及<literal>x</literal>的查询，多列索引也可以使用，但它会比单独的<literal>x</literal>索引更大，因此更慢。最后一种选择是同时创建这三个索引，但这大概只有在该表被搜索的频率远高于被更新的频率，并且三类查询都很常见时才合理。如果其中一种查询远没有另外两种常见，那么你大概只需创建最适合常见查询类型的两个索引即可。
   </para>
 
  </sect1>
 
 
  <sect1 id="indexes-unique">
-  <title>Unique Indexes</title>
+  <title>唯一索引</title>
 
   <indexterm zone="indexes-unique">
-   <primary>index</primary>
-   <secondary>unique</secondary>
+   <primary>索引</primary>
+   <secondary>唯一</secondary>
   </indexterm>
 
   <para>
-   Indexes can also be used to enforce uniqueness of a column's value,
-   or the uniqueness of the combined values of more than one column.
+   索引还可以用于强制列值唯一，或者强制多个列组合值唯一。
 <synopsis>
 CREATE UNIQUE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable> (<replaceable>column</replaceable> <optional>, ...</optional>);
 </synopsis>
-   Currently, only B-tree indexes can be declared unique.
+   当前，只有 B-树索引可以声明为唯一。
   </para>
 
   <para>
-   When an index is declared unique, multiple table rows with equal
-   indexed values are not allowed.  Null values are not considered
-   equal.  A multicolumn unique index will only reject cases where all
-   indexed columns are equal in multiple rows.
+   当一个索引被声明为唯一时，就不允许存在多个具有相同索引值的表行。空值不被视为相等。多列唯一索引只会拒绝那种在多行中所有索引列都相等的情况。
   </para>
 
   <para>
-   <productname>PostgreSQL</productname> automatically creates a unique
-   index when a unique constraint or primary key is defined for a table.
-   The index covers the columns that make up the primary key or unique
-   constraint (a multicolumn index, if appropriate), and is the mechanism
-   that enforces the constraint.
+   当为表定义唯一约束或主键时，<productname>PostgreSQL</productname>会自动创建一个唯一索引。该索引覆盖构成主键或唯一约束的列（必要时是多列索引），并且正是它在强制执行该约束。
   </para>
 
   <note>
    <para>
-    The preferred way to add a unique constraint to a table is
-    <literal>ALTER TABLE ... ADD CONSTRAINT</literal>.  The use of
-    indexes to enforce unique constraints could be considered an
-    implementation detail that should not be accessed directly.
-    One should, however, be aware that there's no need to manually
-    create indexes on unique columns; doing so would just duplicate
-    the automatically-created index.
+    无需手工在唯一列上创建索引；那样做只会重复自动创建的索引。
    </para>
   </note>
  </sect1>
 
 
  <sect1 id="indexes-expressional">
-  <title>Indexes on Expressions</title>
+  <title>表达式索引</title>
 
   <indexterm zone="indexes-expressional">
-   <primary>index</primary>
-   <secondary sortas="expressions">on expressions</secondary>
+   <primary>索引</primary>
+   <secondary sortas="expressions">基于表达式</secondary>
   </indexterm>
 
   <para>
-   An index column need not be just a column of the underlying table,
-   but can be a function or scalar expression computed from one or
-   more columns of the table.  This feature is useful to obtain fast
-   access to tables based on the results of computations.
+   索引列不一定非得是底层表中的某一列，也可以是一个由表中一列或多列计算得到的函数或标量表达式。这个特性有助于基于计算结果来快速访问表。
   </para>
 
   <para>
-   For example, a common way to do case-insensitive comparisons is to
-   use the <function>lower</function> function:
+   例如，进行大小写不敏感比较的一种常见方式，是使用<function>lower</function>函数：
 <programlisting>
 SELECT * FROM test1 WHERE lower(col1) = 'value';
 </programlisting>
-   This query can use an index if one has been
-   defined on the result of the <literal>lower(col1)</literal>
-   function:
+   如果为<literal>lower(col1)</literal>函数的结果定义了索引，这个查询就可以使用该索引：
 <programlisting>
 CREATE INDEX test1_lower_col1_idx ON test1 (lower(col1));
 </programlisting>
   </para>
 
   <para>
-   If we were to declare this index <literal>UNIQUE</>, it would prevent
-   creation of rows whose <literal>col1</> values differ only in case,
-   as well as rows whose <literal>col1</> values are actually identical.
-   Thus, indexes on expressions can be used to enforce constraints that
-   are not definable as simple unique constraints.
+   如果我们把这个索引声明为<literal>UNIQUE</literal>，那么它不仅会阻止创建那些<literal>col1</literal>值仅在大小写上不同的行，也会阻止创建<literal>col1</literal>值完全相同的行。因此，表达式索引可用于强制那些无法定义为简单唯一约束的约束。
   </para>
 
   <para>
-   As another example, if one often does queries like:
+   再例如，如果你经常执行如下查询：
 <programlisting>
 SELECT * FROM people WHERE (first_name || ' ' || last_name) = 'John Smith';
 </programlisting>
-   then it might be worth creating an index like this:
+   那么创建一个如下索引可能是值得的：
 <programlisting>
 CREATE INDEX people_names ON people ((first_name || ' ' || last_name));
 </programlisting>
   </para>
 
   <para>
-   The syntax of the <command>CREATE INDEX</> command normally requires
-   writing parentheses around index expressions, as shown in the second
-   example.  The parentheses can be omitted when the expression is just
-   a function call, as in the first example.
+   正如第二个示例所示，<command>CREATE INDEX</command>命令的语法通常要求对索引表达式写上圆括号。当表达式只是一个函数调用时，则可以像第一个示例那样省略这些圆括号。
   </para>
 
   <para>
-   Index expressions are relatively expensive to maintain, because the
-   derived expression(s) must be computed for each row upon insertion
-   and whenever it is updated.  However, the index expressions are
-   <emphasis>not</> recomputed during an indexed search, since they are
-   already stored in the index.  In both examples above, the system
-   sees the query as just <literal>WHERE indexedcolumn = 'constant'</>
-   and so the speed of the search is equivalent to any other simple index
-   query.  Thus, indexes on expressions are useful when retrieval speed
-   is more important than insertion and update speed.
+   维护索引表达式的代价相对较高，因为在插入每一行时以及每次更新时都必须计算派生表达式。不过，在使用索引搜索时，索引表达式<emphasis>不会</emphasis>被重新计算，因为它们已经存储在索引中。在上面的两个示例里，系统看到的查询只是<literal>WHERE indexedcolumn = 'constant'</literal>，因此搜索速度与其他简单索引查询相同。因此，当检索速度比插入和更新速度更重要时，表达式索引会很有用。
   </para>
  </sect1>
 
 
  <sect1 id="indexes-partial">
-  <title>Partial Indexes</title>
+  <title>部分索引</title>
 
   <indexterm zone="indexes-partial">
-   <primary>index</primary>
-   <secondary>partial</secondary>
+   <primary>索引</primary>
+   <secondary>部分</secondary>
   </indexterm>
 
   <para>
-   A <firstterm>partial index</firstterm> is an index built over a
-   subset of a table; the subset is defined by a conditional
-   expression (called the <firstterm>predicate</firstterm> of the
-   partial index).  The index contains entries only for those table
-   rows that satisfy the predicate.  Partial indexes are a specialized
-   feature, but there are several situations in which they are useful.
+   <firstterm>部分索引</firstterm>是建立在表的一个子集上的索引；这个子集由一个条件表达式定义（称为部分索引的<firstterm>谓词</firstterm>）。索引中只包含满足该谓词的表行的项。部分索引是一种专门特性，但有几种场景下它会很有用。
   </para>
 
   <para>
-   One major reason for using a partial index is to avoid indexing common
-   values.  Since a query searching for a common value (one that
-   accounts for more than a few percent of all the table rows) will not
-   use the index anyway, there is no point in keeping those rows in the
-   index at all.  This reduces the size of the index, which will speed
-   up those queries that do use the index.  It will also speed up many table
-   update operations because the index does not need to be
-   updated in all cases.  <xref linkend="indexes-partial-ex1"> shows a
-   possible application of this idea.
+   使用部分索引的一个主要原因是避免索引常见值。由于搜索常见值（即占全部表行百分之几以上的值）的查询反正也不会使用索引，因此完全没有必要把这些行保留在索引里。这会减小索引尺寸，从而加快那些确实会使用该索引的查询。它也会加快很多表更新操作，因为索引并不需要在所有情况下都更新。<xref linkend="indexes-partial-ex1">展示了这种思路的一种可能应用。
   </para>
 
   <example id="indexes-partial-ex1">
-   <title>Setting up a Partial Index to Exclude Common Values</title>
+   <title>建立一个部分索引以排除常见值</title>
 
    <para>
-    Suppose you are storing web server access logs in a database.
-    Most accesses originate from the IP address range of your organization but
-    some are from elsewhere (say, employees on dial-up connections).
-    If your searches by IP are primarily for outside accesses,
-    you probably do not need to index the IP range that corresponds to your
-    organization's subnet.
+    假设你把 Web 服务器访问日志存储在数据库中。大多数访问来自你所在组织的 IP 地址范围，但也有一些来自其他地方（例如使用拨号连接的员工）。如果你按 IP 搜索时主要关心外部访问，那么你大概没有必要为对应于组织内子网的 IP 范围建索引。
    </para>
 
    <para>
-    Assume a table like this:
+    假设有一个如下表：
 <programlisting>
 CREATE TABLE access_log (
     url varchar,
@@ -699,8 +357,7 @@ CREATE TABLE access_log (
    </para>
 
    <para>
-    To create a partial index that suits our example, use a command
-    such as this:
+    要创建一个适合这个例子的部分索引，可使用如下命令：
 <programlisting>
 CREATE INDEX access_log_client_ip_ix ON access_log (client_ip)
 WHERE NOT (client_ip &gt; inet '192.168.100.0' AND
@@ -708,15 +365,11 @@ WHERE NOT (client_ip &gt; inet '192.168.100.0' AND
 </programlisting>
    </para>
 
-   <para>
-    A typical query that can use this index would be:
-<programlisting>
+   <para>一个能够使用此索引的典型查询如下：<programlisting>
 SELECT *
 FROM access_log
 WHERE url = '/index.html' AND client_ip = inet '212.78.10.32';
-</programlisting>
-    A query that cannot use this index is:
-<programlisting>
+</programlisting>以下查询无法使用此索引：<programlisting>
 SELECT *
 FROM access_log
 WHERE client_ip = inet '192.168.100.23';
@@ -724,35 +377,20 @@ WHERE client_ip = inet '192.168.100.23';
    </para>
 
    <para>
-    Observe that this kind of partial index requires that the common
-    values be predetermined, so such partial indexes are best used for
-    data distributions that do not change.  The indexes can be recreated
-    occasionally to adjust for new data distributions, but this adds
-    maintenance effort.
+    请注意，这类部分索引要求常见值事先可知，因此最适合用于数据分布不会变化的场景。也可以偶尔重建这类索引以适应新的数据分布，但那会增加维护工作量。
    </para>
   </example>
 
   <para>
-   Another possible use for a partial index is to exclude values from the
-   index that the
-   typical query workload is not interested in; this is shown in <xref
-   linkend="indexes-partial-ex2">.  This results in the same
-   advantages as listed above, but it prevents the
-   <quote>uninteresting</quote> values from being accessed via that
-   index, even if an index scan might be profitable in that
-   case.  Obviously, setting up partial indexes for this kind of
-   scenario will require a lot of care and experimentation.
+   部分索引的另一种可能用途，是把典型查询工作负载不感兴趣的值排除在索引之外，如<xref
+   linkend="indexes-partial-ex2">所示。这样会得到与上面相同的好处，但也意味着这些<quote>不感兴趣</quote>的值无法通过该索引访问，即使在那种情况下索引扫描可能是有利的。显然，为这种场景建立部分索引需要大量的谨慎和实验。
   </para>
 
   <example id="indexes-partial-ex2">
-   <title>Setting up a Partial Index to Exclude Uninteresting Values</title>
+   <title>建立一个部分索引以排除不感兴趣的值</title>
 
    <para>
-    If you have a table that contains both billed and unbilled orders,
-    where the unbilled orders take up a small fraction of the total
-    table and yet those are the most-accessed rows, you can improve
-    performance by creating an index on just the unbilled rows.  The
-    command to create the index would look like this:
+    如果你有一张表，其中同时包含已开账单和未开账单的订单，而未开账单订单只占整张表的一小部分，却是最常被访问的那些行，那么你可以通过只为未开账单的行创建索引来提升性能。创建该索引的命令如下：
 <programlisting>
 CREATE INDEX orders_unbilled_index ON orders (order_nr)
     WHERE billed is not true;
@@ -760,77 +398,40 @@ CREATE INDEX orders_unbilled_index ON orders (order_nr)
    </para>
 
    <para>
-    A possible query to use this index would be:
+    一个可能会使用该索引的查询是：
 <programlisting>
 SELECT * FROM orders WHERE billed is not true AND order_nr &lt; 10000;
 </programlisting>
-    However, the index can also be used in queries that do not involve
-    <structfield>order_nr</> at all, e.g.:
+    不过，这个索引也可以用于那些完全不涉及<structfield>order_nr</structfield>的查询，例如：
 <programlisting>
 SELECT * FROM orders WHERE billed is not true AND amount &gt; 5000.00;
 </programlisting>
-    This is not as efficient as a partial index on the
-    <structfield>amount</> column would be, since the system has to
-    scan the entire index.  Yet, if there are relatively few unbilled
-    orders, using this partial index just to find the unbilled orders
-    could be a win.
+    这不像在<structfield>amount</structfield>列上建立部分索引那样高效，因为系统必须扫描整个索引。不过，如果未开账单的订单相对较少，那么即使只是用这个部分索引来找出未开账单订单，也可能是值得的。
    </para>
 
    <para>
-    Note that this query cannot use this index:
+    请注意，下面这个查询不能使用该索引：
 <programlisting>
 SELECT * FROM orders WHERE order_nr = 3501;
 </programlisting>
-    The order 3501 might be among the billed or unbilled
-    orders.
+    因为订单 3501 可能属于已开账单订单，也可能属于未开账单订单。
    </para>
   </example>
 
   <para>
-   <xref linkend="indexes-partial-ex2"> also illustrates that the
-   indexed column and the column used in the predicate do not need to
-   match.  <productname>PostgreSQL</productname> supports partial
-   indexes with arbitrary predicates, so long as only columns of the
-   table being indexed are involved.  However, keep in mind that the
-   predicate must match the conditions used in the queries that
-   are supposed to benefit from the index.  To be precise, a partial
-   index can be used in a query only if the system can recognize that
-   the <literal>WHERE</> condition of the query mathematically implies
-   the predicate of the index.
-   <productname>PostgreSQL</productname> does not have a sophisticated
-   theorem prover that can recognize mathematically equivalent
-   expressions that are written in different forms.  (Not
-   only is such a general theorem prover extremely difficult to
-   create, it would probably be too slow to be of any real use.)
-   The system can recognize simple inequality implications, for example
-   <quote>x &lt; 1</quote> implies <quote>x &lt; 2</quote>; otherwise
-   the predicate condition must exactly match part of the query's
-   <literal>WHERE</> condition
-   or the index will not be recognized as usable. Matching takes
-   place at query planning time, not at run time. As a result,
-   parameterized query clauses do not work with a partial index. For
-   example a prepared query with a parameter might specify
-   <quote>x &lt; ?</quote> which will never imply
-   <quote>x &lt; 2</quote> for all possible values of the parameter.
+   <xref linkend="indexes-partial-ex2">也说明了：索引列和谓词中使用的列不必一致。<productname>PostgreSQL</productname>支持带任意谓词的部分索引，只要其中只涉及正在建立索引的那张表的列。不过要记住，谓词必须与那些希望从该索引受益的查询中使用的条件相匹配。更准确地说，只有当系统能够识别出查询的<literal>WHERE</literal>条件在数学上蕴含该索引的谓词时，部分索引才能用于该查询。<productname>PostgreSQL</productname>并没有一个复杂的定理证明器，来识别那些写法不同但数学上等价的表达式。（不仅构建这样一个通用定理证明器极其困难，而且它很可能也会慢到失去实际用途。）系统可以识别简单的不等式蕴含，例如<quote>x &lt; 1</quote>蕴含<quote>x &lt; 2</quote>；否则，谓词条件必须与查询<literal>WHERE</literal>条件的某一部分完全匹配，否则索引不会被识别为可用。匹配发生在查询规划阶段，而不是运行时。因此，参数化查询子句无法与部分索引配合工作。例如，一个带参数的预备查询可能写成<quote>x &lt; ?</quote>，而它无法保证在参数的所有可能取值下都蕴含<quote>x &lt; 2</quote>。
   </para>
 
   <para>
-   A third possible use for partial indexes does not require the
-   index to be used in queries at all.  The idea here is to create
-   a unique index over a subset of a table, as in <xref
-   linkend="indexes-partial-ex3">.  This enforces uniqueness
-   among the rows that satisfy the index predicate, without constraining
-   those that do not.
+   部分索引的第三种可能用途，甚至不要求索引被查询使用。这里的思路是像<xref
+   linkend="indexes-partial-ex3">那样，在表的一个子集上创建唯一索引。这样就能在满足索引谓词的那些行之间强制唯一性，而不会约束不满足谓词的行。
   </para>
 
   <example id="indexes-partial-ex3">
-   <title>Setting up a Partial Unique Index</title>
+   <title>建立一个部分唯一索引</title>
 
    <para>
-    Suppose that we have a table describing test outcomes.  We wish
-    to ensure that there is only one <quote>successful</> entry for
-    a given subject and target combination, but there might be any number of
-    <quote>unsuccessful</> entries.  Here is one way to do it:
+    假设我们有一张描述测试结果的表。我们希望确保对于给定的测试对象和目标组合，只有一条<quote>成功</quote>记录，但可以有任意多条<quote>失败</quote>记录。实现方法之一如下：
 <programlisting>
 CREATE TABLE tests (
     subject text,
@@ -842,115 +443,62 @@ CREATE TABLE tests (
 CREATE UNIQUE INDEX tests_success_constraint ON tests (subject, target)
     WHERE success;
 </programlisting>
-    This is a particularly efficient approach when there are few
-    successful tests and many unsuccessful ones.
+    当成功测试很少而失败测试很多时，这是一种特别高效的方法。
    </para>
+
   </example>
 
   <para>
-   Finally, a partial index can also be used to override the system's
-   query plan choices.  Also, data sets with peculiar
-   distributions might cause the system to use an index when it really
-   should not.  In that case the index can be set up so that it is not
-   available for the offending query.  Normally,
-   <productname>PostgreSQL</> makes reasonable choices about index
-   usage (e.g., it avoids them when retrieving common values, so the
-   earlier example really only saves index size, it is not required to
-   avoid index usage), and grossly incorrect plan choices are cause
-   for a bug report.
+   最后，部分索引还可以用来影响系统的查询计划选择。同样，分布异常的数据集可能导致系统在实际上不应该使用索引的时候选择使用它。在这种情况下，可以把索引建成对那个有问题的查询不可用。通常，<productname>PostgreSQL</productname>会对索引使用作出合理选择（例如，它会在检索常见值时避免使用索引，因此前面的例子实际上只是节省索引空间，而不是为了避免使用索引所必需的），如果出现明显错误的计划选择，那就应当提交 bug 报告。
   </para>
 
   <para>
-   Keep in mind that setting up a partial index indicates that you
-   know at least as much as the query planner knows, in particular you
-   know when an index might be profitable.  Forming this knowledge
-   requires experience and understanding of how indexes in
-   <productname>PostgreSQL</> work.  In most cases, the advantage of a
-   partial index over a regular index will be minimal.
+   请记住，建立部分索引意味着你至少与查询规划器一样了解情况，尤其是你知道索引何时可能是有利的。形成这种认识需要经验，以及对<productname>PostgreSQL</productname>中索引工作方式的理解。在大多数情况下，部分索引相比普通索引的优势都很小。
   </para>
 
+
   <para>
-   More information about partial indexes can be found in <xref
-   linkend="STON89b">, <xref linkend="OLSON93">, and <xref
-   linkend="SESHADRI95">.
+   关于部分索引的更多信息可参见<xref
+   linkend="STON89b">、<xref linkend="OLSON93">和<xref
+   linkend="SESHADRI95">。
   </para>
  </sect1>
 
 
  <sect1 id="indexes-opclass">
-  <title>Operator Classes and Operator Families</title>
+  <title>操作符类和操作符族</title>
 
   <indexterm zone="indexes-opclass">
-   <primary>operator class</primary>
+   <primary>操作符类</primary>
   </indexterm>
 
   <indexterm zone="indexes-opclass">
-   <primary>operator family</primary>
+   <primary>操作符族</primary>
   </indexterm>
 
-  <para>
-   An index definition can specify an <firstterm>operator
-   class</firstterm> for each column of an index.
-<synopsis>
+  <para>索引定义可以为索引的每一列指定一个<firstterm>操作符类</firstterm>。<synopsis>
 CREATE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable> (<replaceable>column</replaceable> <replaceable>opclass</replaceable> <optional><replaceable>sort options</replaceable></optional> <optional>, ...</optional>);
-</synopsis>
-   The operator class identifies the operators to be used by the index
-   for that column.  For example, a B-tree index on the type <type>int4</type>
-   would use the <literal>int4_ops</literal> class; this operator
-   class includes comparison functions for values of type <type>int4</type>.
-   In practice the default operator class for the column's data type is
-   usually sufficient.  The main reason for having operator classes is
-   that for some data types, there could be more than one meaningful
-   index behavior.  For example, we might want to sort a complex-number data
-   type either by absolute value or by real part.  We could do this by
-   defining two operator classes for the data type and then selecting
-   the proper class when making an index.  The operator class determines
-   the basic sort ordering (which can then be modified by adding sort options
-   <literal>ASC</>/<literal>DESC</> and/or
-   <literal>NULLS FIRST</>/<literal>NULLS LAST</>).
+</synopsis>操作符类确定索引针对该列使用哪些操作符。例如，建立在类型<type>int4</type>上的 B-树索引会使用<literal>int4_ops</literal>类；该操作符类包含针对以下类型的值的比较函数：<type>int4</type>。实际中，列数据类型的默认操作符类通常就足够了。之所以需要操作符类，主要是因为对于某些数据类型，可能存在不止一种有意义的索引行为。例如，可能希望按绝对值或实部对复数数据类型排序。可以为该数据类型定义两个操作符类，并在创建索引时选择合适的类。操作符类决定基本排序顺序（随后可以通过添加排序选项进行调整：<literal>ASC</literal>/<literal>DESC</literal>和/或<literal>NULLS FIRST</literal>/<literal>NULLS LAST</literal>）。
   </para>
 
   <para>
-   There are also some built-in operator classes besides the default ones:
+   除了默认操作符类之外，还有一些内置操作符类：
 
    <itemizedlist>
     <listitem>
      <para>
-      The operator classes <literal>text_pattern_ops</literal>,
-      <literal>varchar_pattern_ops</literal>, and
-      <literal>bpchar_pattern_ops</literal> support B-tree indexes on
-      the types <type>text</type>, <type>varchar</type>, and
-      <type>char</type> respectively.  The
-      difference from the default operator classes is that the values
-      are compared strictly character by character rather than
-      according to the locale-specific collation rules.  This makes
-      these operator classes suitable for use by queries involving
-      pattern matching expressions (<literal>LIKE</literal> or POSIX
-      regular expressions) when the database does not use the standard
-      <quote>C</quote> locale.  As an example, you might index a
-      <type>varchar</type> column like this:
+      操作符类<literal>text_pattern_ops</literal>、<literal>varchar_pattern_ops</literal>和<literal>bpchar_pattern_ops</literal>分别支持类型<type>text</type>、<type>varchar</type>和<type>char</type>上的 B-树索引。它们与默认操作符类的区别在于，值是严格按字符逐个比较，而不是按照区域设置相关的排序规则比较。因此，当数据库未使用标准<quote>C</quote>区域设置时，这些操作符类适用于涉及模式匹配表达式（<literal>LIKE</literal>或 POSIX 正则表达式）的查询。例如，你可以像这样为一个<type>varchar</type>列建立索引：
 <programlisting>
 CREATE INDEX test_index ON test_table (col varchar_pattern_ops);
 </programlisting>
-      Note that you should also create an index with the default operator
-      class if you want queries involving ordinary <literal>&lt;</>,
-      <literal>&lt;=</>, <literal>&gt;</>, or <literal>&gt;=</> comparisons
-      to use an index.  Such queries cannot use the
-      <literal><replaceable>xxx</replaceable>_pattern_ops</literal>
-      operator classes.  (Ordinary equality comparisons can use these
-      operator classes, however.)  It is possible to create multiple
-      indexes on the same column with different operator classes.
-      If you do use the C locale, you do not need the
-      <literal><replaceable>xxx</replaceable>_pattern_ops</literal>
-      operator classes, because an index with the default operator class
-      is usable for pattern-matching queries in the C locale.
+      注意，如果你希望涉及普通<literal>&lt;</literal>、<literal>&lt;=</literal>、<literal>&gt;</literal>或<literal>&gt;=</literal>比较的查询也能使用索引，那么还应该再创建一个使用默认操作符类的索引。这类查询不能使用<literal><replaceable>xxx</replaceable>_pattern_ops</literal>操作符类。（不过普通等值比较是可以使用这些操作符类的。）同一列上可以创建多个使用不同操作符类的索引。如果你使用的是 C 区域设置，则不需要<literal><replaceable>xxx</replaceable>_pattern_ops</literal>操作符类，因为带默认操作符类的索引在 C 区域设置下就可以用于模式匹配查询。
      </para>
     </listitem>
    </itemizedlist>
   </para>
 
   <para>
-    The following query shows all defined operator classes:
+    下面的查询会显示所有已定义的操作符类：
 
 <programlisting>
 SELECT am.amname AS index_method,
@@ -962,18 +510,11 @@ SELECT am.amname AS index_method,
   </para>
 
   <para>
-   An operator class is actually just a subset of a larger structure called an
-   <firstterm>operator family</>.  In cases where several data types have
-   similar behaviors, it is frequently useful to define cross-data-type
-   operators and allow these to work with indexes.  To do this, the operator
-   classes for each of the types must be grouped into the same operator
-   family.  The cross-type operators are members of the family, but are not
-   associated with any single class within the family.
+   操作符类其实只是一个更大结构的子集，这个结构称为<firstterm>操作符族</firstterm>。当若干数据类型具有相似行为时，定义跨数据类型操作符并让索引支持它们，往往会很有用。为此，每种类型对应的操作符类都必须归入同一个操作符族。跨类型操作符属于该族，但不与该族中任何单独一个类关联。
   </para>
 
   <para>
-    This query shows all defined operator families and all
-    the operators included in each family:
+    下面这个查询会显示所有已定义的操作符族，以及每个族中包含的全部操作符：
 <programlisting>
 SELECT am.amname AS index_method,
        opf.opfname AS opfamily_name,
@@ -987,123 +528,68 @@ SELECT am.amname AS index_method,
  </sect1>
 
 
+
+
+
+
  <sect1 id="indexes-examine">
-  <title>Examining Index Usage</title>
+  <title>检查索引使用情况</title>
 
   <indexterm zone="indexes-examine">
-   <primary>index</primary>
-   <secondary>examining usage</secondary>
+   <primary>索引</primary>
+   <secondary>检查使用情况</secondary>
   </indexterm>
 
   <para>
-   Although indexes in <productname>PostgreSQL</> do not need
-   maintenance or tuning, it is still important to check
-   which indexes are actually used by the real-life query workload.
-   Examining index usage for an individual query is done with the
-   <xref linkend="sql-explain">
-   command; its application for this purpose is
-   illustrated in <xref linkend="using-explain">.
-   It is also possible to gather overall statistics about index usage
-   in a running server, as described in <xref linkend="monitoring-stats">.
+   尽管<productname>PostgreSQL</productname>中的索引不需要维护或调优，但检查真实查询工作负载到底实际使用了哪些索引，仍然很重要。检查某个单独查询的索引使用情况，可以使用<xref linkend="sql-explain">命令；它在这方面的应用见<xref linkend="using-explain">。也可以像<xref linkend="monitoring-stats">中描述的那样，在运行中的服务器上收集索引使用的总体统计信息。
   </para>
 
   <para>
-   It is difficult to formulate a general procedure for determining
-   which indexes to create.  There are a number of typical cases that
-   have been shown in the examples throughout the previous sections.
-   A good deal of experimentation is often necessary.
-   The rest of this section gives some tips for that:
+   很难给出一个确定应该创建哪些索引的通用流程。前面各节的示例已经展示了若干典型情形。通常需要做大量实验。下面这部分会给出一些相关提示：
   </para>
 
   <itemizedlist>
    <listitem>
     <para>
-     Always run <xref linkend="sql-analyze">
-     first.  This command
-     collects statistics about the distribution of the values in the
-     table.  This information is required to estimate the number of rows
-     returned by a query, which is needed by the planner to assign
-     realistic costs to each possible query plan.  In absence of any
-     real statistics, some default values are assumed, which are
-     almost certain to be inaccurate.  Examining an application's
-     index usage without having run <command>ANALYZE</command> is
-     therefore a lost cause.
-     See <xref linkend="vacuum-for-statistics">
-     and <xref linkend="autovacuum"> for more information.
+     一定要先运行<xref linkend="sql-analyze">。这个命令会收集表中值分布的统计信息。估计查询会返回多少行，需要这些信息；而规划器要为每种可能的查询计划分配现实的代价，也需要这些信息。如果没有真实统计信息，系统就会假定一些默认值，而这些默认值几乎肯定并不准确。因此，在没有运行<command>ANALYZE</command>的情况下去检查应用的索引使用情况，基本上是徒劳的。更多信息见<xref linkend="vacuum-for-statistics">和<xref linkend="autovacuum">。
     </para>
    </listitem>
 
    <listitem>
     <para>
-     Use real data for experimentation.  Using test data for setting
-     up indexes will tell you what indexes you need for the test data,
-     but that is all.
+     用真实数据做实验。使用测试数据来设置索引，只会告诉你测试数据需要什么索引，仅此而已。
     </para>
 
     <para>
-     It is especially fatal to use very small test data sets.
-     While selecting 1000 out of 100000 rows could be a candidate for
-     an index, selecting 1 out of 100 rows will hardly be, because the
-     100 rows probably fit within a single disk page, and there
-     is no plan that can beat sequentially fetching 1 disk page.
+     特别要避免使用非常小的测试数据集。虽然在 100000 行里选 1000 行可能适合用索引，但在 100 行里选 1 行几乎不适合，因为这 100 行大概都能放进一个磁盘页，而没有任何计划能比顺序取一个磁盘页更快。
     </para>
 
     <para>
-     Also be careful when making up test data, which is often
-     unavoidable when the application is not yet in production.
-     Values that are very similar, completely random, or inserted in
-     sorted order will skew the statistics away from the distribution
-     that real data would have.
+     另外，在编造测试数据时也要小心；如果应用尚未投入生产，这往往无法避免。非常相似、完全随机、或者按排序顺序插入的值，都会让统计信息偏离真实数据应有的分布。
     </para>
    </listitem>
 
    <listitem>
     <para>
-     When indexes are not used, it can be useful for testing to force
-     their use.  There are run-time parameters that can turn off
-     various plan types (see <xref linkend="runtime-config-query-enable">).
-     For instance, turning off sequential scans
-     (<varname>enable_seqscan</>) and nested-loop joins
-     (<varname>enable_nestloop</>), which are the most basic plans,
-     will force the system to use a different plan.  If the system
-     still chooses a sequential scan or nested-loop join then there is
-     probably a more fundamental reason why the index is not being
-     used; for example, the query condition does not match the index.
-     (What kind of query can use what kind of index is explained in
-     the previous sections.)
+     当索引没有被使用时，强制使用它们对测试会很有帮助。有一些运行时参数可以关闭不同的计划类型（见<xref linkend="runtime-config-query-enable">）。例如，关闭顺序扫描（<varname>enable_seqscan</varname>）和嵌套循环连接（<varname>enable_nestloop</varname>）这两种最基本的计划，就会迫使系统使用不同的计划。如果系统仍然选择顺序扫描或嵌套循环连接，那么索引未被使用很可能有更根本的原因，例如查询条件并不匹配该索引。（前面各节已经解释了什么样的查询可以使用什么样的索引。）
     </para>
    </listitem>
 
    <listitem>
     <para>
-     If forcing index usage does use the index, then there are two
-     possibilities: Either the system is right and using the index is
-     indeed not appropriate, or the cost estimates of the query plans
-     are not reflecting reality.  So you should time your query with
-     and without indexes.  The <command>EXPLAIN ANALYZE</command>
-     command can be useful here.
+     如果强制使用索引后确实使用了索引，那么就有两种可能：要么系统是对的，使用索引确实不合适；要么查询计划的代价估计并未反映现实。因此，你应该分别在有索引和无索引的情况下对查询计时。<command>EXPLAIN ANALYZE</command>命令在这里会很有帮助。
     </para>
    </listitem>
 
    <listitem>
     <para>
-     If it turns out that the cost estimates are wrong, there are,
-     again, two possibilities.  The total cost is computed from the
-     per-row costs of each plan node times the selectivity estimate of
-     the plan node.  The costs estimated for the plan nodes can be adjusted
-     via run-time parameters (described in <xref
-     linkend="runtime-config-query-constants">).
-     An inaccurate selectivity estimate is due to
-     insufficient statistics.  It might be possible to improve this by
-     tuning the statistics-gathering parameters (see
-     <xref linkend="sql-altertable">).
+     如果发现代价估计是错的，那么又有两种可能。总代价是根据每个计划节点的逐行代价乘以该计划节点的选择率估计计算出来的。计划节点的估计代价可以通过运行时参数来调整（见<xref
+     linkend="runtime-config-query-constants">）。而选择率估计不准确，则是因为统计信息不足。可以尝试通过调整统计信息收集参数来改进这一点（见<xref
+     linkend="sql-altertable">）。
     </para>
 
     <para>
-     If you do not succeed in adjusting the costs to be more
-     appropriate, then you might have to resort to forcing index usage
-     explicitly.  You might also want to contact the
-     <productname>PostgreSQL</> developers to examine the issue.
+     如果你无法把这些代价调得更合适，那么可能就不得不退而求其次，显式强制使用索引。你也可能希望联系<productname>PostgreSQL</productname>开发者来研究这个问题。
     </para>
    </listitem>
   </itemizedlist>
