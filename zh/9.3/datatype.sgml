@@ -615,7 +615,7 @@ NUMERIC
     </para>
 
     <note>
-     <para>假定<type>real</type>和<type>double precision</type>的尾数分别恰好有 24 位和 53 位，对于 IEEE 标准浮点实现而言是正确的。在非 IEEE 平台上可能会有少许偏差，但为简单起见，所有平台都使用相同的<replaceable>p</replaceable>取值范围。</para>
+     <para>在<productname>PostgreSQL</productname> 7.4 之前，<type>float(<replaceable>p</replaceable>)</type>中的精度被理解为这么多位<emphasis>十进制</emphasis>数字。这一点已被修正，以符合 SQL 标准，即精度以二进制位来度量。假定<type>real</type>和<type>double precision</type>的尾数分别恰好有 24 位和 53 位，对于 IEEE 标准浮点实现而言是正确的。在非 IEEE 平台上可能会有少许偏差，但为简单起见，所有平台都使用相同的<replaceable>p</replaceable>取值范围。</para>
     </note>
 
    </sect2>
@@ -722,6 +722,12 @@ ALTER SEQUENCE <replaceable class="parameter">tablename</replaceable>_<replaceab
      你也可以在不删除该列的情况下删除该序列，但这会强制移除该列的默认值
      表达式。
     </para>
+
+   <note>
+    <para>在<productname>PostgreSQL</productname> 7.3 之前，<type>serial</type> 隐含
+    <literal>UNIQUE</literal>。现在这不再是自动的了。如果希望一个 serial 列
+    拥有唯一约束或作为主键，现在必须像其他数据类型一样显式指定。</para>
+   </note>
    </sect2>
   </sect1>
 
@@ -899,16 +905,12 @@ SELECT '52093.89'::money::numeric::float8;
 
    <para>
     <type>character</type> 类型的值在物理存储时会在右侧用空格填充到
-    指定宽度 <replaceable>n</replaceable>，并且也会按这种形式显示。
-    但是，在比较两个 <type>character</type> 值时，尾随空格在语义上
-    被视为不重要并会被忽略。在空白字符有区分意义的排序规则中，这种
-    行为可能产生意外结果；例如，
-    <command>SELECT 'a '::CHAR(2) collate "C" &lt;
-    E'a\n'::CHAR(2)</command> 会返回真，即使
-    <literal>C</literal> 区域设置认为空格大于换行符。把
+    指定宽度 <replaceable>n</replaceable>，并且也会按这种形式存储和显示。
+    但是，填充的空格在语义上被视为不重要。在比较两个
+    <type>character</type> 值时，尾随空格会被忽略，把
     <type>character</type> 值转换为其他字符串类型之一时，尾随空格会
     被移除。请注意，在 <type>character varying</type> 和
-    <type>text</type> 值中，以及进行模式匹配（即
+    <type>text</type> 值中，以及进行模式匹配（例如
     <literal>LIKE</literal> 和正则表达式）时，尾随空格
     <emphasis>在语义上是有意义的</emphasis>。
    </para>
@@ -1171,24 +1173,24 @@ SELECT '\xDEADBEEF';
 
    <para>
     是否必须转义这些<emphasis>不可打印</emphasis>字节，会因区域设置
-    不同而有所差异。在某些情况下，你可以不转义它们。
+    不同而有所差异。在某些情况下，你可以不转义它们。请注意，
+    <xref linkend="datatype-binary-sqlesc"> 中每个示例的结果都恰好是
+    一个字节长，尽管其输出表示有时多于一个字符。
    </para>
 
    <para>
-    如 <xref linkend="datatype-binary-sqlesc"> 所示，单引号必须成对
-    写出的原因，在于这对 SQL 命令中的任何字符串常量都成立。通用的
-    字符串常量解析器会去掉最外层单引号，并把任意成对的单引号缩减为
-    一个数据字符。因此，<type>bytea</type> 输入函数实际只会看到
-    一个单引号，并将其视为普通数据字符。不过，
-    <type>bytea</type> 输入函数会把反斜线视为特殊字符，而
-    <xref linkend="datatype-binary-sqlesc"> 中展示的其他行为也是由
-    这个函数实现的。
-   </para>
-
-   <para>
-    在某些上下文中，反斜线必须比上面显示的再多写一倍，因为通用的
-    字符串常量解析器也会把成对反斜线缩减为一个数据字符；
-    参见 <xref linkend="sql-syntax-strings">。
+    如 <xref linkend="datatype-binary-sqlesc"> 所示，之所以需要多个反斜线，
+    是因为以字符串常量形式书写的输入串在 <productname>PostgreSQL</productname>
+    服务器中要经过两个解析阶段。每一对反斜线中的第一个会被字符串常量解析器
+    （假定使用转义字符串语法）解释为转义字符并被消耗掉，留下这一对中的第二个
+    反斜线。（可以使用美元引用的字符串来避免这一层转义。）剩下的反斜线随后被
+    <type>bytea</type> 输入函数识别为三位八进制值的开始，或识别为对另一个
+    反斜线的转义。例如，作为 <literal>'\001'</literal> 传递给服务器的字符串常量，
+    在经过转义字符串解析器之后变成 <literal>\001</literal>。然后
+    <literal>\001</literal> 被发送到 <type>bytea</type> 输入函数，并在那里被
+    转换为十进制值为 1 的单个八位组。请注意，单引号字符不会被
+    <type>bytea</type> 特殊对待，因此它遵循字符串常量的普通规则。
+    （另见 <xref linkend="sql-syntax-strings">。）
    </para>
 
    <para>
@@ -1378,7 +1380,8 @@ SELECT 'abc \153\154\155 \052\251\124'::bytea;
     <para>
      SQL 标准要求仅写 <type>timestamp</type> 时，应等效于
      <type>timestamp without time zone</type>，而
-     <productname>PostgreSQL</productname> 也遵循这种行为。
+     <productname>PostgreSQL</productname> 也遵循这种行为。（7.3 之前的版本
+     将其视为 <type>timestamp with time zone</type>。）
      <type>timestamptz</type> 被接受为
      <type>timestamp with time zone</type> 的简写，这是
      <productname>PostgreSQL</productname> 的扩展。
@@ -1847,17 +1850,17 @@ January 8 04:05:06 1999 PST
          <row>
           <entry><literal>today</literal></entry>
           <entry><type>date</type>, <type>timestamp</type></entry>
-          <entry>今天午夜（<literal>00:00</literal>）</entry>
+          <entry>今天午夜</entry>
          </row>
          <row>
           <entry><literal>tomorrow</literal></entry>
           <entry><type>date</type>, <type>timestamp</type></entry>
-          <entry>明天午夜（<literal>00:00</literal>）</entry>
+          <entry>明天午夜</entry>
          </row>
          <row>
           <entry><literal>yesterday</literal></entry>
           <entry><type>date</type>, <type>timestamp</type></entry>
-          <entry>昨天午夜（<literal>00:00</literal>）</entry>
+          <entry>昨天午夜</entry>
          </row>
          <row>
           <entry><literal>allballs</literal></entry>
@@ -2096,9 +2099,7 @@ January 8 04:05:06 1999 PST
         相对 UTC 向西的数字偏移，而 <replaceable>DST</replaceable>
         是可选的夏令时缩写，假定它表示比给定偏移早一小时。例如，如果
         <literal>EST5EDT</literal> 还不是一个已被识别的时区名称，它也会
-        被接受，并且在功能上等同于美国东海岸时间。在这种语法中，时区缩写
-        可以是一个字母串，也可以是用尖括号（<literal>&lt;&gt;</literal>）
-        括起来的任意字符串。当给出夏令时缩写时，假定它按照 IANA 时区数据库
+        被接受，并且在功能上等同于美国东海岸时间。当给出夏令时缩写时，假定它按照 IANA 时区数据库
         <filename>posixrules</filename> 条目中所用的相同夏令时转换日期规则使用。
         在标准的 <productname>PostgreSQL</productname> 安装中，
         <filename>posixrules</filename> 与 <literal>US/Eastern</literal>
@@ -2504,8 +2505,9 @@ SELECT EXTRACT(days from '80 hours'::interval);
      <member><literal>'off'</literal></member>
      <member><literal>'0'</literal></member>
     </simplelist>
-    这些字符串的唯一前缀也同样可以接受，例如 <literal>t</literal> 或
-    <literal>n</literal>。前导或尾随空白会被忽略，并且大小写不敏感。
+    前导或尾随空白会被忽略，并且大小写不敏感。关键字
+    <literal>TRUE</literal> 和 <literal>FALSE</literal>
+    是首选的（符合 <acronym>SQL</acronym> 标准的）用法。
    </para>
 
    <para>
@@ -2534,20 +2536,6 @@ SELECT * FROM test1 WHERE a;
 </programlisting>
    </example>
 
-   <para>
-    前导和尾随空白会被忽略，大小写无关。关键字 <literal>TRUE</literal> 和
-    <literal>FALSE</literal> 是首选的（符合 <acronym>SQL</acronym> 标准）用法。
-   </para>
-
-   <para>
-    注意，语法分析器会自动将 <literal>TRUE</literal> 和
-    <literal>FALSE</literal> 理解为 <type>boolean</type> 类型，但
-    <literal>NULL</literal> 不会，因为它可以是任意类型。因此在某些上下文中，
-    你可能需要显式将 <literal>NULL</literal> 转换为
-    <type>boolean</type>，例如 <literal>NULL::boolean</literal>。
-    反过来，如果语法分析器能够判定某个字符串字面量必定是
-    <type>boolean</type> 类型，则也可以省略这类转换。
-   </para>
   </sect1>
 
   <sect1 id="datatype-enum">
@@ -2803,7 +2791,7 @@ SELECT person.name, holidays.num_weeks FROM person, holidays
     </indexterm>
 
     <para>
-     线段用一对线段的端点来表示。<type>lseg</type>类型的值用下面任一种语法指定：
+     线段（<type>lseg</type>）用成对的点来表示。<type>lseg</type>类型的值用下面任一种语法指定：
 
 <synopsis>
 [ ( <replaceable>x1</replaceable> , <replaceable>y1</replaceable> ) , ( <replaceable>x2</replaceable> , <replaceable>y2</replaceable> ) ]
@@ -3620,7 +3608,13 @@ SET xmloption TO { DOCUMENT | CONTENT };
     默认值是 <literal>CONTENT</literal>，因此允许所有形式的 XML 数据。
    </para>
 
-   </sect2>
+   <note>
+    <para>在使用默认的 XML 选项设置时，如果字符串中包含文档类型声明，
+    则不能直接把它转换为 <type>xml</type> 类型，因为 XML 内容片段的定义
+    不接受文档类型声明。如果需要这样做，可以使用 <literal>XMLPARSE</literal>，
+    或者更改 XML 选项。</para>
+   </note>
+  </sect2>
 
    <sect2>
     <title>编码处理</title>
