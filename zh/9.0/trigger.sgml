@@ -1,293 +1,233 @@
 <!-- $PostgreSQL: pgsql/doc/src/sgml/trigger.sgml,v 1.63.2.1 2010/08/17 04:37:19 petere Exp $ -->
 
  <chapter id="triggers">
-  <title>Triggers</title>
+  <title>触发器</title>
 
   <indexterm zone="triggers">
    <primary>trigger</primary>
   </indexterm>
 
   <para>
-   This chapter provides general information about writing trigger functions.
-   Trigger functions can be written in most of the available procedural
-   languages, including
-   <application>PL/pgSQL</application> (<xref linkend="plpgsql">),
-   <application>PL/Tcl</application> (<xref linkend="pltcl">),
-   <application>PL/Perl</application> (<xref linkend="plperl">), and
-   <application>PL/Python</application> (<xref linkend="plpython">).
-   After reading this chapter, you should consult the chapter for
-   your favorite procedural language to find out the language-specific
-   details of writing a trigger in it.
+   本章提供有关编写触发器函数的一般信息。触发器函数可以用大多数可用的过程语言编写，包括
+   <application>PL/pgSQL</application>（<xref linkend="plpgsql">）、
+   <application>PL/Tcl</application>（<xref linkend="pltcl">）、
+   <application>PL/Perl</application>（<xref linkend="plperl">）和
+   <application>PL/Python</application>（<xref linkend="plpython">）。读完本章后，你还应查阅所用过程语言对应的章节，了解用该语言编写触发器的语言相关细节。
   </para>
 
   <para>
-   It is also possible to write a trigger function in C, although
-   most people find it easier to use one of the procedural languages.
-   It is not currently possible to write a trigger function in the
-   plain SQL function language.
+   也可以用 C 编写触发器函数，不过大多数人会觉得使用某种过程语言更容易。目前还不能用普通 SQL 函数语言编写触发器函数。
   </para>
 
   <sect1 id="trigger-definition">
-   <title>Overview of Trigger Behavior</title>
+   <title>触发器行为概述</title>
 
    <para>
-    A trigger is a specification that the database should automatically
-    execute a particular function whenever a certain type of operation is
-    performed.  Triggers can be defined to execute either before or after any
-    <command>INSERT</command>, <command>UPDATE</command>, or
-    <command>DELETE</command> operation, either once per modified row,
-    or once per <acronym>SQL</acronym> statement.
-    <command>UPDATE</command> triggers can moreover be set to fire only if
-    certain columns are mentioned in the <literal>SET</literal> clause of the
-    <command>UPDATE</command> statement.
-    Triggers can also fire for <command>TRUNCATE</command> statements.
-    If a trigger event occurs, the trigger's function is called at the
-    appropriate time to handle the event.
+    触发器是这样一种规定：每当执行某种特定类型的操作时，数据库就
+    应自动执行一个特定的函数。触发器可以定义为在任何
+    <command>INSERT</command>、<command>UPDATE</command> 或
+    <command>DELETE</command> 操作之前或之后执行，执行方式既可以
+    是每个被修改的行一次，也可以是每条 <acronym>SQL</acronym>
+    语句一次。此外，<command>UPDATE</command> 触发器还可以设置为
+    仅当 <command>UPDATE</command> 语句的 <literal>SET</literal>
+    子句中提及特定列时才触发。触发器也可以由
+    <command>TRUNCATE</command> 语句触发。一旦触发器事件发生，
+    触发器函数就会在恰当的时机被调用以处理该事件。
    </para>
 
    <para>
-    The trigger function must be defined before the trigger itself can be
-    created.  The trigger function must be declared as a
-    function taking no arguments and returning type <literal>trigger</>.
-    (The trigger function receives its input through a specially-passed
-    <structname>TriggerData</> structure, not in the form of ordinary function
-    arguments.)
+    必须先定义触发器函数，之后才能创建触发器本身。触发器函数必须声明为不接受参数并返回类型 <literal>trigger</literal> 的函数。（触发器函数通过特殊传入的
+    <structname>TriggerData</structname> 结构体接收输入，而不是通过普通函数参数。）
    </para>
 
    <para>
-    Once a suitable trigger function has been created, the trigger is
-    established with
-    <xref linkend="sql-createtrigger">.
-    The same trigger function can be used for multiple triggers.
+    创建出合适的触发器函数后，就可以使用 <xref linkend="sql-createtrigger"> 创建触发器。同一个触发器函数可以供多个触发器使用。
    </para>
 
    <para>
-    <productname>PostgreSQL</productname> offers both <firstterm>per-row</>
-    triggers and <firstterm>per-statement</> triggers.  With a per-row
-    trigger, the trigger function
-    is invoked once for each row that is affected by the statement
-    that fired the trigger. In contrast, a per-statement trigger is
-    invoked only once when an appropriate statement is executed,
-    regardless of the number of rows affected by that statement. In
-    particular, a statement that affects zero rows will still result
-    in the execution of any applicable per-statement triggers. These
-    two types of triggers are sometimes called <firstterm>row-level</>
-    triggers and <firstterm>statement-level</> triggers,
-    respectively. Triggers on <command>TRUNCATE</command> may only be
-    defined at statement-level.
+    <productname>PostgreSQL</productname> 同时提供
+    <firstterm>每行</firstterm> 触发器和
+    <firstterm>每语句</firstterm> 触发器。对于每行触发器，触发它
+    的语句所影响的每一行都会调用一次触发器函数。相反，每语句
+    触发器只会在执行相应语句时调用一次，不管该语句影响了多少行。
+    特别是，即使某个语句一行也没有影响，仍会执行所有适用的每语句
+    触发器。这两类触发器有时也分别称为
+    <firstterm>行级</firstterm> 触发器和
+    <firstterm>语句级</firstterm> 触发器。
+    <command>TRUNCATE</command> 的触发器只能定义为语句级。
    </para>
 
    <para>
-    Triggers are also classified as <firstterm>before</> triggers and
-    <firstterm>after</> triggers.
-    Statement-level before triggers naturally fire before the
-    statement starts to do anything, while statement-level after
-    triggers fire at the very end of the statement.  Row-level before
-    triggers fire immediately before a particular row is operated on,
-    while row-level after triggers fire at the end of the statement
-    (but before any statement-level after triggers).
+    触发器还分为<firstterm>之前</firstterm>触发器和
+    <firstterm>之后</firstterm>触发器。语句级 BEFORE 触发器自然在
+    语句开始做任何事之前触发，而语句级 AFTER 触发器在语句的最终
+    末尾触发。行级 BEFORE 触发器在对某个特定行执行操作之前立即
+    触发，而行级 AFTER 触发器在语句末尾触发（但早于任何语句级
+    AFTER 触发器）。
    </para>
 
    <para>
-    Trigger functions invoked by per-statement triggers should always
-    return <symbol>NULL</symbol>. Trigger functions invoked by per-row
-    triggers can return a table row (a value of
-    type <structname>HeapTuple</structname>) to the calling executor,
-    if they choose.  A row-level trigger fired before an operation has
-    the following choices:
+    由每语句触发器调用的触发器函数应始终返回
+    <symbol>NULL</symbol>。由每行触发器调用的触发器函数则可以根据
+    需要向调用它的执行器返回一个表行（即类型
+    <structname>HeapTuple</structname> 的值）。在操作之前触发的
+    行级触发器可以作出如下选择：
 
     <itemizedlist>
      <listitem>
       <para>
-       It can return <symbol>NULL</> to skip the operation for the
-       current row. This instructs the executor to not perform the
-       row-level operation that invoked the trigger (the insertion or
-       modification of a particular table row).
+       它可以返回 <symbol>NULL</symbol>，以跳过对当前行的操作。
+       这会指示执行器不要执行引发该触发器的行级操作（即对某个
+       具体表行的插入或修改）。
       </para>
      </listitem>
 
      <listitem>
       <para>
-       For row-level <command>INSERT</command>
-       and <command>UPDATE</command> triggers only, the returned row
-       becomes the row that will be inserted or will replace the row
-       being updated.  This allows the trigger function to modify the
-       row being inserted or updated.
+       仅对于行级 <command>INSERT</command> 和
+       <command>UPDATE</command> 触发器，返回的行会成为将要插入
+       的行，或替换正在更新的行。这使得触发器函数可以修改即将
+       插入或更新的行。
       </para>
      </listitem>
     </itemizedlist>
 
-    A row-level before trigger that does not intend to cause either of
-    these behaviors must be careful to return as its result the same
-    row that was passed in (that is, the <varname>NEW</varname> row
-    for <command>INSERT</command> and <command>UPDATE</command>
-    triggers, the <varname>OLD</varname> row for
-    <command>DELETE</command> triggers).
+    不打算引发上述任何一种行为的行级 BEFORE 触发器，必须注意把
+    传入的行原样作为结果返回（也就是说，对于
+    <command>INSERT</command> 和 <command>UPDATE</command> 触发器
+    返回 <varname>NEW</varname> 行，对于
+    <command>DELETE</command> 触发器返回
+    <varname>OLD</varname> 行）。
    </para>
 
    <para>
-    The return value is ignored for row-level triggers fired after an
-    operation, and so they can return <symbol>NULL</>.
+    对于在操作之后触发的行级触发器，其返回值会被忽略，因此它们可以返回
+    <symbol>NULL</symbol>。
    </para>
 
    <para>
-    If more than one trigger is defined for the same event on the same
-    relation, the triggers will be fired in alphabetical order by
-    trigger name.  In the case of before triggers, the
-    possibly-modified row returned by each trigger becomes the input
-    to the next trigger.  If any before trigger returns
-    <symbol>NULL</>, the operation is abandoned for that row and subsequent
-    triggers are not fired.
+    如果为同一关系上的同一事件定义了多个触发器，它们会按触发器
+    名称的字母顺序触发。对于 BEFORE 触发器，每个触发器返回的、
+    可能已经被修改过的行都会成为下一个触发器的输入。如果任何
+    BEFORE 触发器返回 <symbol>NULL</>，则会放弃对该行执行该操作，
+    并且后续触发器（针对该行）都不会再触发。
    </para>
 
    <para>
-    A trigger definition can also specify a Boolean <literal>WHEN</>
-    condition, which will be tested to see whether the trigger should
-    be fired.  In row-level triggers the <literal>WHEN</> condition can
-    examine the old and/or new values of columns of the row.  (Statement-level
-    triggers can also have <literal>WHEN</> conditions, although the feature
-    is not so useful for them.)  In a before trigger, the <literal>WHEN</>
-    condition is evaluated just before the function is or would be executed,
-    so using <literal>WHEN</> is not materially different from testing the
-    same condition at the beginning of the trigger function.  However, in
-    an after trigger, the <literal>WHEN</> condition is evaluated just after
-    the row update occurs, and it determines whether an event is queued to
-    fire the trigger at the end of statement.  So when an after trigger's
-    <literal>WHEN</> condition does not return true, it is not necessary
-    to queue an event nor to re-fetch the row at end of statement.  This
-    can result in significant speedups in statements that modify many
-    rows, if the trigger only needs to be fired for a few of the rows.
+    触发器定义还可以指定一个布尔 <literal>WHEN</literal> 条件，
+    用来测试是否应当触发该触发器。对于行级触发器，
+    <literal>WHEN</literal> 条件可以检查该行各列的旧值和/或新值。
+    （语句级触发器也可以有 <literal>WHEN</literal> 条件，不过这个
+    特性对它们用处不大。）在 BEFORE 触发器中，
+    <literal>WHEN</literal> 条件就在函数即将执行或本会执行之前
+    求值，因此使用 <literal>WHEN</literal> 与在触发器函数开头测试
+    同样的条件并无实质差别。不过，在 AFTER 触发器中，
+    <literal>WHEN</literal> 条件会在行更改发生后立即求值，并决定
+    是否要将一个事件排入队列，以便在语句末尾触发该触发器。因此，
+    当 AFTER 触发器的 <literal>WHEN</literal> 条件不返回真时，就
+    不必排队该事件，也不必在语句末尾重新取出该行。如果触发器只
+    需要针对少数几行触发，这会让修改大量行的语句显著加快。
    </para>
 
    <para>
-    Typically, row before triggers are used for checking or
-    modifying the data that will be inserted or updated.  For example,
-    a before trigger might be used to insert the current time into a
-    <type>timestamp</type> column, or to check that two elements of the row are
-    consistent. Row after triggers are most sensibly
-    used to propagate the updates to other tables, or make consistency
-    checks against other tables.  The reason for this division of labor is
-    that an after trigger can be certain it is seeing the final value of the
-    row, while a before trigger cannot; there might be other before triggers
-    firing after it.  If you have no specific reason to make a trigger before
-    or after, the before case is more efficient, since the information about
-    the operation doesn't have to be saved until end of statement.
+    通常，行级 BEFORE 触发器用于检查或修改将要插入或更新的数据。
+    例如，BEFORE 触发器可以用来把当前时间写入某个
+    <type>timestamp</type> 列，或者检查该行的两个元素是否一致。
+    行级 AFTER 触发器最适合用于把更新传播到其他表，或对其他表
+    执行一致性检查。之所以这样分工，是因为 AFTER 触发器可以确定
+    自己看到的是该行的最终值，而 BEFORE 触发器不能；它之后可能
+    还会有其他 BEFORE 触发器触发。如果没有特定理由把触发器做成
+    BEFORE 或 AFTER，BEFORE 的情形效率更高，因为有关该操作的
+    信息不必保存到语句结束。
    </para>
 
    <para>
-    If a trigger function executes SQL commands then these
-    commands might fire triggers again. This is known as cascading
-    triggers.  There is no direct limitation on the number of cascade
-    levels.  It is possible for cascades to cause a recursive invocation
-    of the same trigger; for example, an <command>INSERT</command>
-    trigger might execute a command that inserts an additional row
-    into the same table, causing the <command>INSERT</command> trigger
-    to be fired again.  It is the trigger programmer's responsibility
-    to avoid infinite recursion in such scenarios.
+    如果触发器函数执行 SQL 命令，那么这些命令可能会再次触发触发器。这就是所谓的级联触发器。对级联层数没有直接限制。级联还有可能导致同一个触发器被递归调用；例如，一个 <command>INSERT</command> 触发器可能执行一条向同一个表再插入一行的命令，从而导致该 <command>INSERT</command> 触发器再次触发。因此，在这种场景下，避免无限递归是触发器编写者自己的责任。
    </para>
 
    <para>
-    When a trigger is being defined, arguments can be specified for
-    it.<indexterm><primary>trigger</><secondary>arguments for trigger
-    functions</></indexterm> The purpose of including arguments in the
-    trigger definition is to allow different triggers with similar
-    requirements to call the same function.  As an example, there
-    could be a generalized trigger function that takes as its
-    arguments two column names and puts the current user in one and
-    the current time stamp in the other.  Properly written, this
-    trigger function would be independent of the specific table it is
-    triggering on.  So the same function could be used for
-    <command>INSERT</command> events on any table with suitable
-    columns, to automatically track creation of records in a
-    transaction table for example. It could also be used to track
-    last-update events if defined as an <command>UPDATE</command>
+    在定义触发器时，可以为它指定参数。
+    <indexterm><primary>trigger</><secondary>arguments for trigger
+    functions</></indexterm> 在触发器定义中包含参数，是为了让需求
+    相似的不同触发器能够调用同一个函数。举例来说，可以有一个
+    通用触发器函数，它接受两个列名作为参数，把当前用户写入其中
+    一个列，把当前时间戳写入另一个列。只要编写得当，这个触发器
+    函数就应独立于它所作用的具体表。因此，同一个函数可用于任何
+    具有适当列的表上的 <command>INSERT</command> 事件，例如自动
+    跟踪某个事务表中记录的创建。如果把它定义成
+    <command>UPDATE</command> 触发器，还可以用来跟踪最近更新
+    事件。
     trigger.
    </para>
 
    <para>
-    Each programming language that supports triggers has its own method
-    for making the trigger input data available to the trigger function.
-    This input data includes the type of trigger event (e.g.,
-    <command>INSERT</command> or <command>UPDATE</command>) as well as any
-    arguments that were listed in <command>CREATE TRIGGER</>.
-    For a row-level trigger, the input data also includes the
-    <varname>NEW</varname> row for <command>INSERT</command> and
-    <command>UPDATE</command> triggers, and/or the <varname>OLD</varname> row
-    for <command>UPDATE</command> and <command>DELETE</command> triggers.
-    Statement-level triggers do not currently have any way to examine the
-    individual row(s) modified by the statement.
+    每种支持触发器的编程语言都有自己的方法，使触发器输入数据可供触发器函数使用。这些输入数据包括触发器事件的类型（例如 <command>INSERT</command> 或
+    <command>UPDATE</command>），以及 <command>CREATE TRIGGER</command>
+    中列出的任何参数。对于行级触发器，输入数据还包括
+    <command>INSERT</command> 和 <command>UPDATE</command> 触发器的
+    <varname>NEW</varname> 行，以及/或者 <command>UPDATE</command> 和
+    <command>DELETE</command> 触发器的 <varname>OLD</varname> 行。语句级触发器目前无法检查该语句修改的各个行。
    </para>
 
   </sect1>
 
   <sect1 id="trigger-datachanges">
-   <title>Visibility of Data Changes</title>
+   <title>数据更改的可见性</title>
 
    <para>
-    If you execute SQL commands in your trigger function, and these
-    commands access the table that the trigger is for, then
-    you need to be aware of the data visibility rules, because they determine
-    whether these SQL commands will see the data change that the trigger
-    is fired for.  Briefly:
+    如果你在触发器函数中执行 SQL 命令，而这些命令访问的是触发器
+    所作用的表，那么你需要了解数据可见性规则，因为它们决定了这些
+    SQL 命令能否看到导致触发器触发的数据更改。简而言之：
 
     <itemizedlist>
 
      <listitem>
       <para>
-       Statement-level triggers follow simple visibility rules: none of
-       the changes made by a statement are visible to statement-level
-       triggers that are invoked before the statement, whereas all
-       modifications are visible to statement-level after triggers.
+       语句级触发器遵循简单的可见性规则：语句所做的任何更改对在
+       语句之前调用的语句级触发器都不可见，而所有修改对语句级
+       AFTER 触发器都可见。
       </para>
      </listitem>
 
      <listitem>
       <para>
-       The data change (insertion, update, or deletion) causing the
-       trigger to fire is naturally <emphasis>not</emphasis> visible
-       to SQL commands executed in a row-level before trigger, because
-       it hasn't happened yet.
+       导致触发器触发的数据更改（插入、更新或删除）对于在行级
+       BEFORE 触发器中执行的 SQL 命令自然是<emphasis>不</emphasis>
+       可见的，因为它尚未发生。
       </para>
      </listitem>
 
      <listitem>
       <para>
-       However, SQL commands executed in a row-level before
-       trigger <emphasis>will</emphasis> see the effects of data
-       changes for rows previously processed in the same outer
-       command.  This requires caution, since the ordering of these
-       change events is not in general predictable; a SQL command that
-       affects multiple rows can visit the rows in any order.
+       然而，在行级 BEFORE 触发器中执行的 SQL 命令
+       <emphasis>会</emphasis>看到同一外层命令中先前已处理各行上
+       的数据更改结果。这里必须小心，因为这些更改事件的顺序通常
+       不可预测；一条影响多行的 SQL 命令可能按任意顺序访问这些行。
       </para>
      </listitem>
 
      <listitem>
       <para>
-       When a row-level after trigger is fired, all data changes made
-       by the outer command are already complete, and are visible to
-       the invoked trigger function.
+       当行级 AFTER 触发器被触发时，外层命令所做的所有数据更改
+       都已经完成，并且对被调用的触发器函数可见。
       </para>
      </listitem>
     </itemizedlist>
    </para>
 
    <para>
-    If your trigger function is written in any of the standard procedural
-    languages, then the above statements apply only if the function is
-    declared <literal>VOLATILE</>.  Functions that are declared
-    <literal>STABLE</> or <literal>IMMUTABLE</> will not see changes made by
-    the calling command in any case.
+    如果你的触发器函数是用任何一种标准过程语言编写的，那么只有在该函数被声明为 <literal>VOLATILE</literal> 时，上述说法才成立。被声明为
+    <literal>STABLE</literal> 或 <literal>IMMUTABLE</literal> 的函数在任何情况下都看不到调用命令所做的更改。
    </para>
 
    <para>
-    Further information about data visibility rules can be found in
-    <xref linkend="spi-visibility">.  The example in <xref
-    linkend="trigger-example"> contains a demonstration of these rules.
+    有关数据可见性规则的更多信息可见 <xref linkend="spi-visibility">。
+    <xref linkend="trigger-example"> 中的示例展示了这些规则。
    </para>
   </sect1>
 
   <sect1 id="trigger-interface">
-   <title>Writing Trigger Functions in C</title>
+   <title>用 C 编写触发器函数</title>
 
    <indexterm zone="trigger-interface">
     <primary>trigger</primary>
@@ -295,39 +235,27 @@
    </indexterm>
 
    <para>
-    This section describes the low-level details of the interface to a
-    trigger function.  This information is only needed when writing
-    trigger functions in C.  If you are using a higher-level language then
-    these details are handled for you.  In most cases you should consider
-    using a procedural language before writing your triggers in C.  The
-    documentation of each procedural language explains how to write a
-    trigger in that language.
+    本节说明触发器函数接口的底层细节。这些信息仅在用 C 编写触发器函数时才需要。如果你使用更高层语言，这些细节会由系统代为处理。在多数情况下，在用 C 编写触发器之前，应先考虑使用过程语言。每种过程语言的文档都会说明如何用该语言编写触发器。
    </para>
 
    <para>
-    Trigger functions must use the <quote>version 1</> function manager
-    interface.
+    触发器函数必须使用 <quote>版本 1</quote> 函数管理器接口。
    </para>
 
    <para>
-    When a function is called by the trigger manager, it is not passed
-    any normal arguments, but it is passed a <quote>context</>
-    pointer pointing to a <structname>TriggerData</> structure.  C
-    functions can check whether they were called from the trigger
-    manager or not by executing the macro:
+    当函数由触发器管理器调用时，不会向它传递任何普通参数，但会传递一个指向 <structname>TriggerData</structname> 结构体的 <quote>上下文</quote> 指针。C 函数可以通过执行下列宏来检查自己是否由触发器管理器调用：
 <programlisting>
 CALLED_AS_TRIGGER(fcinfo)
 </programlisting>
-    which expands to:
+    它会展开为：
 <programlisting>
 ((fcinfo)-&gt;context != NULL &amp;&amp; IsA((fcinfo)-&gt;context, TriggerData))
 </programlisting>
-    If this returns true, then it is safe to cast
-    <literal>fcinfo-&gt;context</> to type <literal>TriggerData
-    *</literal> and make use of the pointed-to
-    <structname>TriggerData</> structure.  The function must
-    <emphasis>not</emphasis> alter the <structname>TriggerData</>
-    structure or any of the data it points to.
+    如果该宏返回真，就可以安全地把 <literal>fcinfo-&gt;context</literal>
+    转换为 <literal>TriggerData *</literal> 类型，并使用其所指向的
+    <structname>TriggerData</structname> 结构体。函数
+    <emphasis>绝不能</emphasis> 修改 <structname>TriggerData</structname>
+    结构体本身，也不能修改它所指向的任何数据。
    </para>
 
    <para>
@@ -348,14 +276,14 @@ typedef struct TriggerData
 } TriggerData;
 </programlisting>
 
-    where the members are defined as follows:
+    其中各成员的定义如下：
 
     <variablelist>
      <varlistentry>
       <term><structfield>type</></term>
       <listitem>
        <para>
-        Always <literal>T_TriggerData</literal>.
+        始终是 <literal>T_TriggerData</literal>。
        </para>
       </listitem>
      </varlistentry>
@@ -364,15 +292,15 @@ typedef struct TriggerData
       <term><structfield>tg_event</></term>
       <listitem>
        <para>
-        Describes the event for which the function is called. You can use the
-        following macros to examine <literal>tg_event</literal>:
+        描述调用该函数的事件。可以使用以下宏来检查
+        <literal>tg_event</literal>：
 
         <variablelist>
          <varlistentry>
           <term><literal>TRIGGER_FIRED_BEFORE(tg_event)</literal></term>
           <listitem>
            <para>
-            Returns true if the trigger fired before the operation.
+            如果触发器在操作之前触发，则返回真。
            </para>
           </listitem>
          </varlistentry>
@@ -381,7 +309,7 @@ typedef struct TriggerData
           <term><literal>TRIGGER_FIRED_AFTER(tg_event)</literal></term>
           <listitem>
            <para>
-            Returns true if the trigger fired after the operation.
+            如果触发器在操作之后触发，则返回真。
            </para>
           </listitem>
          </varlistentry>
@@ -390,7 +318,7 @@ typedef struct TriggerData
           <term><literal>TRIGGER_FIRED_FOR_ROW(tg_event)</literal></term>
           <listitem>
            <para>
-            Returns true if the trigger fired for a row-level event.
+            如果触发器是因行级事件触发，则返回真。
            </para>
           </listitem>
          </varlistentry>
@@ -399,7 +327,7 @@ typedef struct TriggerData
           <term><literal>TRIGGER_FIRED_FOR_STATEMENT(tg_event)</literal></term>
           <listitem>
            <para>
-            Returns true if the trigger fired for a statement-level event.
+            如果触发器是因语句级事件触发，则返回真。
            </para>
           </listitem>
          </varlistentry>
@@ -408,7 +336,7 @@ typedef struct TriggerData
           <term><literal>TRIGGER_FIRED_BY_INSERT(tg_event)</literal></term>
           <listitem>
            <para>
-            Returns true if the trigger was fired by an <command>INSERT</command> command.
+            如果触发器是由 <command>INSERT</command> 命令触发，则返回真。
            </para>
           </listitem>
          </varlistentry>
@@ -417,7 +345,7 @@ typedef struct TriggerData
           <term><literal>TRIGGER_FIRED_BY_UPDATE(tg_event)</literal></term>
           <listitem>
            <para>
-            Returns true if the trigger was fired by an <command>UPDATE</command> command.
+            如果触发器是由 <command>UPDATE</command> 命令触发，则返回真。
            </para>
           </listitem>
          </varlistentry>
@@ -426,7 +354,7 @@ typedef struct TriggerData
           <term><literal>TRIGGER_FIRED_BY_DELETE(tg_event)</literal></term>
           <listitem>
            <para>
-            Returns true if the trigger was fired by a <command>DELETE</command> command.
+            如果触发器是由 <command>DELETE</command> 命令触发，则返回真。
            </para>
           </listitem>
          </varlistentry>
@@ -435,7 +363,7 @@ typedef struct TriggerData
           <term><literal>TRIGGER_FIRED_BY_TRUNCATE(tg_event)</literal></term>
           <listitem>
            <para>
-            Returns true if the trigger was fired by a <command>TRUNCATE</command> command.
+            如果触发器是由 <command>TRUNCATE</command> 命令触发，则返回真。
            </para>
           </listitem>
          </varlistentry>
@@ -448,15 +376,14 @@ typedef struct TriggerData
       <term><structfield>tg_relation</></term>
       <listitem>
        <para>
-        A pointer to a structure describing the relation that the trigger fired for.
-        Look at <filename>utils/rel.h</> for details about
-        this structure.  The most interesting things are
-        <literal>tg_relation-&gt;rd_att</> (descriptor of the relation
-        tuples) and <literal>tg_relation-&gt;rd_rel-&gt;relname</>
-        (relation name; the type is not <type>char*</> but
-        <type>NameData</>; use
-        <literal>SPI_getrelname(tg_relation)</> to get a <type>char*</> if you
-        need a copy of the name).
+        指向一个描述该触发器所针对关系的结构体。有关此结构体的细节
+        见 <filename>utils/rel.h</>。其中最值得关注的是
+        <literal>tg_relation-&gt;rd_att</>（该关系元组的描述符）和
+        <literal>tg_relation-&gt;rd_rel-&gt;relname</>
+        （关系名；其类型不是 <type>char*</> 而是
+        <type>NameData</>；如果你需要该名称的副本，可以用
+        <literal>SPI_getrelname(tg_relation)</> 得到
+        <type>char*</type>）。
        </para>
       </listitem>
      </varlistentry>
@@ -465,13 +392,11 @@ typedef struct TriggerData
       <term><structfield>tg_trigtuple</></term>
       <listitem>
        <para>
-        A pointer to the row for which the trigger was fired. This is
-        the row being inserted, updated, or deleted.  If this trigger
-        was fired for an <command>INSERT</command> or
-        <command>DELETE</command> then this is what you should return
-        from the function if you don't want to replace the row with
-        a different one (in the case of <command>INSERT</command>) or
-        skip the operation.
+        指向触发该触发器的那一行。这是正在被插入、更新或删除的行。
+        如果该触发器因 <command>INSERT</command> 或
+        <command>DELETE</command> 而触发，那么如果你不想用另一行
+        替换该行（对 <command>INSERT</command> 而言）或跳过该操作，
+        就应当从函数中返回它。
        </para>
       </listitem>
      </varlistentry>
@@ -480,13 +405,12 @@ typedef struct TriggerData
       <term><structfield>tg_newtuple</></term>
       <listitem>
        <para>
-        A pointer to the new version of the row, if the trigger was
-        fired for an <command>UPDATE</command>, and <symbol>NULL</> if
-        it is for an <command>INSERT</command> or a
-        <command>DELETE</command>. This is what you have to return
-        from the function if the event is an <command>UPDATE</command>
-        and you don't want to replace this row by a different one or
-        skip the operation.
+        如果触发器因 <command>UPDATE</command> 而触发，则指向该行
+        的新版本；如果因 <command>INSERT</command> 或
+        <command>DELETE</command> 而触发，则为
+        <symbol>NULL</symbol>。如果事件是
+        <command>UPDATE</command>，而你不想用另一行替换该行或跳过
+        该操作，就必须从函数中返回它。
        </para>
       </listitem>
      </varlistentry>
@@ -495,8 +419,8 @@ typedef struct TriggerData
       <term><structfield>tg_trigger</></term>
       <listitem>
        <para>
-        A pointer to a structure of type <structname>Trigger</>,
-        defined in <filename>utils/rel.h</>:
+        指向一个 <structname>Trigger</> 类型的结构体，
+        该结构体定义在 <filename>utils/rel.h</> 中：
 
 <programlisting>
 typedef struct Trigger
@@ -520,12 +444,11 @@ typedef struct Trigger
 } Trigger;
 </programlisting>
 
-       where <structfield>tgname</> is the trigger's name,
-       <structfield>tgnargs</> is the number of arguments in
-       <structfield>tgargs</>, and <structfield>tgargs</> is an array of
-       pointers to the arguments specified in the <command>CREATE
-       TRIGGER</command> statement. The other members are for internal use
-       only.
+       其中 <structfield>tgname</> 是触发器的名称，
+       <structfield>tgnargs</> 是 <structfield>tgargs</> 中参数的
+       数量，而 <structfield>tgargs</> 是一个指针数组，指向
+       <command>CREATE
+       TRIGGER</command> 语句中指定的参数。其他成员仅供内部使用。
        </para>
       </listitem>
      </varlistentry>
@@ -534,8 +457,9 @@ typedef struct Trigger
       <term><structfield>tg_trigtuplebuf</></term>
       <listitem>
        <para>
-        The buffer containing <structfield>tg_trigtuple</structfield>, or <symbol>InvalidBuffer</symbol> if there
-        is no such tuple or it is not stored in a disk buffer.
+        包含 <structfield>tg_trigtuple</structfield> 的缓冲区；
+        如果没有这样的元组，或者它未存储在磁盘缓冲区中，则为
+        <symbol>InvalidBuffer</symbol>。
        </para>
       </listitem>
      </varlistentry>
@@ -544,8 +468,9 @@ typedef struct Trigger
       <term><structfield>tg_newtuplebuf</></term>
       <listitem>
        <para>
-        The buffer containing <structfield>tg_newtuple</structfield>, or <symbol>InvalidBuffer</symbol> if there
-        is no such tuple or it is not stored in a disk buffer.
+        包含 <structfield>tg_newtuple</structfield> 的缓冲区；
+        如果没有这样的元组，或者它未存储在磁盘缓冲区中，则为
+        <symbol>InvalidBuffer</symbol>。
        </para>
       </listitem>
      </varlistentry>
@@ -554,34 +479,28 @@ typedef struct Trigger
    </para>
 
    <para>
-    A trigger function must return either a
-    <structname>HeapTuple</> pointer or a <symbol>NULL</> pointer
-    (<emphasis>not</> an SQL null value, that is, do not set <parameter>isNull</parameter> true).
-    Be careful to return either
-    <structfield>tg_trigtuple</> or <structfield>tg_newtuple</>,
-    as appropriate, if you don't want to modify the row being operated on.
+    触发器函数必须返回一个 <structname>HeapTuple</structname> 指针或一个
+    <symbol>NULL</symbol> 指针（<emphasis>不是</emphasis> SQL 空值，也就是说不要把
+    <parameter>isNull</parameter> 设为真）。如果你不想修改正在处理的行，就要小心地根据情况返回适当的 <structfield>tg_trigtuple</structfield> 或
+    <structfield>tg_newtuple</structfield>。
    </para>
   </sect1>
 
   <sect1 id="trigger-example">
-   <title>A Complete Trigger Example</title>
+   <title>一个完整的触发器示例</title>
 
    <para>
-    Here is a very simple example of a trigger function written in C.
-    (Examples of triggers written in procedural languages can be found
-    in the documentation of the procedural languages.)
+    这里给出一个非常简单的、用 C 编写的触发器函数示例。（用过程语言编写的触发器示例可见各过程语言的文档。）
    </para>
 
    <para>
-    The function <function>trigf</> reports the number of rows in the
-    table <structname>ttest</> and skips the actual operation if the
-    command attempts to insert a null value into the column
-    <structfield>x</>. (So the trigger acts as a not-null constraint but
-    doesn't abort the transaction.)
+   函数 <function>trigf</function> 会报告表 <structname>ttest</structname> 中的行数，
+   并在命令试图向列 <structfield>x</structfield> 中插入空值时跳过实际操作。
+   （这样，这个触发器就起到了非空约束的作用，但不会中止事务。）
    </para>
 
    <para>
-    First, the table definition:
+    首先，表定义：
 <programlisting>
 CREATE TABLE ttest (
     x integer
@@ -590,7 +509,7 @@ CREATE TABLE ttest (
    </para>
 
    <para>
-    This is the source code of the trigger function:
+    下面是触发器函数的源代码：
 <programlisting><![CDATA[
 #include "postgres.h"
 #include "executor/spi.h"       /* this is what you need to work with SPI */
@@ -670,10 +589,7 @@ trigf(PG_FUNCTION_ARGS)
 </programlisting>
    </para>
 
-   <para>
-    After you have compiled the source code (see <xref
-    linkend="dfunc">), declare the function and the triggers:
-<programlisting>
+   <para>编译完源代码后（参见<xref linkend="dfunc">），声明函数和触发器：<programlisting>
 CREATE FUNCTION trigf() RETURNS trigger
     AS '<replaceable>filename</>'
     LANGUAGE C;
@@ -687,7 +603,7 @@ CREATE TRIGGER tafter AFTER INSERT OR UPDATE OR DELETE ON ttest
    </para>
 
    <para>
-    Now you can test the operation of the trigger:
+    现在可以测试该触发器的行为：
 <screen>
 =&gt; INSERT INTO ttest VALUES (NULL);
 INFO:  trigf (fired before): there are 0 rows in ttest
@@ -756,9 +672,9 @@ DELETE 2
    </para>
 
    <para>
-    There are more complex examples in
-    <filename>src/test/regress/regress.c</filename> and
-    in <filename>contrib/spi</filename>.
+    更复杂的示例可见
+    <filename>src/test/regress/regress.c</filename> 和
+    <filename>contrib/spi</filename>。
    </para>
   </sect1>
  </chapter>
