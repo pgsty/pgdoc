@@ -111,29 +111,41 @@ SELECT relpages, reltuples FROM pg_class WHERE relname = 'tenk1';
     可以看到<classname>tenk1</classname>有 358 个磁盘页和 10000 行。估计代价按如下公式计算：（读取的磁盘页数 * <xref linkend="guc-seq-page-cost"/>）+（扫描的行数 * <xref linkend="guc-cpu-tuple-cost"/>）。默认情况下，<varname>seq_page_cost</varname>为 1.0，<varname>cpu_tuple_cost</varname>为 0.01，因此估计代价就是 (358 * 1.0) + (10000 * 0.01) = 458。
    </para>
 
-   <para>现在修改查询，添加一个<literal>WHERE</literal>条件：<screen>
+   <para>
+    现在给查询增加一个<literal>WHERE</literal>条件：
+
+<screen>
 EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 7000;
 
                          QUERY PLAN
 ------------------------------------------------------------
- Seq Scan on tenk1  (cost=0.00..483.00 rows=7001 width=244)
+ Seq Scan on tenk1  (cost=0.00..470.00 rows=7000 width=244)
    Filter: (unique1 &lt; 7000)
-</screen>注意，<command>EXPLAIN</command>的输出表明，<literal>WHERE</literal>子句被作为一个<quote>过滤器</quote>条件附加到 Seq Scan 计划节点上。这表示计划节点会对扫描到的每一行检查该条件，并且只输出满足条件的行。由于有了<literal>WHERE</literal>子句，估计输出行数减少了。但扫描仍需访问全部 10000 行，因此代价没有下降；实际上还略有上升（精确地说，增加了 10000 *<xref linkend="guc-cpu-operator-cost"/>），以反映检查<literal>WHERE</literal>条件所消耗的额外 CPU 时间。</para>
+</screen>
+
+    注意，<command>EXPLAIN</command>输出显示，<literal>WHERE</literal>子句作为附加在 Seq Scan 计划节点上的<quote>过滤器</quote>条件被应用。这意味着该计划节点会对扫描到的每一行检查该条件，只输出满足条件的那些行。由于有了<literal>WHERE</literal>子句，估计输出行数降低了；但扫描仍然必须访问全部 10000 行，所以代价没有下降。实际上它还略微上升了一些，准确地说是上升了 10000 * <xref linkend="guc-cpu-operator-cost"/>，以反映额外检查<literal>WHERE</literal>条件所需的 CPU 时间。
+   </para>
 
    <para>
     这条查询实际选出的行数是 7000，但估计的<literal>rows</literal>只是近似值。如果重复这个实验，很可能会得到略有不同的估计值。此外，由于<command>ANALYZE</command>生成的统计信息来自该表的随机采样，这个估计值可能在每次执行<command>ANALYZE</command>之后发生变化。
    </para>
 
-   <para>现在让条件更严格一些：<screen>
+   <para>
+    现在把条件收紧一些：
+
+<screen>
 EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 100;
 
                                   QUERY PLAN
-------------------------------------------------------------------------------
- Bitmap Heap Scan on tenk1  (cost=5.07..229.20 rows=101 width=244)
+-------------------------------------------------------------------&zwsp;-----------
+ Bitmap Heap Scan on tenk1  (cost=5.06..224.98 rows=100 width=244)
    Recheck Cond: (unique1 &lt; 100)
-   -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=101 width=0)
+   -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=100 width=0)
          Index Cond: (unique1 &lt; 100)
-</screen>这里规划器决定使用两步计划：子计划节点访问索引，找出匹配索引条件的行的位置，然后上层计划节点再从表本身取出这些行。分别取出各行的代价远高于顺序读取，但由于不必访问表的所有页，这仍然比顺序扫描便宜。（使用两层计划的原因是，上层计划节点在读取行之前，会先把索引确定的行位置按物理顺序排列，以尽量降低逐行读取的代价。节点名称中的<quote>位图</quote>就是执行这种排序的机制。）</para>
+</screen>
+
+    这里规划器决定采用两步计划：子计划节点访问索引，找出满足索引条件的行位置，然后上层计划节点再从表中实际取回这些行。单独取回行比顺序读取昂贵得多，但因为不必访问表中的所有页面，这样仍然比顺序扫描便宜。（之所以采用两层计划，是因为上层计划节点会在读取前先将索引识别出的行位置按物理顺序整理，从而尽量降低零散取页的代价。节点名称中的<quote>位图</quote>就是完成这种整理的机制。）
+   </para>
 
    <para>现在向<literal>WHERE</literal>子句添加另一个条件：<screen>
 EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 100 AND stringu1 = 'xxx';
@@ -298,50 +310,81 @@ WHERE t1.unique1 &lt; 100 AND t1.unique2 = t2.unique2;
   <sect2 id="using-explain-analyze">
    <title><command>EXPLAIN ANALYZE</command></title>
 
-   <para>可以使用<command>EXPLAIN</command>的<literal>ANALYZE</literal>选项检查规划器估计的准确性。启用此选项后，<command>EXPLAIN</command>会实际执行查询，然后显示各个计划节点内累计的实际行数和实际运行时间，同时也显示普通<command>EXPLAIN</command>提供的估计值。例如，可能得到如下结果：<screen>
+   <para>
+    可以使用<command>EXPLAIN</command>的<literal>ANALYZE</literal>选项来检查规划器估计值的准确性。启用该选项后，<command>EXPLAIN</command>会实际执行查询，然后显示各个计划节点累计的真实行计数和真实运行时间，同时也保留普通<command>EXPLAIN</command>会显示的估计值。例如，可能会得到如下结果：
+
+<screen>
 EXPLAIN ANALYZE SELECT *
 FROM tenk1 t1, tenk2 t2
 WHERE t1.unique1 &lt; 10 AND t1.unique2 = t2.unique2;
 
                                                            QUERY PLAN
----------------------------------------------------------------------------------------------------------------------------------
- Nested Loop  (cost=4.65..118.62 rows=10 width=488) (actual time=0.128..0.377 rows=10 loops=1)
-   -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=4.36..39.47 rows=10 width=244) (actual time=0.057..0.121 rows=10 loops=1)
+-------------------------------------------------------------------&zwsp;--------------------------------------------------------------
+ Nested Loop  (cost=4.65..118.50 rows=10 width=488) (actual time=0.017..0.051 rows=10.00 loops=1)
+   Buffers: shared hit=36 read=6
+   -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=4.36..39.38 rows=10 width=244) (actual time=0.009..0.017 rows=10.00 loops=1)
          Recheck Cond: (unique1 &lt; 10)
-         -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..4.36 rows=10 width=0) (actual time=0.024..0.024 rows=10 loops=1)
+         Heap Blocks: exact=10
+         Buffers: shared hit=3 read=5 written=4
+         -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..4.36 rows=10 width=0) (actual time=0.004..0.004 rows=10.00 loops=1)
                Index Cond: (unique1 &lt; 10)
-   -&gt;  Index Scan using tenk2_unique2 on tenk2 t2  (cost=0.29..7.91 rows=1 width=244) (actual time=0.021..0.022 rows=1 loops=10)
+               Index Searches: 1
+               Buffers: shared hit=2
+   -&gt;  Index Scan using tenk2_unique2 on tenk2 t2  (cost=0.29..7.90 rows=1 width=244) (actual time=0.003..0.003 rows=1.00 loops=10)
          Index Cond: (unique2 = t1.unique2)
- Planning time: 0.181 ms
- Execution time: 0.501 ms
-</screen>注意，<quote>actual time</quote>的值以实际时间的毫秒数表示，而<literal>cost</literal>估计值使用任意单位，因此两者不太可能相等。通常最重要的是检查估计行数是否足够接近实际行数。在本例中，所有估计都完全准确，但实际中很少如此。</para>
+         Index Searches: 10
+         Buffers: shared hit=24 read=6
+ Planning:
+   Buffers: shared hit=15 dirtied=9
+ Planning Time: 0.485 ms
+ Execution Time: 0.073 ms
+</screen>
+
+    注意，<quote>actual time</quote>值以毫秒的真实时间表示，而<literal>cost</literal>估计值则以任意单位表示，因此二者通常不会直接对应。通常最值得关注的是估计行数是否与实际情况足够接近。在这个示例中，估计值完全命中，但在实践中这其实相当少见。
+   </para>
 
    <para>
     在某些查询计划中，一个子计划节点可能会执行多次。例如，上面那个嵌套循环计划中的内侧索引扫描会对外侧的每一行执行一次。在这种情况下，<literal>loops</literal>值报告的是该节点的总执行次数，而 actual time 和 rows 显示的是每次执行的平均值。这样做是为了让这些数字更容易与代价估计的展示方式相比较。将它们乘以<literal>loops</literal>值，就能得到该节点实际消耗的总时间。在上面的示例中，执行<literal>tenk2</literal>上的索引扫描总共花费了 0.220 毫秒。
    </para>
 
-   <para>在某些情况下，<command>EXPLAIN ANALYZE</command>除了计划节点的执行时间和行数之外，还会显示额外的执行统计信息。例如，Sort 和 Hash 节点会提供附加信息：<screen>
+   <para>
+    在某些情况下，<command>EXPLAIN ANALYZE</command>会显示除计划节点执行时间和行计数之外的额外执行统计信息。例如，Sort 和 Hash 节点会提供更多信息：
+
+<screen>
 EXPLAIN ANALYZE SELECT *
 FROM tenk1 t1, tenk2 t2
 WHERE t1.unique1 &lt; 100 AND t1.unique2 = t2.unique2 ORDER BY t1.fivethous;
 
                                                                  QUERY PLAN
---------------------------------------------------------------------------------------------------------------------------------------------
- Sort  (cost=717.34..717.59 rows=101 width=488) (actual time=7.761..7.774 rows=100 loops=1)
+-------------------------------------------------------------------&zwsp;-------------------------------------------------------------------&zwsp;------
+ Sort  (cost=713.05..713.30 rows=100 width=488) (actual time=2.995..3.002 rows=100.00 loops=1)
    Sort Key: t1.fivethous
-   Sort Method: quicksort  Memory: 77kB
-   -&gt;  Hash Join  (cost=230.47..713.98 rows=101 width=488) (actual time=0.711..7.427 rows=100 loops=1)
+   Sort Method: quicksort  Memory: 74kB
+   Buffers: shared hit=440
+   -&gt;  Hash Join  (cost=226.23..709.73 rows=100 width=488) (actual time=0.515..2.920 rows=100.00 loops=1)
          Hash Cond: (t2.unique2 = t1.unique2)
-         -&gt;  Seq Scan on tenk2 t2  (cost=0.00..445.00 rows=10000 width=244) (actual time=0.007..2.583 rows=10000 loops=1)
-         -&gt;  Hash  (cost=229.20..229.20 rows=101 width=244) (actual time=0.659..0.659 rows=100 loops=1)
-               Buckets: 1024  Batches: 1  Memory Usage: 28kB
-               -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=5.07..229.20 rows=101 width=244) (actual time=0.080..0.526 rows=100 loops=1)
+         Buffers: shared hit=437
+         -&gt;  Seq Scan on tenk2 t2  (cost=0.00..445.00 rows=10000 width=244) (actual time=0.026..1.790 rows=10000.00 loops=1)
+               Buffers: shared hit=345
+         -&gt;  Hash  (cost=224.98..224.98 rows=100 width=244) (actual time=0.476..0.477 rows=100.00 loops=1)
+               Buckets: 1024  Batches: 1  Memory Usage: 35kB
+               Buffers: shared hit=92
+               -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=5.06..224.98 rows=100 width=244) (actual time=0.030..0.450 rows=100.00 loops=1)
                      Recheck Cond: (unique1 &lt; 100)
-                     -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=101 width=0) (actual time=0.049..0.049 rows=100 loops=1)
+                     Heap Blocks: exact=90
+                     Buffers: shared hit=92
+                     -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..5.04 rows=100 width=0) (actual time=0.013..0.013 rows=100.00 loops=1)
                            Index Cond: (unique1 &lt; 100)
- Planning time: 0.194 ms
- Execution time: 8.008 ms
-</screen>Sort 节点显示所用的排序方法（尤其是排序在内存中还是磁盘上进行），以及所需的内存或磁盘空间。Hash 节点显示 hash 桶数、批次数，以及 hash 表的内存用量峰值。（如果批次数超过一，还会使用磁盘空间，但此处不显示。）</para>
+                           Index Searches: 1
+                           Buffers: shared hit=2
+ Planning:
+   Buffers: shared hit=12
+ Planning Time: 0.187 ms
+ Execution Time: 3.036 ms
+</screen>
+
+    Sort 节点会显示所用的排序方法，特别是排序是在内存中完成还是落到磁盘上，以及所需的内存或磁盘空间。Hash 节点则会显示 hash 桶和批次的数量，以及 hash 表使用内存的峰值。（如果批次数超过 1，还会涉及磁盘空间使用，但这里不会显示出来。）
+   </para>
 
    <para>另一种附加信息是被过滤条件排除的行数：<screen>
 EXPLAIN ANALYZE SELECT * FROM tenk1 WHERE ten &lt; 7;
@@ -463,19 +506,28 @@ EXPLAIN UPDATE parent SET f2 = f2 + 1 WHERE f1 = 101;
     不应将<command>EXPLAIN</command>结果外推到与实际测试场景差异很大的情况。例如，在一个很小的表上得到的结果，不能假定也适用于大型表。规划器的代价估计不是线性的，因此它可能会为更大或更小的表选择不同的计划。一个极端示例是：对于只占用一个磁盘页的表，无论索引是否可用，几乎总会得到顺序扫描计划。规划器认识到，无论如何处理该表都需要一次磁盘页读取，因此再额外读取页面去查看索引并没有价值。（前面的<literal>polygon_tbl</literal>示例已经展示过这种情况。）
    </para>
 
-   <para>有时实际值与估计值不太一致，但实际上并没有问题。其中一种情况是，计划节点的执行因<literal>LIMIT</literal>或类似效果而提前停止。例如，在前面使用的<literal>LIMIT</literal>查询中：<screen>
+   <para>
+    在某些情况下，实际值和估计值不会很好地对应，但这并不表示出现了问题。其中一种情况是，计划节点的执行会被<literal>LIMIT</literal>或类似效果提前截断。例如，在前面用过的<literal>LIMIT</literal>查询中：
+
+<screen>
 EXPLAIN ANALYZE SELECT * FROM tenk1 WHERE unique1 &lt; 100 AND unique2 &gt; 9000 LIMIT 2;
 
                                                           QUERY PLAN
--------------------------------------------------------------------------------------------------------------------------------
- Limit  (cost=0.29..14.71 rows=2 width=244) (actual time=0.177..0.249 rows=2 loops=1)
-   -&gt;  Index Scan using tenk1_unique2 on tenk1  (cost=0.29..72.42 rows=10 width=244) (actual time=0.174..0.244 rows=2 loops=1)
+-------------------------------------------------------------------&zwsp;------------------------------------------------------------
+ Limit  (cost=0.29..14.33 rows=2 width=244) (actual time=0.051..0.071 rows=2.00 loops=1)
+   Buffers: shared hit=16
+   -&gt;  Index Scan using tenk1_unique2 on tenk1  (cost=0.29..70.50 rows=10 width=244) (actual time=0.051..0.070 rows=2.00 loops=1)
          Index Cond: (unique2 &gt; 9000)
          Filter: (unique1 &lt; 100)
          Rows Removed by Filter: 287
- Planning time: 0.096 ms
- Execution time: 0.336 ms
-</screen>Index Scan 节点的估计代价和行数按该节点执行到完成的情况显示。但实际上，Limit 节点取得两行后就停止请求行，因此实际行数只有 2，运行时间也小于估计代价所暗示的时间。这不是估计错误，只是估计值与实际值的显示方式存在差别。</para>
+         Index Searches: 1
+         Buffers: shared hit=16
+ Planning Time: 0.077 ms
+ Execution Time: 0.086 ms
+</screen>
+
+    Index Scan 节点的估计代价和行计数显示得像是它会运行到结束一样。但实际上，Limit 节点在拿到两行之后就停止请求更多行，因此实际行计数只有 2，运行时间也低于代价估计所暗示的水平。这并不是估计错误，只是估计值与真实值的显示方式不同而已。
+   </para>
 
    <para>
     归并连接也会产生一些容易误导人的计量现象。如果归并连接已经耗尽其中一个输入，且另一个输入的下一个键值大于已耗尽输入的最后一个键值，就会停止读取这个尚未耗尽的输入；在这种情况下，不可能再有匹配，因此不必扫描它的剩余部分。这会导致某个子节点没有被完整读取，其结果与前面提到的<literal>LIMIT</literal>情况类似。此外，如果外侧（第一个）子节点包含带有重复键值的行，内侧（第二个）子节点会回退，并重新扫描与该键值匹配的那部分行。<command>EXPLAIN ANALYZE</command>会把这些对同一内侧行的重复输出，统计得像是真实的额外行一样。当外侧存在大量重复值时，内侧子计划节点报告出的实际行计数，可能会明显大于内侧关系中真实存在的行数。
