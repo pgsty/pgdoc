@@ -51,6 +51,9 @@ def main():
         return  # PG >= 9.2 already ships the XSL pipeline
     if "postgres.xml:" not in mf:
         return  # nothing to backport onto
+    if "\nxslthtml:" not in mf:
+        return  # PG >= 10 html pipeline is native XSL (html-stamp, no
+                # xslthtml target); only <= 9.6-era makefiles need the backport
 
     # filelist.sgml: declare the marked-section keyword (9.4 form)
     fl_path = f"{sgml_dir}/filelist.sgml"
