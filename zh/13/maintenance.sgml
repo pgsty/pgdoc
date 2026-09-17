@@ -308,9 +308,32 @@
      <secondary>事务 ID 的</secondary>
     </indexterm>
 
-   <para><productname>PostgreSQL</productname> 的 <link linkend="mvcc-intro">MVCC</link> 事务语义依赖于比较事务 ID（<acronym>XID</acronym>）的大小：如果某个行版本的插入 XID 大于当前事务的 XID，它就处于<quote>未来</quote>，不应对当前事务可见。但是，事务 ID 的大小有限（32 位），长期运行的集簇（超过 40 亿个事务）会遇到<firstterm>事务 ID 回卷</firstterm>：XID 计数器回到零，原本处于过去的事务突然看起来处于未来 &mdash; 这意味着它们的结果变得不可见。也就是灾难性的数据丢失。（数据其实还在，但如果无法访问，也无济于事。）为避免这种情况，必须至少每经过 20 亿个事务，就清理一次每个数据库中的每个表。</para>
+   <para>
+    <productname>PostgreSQL</productname> 的
+    <link linkend="mvcc-intro">MVCC</link> 事务语义依赖于能够比较事务 ID（<acronym>XID</acronym>）
+    数字：如果某个行版本的插入 XID 大于当前事务的 XID，那么这个行版本就处于<quote>未来</quote>，
+    当前事务不应看到它。然而，由于事务 ID 的大小有限（32 位），长期运行的集簇
+    （超过 40 亿个事务）会遭遇<firstterm>事务 ID 回卷</firstterm>：XID 计数器回到零，
+    于是原本属于过去的事务会突然看起来像在未来，这意味着它们的结果会变得不可见。
+    简而言之，就是灾难性的数据丢失。（实际上数据仍然在那里，但如果你无法访问，
+    这也没什么安慰。）为了避免这种情况，必须至少每 20 亿个事务对每个数据库中的每个表执行一次清理。
+   </para>
 
-   <para>定期清理之所以能解决这一问题，是因为 <command>VACUUM</command> 会将行标记为<emphasis>冻结</emphasis>，表示插入这些行的事务早已提交，足以保证该插入事务的影响对当前及未来的所有事务都可见。普通 XID 使用模 2<superscript>32</superscript> 算术进行比较。这意味着，对每个普通 XID，都有 20 亿个 XID 比它<quote>更老</quote>，另有 20 亿个 XID 比它<quote>更新</quote>；换句话说，普通 XID 空间是一个没有端点的环。因此，用某个普通 XID 创建行版本后，无论该 XID 是多少，在接下来的 20 亿个事务中，该行版本都会被视为处于<quote>过去</quote>。如果经过超过 20 亿个事务后它仍然存在，就会突然被视为处于未来。为避免这种情况，<productname>PostgreSQL</productname> 保留了一个特殊 XID：<literal>FrozenTransactionId</literal>。它不遵循普通 XID 的比较规则，始终被视为比所有普通 XID 都老。冻结行版本的处理方式相当于其插入 XID 是 <literal>FrozenTransactionId</literal>，因此无论是否发生回卷，对所有普通事务而言，它们都处于<quote>过去</quote>。所以，这类行版本在被删除之前始终有效，无论存在多久。</para>
+   <para>
+    周期性清理之所以能解决这个问题，是因为 <command>VACUUM</command> 会将行标记为
+    <emphasis>冻结</emphasis>，表示这些行由一个很久以前就已提交的事务插入，
+    因此该插入事务的效果肯定对所有当前和未来事务都可见。普通 XID 使用模
+    2<superscript>32</superscript> 算术进行比较。这意味着，对任意普通 XID，
+    都有 20 亿个 XID 比它<quote>更老</quote>，另有 20 亿个比它<quote>更新</quote>；
+    换句话说，普通 XID 空间是一个没有端点的环。因此，一旦某个行版本带着某个普通 XID 创建出来，
+    那么无论当前谈论的是哪个普通 XID，在接下来的 20 亿个事务中，这个行版本都会看起来处于
+    <quote>过去</quote>。如果该行版本在超过 20 亿个事务之后仍然存在，它就会突然看起来处于未来。
+    为防止这种情况，<productname>PostgreSQL</productname> 保留了一个特殊 XID，
+    <literal>FrozenTransactionId</literal>，它不遵循普通 XID 的比较规则，
+    并且始终被视为比每一个普通 XID 都更老。被冻结的行版本会被当作其插入 XID 是
+    <literal>FrozenTransactionId</literal>，因此无论是否发生回卷问题，它们对于所有普通事务都会显得处于
+    <quote>过去</quote>，从而这类行版本在被删除之前一直有效，不管要持续多久。
+   </para>
 
    <note>
     <para>
@@ -363,7 +386,16 @@
     也可能仍会触发防回卷自动清理；而较低的值则会导致更频繁的激进清理。
    </para>
 
-   <para>增大 <varname>autovacuum_freeze_max_age</varname>（以及相应的 <varname>vacuum_freeze_table_age</varname>）唯一的缺点，是数据库集簇的 <filename>pg_xact</filename> 和 <filename>pg_commit_ts</filename> 子目录会占用更多空间，因为必须保存追溯到 <varname>autovacuum_freeze_max_age</varname> 视界的所有事务的提交状态，以及时间戳（如果启用了 <varname>track_commit_timestamp</varname>）。每个事务的提交状态占用两位，因此，如果将 <varname>autovacuum_freeze_max_age</varname> 设为允许的最大值 20 亿，<filename>pg_xact</filename> 预计会增长到约 0.5GB，<filename>pg_commit_ts</filename> 则约为 20GB。如果这与数据库总大小相比微不足道，建议将 <varname>autovacuum_freeze_max_age</varname> 设为允许的最大值。否则，应根据愿意为 <filename>pg_xact</filename> 和 <filename>pg_commit_ts</filename> 分配的存储空间来设置。（默认值为 2 亿个事务，对应约 50MB 的 <filename>pg_xact</filename> 存储和约 2GB 的 <filename>pg_commit_ts</filename> 存储。）</para>
+   <para>
+    这意味着，如果一个表本来不会因为其他原因被清理，大约每经过
+    <varname>autovacuum_freeze_max_age</varname> 减去
+    <varname>vacuum_freeze_min_age</varname> 个事务，就会在该表上触发一次自动清理。
+    对于那些为了回收空间而经常清理的表，这一点并不重要。然而，对于静态表
+    （包括只接收插入、但没有更新或删除的表），并不需要为了回收空间而清理，
+    因此设法尽可能拉大这些非常大的静态表上强制自动清理之间的间隔，可能会很有用。
+    显然，这可以通过增大 <varname>autovacuum_freeze_max_age</varname> 或减小
+    <varname>vacuum_freeze_min_age</varname> 来做到。
+   </para>
 
    <para>
     减小 <varname>vacuum_freeze_min_age</varname> 的一个缺点是，它可能导致
@@ -655,7 +687,16 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
    <acronym>CSV</acronym>（逗号分隔值）格式捕获日志数据。
   </para>
 
-  <para>也可以使用外部日志轮转程序，特别是已经在其他服务器软件上使用了某个此类程序时。例如，<application>rotatelogs</application> 工具包含在 <productname>Apache</productname> 发行版中，也可用于 <productname>PostgreSQL</productname>。一种方法是通过管道将服务器的 <systemitem>stderr</systemitem> 输出传递给所需程序。如果使用 <command>pg_ctl</command> 启动服务器，那么 <systemitem>stderr</systemitem> 已经被重定向到 <systemitem>stdout</systemitem>，因此只需一个管道命令，例如：<programlisting>
+  <para>
+   另一种做法是，如果你已经在其他服务器软件上使用某个外部日志轮转程序，
+   也可以继续用它。例如，<productname>Apache</productname> 发行版中附带的
+   <application>rotatelogs</application> 工具就可以与
+   <productname>PostgreSQL</productname> 配合使用。一种办法是把服务器的
+   <systemitem>stderr</systemitem> 输出通过管道送给所需的程序。如果你使用
+   <command>pg_ctl</command> 启动服务器，那么 <systemitem>stderr</systemitem>
+   已经被重定向到 <systemitem>stdout</systemitem>，因此你只需要一个管道命令，例如：
+
+<programlisting>
 pg_ctl start | rotatelogs /var/log/pgsql_log 86400
 </programlisting>
   </para>
