@@ -1,32 +1,21 @@
 <!-- doc/src/sgml/lobj.sgml -->
 
  <chapter id="largeObjects">
-  <title>Large Objects</title>
+  <title>大对象</title>
 
-  <indexterm zone="largeobjects"><primary>large object</></>
-  <indexterm><primary>BLOB</><see>large object</></>
+  <indexterm zone="largeobjects"><primary>large object</primary></indexterm>
+  <indexterm><primary>BLOB</primary><see>large object</see></indexterm>
 
    <para>
-    <productname>PostgreSQL</productname> has a <firstterm>large object</>
-    facility, which provides stream-style access to user data that is stored
-    in a special large-object structure.  Streaming access is useful
-    when working with data values that are too large to manipulate
-    conveniently as a whole.
+    <productname>PostgreSQL</productname>提供一种<firstterm>大对象</firstterm>机制，允许以流式方式访问存储在专用大对象结构中的用户数据。在处理大到无法方便地整体操作的数据值时，这种流式访问非常有用。
    </para>
 
    <para>
-    This chapter describes the implementation and the programming and
-    query language interfaces to <productname>PostgreSQL</productname>
-    large object data.  We use the <application>libpq</application> C
-    library for the examples in this chapter, but most programming
-    interfaces native to <productname>PostgreSQL</productname> support
-    equivalent functionality.  Other interfaces might use the large
-    object interface internally to provide generic support for large
-    values.  This is not described here.
+    本章介绍<productname>PostgreSQL</productname>大对象数据的实现，以及相应的编程接口和查询语言接口。本章示例使用<application>libpq</application> C 库，但大多数<productname>PostgreSQL</productname>原生编程接口都支持等效的功能。其他接口也可能在内部使用大对象接口来为大值提供通用支持，这里不作说明。
    </para>
 
   <sect1 id="lo-intro">
-   <title>Introduction</title>
+   <title>简介</title>
 
    <indexterm>
     <primary>TOAST</primary>
@@ -34,124 +23,74 @@
    </indexterm>
 
    <para>
-    All large objects are placed in a single system table called
-    <classname>pg_largeobject</classname>.
-    <productname>PostgreSQL</productname> also supports a storage system called
-    <quote><acronym>TOAST</acronym></quote> that automatically stores values
-    larger than a single database page into a secondary storage area per table.
-    This makes the large object facility partially obsolete.  One
-    remaining advantage of the large object facility is that it allows values
-    up to 2 GB in size, whereas <acronym>TOAST</acronym>ed fields can be at
-    most 1 GB.  Also, large objects can be randomly modified using a read/write
-    API that is more efficient than performing such operations using
-    <acronym>TOAST</acronym>.
+    所有大对象都存放在一个名为<classname>pg_largeobject</classname>的系统表中。<productname>PostgreSQL</productname>还支持一种名为<quote><acronym>TOAST</acronym></quote>的存储系统，它会自动将大于单个数据库页的值存储到每个表各自的二级存储区域中。这使得大对象机制在一定程度上已经过时。大对象机制仍然保留的一个优势是，它允许的值大小可达 2 GB，而经过<acronym>TOAST</acronym>处理的字段最大只能到 1 GB。此外，大对象可以通过一种读写 API 进行随机修改，这比使用<acronym>TOAST</acronym>执行此类操作更高效。
    </para>
 
   </sect1>
 
   <sect1 id="lo-implementation">
-   <title>Implementation Features</title>
+   <title>实现特性</title>
 
    <para>
-    The large object implementation breaks large
-    objects up into <quote>chunks</quote> and stores the chunks in
-    rows in the database.  A B-tree index guarantees fast
-    searches for the correct chunk number when doing random
-    access reads and writes.
+    大对象实现会把大对象拆分成若干<quote>块</quote>，并将这些块存储在数据库行中。一个 B-树索引保证在执行随机访问读写时，能够快速找到正确的块号。
+   </para>
+
+      <para>
+    为与以前的版本兼容，请参见<xref linkend="guc-lo-compat-privileges">。
    </para>
 
    <para>
-    As of <productname>PostgreSQL</> 9.0, large objects have an owner
-    and a set of access permissions, which can be managed using
-    <xref linkend="sql-grant"> and
-    <xref linkend="sql-revoke">.
-    For compatibility with prior releases, see
-    <xref linkend="guc-lo-compat-privileges">.
-    <literal>SELECT</literal> privileges are required to read a large
-    object, and
-    <literal>UPDATE</literal> privileges are required to write to or
-    truncate it.
-    Only the large object owner (or the database superuser) can unlink, comment
-    on, or change the owner of a large object.
+    自<productname>PostgreSQL</productname> 9.0 起，大对象具有拥有者和一组访问权限，可用<xref linkend="sql-grant">和<xref linkend="sql-revoke">管理。读取大对象需要<literal>SELECT</literal>权限，写入或截断大对象需要<literal>UPDATE</literal>权限。只有大对象的拥有者（或者数据库超级用户）才能删除（unlink）、注释或更改大对象的拥有者。
    </para>
   </sect1>
 
   <sect1 id="lo-interfaces">
-   <title>Client Interfaces</title>
+   <title>客户端接口</title>
 
    <para>
-    This section describes the facilities that
-    <productname>PostgreSQL</productname> client interface libraries
-    provide for accessing large objects.  All large object
-    manipulation using these functions <emphasis>must</emphasis> take
-    place within an SQL transaction block.
-    The  <productname>PostgreSQL</productname>  large  object interface is modeled after
-    the <acronym>Unix</acronym>  file-system  interface,  with  analogues  of
-    <function>open</function>,  <function>read</function>,
-    <function>write</function>,
-    <function>lseek</function>, etc.
+    <productname>PostgreSQL</productname>客户端接口库为访问大对象提供了支持。使用这些函数对大对象进行的所有操作都<emphasis>必须</emphasis>发生在一个 SQL 事务块内。<productname>PostgreSQL</productname>的大对象接口是仿照<acronym>Unix</acronym>文件系统接口设计的，提供了与<function>open</function>、<function>read</function>、<function>write</function>、<function>lseek</function>等相对应的操作。
    </para>
 
    <para>
-    Client applications which use the large object interface in
-    <application>libpq</application> should include the header file
-    <filename>libpq/libpq-fs.h</filename> and link with the
-    <application>libpq</application> library.
+    在<application>libpq</application>中使用大对象接口的客户端应用应包含头文件<filename>libpq/libpq-fs.h</filename>并与<application>libpq</application>库链接。
    </para>
 
    <sect2 id="lo-create">
-    <title>Creating a Large Object</title>
+    <title>创建一个大对象</title>
 
     <para>
-     The function
+     函数
 <synopsis>
 Oid lo_creat(PGconn *conn, int mode);
 </synopsis>
-     <indexterm><primary>lo_creat</></>
-     creates a new large object.
-     The return value is the OID that was assigned to the new large object,
-     or <symbol>InvalidOid</symbol> (zero) on failure.
+     <indexterm><primary>lo_creat</primary></indexterm>
+     创建一个新的大对象。返回值是分配给新大对象的 OID，失败时为<symbol>InvalidOid</symbol>（零）。
 
-     <replaceable class="parameter">mode</replaceable> is unused and
-     ignored as of <productname>PostgreSQL</productname> 8.1; however, for
-     backward compatibility with earlier releases it is best to
-     set it to <symbol>INV_READ</symbol>, <symbol>INV_WRITE</symbol>,
-     or <symbol>INV_READ</symbol> <literal>|</> <symbol>INV_WRITE</symbol>.
-     (These symbolic constants are defined
-     in the header file <filename>libpq/libpq-fs.h</filename>.)
+     自<productname>PostgreSQL</productname> 8.1 起，<replaceable class="parameter">mode</replaceable>未被使用且被忽略；不过，为了与更早版本的向后兼容，最好将其设置为<symbol>INV_READ</symbol>、<symbol>INV_WRITE</symbol>或<symbol>INV_READ</symbol> <literal>|</literal> <symbol>INV_WRITE</symbol>。（这些符号常量定义在头文件<filename>libpq/libpq-fs.h</filename>中。）
     </para>
 
     <para>
-     An example:
+     例如：
 <programlisting>
 inv_oid = lo_creat(conn, INV_READ|INV_WRITE);
 </programlisting>
     </para>
 
     <para>
-     The function
+     函数
 <synopsis>
 Oid lo_create(PGconn *conn, Oid lobjId);
 </synopsis>
-     <indexterm><primary>lo_create</></>
-     also creates a new large object.  The OID to be assigned can be
-     specified by <replaceable class="parameter">lobjId</replaceable>;
-     if so, failure occurs if that OID is already in use for some large
-     object.  If <replaceable class="parameter">lobjId</replaceable>
-     is <symbol>InvalidOid</symbol> (zero) then <function>lo_create</> assigns an unused
-     OID (this is the same behavior as <function>lo_creat</>).
-     The return value is the OID that was assigned to the new large object,
-     or <symbol>InvalidOid</symbol> (zero) on failure.
+     <indexterm><primary>lo_create</primary></indexterm>
+     也会创建一个新的大对象。要分配的 OID 可以由<replaceable class="parameter">lobjId</replaceable>指定；如果指定了它，而该 OID 已经被某个大对象使用，则会失败。如果<replaceable class="parameter">lobjId</replaceable>是<symbol>InvalidOid</symbol>（零），则<function>lo_create</function>会分配一个未使用的 OID（其行为与<function>lo_creat</function>相同）。返回值是分配给新大对象的 OID，失败时为<symbol>InvalidOid</symbol>（零）。
     </para>
 
     <para>
-     <function>lo_create</> is new as of <productname>PostgreSQL</productname>
-     8.1; if this function is run against an older server version, it will
-     fail and return <symbol>InvalidOid</symbol>.
+     <function>lo_create</function>是<productname>PostgreSQL</productname> 8.1 新增的；如果将该函数用于更早版本的服务器，它会失败并返回<symbol>InvalidOid</symbol>。
     </para>
 
     <para>
-     An example:
+     例如：
 <programlisting>
 inv_oid = lo_create(conn, desired_oid);
 </programlisting>
@@ -159,109 +98,62 @@ inv_oid = lo_create(conn, desired_oid);
    </sect2>
 
    <sect2 id="lo-import">
-    <title>Importing a Large Object</title>
+    <title>导入一个大对象</title>
 
     <para>
-     To import an operating system file as a large object, call
+     要把一个操作系统文件导入为大对象，调用
 <synopsis>
 Oid lo_import(PGconn *conn, const char *filename);
 </synopsis>
-     <indexterm><primary>lo_import</></>
-     <replaceable class="parameter">filename</replaceable>
-     specifies the operating system name of
-     the file to be imported as a large object.
-     The return value is the OID that was assigned to the new large object,
-     or <symbol>InvalidOid</symbol> (zero) on failure.
-     Note that the file is read by the client interface library, not by
-     the server; so it must exist in the client file system and be readable
-     by the client application.
+     <indexterm><primary>lo_import</primary></indexterm>
+     <replaceable class="parameter">filename</replaceable>指定要作为大对象导入的操作系统文件名。返回值是分配给新大对象的 OID，失败时为<symbol>InvalidOid</symbol>（零）。注意，该文件是由客户端接口库读取的，而不是由服务器读取的；因此它必须存在于客户端文件系统中，并且对客户端应用可读。
     </para>
 
     <para>
-     The function
+     函数
 <synopsis>
 Oid lo_import_with_oid(PGconn *conn, const char *filename, Oid lobjId);
 </synopsis>
-     <indexterm><primary>lo_import_with_oid</></>
-     also imports a new large object.  The OID to be assigned can be
-     specified by <replaceable class="parameter">lobjId</replaceable>;
-     if so, failure occurs if that OID is already in use for some large
-     object.  If <replaceable class="parameter">lobjId</replaceable>
-     is <symbol>InvalidOid</symbol> (zero) then <function>lo_import_with_oid</> assigns an unused
-     OID (this is the same behavior as <function>lo_import</>).
-     The return value is the OID that was assigned to the new large object,
-     or <symbol>InvalidOid</symbol> (zero) on failure.
+     <indexterm><primary>lo_import_with_oid</primary></indexterm>
+     也会导入一个新的大对象。要分配的 OID 可以由<replaceable class="parameter">lobjId</replaceable>指定；如果指定了它，而该 OID 已经被某个大对象使用，则会失败。如果<replaceable class="parameter">lobjId</replaceable>是<symbol>InvalidOid</symbol>（零），则<function>lo_import_with_oid</function>会分配一个未使用的 OID（其行为与<function>lo_import</function>相同）。返回值是分配给新大对象的 OID，失败时为<symbol>InvalidOid</symbol>（零）。
     </para>
 
     <para>
-     <function>lo_import_with_oid</> is new as of <productname>PostgreSQL</productname>
-     8.4 and uses <function>lo_create</function> internally which is new in 8.1; if this function is run against 8.0 or before, it will
-     fail and return <symbol>InvalidOid</symbol>.
+     <function>lo_import_with_oid</function>是<productname>PostgreSQL</productname> 8.4 新增的，它在内部使用了 8.1 新增的<function>lo_create</function>；如果将该函数用于 8.0 或更早版本的服务器，它会失败并返回<symbol>InvalidOid</symbol>。
     </para>
    </sect2>
 
    <sect2 id="lo-export">
-    <title>Exporting a Large Object</title>
+    <title>导出一个大对象</title>
 
     <para>
-     To export a large object
-     into an operating system file, call
+     要把一个大对象导出到操作系统文件中，调用
 <synopsis>
 int lo_export(PGconn *conn, Oid lobjId, const char *filename);
 </synopsis>
-     <indexterm><primary>lo_export</></>
-     The <parameter>lobjId</parameter> argument specifies the OID of the large
-     object to export and the <parameter>filename</parameter> argument
-     specifies the operating system name of the file.  Note that the file is
-     written by the client interface library, not by the server.  Returns 1
-     on success, -1 on failure.
+     <indexterm><primary>lo_export</primary></indexterm>
+     <parameter>lobjId</parameter>参数指定要导出的大对象的 OID，<parameter>filename</parameter>参数指定操作系统文件名。注意，该文件是由客户端接口库写入的，而不是由服务器写入的。成功时返回 1，失败时返回 -1。
     </para>
    </sect2>
 
    <sect2 id="lo-open">
-    <title>Opening an Existing Large Object</title>
+    <title>打开一个现有的大对象</title>
 
     <para>
-     To open an existing large object for reading or writing, call
+     要打开一个现有的大对象以供读取或写入，调用
 <synopsis>
 int lo_open(PGconn *conn, Oid lobjId, int mode);
 </synopsis>
-     <indexterm><primary>lo_open</></>
-     The <parameter>lobjId</parameter> argument specifies the OID of the large
-     object to open.   The <parameter>mode</parameter> bits control whether the
-     object is opened for reading (<symbol>INV_READ</>), writing
-     (<symbol>INV_WRITE</symbol>), or both.
-     (These symbolic constants are defined
-     in the header file <filename>libpq/libpq-fs.h</filename>.)
-     A large object cannot be opened before it is created.
-     <function>lo_open</function> returns a (non-negative) large object
-     descriptor for later use in <function>lo_read</function>,
-     <function>lo_write</function>, <function>lo_lseek</function>,
-     <function>lo_tell</function>, and <function>lo_close</function>.
-     The descriptor is only valid for
-     the duration of the current transaction.
-     On failure, -1 is returned.
+     <indexterm><primary>lo_open</primary></indexterm>
+     <parameter>lobjId</parameter>参数指定要打开的大对象的 OID。<parameter>mode</parameter>位控制该对象是以读取（<symbol>INV_READ</symbol>）、写入（<symbol>INV_WRITE</symbol>）还是两者兼有的方式打开。（这些符号常量定义在头文件<filename>libpq/libpq-fs.h</filename>中。）<function>lo_open</function>返回一个（非负的）大对象描述符，供后续在<function>lo_read</function>、<function>lo_write</function>、<function>lo_lseek</function>、<function>lo_tell</function>和<function>lo_close</function>中使用。大对象在被创建之前不能被打开。该描述符只在当前事务持续期间有效。失败时返回 -1。
     </para>
 
     <para>
-     The server currently does not distinguish between modes
-     <symbol>INV_WRITE</symbol> and <symbol>INV_READ</> <literal>|</>
-     <symbol>INV_WRITE</symbol>: you are allowed to read from the descriptor
-     in either case.  However there is a significant difference between
-     these modes and <symbol>INV_READ</> alone: with <symbol>INV_READ</>
-     you cannot write on the descriptor, and the data read from it will
-     reflect the contents of the large object at the time of the transaction
-     snapshot that was active when <function>lo_open</> was executed,
-     regardless of later writes by this or other transactions.  Reading
-     from a descriptor opened with <symbol>INV_WRITE</symbol> returns
-     data that reflects all writes of other committed transactions as well
-     as writes of the current transaction.  This is similar to the behavior
-     of <literal>REPEATABLE READ</> versus <literal>READ COMMITTED</> transaction
-     modes for ordinary SQL <command>SELECT</> commands.
+     服务器当前不区分<symbol>INV_WRITE</symbol>和<symbol>INV_READ</symbol> <literal>|</literal> <symbol>INV_WRITE</symbol>这两种模式：在这两种情况下都允许通过该描述符读取。不过，这两种模式与单独使用<symbol>INV_READ</symbol>存在一个重要区别：使用<symbol>INV_READ</symbol>时，不能通过该描述符写入，而且从该描述符读取到的数据会反映执行<function>lo_open</function>时活动事务快照中的大对象内容，而不受本事务或其他事务之后写入的影响。对于以<symbol>INV_WRITE</symbol>打开的描述符，读取返回的数据会反映其他已提交事务的所有写入以及当前事务的写入。这类似于普通 SQL <command>SELECT</command>命令在<literal>REPEATABLE READ</literal>与<literal>READ COMMITTED</literal>事务模式下的行为差异。
     </para>
 
     <para>
-     An example:
+     例如：
 <programlisting>
 inv_fd = lo_open(conn, inv_oid, INV_READ|INV_WRITE);
 </programlisting>
@@ -269,158 +161,126 @@ inv_fd = lo_open(conn, inv_oid, INV_READ|INV_WRITE);
 </sect2>
 
 <sect2 id="lo-write">
-<title>Writing Data to a Large Object</title>
+<title>向大对象写入数据</title>
 
 <para>
-     The function
+     函数
 <synopsis>
 int lo_write(PGconn *conn, int fd, const char *buf, size_t len);
 </synopsis>
-     <indexterm><primary>lo_write</></> writes
-     <parameter>len</parameter> bytes from <parameter>buf</parameter>
-     to large object descriptor <parameter>fd</>.  The <parameter>fd</parameter>
-     argument must have been returned by a previous
-     <function>lo_open</function>.  The number of bytes actually
-     written is returned.  In the event of an error, the return value
-     is negative.
+     <indexterm><primary>lo_write</primary></indexterm>
+     将<parameter>buf</parameter>中的<parameter>len</parameter>字节写入大对象描述符<parameter>fd</parameter>。<parameter>fd</parameter>参数必须是先前由<function>lo_open</function>返回的大对象描述符。返回值是实际写入的字节数。发生错误时，返回值为负。
 </para>
+
 </sect2>
 
 <sect2 id="lo-read">
-<title>Reading Data from a Large Object</title>
+<title>从大对象读取数据</title>
 
 <para>
-     The function
+     函数
 <synopsis>
 int lo_read(PGconn *conn, int fd, char *buf, size_t len);
 </synopsis>
-     <indexterm><primary>lo_read</></> reads
-     <parameter>len</parameter> bytes from large object descriptor
-     <parameter>fd</parameter> into <parameter>buf</parameter>. The
-     <parameter>fd</parameter> argument must have been returned by a
-     previous <function>lo_open</function>.  The number of bytes
-     actually read is returned. In the event of an error, the return
-     value is negative.
+     <indexterm><primary>lo_read</primary></indexterm>
+     从大对象描述符<parameter>fd</parameter>中读取<parameter>len</parameter>字节到<parameter>buf</parameter>中。<parameter>fd</parameter>参数必须是先前由<function>lo_open</function>返回的大对象描述符。返回实际读取的字节数。发生错误时，返回值为负。
 </para>
+
 </sect2>
 
 <sect2 id="lo-seek">
-<title>Seeking in a Large Object</title>
+<title>在大对象中定位</title>
 
 <para>
-     To change the current read or write location associated with a
-     large object descriptor, call
+     要改变与大对象描述符关联的当前读或写位置，调用
 <synopsis>
 int lo_lseek(PGconn *conn, int fd, int offset, int whence);
 </synopsis>
-     <indexterm><primary>lo_lseek</></> This function moves the
-     current location pointer for the large object descriptor identified by
-     <parameter>fd</> to the new location specified by
-     <parameter>offset</>.  The valid values for <parameter>whence</>
-     are <symbol>SEEK_SET</> (seek from object start),
-     <symbol>SEEK_CUR</> (seek from current position), and
-     <symbol>SEEK_END</> (seek from object end).  The return value is
-     the new location pointer, or -1 on error.
+     <indexterm><primary>lo_lseek</primary></indexterm>
+     该函数将由<parameter>fd</parameter>标识的大对象描述符的当前位置指针移动到由<parameter>offset</parameter>指定的新位置。<parameter>whence</parameter>的有效值是<symbol>SEEK_SET</symbol>（从对象起始处定位）、<symbol>SEEK_CUR</symbol>（从当前位置定位）以及<symbol>SEEK_END</symbol>（从对象末尾定位）。返回值是新的位置指针，出错时为 -1。
 </para>
+
 </sect2>
 
 <sect2 id="lo-tell">
-<title>Obtaining the Seek Position of a Large Object</title>
+<title>获取大对象的当前位置</title>
 
 <para>
-     To obtain the current read or write location of a large object descriptor,
-     call
+     要取得大对象描述符当前的读或写位置，调用
 <synopsis>
 int lo_tell(PGconn *conn, int fd);
 </synopsis>
-     <indexterm><primary>lo_tell</></> If there is an error, the
-     return value is negative.
+     <indexterm><primary>lo_tell</primary></indexterm>
+     如果发生错误，返回值是 -1。
 </para>
+
 </sect2>
 
 <sect2 id="lo-truncate">
-<title>Truncating a Large Object</title>
+<title>截断一个大对象</title>
 
 <para>
-     To truncate a large object to a given length, call
+     要把一个大对象截断为给定长度，调用
 <synopsis>
 int lo_truncate(PGcon *conn, int fd, size_t len);
 </synopsis>
-     <indexterm><primary>lo_truncate</></> truncates the large object
-     descriptor <parameter>fd</> to length <parameter>len</>.  The
-     <parameter>fd</parameter> argument must have been returned by a
-     previous <function>lo_open</function>.  If <parameter>len</> is
-     greater than the current large object length, the large object
-     is extended with null bytes ('\0').
+     <indexterm><primary>lo_truncate</primary></indexterm>
+     该函数把大对象描述符<parameter>fd</parameter>对应的大对象截断为长度<parameter>len</parameter>。<parameter>fd</parameter>参数必须是先前由<function>lo_open</function>返回的大对象描述符。如果<parameter>len</parameter>大于大对象当前的长度，则会用零字节（'\0'）把该大对象扩展。成功时，<function>lo_truncate</function>返回零；出错时返回值为 -1。
 </para>
 
 <para>
-     The file offset is not changed.
+     文件偏移量不会改变。
 </para>
 
 <para>
-     On success <function>lo_truncate</function> returns
-     zero.  On error, the return value is negative.
+     <function>lo_truncate</function>是<productname>PostgreSQL</productname> 8.3 新增的；如果将该函数用于更早版本的服务器，它会失败并返回一个负值。
 </para>
 
-<para>
-     <function>lo_truncate</> is new as of <productname>PostgreSQL</productname>
-     8.3; if this function is run against an older server version, it will
-     fail and return a negative value.
-</para>
 </sect2>
 
 <sect2 id="lo-close">
-<title>Closing a Large Object Descriptor</title>
+<title>关闭一个大对象描述符</title>
 
 <para>
-     A large object descriptor can be closed by calling
+     可以通过调用
 <synopsis>
 int lo_close(PGconn *conn, int fd);
 </synopsis>
-     <indexterm><primary>lo_close</></> where <parameter>fd</> is a
-     large object descriptor returned by <function>lo_open</function>.
-     On success, <function>lo_close</function> returns zero.  On
-     error, the return value is negative.
+     <indexterm><primary>lo_close</primary></indexterm>
+     来关闭一个大对象描述符，其中<parameter>fd</parameter>是由<function>lo_open</function>返回的大对象描述符。成功时，<function>lo_close</function>返回零；出错时返回值为 -1。
 </para>
 
 <para>
-     Any large  object  descriptors that remain open at the end of a
-     transaction will be closed automatically.
+     任何在事务结束时仍保持打开的大对象描述符都会被自动关闭。
 </para>
 </sect2>
 
    <sect2 id="lo-unlink">
-    <title>Removing a Large Object</title>
+    <title>移除一个大对象</title>
 
     <para>
-     To remove a large object from the database, call
+     要从数据库中移除一个大对象，调用
 <synopsis>
 int lo_unlink(PGconn *conn, Oid lobjId);
 </synopsis>
-     <indexterm><primary>lo_unlink</></> The
-     <parameter>lobjId</parameter> argument specifies the OID of the
-     large object to remove.  Returns 1 if successful, -1 on failure.
+     <indexterm><primary>lo_unlink</primary></indexterm>
+     <parameter>lobjId</parameter>参数指定要移除的大对象的 OID。成功时返回 1，失败时返回 -1。
     </para>
    </sect2>
 
 </sect1>
 
 <sect1 id="lo-funcs">
-<title>Server-side Functions</title>
+<title>服务器端函数</title>
 
-  <para>
-   There are server-side functions callable from SQL that correspond to
-   each of the client-side functions described above; indeed, for the
-   most part the client-side functions are simply interfaces to the
-   equivalent server-side functions.  The ones that are actually useful
-   to call via SQL commands are
-   <function>lo_creat</function><indexterm><primary>lo_creat</></>,
-   <function>lo_create</function><indexterm><primary>lo_create</></>,
-   <function>lo_unlink</function><indexterm><primary>lo_unlink</></>,
-   <function>lo_import</function><indexterm><primary>lo_import</></>, and
-   <function>lo_export</function><indexterm><primary>lo_export</></>.
-   Here are examples of their use:
+     <para>
+    前面介绍的每个客户端函数都有对应的服务器端函数可以通过 SQL 调用；实际上，大多数客户端函数都只是等价服务器端函数的接口。通过 SQL 命令调用真正有用的是
+    <function>lo_creat</function><indexterm><primary>lo_creat</></>、
+    <function>lo_create</function><indexterm><primary>lo_create</></>、
+    <function>lo_unlink</function><indexterm><primary>lo_unlink</></>、
+    <function>lo_import</function><indexterm><primary>lo_import</></> 和
+    <function>lo_export</function><indexterm><primary>lo_export</></>。下面是它们的使用示例：
+   </para>
 
 <programlisting>
 CREATE TABLE image (
@@ -443,43 +303,26 @@ INSERT INTO image (name, raster)  -- same as above, but specify OID to use
 SELECT lo_export(image.raster, '/tmp/motd') FROM image
     WHERE name = 'beautiful image';
 </programlisting>
-  </para>
 
-  <para>
-    The server-side <function>lo_import</function> and
-    <function>lo_export</function> functions behave considerably differently
-    from their client-side analogs.  These two functions read and write files
-    in the server's file system, using the permissions of the database's
-    owning user.  Therefore, their use is restricted to superusers.  In
-    contrast, the client-side import and export functions read and write files
-    in the client's file system, using the permissions of the client program.
-    The client-side functions do not require superuser privilege.
-  </para>
+   <para>
+    服务器端 <function>lo_import</function> 和 <function>lo_export</function> 函数的行为与客户端对应函数有很大不同。这两个函数使用运行数据库服务器的用户的权限，读写服务器文件系统中的文件，因此它们的用途受限制。相比之下，客户端导入和导出函数读写客户端文件系统中的文件，使用客户端程序的权限。客户端函数不要求任何特殊的数据库权限。
+   </para>
 
-  <para>
-    The functionality of <function>lo_read</function> and
-    <function>lo_write</function> is also available via server-side calls,
-    but the names of the server-side functions differ from the client side
-    interfaces in that they do not contain underscores.  You must call
-    these functions as <function>loread</> and <function>lowrite</>.
-  </para>
+   <para>
+    <function>lo_read</function> 和 <function>lo_write</function> 的功能也可以通过服务器端调用获得，但服务器端函数名与客户端接口不同：不包含下划线。必须将这些函数调用为<function>loread</function> 和 <function>lowrite</function>。
+   </para>
 
-</sect1>
+    </sect1>
 
 <sect1 id="lo-examplesect">
-<title>Example Program</title>
+<title>示例程序</title>
 
 <para>
-     <xref linkend="lo-example"> is a sample program which shows how the large object
-     interface
-     in <application>libpq</> can be used.  Parts of the program are
-     commented out but are left in the source for  the  reader's
-     benefit.  This program can also be found in
-     <filename>src/test/examples/testlo.c</filename> in the source distribution.
+     <xref linkend="lo-example">是一个示例程序，它展示了如何使用<application>libpq</application>中的大对象接口。程序中有些部分已经被注释掉，但仍保留在源代码中供读者参考。该程序也可以在源代码发行包的<filename>src/test/examples/testlo.c</filename>中找到。
 </para>
 
   <example id="lo-example">
-   <title>Large Objects with <application>libpq</application> Example Program</title>
+   <title>用<application>libpq</application>操作大对象的示例程序</title>
 <programlisting><![CDATA[
 /*--------------------------------------------------------------
  *
@@ -735,3 +578,4 @@ main(int argc, char **argv)
 
 </sect1>
 </chapter>
+<!--PROBE911-->
