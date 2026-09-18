@@ -123,3 +123,8 @@ PG14—19 中文源文完成 1,895 个定点原子修改、321 个文件：1,626
 - 2026-09-16 zh/14 精校批次 14h-2（附录区 6 文件 151 对 + release-14 全文 2349 对）：零缺陷，无改动。release-14 采证：pairdump 2349=2349 平价；结构多重集全等（sect1=25/sect2=52/sect3=13/listitem=1215/itemizedlist=52）；全对标识符+数字保真探针（两轮去噪后仅剩已译英文复合形容词如 out-of-bounds/row-level）；长度离群全量核查为正常中文压缩；零 LONG 离群（无未来内容）。
 - 2026-09-16 zh/14 精校批次 14i（附录杂项 16 单元：indexam/external-projects/sourcerepo/docguide/limits/acronyms 81/glossary 200/color/appendix-obsolete×7/biblio）：零缺陷，无改动。证据见 tmp/final14/findings/appendix-misc.md。
 - 2026-09-16 zh/14 精校批次 14i-contrib（contrib 区 49 单元 1753 对三组全量精读）：零缺陷，无改动。三重探针全过：平价断言；标识符保真（flag 项全为已译复数缩写/复合形容词/全角括号边缘标点，真缺失为零）；长度离群 SHORT 全量核实为完整中文压缩、LONG 为零（无未来内容）。pgcrypto CVE-2026-14663 ignore-cipher-failure、contrib-spi PG20 移除句均经核为 en/14.24 含有的 2025 上游回移，非污染。证据见 tmp/final14/findings/contrib-review.md。
+
+## 2026-09-18 align18 对齐验收样板定稿（六版 10–13/19/20 生效）
+- refentry 小节标题样板：Examples→示例、See also→另见、Notes→注解、Usage→用法（此前 例子/参见/注意/使用 多译并存，以 zh/18 校准形统一）。
+- 术语：Developer Options→开发人员选项（开发者选项 弃用）；中止当前事务（SPI_ROLLBACK refpurpose，回滚当前事务 弃用）。
+- 程序输出表头保持字面（pgbench 初始化输出 table/# of rows 不译）。
