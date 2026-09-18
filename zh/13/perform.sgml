@@ -41,12 +41,15 @@
     查询计划的结构是一棵由<firstterm>计划节点</firstterm>组成的树。树的最底层是扫描节点，它们从表中返回原始行。不同的表访问方法对应不同类型的扫描节点，例如顺序扫描、索引扫描和位图索引扫描。也有一些并非表的行来源，例如<literal>VALUES</literal>子句和<literal>FROM</literal>中的返回集合函数，它们也各自有对应的扫描节点类型。如果查询需要对原始行执行连接、聚合、排序或其他操作，那么扫描节点之上还会出现额外的节点来完成这些操作。同样，这些操作通常不止一种实现方式，因此这里也会出现不同的节点类型。<command>EXPLAIN</command>会为计划树中的每个节点输出一行，显示基本节点类型以及规划器对该计划节点执行代价的估计值。还可能出现相对节点摘要行缩进的附加行，用来显示该节点的更多属性。第一行，也就是最顶层节点的摘要行，给出了整个计划的估计总执行代价；规划器力图最小化的正是这个数字。
    </para>
 
-   <para>下面是一个简单的示例，仅用于展示输出的样子：<screen>
+   <para>
+    下面是一个简单的示例，仅用于展示输出的样子：式：
+
+<screen>
 EXPLAIN SELECT * FROM tenk1;
 
                          QUERY PLAN
 -------------------------------------------------------------
- Seq Scan on tenk1  (cost=0.00..458.00 rows=10000 width=244)
+ Seq Scan on tenk1  (cost=0.00..445.00 rows=10000 width=244)
 </screen>
    </para>
 
@@ -251,23 +254,29 @@ WHERE t1.unique1 &lt; 10 AND t1.unique2 = t2.unique2;
     在这个计划中，有一个嵌套循环连接节点，它的两个输入，也就是两个子节点，都是表扫描。节点摘要行的缩进反映了计划树结构。连接的第一个子节点，也就是<quote>外侧</quote>子节点，是一个与前面见过的位图扫描类似的节点。它的代价和行计数与<literal>SELECT ... WHERE unique1 &lt; 10</literal>得到的结果相同，因为<literal>WHERE</literal>子句<literal>unique1 &lt; 10</literal>正是在该节点上应用的。<literal>t1.unique2 = t2.unique2</literal>子句此时还无关，因此不会影响外侧扫描的行计数。嵌套循环连接节点会对从外侧子节点得到的每一行执行一次第二个，也就是<quote>内侧</quote>子节点。当前外侧行中的列值可以代入内侧扫描；这里外侧行的<literal>t1.unique2</literal>值可用，因此得到的计划和代价与前面看到的简单<literal>SELECT ... WHERE t2.unique2 = <replaceable>constant</replaceable></literal>情形类似。（由于预期在对<literal>t2</literal>反复执行索引扫描期间会发生缓存命中，估计代价实际上比前面看到的略低一些。）随后，循环节点的代价建立在外侧扫描代价之上，再加上每个外侧行都要执行一次内侧扫描的代价（这里是 10 * 7.91），以及少量连接处理的 CPU 时间。
    </para>
 
-   <para>在这个示例中，连接的输出行计数恰好等于两个扫描行计数的乘积，但并非总是如此，因为还可能存在同时提到两个表的附加<literal>WHERE</literal>子句，它们只能在连接点上应用，而不能作用于任一输入扫描。下面是一个示例： <screen>
+   <para>
+    在这个示例中，连接的输出行计数恰好等于两个扫描行计数的乘积，但并非总是如此，因为还可能存在同时提到两个表的附加<literal>WHERE</literal>子句，它们只能在连接点上应用，而不能作用于任一输入扫描。下面是一个示例：
+
+<screen>
 EXPLAIN SELECT *
 FROM tenk1 t1, tenk2 t2
 WHERE t1.unique1 &lt; 10 AND t2.unique2 &lt; 10 AND t1.hundred &lt; t2.hundred;
 
                                          QUERY PLAN
 -------------------------------------------------------------------&zwsp;--------------------------
- Nested Loop  (cost=4.65..49.46 rows=33 width=488)
+ Nested Loop  (cost=4.65..49.36 rows=33 width=488)
    Join Filter: (t1.hundred &lt; t2.hundred)
-   -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=4.36..39.47 rows=10 width=244)
+   -&gt;  Bitmap Heap Scan on tenk1 t1  (cost=4.36..39.38 rows=10 width=244)
          Recheck Cond: (unique1 &lt; 10)
          -&gt;  Bitmap Index Scan on tenk1_unique1  (cost=0.00..4.36 rows=10 width=0)
                Index Cond: (unique1 &lt; 10)
    -&gt;  Materialize  (cost=0.29..8.51 rows=10 width=244)
          -&gt;  Index Scan using tenk2_unique2 on tenk2 t2  (cost=0.29..8.46 rows=10 width=244)
                Index Cond: (unique2 &lt; 10)
-</screen>条件<literal>t1.hundred &lt; t2.hundred</literal>无法在<literal>tenk2_unique2</literal>索引中测试，因此它被放到连接节点上应用。这会降低连接节点估计的输出行数，但不会改变任一输入扫描。</para>
+</screen>
+
+    条件<literal>t1.hundred &lt; t2.hundred</literal>无法在<literal>tenk2_unique2</literal>索引中测试，因此它被放到连接节点上应用。这会降低连接节点估计的输出行数，但不会改变任一输入扫描。
+   </para>
 
    <para>
     注意，这里规划器通过在连接的内侧关系之上放置一个 Materialize 计划节点，选择将其<quote>物化</quote>。这意味着<literal>t2</literal>索引扫描只会执行一次，尽管嵌套循环连接节点需要读取那份数据十次，也就是外侧关系的每一行都要读取一次。Materialize 节点会在读取数据时将其保存在内存中，并在之后的每次遍历中从内存返回这些数据。

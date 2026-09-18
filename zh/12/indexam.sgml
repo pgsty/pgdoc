@@ -36,7 +36,9 @@
    索引访问方法的处理器函数必须声明为接受一个 <type>internal</type> 类型的参数，并返回伪类型 <type>index_am_handler</type>。这个参数只是一个占位值，用来防止处理器函数被 SQL 命令直接调用。该函数的结果必须是一个通过 palloc 分配的 <structname>IndexAmRoutine</structname> 结构体，其中包含核心代码使用该索引访问方法所需的全部信息。<structname>IndexAmRoutine</structname> 结构体也称为该访问方法的<firstterm>API 结构体</firstterm>，其中的字段指定了访问方法的各种固定属性，例如它是否支持多列索引。更重要的是，它包含该访问方法的支持函数指针，而这些支持函数完成了实际访问索引的全部工作。这些支持函数是普通 C 函数，在 SQL 层不可见也不可调用。支持函数将在 <xref linkend="index-functions"/> 中介绍。
   </para>
 
-  <para>结构体<structname>IndexAmRoutine</structname>定义如下：<programlisting>
+  <para>
+   <structname>IndexAmRoutine</structname> 结构体定义如下：
+<programlisting>
 typedef struct IndexAmRoutine
 {
     NodeTag     type;
@@ -48,10 +50,18 @@ typedef struct IndexAmRoutine
     uint16      amstrategies;
     /* 此 AM 使用的支持函数总数 */
     uint16      amsupport;
+    /* 操作符类选项支持函数编号，或为 0 */
+    uint16      amoptsprocnum;
     /* AM 是否支持按被索引列的值进行 ORDER BY？ */
     bool        amcanorder;
     /* AM 是否支持按被索引列上操作符的结果进行 ORDER BY？ */
     bool        amcanorderbyop;
+    /* AM 是否支持使用与 hash AM 一致的 API 进行 hash 运算？ */
+    bool        amcanhash;
+    /* 操作符族内的操作符是否具有一致的相等语义？ */
+    bool        amconsistentequality;
+    /* 操作符族内的操作符是否具有一致的排序语义？ */
+    bool        amconsistentordering;
     /* AM 是否支持反向扫描？ */
     bool        amcanbackward;
     /* AM 是否支持 UNIQUE 索引？ */
@@ -72,8 +82,17 @@ typedef struct IndexAmRoutine
     bool        ampredlocks;
     /* AM 是否支持并行扫描？ */
     bool        amcanparallel;
+    /* AM 是否支持并行构建？ */
+    bool        amcanbuildparallel;
     /* AM 是否支持 INCLUDE 子句指定的内含列？ */
     bool        amcaninclude;
+    /* AM 是否使用 maintenance_work_mem？ */
+    bool        amusemaintenanceworkmem;
+    /* AM 是否对元组进行摘要，且一个摘要至少涵盖
+     * 块中的所有元组？ */
+    bool        amsummarizing;
+    /* 并行清理标志的 OR 组合 */
+    uint8       amparallelvacuumoptions;
     /* 索引中存储的数据类型；如果可变，则为 InvalidOid */
     Oid         amkeytype;
 
@@ -81,14 +100,17 @@ typedef struct IndexAmRoutine
     ambuild_function ambuild;
     ambuildempty_function ambuildempty;
     aminsert_function aminsert;
+    aminsertcleanup_function aminsertcleanup;   /* 可以为 NULL */
     ambulkdelete_function ambulkdelete;
     amvacuumcleanup_function amvacuumcleanup;
     amcanreturn_function amcanreturn;   /* 可以为 NULL */
     amcostestimate_function amcostestimate;
+    amgettreeheight_function amgettreeheight;   /* 可以为 NULL */
     amoptions_function amoptions;
     amproperty_function amproperty;     /* 可以为 NULL */
     ambuildphasename_function ambuildphasename;   /* 可以为 NULL */
     amvalidate_function amvalidate;
+    amadjustmembers_function amadjustmembers; /* 可以为 NULL */
     ambeginscan_function ambeginscan;
     amrescan_function amrescan;
     amgettuple_function amgettuple;     /* 可以为 NULL */
@@ -101,6 +123,10 @@ typedef struct IndexAmRoutine
     amestimateparallelscan_function amestimateparallelscan;    /* 可以为 NULL */
     aminitparallelscan_function aminitparallelscan;    /* 可以为 NULL */
     amparallelrescan_function amparallelrescan;    /* 可以为 NULL */
+
+    /* 支持规划的接口函数 */
+    amtranslate_strategy_function amtranslatestrategy;  /* 可以为 NULL */
+    amtranslate_cmptype_function amtranslatecmptype;    /* 可以为 NULL */
 } IndexAmRoutine;
 </programlisting>
   </para>
@@ -155,8 +181,11 @@ aminsert (Relation indexRelation,
           ItemPointer heap_tid,
           Relation heapRelation,
           IndexUniqueCheck checkUnique,
+          bool indexUnchanged,
           IndexInfo *indexInfo);
-</programlisting>将一个新元组插入已有索引。<literal>values</literal>和<literal>isnull</literal>数组给出要索引的键值，<literal>heap_tid</literal>则是要索引的 TID。如果访问方法支持唯一索引（其<structfield>amcanunique</structfield>标志为 true），则<literal>checkUnique</literal>指明要执行的唯一性检查类型，具体取决于唯一约束是否可延迟；详情参见<xref linkend="index-unique-checks"/>。通常，访问方法只在执行唯一性检查时才需要<literal>heapRelation</literal>参数（因为此时必须查看堆以确认元组是否存活）。</para>
+</programlisting>
+   向现有索引中插入一个新元组。<literal>values</literal> 和 <literal>isnull</literal> 数组给出要建立索引的键值，而 <literal>heap_tid</literal> 是要建立索引的 TID。如果该访问方法支持唯一索引（其 <structfield>amcanunique</structfield> 标志为真），那么 <literal>checkUnique</literal> 指示要执行的唯一性检查类型。这取决于唯一约束是否可延迟；详见 <xref linkend="index-unique-checks"/>。通常，访问方法只会在执行唯一性检查时需要 <literal>heapRelation</literal> 参数（因为这时它必须到堆中核实元组是否仍然存活）。
+  </para>
 
   <para>
    该函数返回的布尔值只有在 <literal>checkUnique</literal> 为 <literal>UNIQUE_CHECK_PARTIAL</literal> 时才有意义。在这种情况下，返回真表示新条目已知是唯一的，而返回假表示它可能不是唯一的（因此必须安排一次延迟的唯一性重检）。对于其他情况，建议恒定返回假。
