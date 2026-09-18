@@ -96,6 +96,8 @@
     <command>DELETE</command> 等命令会继续正常工作，不过在表被清理时，你将不能使用
     <command>ALTER TABLE</command> 等命令修改该表的定义。）
     <command>VACUUM FULL</command> 需要对正在处理的表持有独占锁，因此不能与对该表的其他使用并行进行。
+    <command>VACUUM FULL</command> 的另一个缺点是，虽然它缩减了表的大小，
+    却不会成比例地缩减索引大小；实际上它还可能让索引变得<emphasis>更大</emphasis>。因此，
     一般来说，管理员应尽量使用标准 <command>VACUUM</command> 并避免
     <command>VACUUM FULL</command>。
    </para>
@@ -117,7 +119,7 @@
    <para>
     在 <productname>PostgreSQL</productname> 中，对某一行执行
     <command>UPDATE</command> 或 <command>DELETE</command> 时，不会立即移除该行的旧版本。
-    这种方法对于获得多版本并发控制（<acronym>MVCC</acronym>，见
+    这种方法对于获得多版本并发控制（MVCC，见
     <xref linkend="mvcc">）的好处是必需的：当行版本仍可能对其他事务可见时，就不能删除它。
     但最终，过时或已删除的行版本将不再是任何事务关心的对象。必须回收它占用的空间，
     以供新行重用，从而避免磁盘空间需求无限增长。这是通过运行 <command>VACUUM</command>
@@ -127,9 +129,10 @@
    <para>
     标准形式的 <command>VACUUM</command> 会移除表和索引中的死行版本，并将空间标记为可供将来重用。
     不过，它不会把空间归还给操作系统，除非出现一种特殊情况：表尾的一个或多个页面完全空闲，
-    并且能够轻松获得一个排他表锁。相比之下，<command>VACUUM FULL</command> 会主动压实表，
-    它会写出一个不含死空间的全新表文件版本。这会将表的大小降到最小，但可能耗时很长。
-    在操作完成之前，它还需要额外的磁盘空间来存放表的新副本。
+    并且能够轻松获得一个排他表锁。相比之下，<command>VACUUM FULL</command> 会通过把行版本移动到较前面的页面来主动压实表。
+    这样它就能使表尾的页面完全变空，进而把这些页面归还给操作系统。不过，如果必须移动很多行，
+    这可能耗时很长。另外，移动一行需要暂时为它建立重复的索引项（指向新位置的索引项必须先建立，
+    旧索引项才能删除）；因此，以这种方式大量移动行会导致严重的索引膨胀。
    </para>
 
    <para>
@@ -156,27 +159,28 @@
     <command>VACUUM</command>，并在必要时更频繁地清理那些更新特别频繁的表。
     （某些更新率极高的安装，甚至会每隔几分钟就清理一次最繁忙的表。）
     如果你在一个集簇中有多个数据库，不要忘记对每一个数据库都执行
-    <command>VACUUM</command>；程序 <xref linkend="app-vacuumdb"> 可能会有帮助。
+    <command>VACUUM</command>；程序 <xref linkend="app-vacuumdb" endterm="app-vacuumdb-title"> 可能会有帮助。
    </para>
 
    <tip>
    <para>
-    当一个表由于大规模更新或删除活动而包含大量死行版本时，普通的 <command>VACUUM</command>
-    可能并不能令人满意。如果你有这样一个表，并且需要回收它所占用的多余磁盘空间，
-    就需要使用 <command>VACUUM FULL</command>，或者改用
-    <xref linkend="sql-cluster">，
-    又或者使用 <xref linkend="sql-altertable">
+    当一个表由于大规模更新或删除活动而包含大量死行版本时，
+    两种形式的 <command>VACUUM</command> 都不能完全令人满意。如果你有这样一个表，
+    并且需要回收它所占用的多余磁盘空间，最好的办法是使用
+    <xref linkend="sql-cluster" endterm="sql-cluster-title">，
+    或者 <xref linkend="sql-altertable" endterm="sql-altertable-title">
     的某一种重写表变体。这些命令会重写整个表的新副本，并为其构建新的索引。
-    所有这些选项都需要独占锁。还要注意，
-    它们会临时额外占用大约等于该表大小的磁盘空间，因为在新表和新索引完成之前，
-    旧的表和索引副本都不能被释放。
+    与 <command>VACUUM FULL</command> 一样，它们需要独占锁。还要注意，
+    它们会临时额外占用磁盘空间，因为在新表和新索引完成之前，
+    旧的表和索引副本都不能被释放。在最坏的情况下，即磁盘几乎已满时，
+    <command>VACUUM FULL</command> 可能是唯一可行的选择。
    </para>
    </tip>
 
    <tip>
    <para>
     如果你有一个表，其全部内容会被定期删除，考虑使用
-    <xref linkend="sql-truncate">，
+    <xref linkend="sql-truncate" endterm="sql-truncate-title">，
     而不是先 <command>DELETE</command> 再 <command>VACUUM</command>。
     <command>TRUNCATE</command> 会立即移除表的全部内容，而不需要后续再执行
     <command>VACUUM</command> 或 <command>VACUUM FULL</command> 来回收此时未使用的磁盘空间。
@@ -186,7 +190,7 @@
   </sect2>
 
   <sect2 id="vacuum-for-statistics">
-   <title>更新规划器统计信息</title>
+   <title id="vacuum-for-statistics-title">更新规划器统计信息</title>
 
    <indexterm zone="vacuum-for-statistics">
     <primary>statistics</primary>
@@ -200,7 +204,7 @@
    <para>
     <productname>PostgreSQL</productname> 查询规划器依赖于有关表内容的统计信息，
     以便为查询生成良好的计划。这些统计信息由
-    <xref linkend="sql-analyze"> 命令收集，
+    <xref linkend="sql-analyze" endterm="sql-analyze-title"> 命令收集，
     它既可以单独调用，也可以作为 <command>VACUUM</command> 的一个可选步骤执行。
     拥有足够准确的统计信息很重要，否则糟糕的计划选择可能会降低数据库性能。
    </para>
@@ -239,7 +243,6 @@
      linkend="guc-default-statistics-target"> 更改数据库范围的默认值。
     </para>
 
-    <para>此外，默认情况下，关于函数选择率的信息很有限。不过，如果创建了使用函数调用的表达式索引，系统就会收集关于该函数的有用统计信息，这可以显著改善使用该表达式索引的查询计划。</para>
    </tip>
   </sect2>
 
@@ -319,8 +322,7 @@ SELECT datname, age(datfrozenxid) FROM pg_database;
    <para>
    <command>VACUUM</command>通常只扫描自上次清理以来被修改过的页面，但只有当扫描整个表时，
    <structfield>relfrozenxid</structfield> 才会被推进。当
-    <structfield>relfrozenxid</structfield>的年龄超过<varname>vacuum_freeze_table_age</varname>个事务、使用了 <command>VACUUM</command> 的
-    <literal>FREEZE</literal> 选项，或者所有页面碰巧都需要清理以移除死行版本时，
+    <structfield>relfrozenxid</structfield>的年龄超过<varname>vacuum_freeze_table_age</varname>个事务、使用了 <command>VACUUM FREEZE</command> 命令，或者所有页面碰巧都需要清理以移除死行版本时，
     就会扫描整个表。当 <command>VACUUM</command> 扫描整个表时，
     它应把 <literal>age(relfrozenxid)</literal> 设为略高于所用
     <varname>vacuum_freeze_min_age</varname> 设置的值
@@ -350,7 +352,7 @@ HINT:  Stop the postmaster and use a standalone backend to VACUUM in "mydb".
   </sect2>
 
   <sect2 id="autovacuum">
-   <title>自动清理守护进程</title>
+   <title id="autovacuum-title">自动清理守护进程</title>
 
    <indexterm>
     <primary>autovacuum</primary>
@@ -367,10 +369,11 @@ HINT:  Stop the postmaster and use a standalone backend to VACUUM in "mydb".
    </para>
 
    <para>
-    <quote>自动清理守护进程</quote>实际上由多个进程组成。有一个常驻的守护进程，称为<firstterm>自动清理启动器</firstterm>，负责为所有数据库启动<firstterm>自动清理工作进程</firstterm>。启动器会把工作分摊到各时间段，尝试每<xref linkend="guc-autovacuum-naptime">秒在每个数据库中启动一个工作进程。（因此，如果安装有<replaceable>N</replaceable>个数据库，每<varname>autovacuum_naptime</varname>/<replaceable>N</replaceable>秒就会启动一个新的工作进程。）同一时刻最多允许<xref linkend="guc-autovacuum-max-workers">个工作进程运行。如果要处理的数据库多于<varname>autovacuum_max_workers</varname>个，第一个工作进程一结束，就会处理下一个数据库。每个工作进程将检查其数据库中的每个表，并根据需要执行<command>VACUUM</command>和/或<command>ANALYZE</command>。
+    <quote>自动清理守护进程</quote>实际上由多个进程组成。有一个常驻的守护进程，称为<firstterm>自动清理启动器</firstterm>，负责为所有数据库启动<firstterm>自动清理工作进程</firstterm>。启动器会把工作分摊到各时间段，尝试每<xref linkend="guc-autovacuum-naptime">秒在每个数据库中启动一个工作进程。每个数据库都会启动一个工作进程，同一时刻最多允许<xref linkend="guc-autovacuum-max-workers">个进程运行。如果要处理的数据库多于<xref linkend="guc-autovacuum-max-workers">个，第一个工作进程一结束，就会处理下一个数据库。每个工作进程将检查其数据库中的每个表，并根据需要执行<command>VACUUM</command>和/或<command>ANALYZE</command>。
    </para>
 
    <para>
+    <xref linkend="guc-autovacuum-max-workers">设置限制了任一时刻可以运行的工作进程数量。
     如果多个大型表在很短时间内都变得需要清理，那么所有自动清理工作进程都可能会长期忙于清理这些表。
     这会导致其他表和数据库在某个工作进程空闲下来之前都得不到清理。单个数据库中的工作进程数量没有上限，
     但工作进程会尽量避免重复其他工作进程已经完成的工作。注意，正在运行的工作进程数量不计入
@@ -391,10 +394,6 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
    </para>
 
    <para>
-    自动清理无法访问临时表。因此，应通过会话 SQL 命令执行适当的清理和分析操作。
-   </para>
-
-   <para>
     默认阈值和尺度因子取自 <filename>postgresql.conf</filename>，但也可以按表覆盖它们；详情见
     <xref linkend="sql-createtable-storage-parameters"
     endterm="sql-createtable-storage-parameters-title">。如果某个设置已经通过存储参数修改，
@@ -403,26 +402,12 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
    </para>
 
    <para>
-    除了基础阈值和缩放因子之外，还有六个可以通过存储参数为每个表设置的自动清理参数。第一个参数<literal>autovacuum_enabled</literal>可以设置为<literal>false</literal>，指示自动清理守护进程完全跳过该特定表。这种情况下，只有在必须防止事务 ID 回卷时，自动清理才会触及该表。
-    Another two parameters,
-    <literal>autovacuum_vacuum_cost_delay</literal> and
-    <literal>autovacuum_vacuum_cost_limit</literal>, are used to set
-    用于为基于代价的清理延迟特性设置表特定的值（见<xref linkend="runtime-config-resource-vacuum-cost">）。
-    <literal>autovacuum_freeze_min_age</literal>,
-    <literal>autovacuum_freeze_max_age</literal> and
-    <literal>autovacuum_freeze_table_age</literal> are used to set
-    values for <xref linkend="guc-vacuum-freeze-min-age">,
-    <xref linkend="guc-autovacuum-freeze-max-age"> and
-    <xref linkend="guc-vacuum-freeze-table-age"> respectively.
+    除了基础阈值和缩放因子之外，还有六个可以通过存储参数为每个表设置的自动清理参数。第一个参数<literal>autovacuum_enabled</literal>可以设置为<literal>false</literal>，指示自动清理守护进程完全跳过该特定表。这种情况下，只有在必须防止事务 ID 回卷时，自动清理才会触及该表。另外两个参数<literal>autovacuum_vacuum_cost_delay</literal>和<literal>autovacuum_vacuum_cost_limit</literal>用于为<xref linkend="runtime-config-resource-vacuum-cost" endterm="runtime-config-resource-vacuum-cost-title">特性设置表特定的值。<literal>autovacuum_freeze_min_age</literal>、<literal>autovacuum_freeze_max_age</literal>和<literal>autovacuum_freeze_table_age</literal>分别用于为<xref linkend="guc-vacuum-freeze-min-age">、<xref linkend="guc-autovacuum-freeze-max-age">和<xref linkend="guc-vacuum-freeze-table-age">设置值。
    </para>
 
    <para>
-    当多个工作进程同时运行时，代价延迟参数会在所有运行中的工作进程之间
-    <quote>平衡</quote>，这样无论实际运行了多少个工作进程，系统承受的总 I/O 影响都相同。
-    不过，任何正在处理那些为每表存储参数
-    <literal>autovacuum_vacuum_cost_delay</literal> 或
-    <literal>autovacuum_vacuum_cost_limit</literal> 显式设置过值的表的工作进程，
-    都不会被纳入这个均衡算法。
+    当多个工作进程同时运行时，代价限制会在所有运行中的工作进程之间
+    <quote>平衡</quote>，这样无论实际运行了多少个工作进程，对系统的总体影响都相同。
    </para>
   </sect2>
  </sect1>
@@ -436,11 +421,15 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
   </indexterm>
 
   <para>
-   在某些情况下，值得周期性地使用<xref linkend="sql-reindex">命令来重建索引。
+   在某些情况下，值得周期性地使用<xref linkend="sql-reindex" endterm="sql-reindex-title">命令来重建索引。
   </para>
 
   <para>
-   B-树索引中已经完全变空的索引页会被回收以供重用。不过，仍然可能出现空间利用低效：
+   在 7.4 之前的 <productname>PostgreSQL</productname> 版本中，由于 B-树索引缺乏内部空间回收机制，经常需要定期重建索引以避免<quote>索引膨胀</quote>。任何索引键范围随时间推移而变化的情况&mdash;&mdash;例如，在一个最终会删除旧条目的表上按时间戳建的索引&mdash;&mdash;都会导致膨胀，因为键范围中不再需要的部分所对应的索引页不会被回收以供重用。随着时间的推移，索引大小可能会变得远大于其中有用的数据量。
+  </para>
+
+  <para>
+   在 <productname>PostgreSQL</productname> 7.4 及之后的版本中，已经完全变空的索引页会被回收以供重用。不过，仍然可能出现空间利用低效：
    如果某个页面上的索引键除了少数几个之外都被删除，该页面仍会保留分配。因此，
    在一种使用模式下，如果每个键范围中的大多数但不是全部键最终都被删除，
    就会出现糟糕的空间利用。对于这种使用模式，建议定期重建索引。
@@ -471,7 +460,7 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
   <para>
    最好把数据库服务器的日志输出保存到某个地方，而不是简单地把它丢弃到
    <filename>/dev/null</filename>。诊断问题时，日志输出极其宝贵。但是，日志输出往往十分庞大（尤其是在较高调试级别下），因此你不会希望无限期保存它。
-   你需要对日志文件进行<emphasis>轮转</emphasis>，以便周期性地启用新的日志文件，
+   你需要对日志文件进行<quote>轮转</quote>，以便周期性地启用新的日志文件，
    并在合理时间后移除旧文件。
   </para>
 
@@ -483,7 +472,7 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
   </para>
 
   <para>
-   更好的做法是把服务器的<systemitem>stderr</systemitem>输出发送给某种日志轮转程序。有一个内建的日志轮转设施，只需在<filename>postgresql.conf</filename>中把配置参数<literal>logging_collector</literal>设置为<literal>true</literal>即可使用。该程序的控制参数在<xref linkend="runtime-config-logging-where">中介绍。你也可以用这种做法以机器可读的<acronym>CSV</acronym>（逗号分隔值）格式捕获日志数据。
+   更好的做法是把服务器的<systemitem>stderr</systemitem>输出发送给某种日志轮转程序。有一个内建的日志轮转程序，只需在<filename>postgresql.conf</filename>中把配置参数<literal>logging_collector</literal>设置为<literal>true</literal>即可使用。该程序的控制参数在<xref linkend="runtime-config-logging-where">中介绍。你也可以用这种做法以机器可读的 CSV 格式捕获日志数据。
   </para>
 
   <para>也可以使用外部日志轮转程序，特别是已经在其他服务器软件上使用了某个此类程序时。例如，<application>rotatelogs</application> 工具包含在 <productname>Apache</productname> 发行版中，也可用于 <productname>PostgreSQL</productname>。为此，只需通过管道将服务器的 <systemitem>stderr</systemitem> 输出传递给所需程序。如果使用 <command>pg_ctl</command> 启动服务器，那么 <systemitem>stderr</systemitem> 已经被重定向到 <systemitem>stdout</systemitem>，因此只需一个管道命令，例如：<programlisting>
@@ -501,7 +490,7 @@ pg_ctl start | rotatelogs /var/log/pgsql_log 86400
    此外，在 <productname>Linux</productname> 上，
    <application>syslog</application> 会把每条消息都刷盘，导致性能较差。
    （你可以在 <application>syslog</application> 配置文件的文件名开头使用一个
-   <quote><literal>-</literal></quote> 来禁用同步。）
+   <literal>-</literal> 来禁用同步。）
   </para>
 
   <para>
@@ -510,8 +499,5 @@ pg_ctl start | rotatelogs /var/log/pgsql_log 86400
    定期删除旧日志文件。另一种可能是把轮转程序配置为循环覆盖旧日志文件。
   </para>
 
-  <para>
-   <ulink url="http://pgfouine.projects.postgresql.org/">pgFouine</ulink>是一个进行复杂日志文件分析的外部项目。<ulink url="http://bucardo.org/wiki/Check_postgres">check_postgres</ulink>在日志文件中出现重要消息时提供 Nagios 告警，并能检测许多其他异常情况。
-  </para>
  </sect1>
 </chapter>
