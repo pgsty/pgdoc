@@ -1,0 +1,1322 @@
+<!-- $PostgreSQL: pgsql/doc/src/sgml/monitoring.sgml,v 1.80.2.3 2010/09/09 00:48:29 momjian Exp $ -->
+
+<chapter id="monitoring">
+ <title>监控数据库活动</title>
+
+ <indexterm zone="monitoring">
+  <primary>monitoring</primary>
+  <secondary>database activity</secondary>
+ </indexterm>
+
+ <indexterm zone="monitoring">
+  <primary>database activity</primary>
+  <secondary>monitoring</secondary>
+ </indexterm>
+
+ <para>
+  数据库管理员常常会问：<quote>系统现在正在做什么？</quote>本章将讨论如何回答这个问题。
+ </para>
+
+  <para>
+   有几种工具可用于监控数据库活动和分析性能。本章的大部分内容将用于描述<productname>PostgreSQL</productname>的统计收集器，
+   但也不应忽略常见的 Unix 监控程序，例如<command>ps</command>、<command>top</command>、<command>iostat</command>和<command>vmstat</command>。
+   此外，一旦确定了某个查询性能不佳，可能需要使用<productname>PostgreSQL</productname>的<xref linkend="sql-explain">命令进行进一步调查。
+   <xref linkend="using-explain">讨论了<command>EXPLAIN</command>以及理解单个查询行为的其他方法。
+</para>
+
+ <sect1 id="monitoring-ps">
+  <title>标准 Unix 工具</Title>
+
+  <indexterm zone="monitoring-ps">
+   <primary>ps</primary>
+   <secondary>to monitor activity</secondary>
+  </indexterm>
+
+  <para>
+   在大多数 Unix 平台上，<productname>PostgreSQL</productname>会修改由<command>ps</command>报告的命令标题，以便轻松识别各个服务器进程。以下是一个显示示例：<screen>
+$ ps auxww | grep ^postgres
+postgres   960  0.0  1.1  6104 1480 pts/1    SN   13:17   0:00 postgres -i
+postgres   963  0.0  1.1  7084 1472 pts/1    SN   13:17   0:00 postgres: writer process
+postgres   965  0.0  1.1  6152 1512 pts/1    SN   13:17   0:00 postgres: stats collector process
+postgres   998  0.0  2.3  6532 2992 pts/1    SN   13:18   0:00 postgres: tgl runbug 127.0.0.1 idle
+postgres  1003  0.0  2.4  6532 3128 pts/1    SN   13:19   0:00 postgres: tgl regression [local] SELECT waiting
+postgres  1016  0.1  2.4  6532 3080 pts/1    SN   13:19   0:00 postgres: tgl regression [local] idle in transaction
+</screen>（<command>ps</command>的适当调用方式随平台而异，显示内容的细节也是如此。此示例来自较新的 Linux 系统。）这里列出的第一个进程是主服务器进程。显示的命令参数与启动该进程时使用的参数相同。接下来的两个进程是主进程自动启动的后台工作进程。（如果系统被设置为不启动统计收集器，则不会出现<quote>stats collector</quote>进程。）其余每个进程都是处理一个客户端连接的服务器进程。每个这样的进程都将其命令行显示设置为以下形式：<screen>
+postgres: <replaceable>user</replaceable> <replaceable>database</replaceable> <replaceable>host</replaceable> <replaceable>activity</replaceable>
+</screen>在客户端连接的整个生命周期内，用户、数据库和（客户端）主机这几项保持不变，但活动指示符会改变。活动可以是<literal>idle</literal>（即等待客户端命令）、<literal>idle in transaction</literal>（在<command>BEGIN</command>块内等待客户端），或者命令类型名称，例如<literal>SELECT</literal>。此外，服务器进程当前若正在等待另一会话持有的锁，还会附加<literal>waiting</literal>。在上面的示例中，可以推断进程 1003 正在等待进程 1016 完成事务，从而释放某个锁。
+  </para>
+
+  <para>
+   如果您关闭了<xref linkend="guc-update-process-title">，则活动指示器不会更新；进程标题仅在新进程启动时设置一次。在某些平台上，这可以节省可观的每命令开销；在其他平台上，则微不足道。
+  </para>
+
+  <tip>
+  <para>
+  <productname>Solaris</productname>需要特殊处理。您必须使用<command>/usr/ucb/ps</command>，而不是<command>/bin/ps</command>。您还必须使用两个<option>w</option>标志，而不仅仅是一个。此外，您对<command>postgres</command>命令的原始调用必须具有比每个服务器进程提供的更短的<command>ps</command>状态显示。如果未满足这三个条件，每个服务器进程的<command>ps</command>输出都会显示原始的<command>postgres</command>命令行。
+  </para>
+  </tip>
+ </sect1>
+
+ <sect1 id="monitoring-stats">
+  <title>统计收集器</Title>
+
+  <indexterm zone="monitoring-stats">
+   <primary>statistics</primary>
+  </indexterm>
+
+  <para>
+   <productname>PostgreSQL</productname>的<firstterm>统计收集器</firstterm>是一个支持收集和报告服务器活动信息的子系统。目前，收集器可以按磁盘块和单行两种方式统计对表和索引的访问。它还跟踪每个表中的总行数，以及每个表最近一次清理和分析的时间。它还可以统计对用户定义函数的调用次数以及在每个函数中花费的总时间。
+  </para>
+
+  <para>
+   <productname>PostgreSQL</productname>还支持报告其他服务器进程当前正在执行的确切命令。此功能独立于收集器进程。
+  </para>
+
+ <sect2 id="monitoring-stats-setup">
+  <title>统计信息收集配置</Title>
+
+  <para>
+   由于收集统计信息会增加查询执行的开销，因此可以配置系统是否收集信息。这由通常在<filename>postgresql.conf</filename>中设置的配置参数控制（有关设置配置参数的详细信息，请参阅<xref linkend="runtime-config">）。
+  </para>
+
+  <para>
+   参数<xref linkend="guc-track-counts">控制是否收集关于表和索引访问的统计信息。
+</para>
+
+  <para>
+   参数<xref linkend="guc-track-functions">启用对用户定义函数使用的跟踪。
+  </para>
+
+  <para>
+   参数<xref linkend="guc-track-activities">启用对任意服务器进程当前执行命令的监控。
+  </para>
+
+  <para>
+   通常，这些参数会设置在<filename>postgresql.conf</filename>中，以便它们适用于所有服务器进程，但也可以在单个会话中使用<xref linkend="sql-set">命令打开或关闭它们。（为防止普通用户隐藏其活动不被管理员发现，只有超级用户才能使用<command>SET</command>更改这些参数。）
+  </para>
+
+  <para>
+   统计收集器通过临时文件与需要信息的后端（包括自动清理）通信。这些文件存储在<filename>pg_stat_tmp</filename>子目录中。当 postmaster 关闭时，统计数据的一份永久副本会存储在<filename>global</filename>子目录中。为提高性能，可以把参数<xref linkend="guc-stats-temp-directory">指向基于 RAM 的文件系统，以减少物理 I/O 需求。
+  </para>
+
+ </sect2>
+
+ <sect2 id="monitoring-stats-views">
+  <title>查看收集到的统计信息</Title>
+
+  <para>
+   若干预定义视图（列于<xref linkend="monitoring-stats-views-table">中）可用于展示统计收集的结果。另外，也可以使用底层的统计函数构建自定义视图。
+  </para>
+
+  <para>
+   在使用统计信息监控当前活动时，重要的是要认识到这些信息不会即时更新。每个服务器进程在即将进入空闲之前把新的统计计数传送给收集器；因此仍在进行中的查询或事务不会影响显示的总数。此外，收集器本身最多每<varname>PGSTAT_STAT_INTERVAL</varname>毫秒（默认 500，除非构建服务器时更改）发出一次新报告。因此，显示的信息滞后于实际活动。不过，<varname>track_activities</varname>收集的当前查询信息总是最新的。
+  </para>
+
+  <para>
+   另一个重要点是，当要求服务器进程显示这些统计信息中的任何一种时，它会先取回收集器进程最近发出的报告，然后在当前事务结束之前，对所有统计视图和函数一直使用这一快照。因此，只要你继续当前事务，统计信息就会显示静态信息。类似地，在事务中第一次请求这类当前查询信息时，就会收集所有会话当前查询的信息，并且在整个事务期间显示的都是同一份信息。这是一个特性，而不是一个错误，因为它允许你对统计信息执行多个查询并对结果做关联，而不必担心数字在你眼前变化。但如果希望每个查询都看到新的结果，请确保在任何事务块之外执行这些查询。或者，也可以调用<function>pg_stat_clear_snapshot</function>()，它会丢弃当前事务的统计快照（如果有）。下一次使用统计信息时，就会获取一个新的快照。
+</para>
+
+  <table id="monitoring-stats-views-table">
+   <title>标准统计视图</title>
+
+   <tgroup cols="2">
+    <thead>
+     <row>
+      <entry>View Name</entry>
+      <entry>Description</entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry><structname>pg_stat_activity</></entry>
+      <entry>每个服务器进程一行，显示数据库 OID、数据库名、进程<acronym>ID</acronym>、用户 OID、用户名、客户端地址和端口号，服务器进程、当前事务和当前查询开始执行的时间，进程的等待状态，以及当前查询的文本。报告当前查询数据的各列只有在参数<varname>track_activities</varname>未被关闭时才可用。此外，只有当查看该视图的用户是超级用户或与被报告进程的属主是同一用户时，这些列才可见。
+     </entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_stat_bgwriter</></entry>
+      <entry>仅一行，显示来自后台写进程的集簇范围统计：计划内检查点的数量、被请求的检查点的数量、由检查点和后台清理扫描写出的缓冲区数，以及后台写进程因写出过多缓冲区而中止清理扫描的次数。还包括关于共享缓冲池的统计，包括由后端进程（即非后台写进程）写出的缓冲区数和分配的总缓冲区数。
+     </entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_stat_database</></entry>
+      <entry>每个数据库一行，显示数据库 OID、数据库名、连接到该数据库的活动服务器进程数、该数据库中已提交和已回滚的事务数、读取的磁盘块总数、缓冲区命中总数（即因在缓冲缓存中找到块而避免的块读请求数），以及返回、获取、插入、更新和删除的行数。
+     </entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_stat_all_tables</></entry>
+      <entry>当前数据库中的每个表（包括 TOAST 表）一行，显示表 OID、模式和表名、发起的顺序扫描次数、顺序扫描取出的活行数、发起的索引扫描次数（对该表所属的所有索引）、索引扫描取出的活行数、行插入、更新和删除的次数、HOT 更新（即无单独索引更新）的次数、活行数和死行数、该表最近一次手工清理的时间、最近一次被自动清理守护进程清理的时间、最近一次手工分析的时间，以及最近一次被自动清理守护进程分析的时间。
+      </entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_stat_sys_tables</></entry>
+      <entry>与<structname>pg_stat_all_tables</structname>相同，但只显示系统表。</entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_stat_user_tables</></entry>
+      <entry>与<structname>pg_stat_all_tables</structname>相同，但只显示用户表。</entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_stat_all_indexes</></entry>
+      <entry>当前数据库中的每个索引一行，显示表和索引 OID、模式、表和索引名、在该索引上发起的索引扫描次数、索引扫描返回的索引条目数，以及使用该索引的简单索引扫描取出的活表行数。
+      </entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_stat_sys_indexes</></entry>
+      <entry>和<structname>pg_stat_all_indexes</structname>一样，但只显示系统表上的索引。</entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_stat_user_indexes</></entry>
+      <entry>和<structname>pg_stat_all_indexes</structname>一样，但只显示用户表上的索引。</entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_statio_all_tables</></entry>
+      <entry>当前数据库中的每个表（包括 TOAST 表）一行，显示表 OID、模式和表名、从该表读取的磁盘块数、缓冲区命中数、该表所有索引的磁盘块读取数和缓冲区命中数、该表辅助 TOAST 表（若有）的磁盘块读取数和缓冲区命中数，以及 TOAST 表索引的磁盘块读取数和缓冲区命中数。
+      </entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_statio_sys_tables</></entry>
+      <entry>Same as <structname>pg_statio_all_tables</>, except that only
+      system tables are shown.</entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_statio_user_tables</></entry>
+      <entry>Same as <structname>pg_statio_all_tables</>, except that only
+      user tables are shown.</entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_statio_all_indexes</></entry>
+      <entry>当前数据库中的每个索引一行，显示表和索引 OID、模式、表和索引名，以及该索引中的磁盘块读取数和缓冲区命中数。
+      </entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_statio_sys_indexes</></entry>
+      <entry>和<structname>pg_statio_all_indexes</structname>一样，但只显示系统表上的索引。</entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_statio_user_indexes</></entry>
+      <entry>和<structname>pg_statio_all_indexes</structname>一样，但只显示用户表上的索引。</entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_statio_all_sequences</></entry>
+      <entry>当前数据库中的每个序列对象一行，显示序列 OID、模式和序列名，以及该序列中的磁盘块读取数和缓冲区命中数。
+      </entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_statio_sys_sequences</></entry>
+      <entry>和<structname>pg_statio_all_sequences</structname>一样，但只显示系统序列。（目前没有定义任何系统序列，因此该视图总是空的。）</entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_statio_user_sequences</></entry>
+      <entry>和<structname>pg_statio_all_sequences</structname>一样，但只显示用户序列。</entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_stat_user_functions</></entry>
+      <entry>对所有被跟踪的函数，显示函数 OID、模式、名称、调用次数、总时间和自身时间。自身时间是花在该函数本身的时间，总时间包括花在它调用的函数中的时间。时间值以毫秒计。
+     </entry>
+     </row>
+
+    </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   每个索引的统计信息对于判断哪些索引正在被使用以及它们有多有效尤其有用。
+  </para>
+
+  <para>
+   从<productname>PostgreSQL</productname> 8.1 开始，索引既可以被直接使用，也可以通过<quote>位图扫描</quote>使用。在位图扫描中，多个索引的输出可以通过 AND 或 OR 规则组合；因此在使用位图扫描时，很难把各个堆行取出与特定索引关联起来。因此，位图扫描会增加它所用索引的<structname>pg_stat_all_indexes</structname>.<structfield>idx_tup_read</structfield>计数，并增加该表的<structname>pg_stat_all_tables</structname>.<structfield>idx_tup_fetch</structfield>计数，但不影响<structname>pg_stat_all_indexes</structname>.<structfield>idx_tup_fetch</structfield>。
+  </para>
+
+  <note>
+   <para>
+    在<productname>PostgreSQL</productname> 8.1 之前，<structfield>idx_tup_read</structfield>和<structfield>idx_tup_fetch</structfield>计数基本上总是相等的。现在，即使不考虑位图扫描，它们也可能不同，因为<structfield>idx_tup_read</structfield>统计从索引中取出的索引条目，而<structfield>idx_tup_fetch</structfield>统计从表中取出的活行；如果用索引取出了任何死行或尚未提交的行，后者就会更小。
+   </para>
+  </note>
+
+  <para>
+   <structname>pg_statio_</structname>视图主要用于判断缓冲区缓存的有效性。
+   如果实际磁盘读取次数远少于缓冲区命中次数，缓存就能满足大多数读取请求，而无需调用内核。
+   不过，这些统计信息并不能反映全部情况：由于<productname>PostgreSQL</productname>处理磁盘 I/O 的方式，
+   不在<productname>PostgreSQL</productname>缓冲区缓存中的数据仍可能驻留在内核的 I/O 缓存中，
+   因而仍可在不执行物理读取的情况下取得。对于希望更详细地了解<productname>PostgreSQL</productname> I/O 行为的用户，
+   建议将<productname>PostgreSQL</productname>统计收集器与能够深入查看内核 I/O 处理情况的操作系统工具结合使用。
+  </para>
+
+  <para>
+   也可以通过编写查询来建立查看统计信息的其他方式，这些查询使用与标准视图相同的底层统计访问函数。这些函数列于<xref linkend="monitoring-stats-funcs-table">中。每数据库访问函数以数据库 OID 为参数来标识要报告的数据库。每表和每索引函数以表或索引 OID 为参数。函数调用统计的函数以函数 OID 为参数。（注意，用这些函数只能看到当前数据库中的表、索引和函数。）每服务器进程访问函数以服务器进程编号为参数，其范围从 1 到当前活动服务器进程数。
+  </para>
+
+  <table id="monitoring-stats-funcs-table">
+   <title>统计访问函数</title>
+
+   <tgroup cols="3">
+    <thead>
+     <row>
+      <entry>Function</entry>
+      <entry>Return Type</entry>
+      <entry>Description</entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry><literal><function>pg_stat_get_db_numbackends</function>(<type>oid</type>)</literal></entry>
+      <entry><type>integer</type></entry>
+      <entry>
+       数据库的活动服务器进程数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_db_xact_commit</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       数据库中已提交的事务数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_db_xact_rollback</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       数据库中已回滚的事务数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_db_blocks_fetched</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       数据库的磁盘块读取请求数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_db_blocks_hit</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       数据库在缓存中找到的磁盘块读取请求数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_db_tuples_returned</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       数据库返回的元组数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_db_tuples_fetched</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       数据库获取的元组数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_db_tuples_inserted</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       数据库中插入的元组数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_db_tuples_updated</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       数据库中更新的元组数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_db_tuples_deleted</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       数据库中删除的元组数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_numscans</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       参数为表时是完成的顺序扫描数，参数为索引时是完成的索引扫描数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_tuples_returned</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       参数为表时是顺序扫描读取的行数，参数为索引时是返回的索引条目数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_tuples_fetched</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       参数为表时是位图扫描取出的表行数，参数为索引时是使用该索引的简单索引扫描取出的表行数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_tuples_inserted</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       插入表中的行数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_tuples_updated</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       表中更新的行数（包括 HOT 更新）
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_tuples_deleted</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       从表中删除的行数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_tuples_hot_updated</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       Number of rows HOT-updated in table
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_live_tuples</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       表中的活行数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_dead_tuples</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       表中的死行数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_blocks_fetched</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       表或索引的磁盘块读取请求数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_blocks_hit</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       表或索引在缓存中找到的磁盘块请求数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_last_vacuum_time</function>(<type>oid</type>)</literal></entry>
+      <entry><type>timestamptz</type></entry>
+      <entry>
+       该表最近一次由用户发起的清理的时间
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_last_autovacuum_time</function>(<type>oid</type>)</literal></entry>
+      <entry><type>timestamptz</type></entry>
+      <entry>
+       该表最近一次由自动清理守护进程发起的清理的时间
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_last_analyze_time</function>(<type>oid</type>)</literal></entry>
+      <entry><type>timestamptz</type></entry>
+      <entry>
+       该表最近一次由用户发起的分析的时间
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_last_autoanalyze_time</function>(<type>oid</type>)</literal></entry>
+      <entry><type>timestamptz</type></entry>
+      <entry>
+       该表最近一次由自动清理守护进程发起的分析的时间
+      </entry>
+     </row>
+
+     <row>
+       <!-- See also the entry for this in func.sgml -->
+      <entry><literal><function>pg_backend_pid()</function></literal></entry>
+      <entry><type>integer</type></entry>
+      <entry>
+       附属于当前会话的服务器进程的进程 ID
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_activity</function>(<type>integer</type>)</literal></entry>
+      <entry><type>setof record</type></entry>
+      <entry>
+       返回带有指定 PID 的后端的信息记录；如果指定<symbol>NULL</symbol>，则为系统中每个活动后端各返回一条记录。返回的字段是<structname>pg_stat_activity</structname>视图中字段的一个子集.
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_function_calls</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       该函数被调用的次数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_function_time</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       花在该函数上的总挂钟时间，以微秒计。包括花在它调用的函数中的时间。
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_function_self_time</function>(<type>oid</type>)</literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       仅花在该函数本身上的时间。不包括花在被调用函数中的时间。
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_backend_idset()</function></literal></entry>
+      <entry><type>setof integer</type></entry>
+      <entry>
+       当前活动服务器进程编号的集合（从 1 到活动服务器进程数）。用法示例见正文。
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_backend_pid</function>(<type>integer</type>)</literal></entry>
+      <entry><type>integer</type></entry>
+      <entry>
+       给定服务器进程的进程 ID
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_backend_dbid</function>(<type>integer</type>)</literal></entry>
+      <entry><type>oid</type></entry>
+      <entry>
+       给定服务器进程的数据库 ID
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_backend_userid</function>(<type>integer</type>)</literal></entry>
+      <entry><type>oid</type></entry>
+      <entry>
+       给定服务器进程的用户 ID
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_backend_activity</function>(<type>integer</type>)</literal></entry>
+      <entry><type>text</type></entry>
+      <entry>
+       给定服务器进程的活动命令，但仅当当前用户是超级用户或与被查询会话的用户相同（且<varname>track_activities</varname>已启用）时可见
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_backend_waiting</function>(<type>integer</type>)</literal></entry>
+      <entry><type>boolean</type></entry>
+      <entry>
+       如果给定服务器进程正在等待锁则为真，但仅当当前用户是超级用户或与被查询会话的用户相同（且<varname>track_activities</varname>已启用）时可见
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_backend_activity_start</function>(<type>integer</type>)</literal></entry>
+      <entry><type>timestamp with time zone</type></entry>
+      <entry>
+       给定服务器进程当前执行的查询的启动时间，但仅当当前用户是超级用户或与被查询会话的用户相同（且<varname>track_activities</varname>已启用）时可见
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_backend_xact_start</function>(<type>integer</type>)</literal></entry>
+      <entry><type>timestamp with time zone</type></entry>
+      <entry>
+       给定服务器进程当前执行的事务的启动时间，但仅当当前用户是超级用户或与被查询会话的用户相同（且<varname>track_activities</varname>已启用）时可见
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_backend_start</function>(<type>integer</type>)</literal></entry>
+      <entry><type>timestamp with time zone</type></entry>
+      <entry>
+       给定服务器进程的启动时间；如果当前用户既不是超级用户也不是被查询会话的用户，则为 null
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_backend_client_addr</function>(<type>integer</type>)</literal></entry>
+      <entry><type>inet</type></entry>
+      <entry>
+       连接到给定服务器进程的客户端的 IP 地址；如果连接是通过 Unix 域套接字建立的，或者当前用户既不是超级用户也不是被查询会话的用户，则为 null
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_backend_client_port</function>(<type>integer</type>)</literal></entry>
+      <entry><type>integer</type></entry>
+      <entry>
+       连接到给定服务器进程的客户端的 TCP 端口号；如果连接是通过 Unix 域套接字建立的则为 -1；如果当前用户既不是超级用户也不是被查询会话的用户，则为 null
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_bgwriter_timed_checkpoints()</function></literal></entry>
+       <entry><type>bigint</type></entry>
+       <entry>
+        后台写进程启动的定时检查点次数
+        (because the <varname>checkpoint_timeout</varname> time has expired)
+       </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_bgwriter_requested_checkpoints()</function></literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       后台写进程因超出<varname>checkpoint_segments</varname>或因发出了<command>CHECKPOINT</command>命令而根据后端请求启动检查点的次数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_bgwriter_buf_written_checkpoints()</function></literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       检查点期间后台写进程写出的缓冲区数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_bgwriter_buf_written_clean()</function></literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       后台写进程为例行清理脏页而写出的缓冲区数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_bgwriter_maxwritten_clean()</function></literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       后台写进程因写出的缓冲区数超过<varname>bgwriter_lru_maxpages</varname>参数指定值而中止其清理扫描的次数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_buf_written_backend()</function></literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       后端因需要分配新缓冲区而写出的缓冲区数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_get_buf_alloc()</function></literal></entry>
+      <entry><type>bigint</type></entry>
+      <entry>
+       缓冲区分配总数
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_clear_snapshot()</function></literal></entry>
+      <entry><type>void</type></entry>
+      <entry>
+       丢弃当前统计快照
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_reset()</function></literal></entry>
+      <entry><type>void</type></entry>
+      <entry>
+       将当前数据库的所有统计计数器重置为零
+       (requires superuser privileges)
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_reset_shared</function>(text)</literal></entry>
+      <entry><type>void</type></entry>
+      <entry>
+       将数据库集簇的部分共享统计计数器重置为零（需要超级用户权限）。调用<literal>pg_stat_reset_shared('bgwriter')</literal>将把<structname>pg_stat_bgwriter</structname>显示的所有值清零。
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_reset_single_table_counters</function>(oid)</literal></entry>
+      <entry><type>void</type></entry>
+      <entry>
+       将当前数据库中单个表或索引的统计信息重置为零（需要超级用户权限）
+      </entry>
+     </row>
+
+     <row>
+      <entry><literal><function>pg_stat_reset_single_function_counters</function>(oid)</literal></entry>
+      <entry><type>void</type></entry>
+      <entry>
+       将当前数据库中单个函数的统计信息重置为零（需要超级用户权限）
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+   <note>
+    <para>
+     <function>pg_stat_get_blocks_fetched</function>减去<function>pg_stat_get_blocks_hit</function>得到的是为该表、索引或数据库发出的内核<function>read()</function>调用数；由于内核级缓冲，实际物理读取次数通常更低。<literal>*_blks_read</literal>统计列使用的就是这个差值，即 fetched 减 hit。
+    </para>
+   </note>
+
+  <para>
+   所有访问后端信息的函数都以 backend id 编号索引，唯一例外是以 PID 索引的<function>pg_stat_get_activity</function>。函数<function>pg_stat_get_backend_idset</function>提供了一种为每个活动服务器进程生成一行的便捷方法。例如，要显示所有服务器进程的<acronym>PID</acronym>和当前查询：
+
+<programlisting>
+SELECT pg_stat_get_backend_pid(s.backendid) AS procpid,
+       pg_stat_get_backend_activity(s.backendid) AS current_query
+    FROM (SELECT pg_stat_get_backend_idset() AS backendid) AS s;
+</programlisting>
+  </para>
+
+ </sect2>
+ </sect1>
+
+ <sect1 id="monitoring-locks">
+  <title>查看锁</title>
+
+  <indexterm zone="monitoring-locks">
+   <primary>lock</primary>
+   <secondary>monitoring</secondary>
+  </indexterm>
+
+  <para>
+   监控数据库活动的另外一个有用的工具是<structname>pg_locks</structname>系统表。这样就允许数据库管理员查看锁管理器中当前存在的锁的信息。例如，这个功能可以被用于：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      查看当前存在的所有锁、在一个特定数据库中的关系上所有的锁、在一个特定关系上所有的锁，或者由一个特定<productname>PostgreSQL</productname>会话持有的所有的锁。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      判断当前数据库中带有最多未授予锁的关系（它可能是数据库客户端之间的竞争来源）。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      判断锁竞争给数据库总体性能带来的影响，以及锁竞争随着整个数据库流量的变化范围。
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <structname>pg_locks</structname>视图的细节在<xref linkend="view-pg-locks">中。更多有关<productname>PostgreSQL</productname>的锁和管理并发性的信息，请参考<xref linkend="mvcc">。
+  </para>
+ </sect1>
+
+ <sect1 id="dynamic-trace">
+  <title>动态追踪</title>
+
+ <indexterm zone="dynamic-trace">
+  <primary>DTrace</primary>
+ </indexterm>
+
+  <para>
+   <productname>PostgreSQL</productname>提供了功能来支持数据库服务器的动态追踪。这样就允许在代码中的特 定点上调用外部工具来追踪执行过程。
+  </para>
+
+  <para>
+   一些探针或追踪点已经被插入在源代码中。这些探针的目的是被数据库开发者和管理员使用。默认情况下，探针不被编译到<productname>PostgreSQL</productname>中；用户需要显式地告诉配置脚本使得探针可用。
+  </para>
+
+  <para>
+   Currently, only the
+   <ulink url="http://opensolaris.org/os/community/dtrace/">DTrace</ulink>
+   工具支持，它可用于 OpenSolaris、Solaris 10 和 Mac OS X Leopard。预计 DTrace 将来也会在 FreeBSD 以及可能的其他操作系统上可用。Linux 上的<ulink url="http://sourceware.org/systemtap/">SystemTap</ulink>项目也提供了 DTrace 的等价物。通过修改<filename>src/include/utils/probes.h</filename>中宏的定义，理论上也可以支持其他动态追踪工具。
+  </para>
+
+  <sect2 id="compiling-for-trace">
+   <title>为动态追踪编译</title>
+
+  <para>
+   默认情况下，探针是不可用的，因此你将需要显式地告诉配置脚本让探针在<productname>PostgreSQL</productname>中可用。要包括 DTrace 支持，在配置时指定<option>--enable-dtrace</option>。更多信息请见<xref linkend="install-procedure">。
+  </para>
+  </sect2>
+
+  <sect2 id="trace-points">
+   <title>内置探针</title>
+
+  <para>
+   源码中提供了许多标准探针，如<xref linkend="dtrace-probe-point-table">所示。
+   当然还可以添加更多探针来增强<productname>PostgreSQL</productname>的可观测性。
+  </para>
+
+ <table id="dtrace-probe-point-table">
+  <title>内置 DTrace 探针</title>
+  <tgroup cols="3">
+   <thead>
+    <row>
+     <entry>Name</entry>
+     <entry>Parameters</entry>
+     <entry>Description</entry>
+    </row>
+   </thead>
+
+   <tbody>
+
+    <row>
+     <entry>transaction-start</entry>
+     <entry>(LocalTransactionId)</entry>
+     <entry>在新事务开始时触发的探针。
+      arg0 is the transaction ID.</entry>
+    </row>
+    <row>
+     <entry>transaction-commit</entry>
+     <entry>(LocalTransactionId)</entry>
+     <entry>事务成功完成时触发的探针。
+      arg0 is the transaction ID.</entry>
+    </row>
+    <row>
+     <entry>transaction-abort</entry>
+     <entry>(LocalTransactionId)</entry>
+     <entry>事务未能成功完成时触发的探针。
+      arg0 is the transaction ID.</entry>
+    </row>
+    <row>
+     <entry>query-start</entry>
+     <entry>(const char *)</entry>
+     <entry>开始处理查询时触发的探针。
+      arg0 is the query string.</entry>
+    </row>
+    <row>
+     <entry>query-done</entry>
+     <entry>(const char *)</entry>
+     <entry>查询处理完成时触发的探针。
+      arg0 is the query string.</entry>
+    </row>
+    <row>
+     <entry>query-parse-start</entry>
+     <entry>(const char *)</entry>
+     <entry>开始解析查询时触发的探针。
+      arg0 is the query string.</entry>
+    </row>
+    <row>
+     <entry>query-parse-done</entry>
+     <entry>(const char *)</entry>
+     <entry>查询解析完成时触发的探针。
+      arg0 is the query string.</entry>
+    </row>
+    <row>
+     <entry>query-rewrite-start</entry>
+     <entry>(const char *)</entry>
+     <entry>开始重写查询时触发的探针。
+      arg0 is the query string.</entry>
+    </row>
+    <row>
+     <entry>query-rewrite-done</entry>
+     <entry>(const char *)</entry>
+     <entry>查询重写完成时触发的探针。
+      arg0 is the query string.</entry>
+    </row>
+    <row>
+     <entry>query-plan-start</entry>
+     <entry>()</entry>
+     <entry>开始规划查询时触发的探针。</entry>
+    </row>
+    <row>
+     <entry>query-plan-done</entry>
+     <entry>()</entry>
+     <entry>查询规划完成时触发的探针。</entry>
+    </row>
+    <row>
+     <entry>query-execute-start</entry>
+     <entry>()</entry>
+     <entry>开始执行查询时触发的探针。</entry>
+    </row>
+    <row>
+     <entry>query-execute-done</entry>
+     <entry>()</entry>
+     <entry>查询执行完成时触发的探针。</entry>
+    </row>
+    <row>
+     <entry>statement-status</entry>
+     <entry>(const char *)</entry>
+     <entry>服务器进程更新其<structname>pg_stat_activity</structname>.<structfield>current_query</structfield>状态时触发的探针。arg0 是新的状态字符串。</entry>
+    </row>
+    <row>
+     <entry>checkpoint-start</entry>
+     <entry>(int)</entry>
+     <entry>检查点启动时触发的探针。arg0 是用于区分不同检查点类型（如 shutdown、immediate 或 force）的位标志。</entry>
+    </row>
+    <row>
+     <entry>checkpoint-done</entry>
+     <entry>(int, int, int, int, int)</entry>
+     <entry>检查点完成时触发的探针。（接下来列出的探针在检查点处理期间依次触发。）arg0 是写出的缓冲区数。arg1 是缓冲区总数。arg2、arg3 和 arg4 分别包含新增、删除和回收的 xlog 文件数。</entry>
+    </row>
+    <row>
+     <entry>clog-checkpoint-start</entry>
+     <entry>(bool)</entry>
+     <entry>检查点的 CLOG 部分开始时触发的探针。正常检查点时 arg0 为真，关闭检查点时为假。</entry>
+    </row>
+    <row>
+     <entry>clog-checkpoint-done</entry>
+     <entry>(bool)</entry>
+     <entry>检查点的 CLOG 部分完成时触发的探针。arg0 的含义与 clog-checkpoint-start 相同。</entry>
+    </row>
+    <row>
+     <entry>subtrans-checkpoint-start</entry>
+     <entry>(bool)</entry>
+     <entry>检查点的 SUBTRANS 部分开始时触发的探针。正常检查点时 arg0 为真，关闭检查点时为假。</entry>
+    </row>
+    <row>
+     <entry>subtrans-checkpoint-done</entry>
+     <entry>(bool)</entry>
+     <entry>检查点的 SUBTRANS 部分完成时触发的探针。arg0 的含义与 subtrans-checkpoint-start 相同。</entry>
+    </row>
+    <row>
+     <entry>multixact-checkpoint-start</entry>
+     <entry>(bool)</entry>
+     <entry>检查点的 MultiXact 部分开始时触发的探针。正常检查点时 arg0 为真，关闭检查点时为假。</entry>
+    </row>
+    <row>
+     <entry>multixact-checkpoint-done</entry>
+     <entry>(bool)</entry>
+     <entry>检查点的 MultiXact 部分完成时触发的探针。arg0 的含义与 multixact-checkpoint-start 相同。</entry>
+    </row>
+    <row>
+     <entry>buffer-checkpoint-start</entry>
+     <entry>(int)</entry>
+     <entry>检查点的缓冲区写出部分开始时触发的探针。arg0 是用于区分不同检查点类型（如 shutdown、immediate 或 force）的位标志。</entry>
+    </row>
+    <row>
+     <entry>buffer-sync-start</entry>
+     <entry>(int, int)</entry>
+     <entry>检查点期间开始写出脏缓冲区时（在识别出哪些缓冲区必须写出之后）触发的探针。arg0 是缓冲区总数。arg1 是当前脏且需要写出的缓冲区数。</entry>
+    </row>
+    <row>
+     <entry>buffer-sync-written</entry>
+     <entry>(int)</entry>
+     <entry>检查点期间每写出一个缓冲区后触发的探针。arg0 是缓冲区的 ID 编号。</entry>
+    </row>
+    <row>
+     <entry>buffer-sync-done</entry>
+     <entry>(int, int, int)</entry>
+     <entry>所有脏缓冲区都已写出时触发的探针。arg0 是缓冲区总数。arg1 是检查点进程实际写出的缓冲区数。arg2 是预期要写出的缓冲区数（buffer-sync-start 的 arg1）；任何差值都反映了检查点期间其他进程刷写的缓冲区。</entry>
+    </row>
+    <row>
+     <entry>buffer-checkpoint-sync-start</entry>
+     <entry>()</entry>
+     <entry>脏缓冲区已写入内核之后、开始发出 fsync 请求之前触发的探针。</entry>
+    </row>
+    <row>
+     <entry>buffer-checkpoint-done</entry>
+     <entry>()</entry>
+     <entry>缓冲区到磁盘的同步完成时触发的探针。</entry>
+    </row>
+    <row>
+     <entry>twophase-checkpoint-start</entry>
+     <entry>()</entry>
+     <entry>检查点的两阶段部分开始时触发的探针。</entry>
+    </row>
+    <row>
+     <entry>twophase-checkpoint-done</entry>
+     <entry>()</entry>
+     <entry>检查点的两阶段部分完成时触发的探针。</entry>
+    </row>
+    <row>
+     <entry>buffer-read-start</entry>
+     <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid, bool, bool)</entry>
+     <entry>缓冲区读取开始时触发的探针。arg0 和 arg1 是页的分支号和块号（但如果是关系扩展请求，arg1 为 -1）。arg2、arg3 和 arg4 是标识该关系的表空间、数据库和关系 OID。arg5 对本地缓冲区为真，对共享缓冲区为假。arg6 对关系扩展请求为真，对普通读取为假。</entry>
+    </row>
+    <row>
+     <entry>buffer-read-done</entry>
+     <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid, bool, bool, bool)</entry>
+     <entry>缓冲区读取完成时触发的探针。arg0 和 arg1 是页的分支号和块号（如果是关系扩展请求，arg1 此时是新增块的块号）。arg2、arg3 和 arg4 是标识该关系的表空间、数据库和关系 OID。arg5 对本地缓冲区为真，对共享缓冲区为假。arg6 对关系扩展请求为真，对普通读取为假。arg7 如果缓冲区在池中找到则为真，否则为假。</entry>
+    </row>
+    <row>
+     <entry>buffer-flush-start</entry>
+     <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid)</entry>
+     <entry>对共享缓冲区发出任何写请求之前触发的探针。arg0 和 arg1 是页的分支号和块号。arg2、arg3 和 arg4 是标识该关系的表空间、数据库和关系 OID。</entry>
+    </row>
+    <row>
+     <entry>buffer-flush-done</entry>
+     <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid)</entry>
+     <entry>写请求完成时触发的探针。（注意这只是把数据传递给内核的时间；通常还没有真正写到磁盘上。）参数与 buffer-flush-start 相同。</entry>
+    </row>
+    <row>
+     <entry>buffer-write-dirty-start</entry>
+     <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid)</entry>
+     <entry>服务器进程开始写出脏缓冲区时触发的探针。（如果这种情况经常发生，说明<xref linkend="guc-shared-buffers">太小或需要调整后台写控制参数。）arg0 和 arg1 是页的分支号和块号。arg2、arg3 和 arg4 是标识该关系的表空间、数据库和关系 OID。</entry>
+    </row>
+    <row>
+     <entry>buffer-write-dirty-done</entry>
+     <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid)</entry>
+     <entry>脏缓冲区写出完成时触发的探针。参数与 buffer-write-dirty-start 相同。</entry>
+    </row>
+    <row>
+     <entry>wal-buffer-write-dirty-start</entry>
+     <entry>()</entry>
+     <entry>服务器进程因 WAL 缓冲区空间耗尽而开始写出脏 WAL 缓冲区时触发的探针。（如果这种情况经常发生，说明<xref linkend="guc-wal-buffers">太小。）</entry>
+    </row>
+    <row>
+     <entry>wal-buffer-write-dirty-done</entry>
+     <entry>()</entry>
+     <entry>脏 WAL 缓冲区写出完成时触发的探针。</entry>
+    </row>
+    <row>
+     <entry>xlog-insert</entry>
+     <entry>(unsigned char, unsigned char)</entry>
+     <entry>插入 WAL 记录时触发的探针。arg0 是该记录的资源管理器（rmid）。arg1 是信息标志。</entry>
+    </row>
+    <row>
+     <entry>xlog-switch</entry>
+     <entry>()</entry>
+     <entry>请求 WAL 段切换时触发的探针。</entry>
+    </row>
+    <row>
+     <entry>smgr-md-read-start</entry>
+     <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid)</entry>
+     <entry>开始从关系读取块时触发的探针。arg0 和 arg1 是页的分支号和块号。arg2、arg3 和 arg4 是标识该关系的表空间、数据库和关系 OID。</entry>
+    </row>
+    <row>
+     <entry>smgr-md-read-done</entry>
+     <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid, int, int)</entry>
+     <entry>块读取完成时触发的探针。arg0 和 arg1 是页的分支号和块号。arg2、arg3 和 arg4 是标识该关系的表空间、数据库和关系 OID。arg5 是实际读取的字节数，arg6 是请求的字节数（如果两者不同，则表明出现了问题）。</entry>
+    </row>
+    <row>
+     <entry>smgr-md-write-start</entry>
+     <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid)</entry>
+     <entry>开始向关系写入块时触发的探针。arg0 和 arg1 是页的分支号和块号。arg2、arg3 和 arg4 是标识该关系的表空间、数据库和关系 OID。</entry>
+    </row>
+    <row>
+     <entry>smgr-md-write-done</entry>
+     <entry>(ForkNumber, BlockNumber, Oid, Oid, Oid, int, int)</entry>
+     <entry>块写入完成时触发的探针。arg0 和 arg1 是页的分支号和块号。arg2、arg3 和 arg4 是标识该关系的表空间、数据库和关系 OID。arg5 是实际写入的字节数，arg6 是请求的字节数（如果两者不同，则表明出现了问题）。</entry>
+    </row>
+    <row>
+     <entry>sort-start</entry>
+     <entry>(int, bool, int, int, bool)</entry>
+     <entry>排序操作开始时触发的探针。arg0 指示堆排序、索引排序还是数据排序。arg1 为真表示强制唯一值。arg2 是键列数。arg3 是允许的工作内存 KB 数。arg4 为真表示需要随机访问排序结果。</entry>
+    </row>
+    <row>
+     <entry>sort-done</entry>
+     <entry>(bool, long)</entry>
+     <entry>排序完成时触发的探针。arg0 为真表示外部排序，为假表示内部排序。arg1 是外部排序使用的磁盘块数，或内部排序使用的内存 KB 数。</entry>
+    </row>
+    <row>
+     <entry>lwlock-acquire</entry>
+     <entry>(LWLockId, LWLockMode)</entry>
+     <entry>获取到一个 LWLock 时触发的探针。arg0 是该 LWLock 的 ID。arg1 是请求的锁模式，即排他或共享。</entry>
+    </row>
+    <row>
+     <entry>lwlock-release</entry>
+     <entry>(LWLockId)</entry>
+     <entry>释放一个 LWLock 时触发的探针（但注意被释放的等待者尚未被唤醒）。arg0 是该 LWLock 的 ID。</entry>
+    </row>
+    <row>
+     <entry>lwlock-wait-start</entry>
+     <entry>(LWLockId, LWLockMode)</entry>
+     <entry>LWLock 不能立即获取、服务器进程开始等待该锁可用时触发的探针。arg0 是该 LWLock 的 ID。arg1 是请求的锁模式，即排他或共享。</entry>
+    </row>
+    <row>
+     <entry>lwlock-wait-done</entry>
+     <entry>(LWLockId, LWLockMode)</entry>
+     <entry>服务器进程结束对 LWLock 的等待时触发的探针（它实际上尚未持有该锁）。arg0 是该 LWLock 的 ID。arg1 是请求的锁模式，即排他或共享。</entry>
+    </row>
+    <row>
+     <entry>lwlock-condacquire</entry>
+     <entry>(LWLockId, LWLockMode)</entry>
+     <entry>调用者指定不等待却成功获取到 LWLock 时触发的探针。arg0 是该 LWLock 的 ID。arg1 是请求的锁模式，即排他或共享。</entry>
+    </row>
+    <row>
+     <entry>lwlock-condacquire-fail</entry>
+     <entry>(LWLockId, LWLockMode)</entry>
+     <entry>调用者指定不等待且未能成功获取 LWLock 时触发的探针。arg0 是该 LWLock 的 ID。arg1 是请求的锁模式，即排他或共享。</entry>
+    </row>
+    <row>
+     <entry>lock-wait-start</entry>
+     <entry>(unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, LOCKMODE)</entry>
+     <entry>重量级锁（lmgr 锁）请求因锁不可用而开始等待时触发的探针。arg0 到 arg3 是标识被锁定对象的标签字段。arg4 指示被锁定对象的类型。arg5 指示请求的锁类型。</entry>
+    </row>
+    <row>
+     <entry>lock-wait-done</entry>
+     <entry>(unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, LOCKMODE)</entry>
+     <entry>重量级锁（lmgr 锁）请求结束等待时触发的探针（它实际上尚未持有该锁）。参数与 lock-wait-start 相同。</entry>
+    </row>
+    <row>
+     <entry>deadlock-found</entry>
+     <entry>()</entry>
+     <entry>死锁检测器发现死锁时触发的探针。</entry>
+    </row>
+
+   </tbody>
+   </tgroup>
+  </table>
+
+ <table id="typedefs-table">
+  <title>探针参数中使用的已定义类型</title>
+  <tgroup cols="2">
+   <thead>
+    <row>
+     <entry>Type</entry>
+     <entry>Definition</entry>
+    </row>
+   </thead>
+
+   <tbody>
+
+    <row>
+     <entry>LocalTransactionId</entry>
+     <entry>unsigned int</entry>
+    </row>
+    <row>
+     <entry>LWLockId</entry>
+     <entry>int</entry>
+    </row>
+    <row>
+     <entry>LWLockMode</entry>
+     <entry>int</entry>
+    </row>
+    <row>
+     <entry>LOCKMODE</entry>
+     <entry>int</entry>
+    </row>
+    <row>
+     <entry>BlockNumber</entry>
+     <entry>unsigned int</entry>
+    </row>
+    <row>
+     <entry>Oid</entry>
+     <entry>unsigned int</entry>
+    </row>
+    <row>
+     <entry>ForkNumber</entry>
+     <entry>int</entry>
+    </row>
+    <row>
+     <entry>bool</entry>
+     <entry>char</entry>
+    </row>
+
+   </tbody>
+   </tgroup>
+  </table>
+
+
+  </sect2>
+
+  <sect2 id="using-trace-points">
+   <title>使用探针</title>
+
+  <para>
+   下面的示例展示了一个分析系统中事务计数的 DTrace 脚本，可以用来代替一次性能测试之前和之后的<structname>pg_stat_database</structname>快照：
+<programlisting>
+#!/usr/sbin/dtrace -qs
+
+postgresql$1:::transaction-start
+{
+      @start["Start"] = count();
+      self->ts  = timestamp;
+}
+
+postgresql$1:::transaction-abort
+{
+      @abort["Abort"] = count();
+}
+
+postgresql$1:::transaction-commit
+/self->ts/
+{
+      @commit["Commit"] = count();
+      @time["Total time (ns)"] = sum(timestamp - self->ts);
+      self->ts=0;
+}
+</programlisting>
+   当被执行时，该示例 D 脚本给出这样的输出：
+<screen>
+# ./txn_count.d `pgrep -n postgres` or ./txn_count.d &lt;PID&gt;
+^C
+
+Start                                          71
+Commit                                         70
+Total time (ns)                        2312105013
+</screen>
+  </para>
+
+  <note>
+   <para>
+    SystemTap 的追踪脚本记法与 DTrace 不同，但底层探针是兼容的。需要注意的一点是，截至本文编写时，SystemTap 脚本必须使用双下划线来代替连字符引用探针名。预计未来的 SystemTap 版本会修复这一点。
+   </para>
+  </note>
+
+  <para>
+   你应该记住，DTrace 脚本需要细心地编写和调试，否则被收集的追踪信息可能会毫无意义。在大多数发现问题的情况下，出错的是插桩，而不是底层系统。当讨论使用动态追踪发现的信息时，一定要附上使用的脚本以便其也被检查和讨论。
+  </para>
+
+  <para>
+   更多示例脚本可以在 PgFoundry 的<ulink url="http://pgfoundry.org/projects/dtrace/">dtrace 项目</ulink>中找到。
+  </para>
+  </sect2>
+
+  <sect2 id="defining-trace-points">
+   <title>定义新探针</title>
+
+  <para>
+   开发者可以在代码中任意位置定义新的探针，当然这要重新编译之后才能生效。下面是插入新探针的步骤：
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     决定探针名称以及要通过探针提供的数据
+    </para>
+   </step>
+
+   <step>
+    <para>
+     把该探针定义加入到<filename>src/backend/utils/probes.d</filename>
+    </para>
+   </step>
+
+   <step>
+    <para>
+     如果<filename>pg_trace.h</filename>尚未被包含该探针点的模块引用，则将它包含进来，并且在源代码中期望的位置插入<literal>TRACE_POSTGRESQL</literal>探针宏
+    </para>
+   </step>
+
+   <step>
+    <para>
+     重新编译并验证新探针是可用的
+    </para>
+   </step>
+  </procedure>
+
+  <formalpara>
+   <title>示例：</title>
+   <para>
+    这里是一个如何增加一个探针来用事务 ID 追踪所有新事务的示例。
+   </para>
+  </formalpara>
+
+  <procedure>
+   <step>
+    <para>
+     决定探针将被命名为<literal>transaction-start</literal>并且需要一个LocalTransactionId类型的参数
+    </para>
+   </step>
+
+   <step>
+    <para>
+     将该探针定义加入到<filename>src/backend/utils/probes.d</filename>：
+<programlisting>
+probe transaction__start(LocalTransactionId);
+</programlisting>
+     注意探针名字中双下划线的使用。在一个使用探针的 DTrace 脚本中，双下划线需要被替换为一个连字符，因此，文档中应向用户说明的名称是<literal>transaction-start</literal>。
+    </para>
+   </step>
+
+   <step>
+    <para>
+     在编译时，<literal>transaction__start</literal>被转换成一个名为<literal>TRACE_POSTGRESQL_TRANSACTION_START</literal>的宏（注意这里是单下划线），可以通过包含头文件<filename>pg_trace.h</filename>获得。将宏调用加入到源代码中的合适位置。在这种情况下，看起来类似：
+
+<programlisting>
+TRACE_POSTGRESQL_TRANSACTION_START(vxid.localTransactionId);
+</programlisting>
+    </para>
+   </step>
+
+   <step>
+    <para>
+     在重新编译和运行新的二进制文件之后，通过运行下面的 DTrace 命令来检查新增的探针是否可用。你应该看到类似下面的输出：
+<screen>
+# dtrace -ln transaction-start
+   ID    PROVIDER          MODULE           FUNCTION NAME
+18705 postgresql49878     postgres     StartTransactionCommand transaction-start
+18755 postgresql49877     postgres     StartTransactionCommand transaction-start
+18805 postgresql49876     postgres     StartTransactionCommand transaction-start
+18855 postgresql49875     postgres     StartTransactionCommand transaction-start
+18986 postgresql49873     postgres     StartTransactionCommand transaction-start
+</screen>
+    </para>
+   </step>
+  </procedure>
+
+  <para>
+   向C代码中添加追踪宏时，有一些事情需要注意：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      需要小心的是，为探针参数指定的数据类型要匹配宏中使用的变量的数据类型，否则会发生编译错误。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      在大多数平台上，如果用<option>--enable-dtrace</option>编译了<productname>PostgreSQL</productname>，无论何时当控制经过一个追踪宏时，都会对该宏的参数求值，<emphasis>即使没有进行追踪也会这样做</emphasis>。如果只是报告少数局部变量的值，通常无需担心这一点。但是要注意不要将开销大的函数调用放入参数中。如果你需要这样做，考虑通过检查追踪是否真的被启用来保护该宏：
+
+<programlisting>
+if (TRACE_POSTGRESQL_TRANSACTION_START_ENABLED())
+    TRACE_POSTGRESQL_TRANSACTION_START(some_function(...));
+</programlisting>
+
+      每个追踪宏有一个对应的<literal>ENABLED</literal>宏。
+     </para>
+    </listitem>
+   </itemizedlist>
+
+  </para>
+
+  </sect2>
+
+ </sect1>
+
+</chapter>

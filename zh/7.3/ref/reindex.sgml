@@ -1,0 +1,230 @@
+<!--
+$PostgreSQL: pgsql/doc/src/sgml/ref/reindex.sgml,v 1.40 2010/04/03 07:23:02 petere Exp $
+PostgreSQL documentation
+-->
+
+<refentry id="SQL-REINDEX">
+ <refmeta>
+  <refentrytitle>REINDEX</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>REINDEX</refname>
+  <refpurpose>rebuild indexes</refpurpose>
+ </refnamediv>
+
+ <indexterm zone="sql-reindex">
+  <primary>REINDEX</primary>
+ </indexterm>
+
+ <refsynopsisdiv>
+<synopsis>
+REINDEX { INDEX | TABLE | DATABASE | SYSTEM } <replaceable class="PARAMETER">name</replaceable> [ FORCE ]
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>描述</title>
+
+  <para>
+   <command>REINDEX</command>使用索引所属表中存储的数据重建索引，
+   并替换索引的旧副本。以下几种场景适合使用<command>REINDEX</command>：
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      一个索引已经损坏，不再包含有效数据。尽管理论上这不该发生，
+      但在实践中索引可能因软件缺陷或硬件故障而损坏。
+      <command>REINDEX</command>提供了一种恢复方法。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      一个索引已经<quote>膨胀</quote>，也就是说其中包含许多空页或几乎为空
+      的页。在 <productname>PostgreSQL</productname> 中，B-树索引在某些不常见
+      的访问模式下可能出现这种情况。<command>REINDEX</command>可通过写入一个
+      不含死页的新版本索引来减少索引的空间消耗。详见<xref
+      linkend="routine-reindex">。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      你修改了某个索引的存储参数（例如 fillfactor），并希望确保该更改已经
+      完全生效。
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>使用 <literal>CONCURRENTLY</literal> 选项构建索引失败后，会留下一个<quote>无效</quote>索引。这类索引没有用处，但用 <command>REINDEX</command> 重建它们可能很方便。注意，<command>REINDEX</command> 不会进行并发构建。要在不干扰生产运行的情况下构建索引，应删除该索引并重新执行 <command>CREATE INDEX CONCURRENTLY</command> 命令。</para>
+    </listitem>
+
+   </itemizedlist></para>
+ </refsect1>
+
+ <refsect1>
+  <title>参数</title>
+
+  <variablelist>
+   <varlistentry>
+    <term><literal>INDEX</literal></term>
+    <listitem>
+     <para>重新创建指定的索引。</para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>TABLE</literal></term>
+    <listitem>
+     <para>重新创建指定表的所有索引。如果该表有一个辅助<quote>TOAST</quote>表，也会对其重新索引。</para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>DATABASE</literal></term>
+    <listitem>
+     <para>
+      重新创建当前数据库中的所有索引。
+      共享系统目录上的索引也会被处理。这种形式的<command>REINDEX</command>不能
+      在事务块内执行。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>SYSTEM</literal></term>
+    <listitem>
+     <para>
+      重新创建当前数据库内系统目录上的所有索引。共享系统目录上的索引也包
+      含在内。用户表上的索引不会被处理。这种形式的
+      <command>REINDEX</command>不能在事务块内执行。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><replaceable class="PARAMETER">name</replaceable></term>
+    <listitem>
+     <para>
+      要重新索引的特定索引、表或数据库的名称。索引名和表名可以带模式限
+      定。目前，<command>REINDEX DATABASE</command>和
+      <command>REINDEX SYSTEM</command>只能对当前数据库重新索引，所以其参数必须与当前数据库名匹配。
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>FORCE</literal></term>
+    <listitem>
+     <para>在每个索引被重建时打印进度报告。</para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>注解</title>
+
+  <para>
+   如果怀疑某个用户表上的索引已经损坏，可以使用
+   <command>REINDEX INDEX</command>或<command>REINDEX TABLE</command>
+   直接重建该索引，或者重建该表上的所有索引。
+  </para>
+
+  <para>
+   如果需要从系统表上的索引损坏中恢复，情况就更复杂了。在这种情况下，
+   重要的是系统本身没有使用任何可疑索引。（事实上，在这种场景下，你可
+   能会发现服务器进程在启动时立即崩溃，因为它依赖损坏的索引。）要安
+   全恢复，必须用<option>-P</option>选项启动服务器，该选项会阻止服务器
+   在查找系统目录时使用索引。
+  </para>
+
+  <para>
+   一种做法是关闭服务器，并在命令行中包含<option>-P</option>选项来启
+   动单用户 <productname>PostgreSQL</productname> 服务器。然后可以根据
+   希望重建的范围，执行<command>REINDEX DATABASE</command>、
+   <command>REINDEX SYSTEM</command>、<command>REINDEX TABLE</command>
+   或<command>REINDEX INDEX</command>。如果拿不准，就使用
+   <command>REINDEX SYSTEM</command>来重建该数据库中的所有系统索引。然
+   后退出单用户服务器会话并重新启动常规服务器。关于如何与单用户服务器接
+   口交互的更多信息，参见<xref linkend="app-postgres">参考页。
+  </para>
+
+  <para>
+   另一种方法是启动一个常规服务器会话，并在其命令行选项中包含
+   <option>-P</option>。具体做法因客户端而异，但对于所有基于
+   <application>libpq</application>的客户端，都可以在启动客户端之前将环
+   境变量<envar>PGOPTIONS</envar>设置为<literal>-P</literal>。注意，尽
+   管这种方法不需要阻止其他客户端，但在修复完成之前，阻止其他用户连接到
+   受损数据库可能仍然更稳妥。
+  </para>
+
+  <para>
+   <command>REINDEX</command>类似于删除并重新创建索引，因为索引内容都是
+   从头重建的。不过，两者在锁方面的考量相当不同。
+   <command>REINDEX</command>会阻止该索引所属表上的写入，但不阻止读取。它
+   还会对正在处理的特定索引获取独占锁，
+   从而阻塞试图使用该索引的读取。相比之下，
+   <command>DROP INDEX</command>会短暂地对父表获取独占锁，同时阻塞写入和读取。随后的
+   <command>CREATE INDEX</command>会阻止写入但不阻止读取；由于索引不存
+   在，读取不会尝试使用它，因此不会发生阻塞，但读取可能被迫使用代价高昂
+   的顺序扫描。
+  </para>
+
+  <para>对单个索引或表重新索引，要求用户是该索引或表的拥有者。对数据库重新索引，则要求用户是该数据库的拥有者（因此，拥有者可以重建其他用户所拥有表的索引）。当然，超级用户始终可以重新索引任何对象。</para>
+
+  <para>
+   在<productname>PostgreSQL</productname> 8.1 之前，<command>REINDEX DATABASE</command>只处理系统索引，而不是像其名字所暗示的那样处理所有索引。这一行为已被更改，以减少出人意料的因素。旧的行为可以通过<command>REINDEX SYSTEM</command>使用。
+  </para>
+
+  <para>
+   重建表<productname>my_table</productname>上的所有索引：
+
+<command>
+REINDEX TABLE my_table;
+</>
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>示例</title>
+
+  <para>
+   重建单个索引：
+
+<programlisting>
+REINDEX INDEX my_index;
+</programlisting>
+  </para>
+
+  <para>
+   重建表<literal>my_table</literal>上的所有索引：
+
+<programlisting>
+REINDEX TABLE my_table;
+</programlisting>
+  </para>
+
+  <para>
+   在不假定系统索引已经有效的情况下，重建某个数据库中的所有索引：
+
+<programlisting>
+$ <userinput>export PGOPTIONS="-P"</userinput>
+$ <userinput>psql broken_db</userinput>
+...
+broken_db=&gt; REINDEX DATABASE broken_db;
+broken_db=&gt; \q
+</programlisting></para>
+ </refsect1>
+
+ <refsect1>
+  <title>兼容性</title>
+
+  <para>
+   在 SQL 标准中没有<command>REINDEX</command>命令。
+  </para>
+ </refsect1>
+</refentry>

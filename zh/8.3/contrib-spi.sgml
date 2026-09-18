@@ -1,0 +1,136 @@
+<!-- $PostgreSQL: pgsql/doc/src/sgml/contrib-spi.sgml,v 1.2.16.1 2010/08/17 04:37:15 petere Exp $ -->
+
+<sect1 id="contrib-spi">
+ <title>spi</title>
+
+ <indexterm zone="contrib-spi">
+  <primary>SPI</primary>
+  <secondary>examples</secondary>
+ </indexterm>
+
+ <para>
+  <filename>contrib/spi</> 模块提供了若干使用 SPI 和触发器的可行
+  示例。虽然这些函数本身也有一定的独立用途，但把它们作为可按自身
+  需求修改的示例来看更有价值。这些函数足够通用，可以用于任何表，
+  但在创建触发器时必须指定表名和字段名（如下所述）。
+ </para>
+
+ <sect2>
+  <title>refint.c &mdash; 用于实现引用完整性的函数</title>
+
+  <para><function>check_primary_key()</function>和<function>check_foreign_key()</function>用于检查外键约束。（当然，这项功能早已被内置的外键机制取代，不过该模块作为示例仍然有用。）</para>
+
+  <para>
+   <function>check_primary_key()</function> 检查引用表。使用时，在引用其他表的表上
+   创建一个使用该函数的 <literal>BEFORE INSERT OR UPDATE</literal> 触发器。
+   触发器参数依次为：引用表中构成外键的列名、被引用表名，以及被引用表中构成
+   主键/唯一键的列名。
+   若要处理多个外键，请为每个引用分别创建一个触发器。
+  </para>
+
+  <para>
+   <function>check_foreign_key()</function> 检查被引用表。使用时，在被其他表引用的表上
+   创建一个使用该函数的 <literal>BEFORE DELETE OR UPDATE</literal> 触发器。
+   触发器参数依次为：该函数需要检查的引用表数量、发现引用键时采取的动作
+   （<literal>cascade</literal> 表示删除引用行，
+   <literal>restrict</literal> 表示若存在引用键则中止事务，
+   <literal>setnull</literal> 表示将引用键字段设为空）、
+   被引用表中构成主键/唯一键的列名，然后是引用表名和列名
+   （按第一个参数指定的引用表数量重复提供）。请注意，主键/唯一键列应标记为
+   NOT NULL，并具有唯一索引。
+  </para>
+
+  <para>
+   <filename>refint.example</filename> 中有示例。
+  </para>
+ </sect2>
+
+ <sect2>
+  <title>timetravel.c &mdash; 实现时间旅行的函数</title>
+
+  <para>很久以前，<productname>PostgreSQL</productname>曾内置时间旅行功能，为每个元组保存插入和删除时间。可以使用这些函数模拟这一功能。要使用这些函数，必须为表添加两个<type>abstime</type>类型的列，以存储元组插入的时间（start_date）和更改/删除的时间（stop_date）：<programlisting>
+CREATE TABLE mytab (
+        ...             ...
+        start_date      abstime,
+        stop_date       abstime
+        ...             ...
+);
+</programlisting>这些列可以任意命名，不过在这里我们将它们称为 start_date 和 stop_date。</para>
+
+  <para>插入新行时，start_date 通常应设置为当前时间，stop_date 应设置为<literal>infinity</literal>。如果插入的数据在这些列中包含空值，触发器会自动将其替换为上述值。一般来说，只有在重新载入转储数据时，才应向这些列中插入显式的非空数据。</para>
+
+  <para>stop_date 等于<literal>infinity</literal>的元组<quote>当前有效</quote>，可以修改。stop_date 为有限值的元组则不能再修改，触发器会阻止这种操作。（如果需要这样做，可以按下文所示关闭时间旅行。）</para>
+
+  <para>对于可修改的行，更新时只会将被更新元组的 stop_date 改为当前时间，并插入一个包含修改后数据的新元组。新元组的 start_date 将设置为当前时间，stop_date 设置为<literal>infinity</literal>。</para>
+
+  <para>删除操作实际上不会删除元组，而只会将其 stop_date 设置为当前时间。</para>
+
+  <para>要查询<quote>当前有效</quote>的元组，请在查询的 WHERE 条件中加入<literal>stop_date = 'infinity'</literal>。（你可能希望将其放入视图中。）类似地，通过为 start_date 和 stop_date 设置合适的条件，也可以查询在过去任何时间有效的元组。</para>
+
+  <para><function>timetravel()</function>是支持此行为的通用触发器函数。在每个使用时间旅行的表上，使用此函数创建一个<literal>BEFORE INSERT OR UPDATE OR DELETE</literal>触发器。指定两个触发器参数：start_date 和 stop_date 列的实际名称。还可以选择指定一到三个额外参数，它们必须引用<type>text</type>类型的列。触发器会在 INSERT 时将当前用户名存入其中的第一列，在 UPDATE 时存入第二列，在 DELETE 时存入第三列。</para>
+
+  <para><function>set_timetravel()</function>允许为表打开或关闭时间旅行。<literal>set_timetravel('mytab', 1)</literal>会为表<literal>mytab</literal>打开 TT。<literal>set_timetravel('mytab', 0)</literal>会为表<literal>mytab</literal>关闭 TT。两种情况都会报告原来的状态。在 TT 关闭时，可以自由修改 start_date 和 stop_date 列。请注意，开关状态仅作用于当前数据库会话；新会话总是从所有表的 TT 都打开的状态开始。</para>
+
+  <para><function>get_timetravel()</function>返回表的 TT 状态，而不改变它。</para>
+
+  <para><filename>timetravel.example</filename>中有一个示例。</para>
+ </sect2>
+
+ <sect2>
+  <title>autoinc.c &mdash; functions for autoincrementing fields</title>
+
+  <para><function>autoinc()</function>是一个将序列的下一个值存入整数字段的触发器。它与内置的<quote>序列列</quote>功能有一些重叠，但并不相同：<function>autoinc()</function>会覆盖插入时试图为该字段指定其他值的操作，而且还可以选择在更新时也递增该字段。</para>
+
+  <para>
+   使用时，创建一个使用该函数的 <literal>BEFORE INSERT</literal>
+   （或者可选的 <literal>BEFORE INSERT OR UPDATE</literal>）触发器。
+   指定两个触发器参数：要修改的整型列名，以及提供这些值的序列对象名。
+   （实际上，如果你希望更新多个自动递增列，也可以指定任意多组这样的名称对。）
+  </para>
+
+  <para>
+   <filename>autoinc.example</filename> 中有一个示例。
+  </para>
+
+ </sect2>
+
+ <sect2>
+  <title>insert_username.c &mdash; 用于跟踪谁修改了表的函数</title>
+
+  <para>
+   <function>insert_username()</function> 是一个将当前用户名存入文本字段的触发器。
+   它有助于跟踪表中某一特定行最后一次是由谁修改的。
+  </para>
+
+  <para>
+   使用时，创建一个使用该函数的 <literal>BEFORE INSERT</literal> 和/或
+   <literal>UPDATE</literal> 触发器。指定一个触发器参数：要修改的文本列名。
+  </para>
+
+  <para>
+   <filename>insert_username.example</filename> 中有一个示例。
+  </para>
+
+ </sect2>
+
+ <sect2>
+  <title>moddatetime.c &mdash; 用于跟踪最后修改时间的函数</title>
+
+  <para>
+   <function>moddatetime()</function> 是一个将当前时间存入 <type>timestamp</type> 字段的触发器。
+   它有助于跟踪表中某一特定行最后一次被修改的时间。
+  </para>
+
+  <para>
+   To use, create a <literal>BEFORE UPDATE</>
+   trigger using this function.  Specify a single trigger
+   argument: the name of the <type>timestamp</> column to be modified.
+  </para>
+
+  <para>
+   <filename>moddatetime.example</filename> 中有一个示例。
+  </para>
+
+ </sect2>
+
+</sect1>

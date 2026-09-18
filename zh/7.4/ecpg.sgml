@@ -1,0 +1,4479 @@
+<!-- $PostgreSQL: pgsql/doc/src/sgml/ecpg.sgml,v 1.100.2.6 2010/09/02 14:57:09 tgl Exp $ -->
+
+<chapter id="ecpg">
+ <title><application>ECPG</application> - Embedded <acronym>SQL</acronym> in C</title>
+
+ <indexterm zone="ecpg"><primary>embedded SQL</primary><secondary>in C</secondary></indexterm>
+ <indexterm zone="ecpg"><primary>C</primary></indexterm>
+ <indexterm zone="ecpg"><primary>ECPG</primary></indexterm>
+
+ <para>
+  这一章描述了用于<productname>PostgreSQL</productname>的嵌入式<acronym>SQL</acronym>包。它由 Linus Tolke（<email>linus@epact.se</email>）和 Michael Meskes（<email>meskes@postgresql.org</email>）编写。最初它是为了与<acronym>C</acronym>一起工作而编写的。它也能与<acronym>C++</acronym>配合，但是它还不识别所有的<acronym>C++</acronym>结构。
+ </para>
+
+ <para>
+  这份文档还很不完整。不过，由于这一接口是标准化的，因此可以在许多关于 SQL 的资料中找到补充信息。
+ </para>
+
+ <sect1 id="ecpg-concept">
+  <title>概念</title>
+
+  <para>
+   嵌入式 SQL 程序由普通编程语言编写的代码（这里是 C）与位于特殊标记区段中的 SQL 命令混合组成。要构建该程序，首先要将源代码交给嵌入式 SQL 预处理器，它会把源代码转换成普通 C 程序，之后就可以由 C 编译器处理。
+  </para>
+
+  <para>
+   与其他在 C 代码中处理<acronym>SQL</acronym>命令的方法相比，嵌入式<acronym>SQL</acronym>有其优势。首先，它能处理与你的<acronym>C</acronym>程序变量之间来回传递信息的繁琐工作。其次，程序中的 SQL 代码会在构建时接受语法正确性检查。第三，C 中的嵌入式<acronym>SQL</acronym>由<acronym>SQL</acronym>标准规定，并且得到许多其他<acronym>SQL</acronym>数据库系统的支持。<productname>PostgreSQL</productname> 的实现被设计为尽可能贴合该标准，因此通常可以比较容易地把为其他 SQL 数据库编写的嵌入式<acronym>SQL</acronym>程序移植到<productname>PostgreSQL</productname>。
+  </para>
+
+  <para>如前所述，为嵌入式 <acronym>SQL</acronym> 接口编写的程序，就是插入了特殊代码的普通 C 程序，这些特殊代码用于执行数据库相关操作，其形式始终如下：<programlisting>
+EXEC SQL ...;
+</programlisting>这些语句在语法上占据一条 C 语句的位置。根据具体语句的不同，它们可以出现在全局层级，也可以出现在函数内部。嵌入式 <acronym>SQL</acronym> 语句遵循普通 <acronym>SQL</acronym> 代码的大小写规则，而不是 C 的规则。此外，它们还允许 SQL 标准中规定的嵌套 C 风格注释。但程序中的 C 部分仍遵循 C 标准，不接受嵌套注释。</para>
+
+  <para>
+   下列小节解释了所有嵌入式 SQL 语句。
+  </para>
+ </sect1>
+
+ <sect1 id="ecpg-connect">
+  <title>连接到数据库服务器</title>
+
+  <para>使用以下语句连接数据库：<programlisting>
+EXEC SQL CONNECT TO <replaceable>target</replaceable> <optional>AS <replaceable>connection-name</replaceable></optional> <optional>USER <replaceable>user-name</replaceable></optional>;
+</programlisting>其中，<replaceable>target</replaceable> 可以按以下方式指定：<itemizedlist>
+    <listitem>
+     <simpara>
+      <literal><replaceable>dbname</replaceable><optional>@<replaceable>hostname</replaceable></optional><optional>:<replaceable>port</replaceable></optional></literal>
+     </simpara>
+    </listitem>
+
+    <listitem>
+     <simpara>
+      <literal>tcp:postgresql://<replaceable>hostname</replaceable><optional>:<replaceable>port</replaceable></optional><optional>/<replaceable>dbname</replaceable></optional><optional>?<replaceable>options</replaceable></optional></literal>
+     </simpara>
+    </listitem>
+
+    <listitem>
+     <simpara><literal>unix:postgresql://<replaceable>hostname</replaceable><optional>:<replaceable>port</replaceable></optional><optional>/<replaceable>dbname</replaceable></optional><optional>?<replaceable>options</replaceable></optional></literal></simpara>
+    </listitem>
+
+    <listitem>
+     <simpara>
+      包含上述某种形式的 SQL 字符串常量
+     </simpara>
+    </listitem>
+
+    <listitem>
+     <simpara>
+      对包含上述某种形式的字符变量的引用（见示例）
+     </simpara>
+    </listitem>
+
+    <listitem>
+     <simpara>
+      <literal>DEFAULT</literal>
+     </simpara>
+    </listitem>
+   </itemizedlist>如果直接写出连接目标（即不通过变量引用），且未用引号括起该值，就会应用普通 SQL 的大小写不敏感规则。此时，也可以按需分别用双引号括起各个参数。实际使用中，采用单引号括起的字符串字面值或变量引用，可能更不容易出错。连接目标 <literal>DEFAULT</literal> 会以默认用户名发起到默认数据库的连接，此时不能单独指定用户名或连接名。</para>
+
+  <para>
+   也有不同的方法来指定用户名：
+
+   <itemizedlist>
+    <listitem>
+     <simpara>
+      <literal><replaceable>username</replaceable></literal>
+     </simpara>
+    </listitem>
+
+    <listitem>
+     <simpara>
+      <literal><replaceable>username</replaceable>/<replaceable>password</replaceable></literal>
+     </simpara>
+    </listitem>
+
+    <listitem>
+     <simpara>
+      <literal><replaceable>username</replaceable> IDENTIFIED BY <replaceable>password</replaceable></literal>
+     </simpara>
+    </listitem>
+
+    <listitem>
+     <simpara>
+      <literal><replaceable>username</replaceable> USING <replaceable>password</replaceable></literal>
+     </simpara>
+    </listitem>
+   </itemizedlist>
+
+   如上所述，参数<replaceable>username</replaceable>以及<replaceable>password</replaceable>可以是一个 SQL 标识符、一个 SQL 字符串常量或者一个对字符变量的引用。
+  </para>
+
+  <para>
+   <replaceable>connection-name</replaceable>被用来在一个程序中处理多个连接。如果一个程序只使用一个连接，则可以省略它。最近被打开的连接将成为当前连接，当一个 SQL 语句要被执行时，将默认使用它（见这一章稍后的部分）。
+  </para>
+
+  <para>以下是一些 <command>CONNECT</command> 语句的示例：<programlisting>
+EXEC SQL CONNECT TO mydb@sql.mydomain.com;
+
+EXEC SQL CONNECT TO unix:postgresql://sql.mydomain.com/mydb AS myconnection USER john;
+
+EXEC SQL BEGIN DECLARE SECTION;
+const char *target = "mydb@sql.mydomain.com";
+const char *user = "john";
+EXEC SQL END DECLARE SECTION;
+ ...
+EXEC SQL CONNECT TO :target USER :user;
+</programlisting>最后一种形式使用了上面提到的字符变量引用。后续章节会说明，如何在 C 变量前加冒号，以便在 SQL 语句中使用它们。</para>
+
+  <para>
+   请注意，连接目标的格式并未在 SQL 标准中规定。因此，如果你想开发可移植的应用，最好采用类似上面最后一个示例的方法，把连接目标字符串封装在某个地方。
+  </para>
+ </sect1>
+
+ <sect1 id="ecpg-disconnect">
+  <title>关闭一个连接</title>
+
+  <para>要关闭连接，请使用以下语句：<programlisting>
+EXEC SQL DISCONNECT <optional><replaceable>connection</replaceable></optional>;
+</programlisting>其中，<replaceable>connection</replaceable> 可以按以下方式指定：<itemizedlist>
+    <listitem>
+     <simpara>
+      <literal><replaceable>connection-name</replaceable></literal>
+     </simpara>
+    </listitem>
+
+    <listitem>
+     <simpara>
+      <literal>DEFAULT</literal>
+     </simpara>
+    </listitem>
+
+    <listitem>
+     <simpara>
+      <literal>CURRENT</literal>
+     </simpara>
+    </listitem>
+
+    <listitem>
+     <simpara>
+      <literal>ALL</literal>
+     </simpara>
+    </listitem>
+   </itemizedlist>如果未指定连接名，则关闭当前连接。</para>
+
+  <para>
+   应用程序始终显式断开其打开的每个连接，是良好的编程习惯。
+  </para>
+ </sect1>
+
+ <sect1 id="ecpg-commands">
+  <title>运行 SQL 命令</title>
+
+  <para>
+   任何 SQL 命令都可以在一个嵌入式 SQL 应用中被运行。下面是一些在嵌入式 SQL 应用中运行 SQL 命令的例子。
+  </para>
+
+  <para>
+   创建一个表：
+<programlisting>
+EXEC SQL CREATE TABLE foo (number integer, ascii char(16));
+EXEC SQL CREATE UNIQUE INDEX num1 ON foo(number);
+EXEC SQL COMMIT;
+</programlisting>
+  </para>
+
+  <para>
+   插入行：
+<programlisting>
+EXEC SQL INSERT INTO foo (number, ascii) VALUES (9999, 'doodad');
+EXEC SQL COMMIT;
+</programlisting>
+  </para>
+
+  <para>
+   删除行：
+<programlisting>
+EXEC SQL DELETE FROM foo WHERE number = 9999;
+EXEC SQL COMMIT;
+</programlisting>
+  </para>
+
+  <para>
+   单行选择：
+<programlisting>
+EXEC SQL SELECT foo INTO :FooBar FROM table1 WHERE ascii = 'doodad';
+</programlisting>
+  </para>
+
+  <para>
+   使用游标选择：
+<programlisting>
+EXEC SQL DECLARE foo_bar CURSOR FOR
+    SELECT number, ascii FROM foo
+    ORDER BY ascii;
+EXEC SQL OPEN foo_bar;
+EXEC SQL FETCH foo_bar INTO :FooBar, DooDad;
+...
+EXEC SQL CLOSE foo_bar;
+EXEC SQL COMMIT;
+</programlisting>
+  </para>
+
+  <para>
+   更新：
+<programlisting>
+EXEC SQL UPDATE foo
+    SET ascii = 'foobar'
+    WHERE number = 9999;
+EXEC SQL COMMIT;
+</programlisting>
+  </para>
+
+  <para>
+   <literal>:<replaceable>something</replaceable></literal>形式的词元是<firstterm>主变量</firstterm>，即它们指向 C 程序中的变量。其说明见<xref linkend="ecpg-variables">。
+  </para>
+
+  <para>
+   在默认模式下，只有发出<command>EXEC SQL COMMIT</command>时语句才会提交。嵌入式 SQL 接口也支持事务自动提交（类似于<application>libpq</application>的行为），可以通过<command>ecpg</command>的<option>-t</option>命令行选项（见下文）或者<literal>EXEC SQL SET AUTOCOMMIT TO ON</literal>语句启用。在自动提交模式中，除非位于显式事务块内，每条命令都会自动提交。这种模式也可以通过<literal>EXEC SQL SET AUTOCOMMIT TO OFF</literal>显式关闭。
+  </para>
+ </sect1>
+
+ <sect1 id="ecpg-set-connection">
+  <title>选择一个连接</title>
+
+  <para>
+   上一节中展示的 SQL 语句在当前连接（即最近打开的连接）上执行。如果一个应用需要管理多个连接，有两种处理方式。
+  </para>
+
+  <para>
+   第一种方式是显式地为每一个 SQL 语句选择一个连接，例如：
+<programlisting>
+EXEC SQL AT <replaceable>connection-name</replaceable> SELECT ...;
+</programlisting>
+   如果应用需要以混合的顺序使用多个连接，这种方式特别合适。
+  </para>
+
+  <para>
+   如果你的应用使用多个线程执行，它们不能并发地共享一个连接。你必须显式地控制对连接的访问（使用互斥量）或者为每个线程使用一个连接。如果每个线程使用自己的连接，将需要使用 AT 子句来指定该线程将使用的连接。
+  </para>
+
+  <para>
+   第二种方式是执行一个语句来切换当前的连接。该语句是：
+<programlisting>
+EXEC SQL SET CONNECTION <replaceable>connection-name</replaceable>;
+</programlisting>
+   如果有很多语句要在同一个连接上执行，这种方式尤其方便。
+  </para>
+ </sect1>
+
+ <sect1 id="ecpg-variables">
+  <title>使用主变量</title>
+
+  <para>
+   在<xref linkend="ecpg-commands">中，你已经看到如何从嵌入式 SQL 程序中执行 SQL 语句。其中一些语句只使用固定值，既无法把用户提供的值插入语句中，也无法让程序处理查询返回的值。这类语句在实际应用中并不真正有用。本节将详细解释如何使用一种称为<firstterm>主变量</firstterm>的简单机制，在 C 程序与嵌入式 SQL 语句之间传递数据。在嵌入式 SQL 程序中，我们把 SQL 语句视为 C 程序代码中的<firstterm>客体</firstterm>，而 C 是<firstterm>主语言</firstterm>。因此，C 程序中的变量被称为<firstterm>主变量</firstterm>。
+  </para>
+
+  <sect2>
+   <title>概述</title>
+
+   <para>
+    在嵌入式 SQL 中，在 C 程序和 SQL 语句之间传递数据特别简单。我们不必让程序把数据拼接进语句中去，那样会带来诸如正确为值加引号等各种复杂问题；只需在 SQL 语句中写出 C 变量的名称，并在前面加上一个冒号即可。例如：
+<programlisting>
+EXEC SQL INSERT INTO sometable VALUES (:v1, 'foo', :v2);
+</programlisting>
+    该语句引用了两个名为<varname>v1</varname>和<varname>v2</varname>的 C 变量，同时还使用了一个普通的 SQL 字符串常量，以说明你并不局限于只使用某一种数据。
+   </para>
+
+   <para>
+    这种在 SQL 语句中插入 C 变量的方式可以用在 SQL 语句中每一个应该出现值表达式的地方。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>声明节</title>
+
+   <para>
+    要把数据从程序传给数据库（例如作为查询参数），或者把数据从数据库传回程序，用来承载这些数据的 C 变量必须声明在经过特殊标记的区段中，这样嵌入式 SQL 预处理器才能识别它们。
+   </para>
+
+   <para>
+    这个区段始于：
+<programlisting>
+EXEC SQL BEGIN DECLARE SECTION;
+</programlisting>
+    并结束于：
+<programlisting>
+EXEC SQL END DECLARE SECTION;
+</programlisting>
+    在这两行之间，必须是正常的 C 变量声明，例如：
+<programlisting>
+int   x = 4;
+char  foo[16], bar[16];
+</programlisting>
+    如你所见，可以选择为变量指定初始值。变量的作用域由其声明节在程序中的位置决定。你也可以使用下面的语法声明变量，这种写法会隐式创建一个声明节：
+<programlisting>
+EXEC SQL int i = 4;
+</programlisting>
+    一个程序中可以根据需要放置任意多个声明节。
+   </para>
+
+   <para>
+   这些声明也会作为普通 C 变量声明写入输出文件，因此无需再次声明它们。不准备在 SQL 命令中使用的变量可以照常在这些特殊声明节之外声明。
+  </para>
+
+   <para>
+    结构体或联合的定义也必须写在<literal>DECLARE</literal>声明节中。否则预处理器无法处理这些类型，因为它不知道它们的定义。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>不同类型的主变量</title>
+   <para>
+    你也可以把数组、typedef、结构体和指针用作主变量。此外，还存在一些只在 ECPG 中使用的特殊类型的主变量。
+   </para>
+
+   <para>
+    下面是主变量的一些例子：
+    <variablelist>
+     <varlistentry>
+      <term>Arrays</term>
+      <listitem>
+      <para>
+       数组声明最常见的用途之一可能就是像这样分配一个 char 数组：
+<programlisting>
+EXEC SQL BEGIN DECLARE SECTION;
+    char str[50];
+EXEC SQL END DECLARE SECTION;
+</programlisting>
+       注意你必须自己处理长度。如果你把这个主变量用作一个返回多于 49 个字符的字符串的查询的目标变量，就会发生缓冲区溢出。
+      </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>Typedefs</term>
+      <listitem>
+      <para>使用 <literal>typedef</literal> 关键字将新类型映射到已有类型。<programlisting>
+EXEC SQL BEGIN DECLARE SECTION;
+    typedef char mychartype[40];
+    typedef long serial_t;
+EXEC SQL END DECLARE SECTION;
+</programlisting>注意，也可以使用：<programlisting>
+EXEC SQL TYPE serial_t IS long;
+</programlisting>此声明不必放在声明区段内。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>Pointers</term>
+      <listitem>
+      <para>
+   你可以声明指向最常见类型的指针。但要注意，只有使用自动内存分配时，才能将指针用作查询的目标变量。关于自动内存分配的更多信息，参见<xref linkend="ecpg-descriptors">。
+  </para>
+<programlisting>
+EXEC SQL BEGIN DECLARE SECTION;
+    int   *intp;
+    char **charp;
+EXEC SQL END DECLARE SECTION;
+</programlisting>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>Special types of variables</term>
+      <listitem>
+       <para>
+        ECPG 包含一些特殊类型，帮助你轻松地与来自 SQL 服务器的数据交互。例如，它实现了对<type>varchar</type>、<type>numeric</type>、<type>date</type>、<type>timestamp</type>和<type>interval</type>类型的支持。<xref linkend="ecpg-pgtypes">包含处理这些类型的基本函数，这样例如你就不需要仅仅为了把一个区间加到一个时间戳上而向 SQL 服务器发送一个查询。
+       </para>
+       <para>
+        特殊类型<type>VARCHAR</type>会被转换成每个变量的一个命名的<type>struct</type>。像这样的声明：
+<programlisting>
+VARCHAR var[180];
+</programlisting>
+         会被转换为：
+<programlisting>
+struct varchar_var { int len; char arr[180]; } var;
+</programlisting>
+        这个结构适合与<type>varchar</type>类型的 SQL 数据交互。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+  </sect2>
+
+  <sect2>
+   <title><command>SELECT INTO</command> and <command>FETCH INTO</command></title>
+
+   <para>
+    现在你应该能够把程序产生的数据传递到一个 SQL 命令中了。但是怎么检索一个查询的结果呢？为此，嵌入式 SQL 提供了常规命令<command>SELECT</command>和<command>FETCH</command>的特殊变体。这些命令有一个特殊的<literal>INTO</literal>子句，它指定被检索到的值要被存储在哪些主变量中。
+   </para>
+
+   <para>
+    这里是一个例子：
+<programlisting>
+/*
+ * 假定有下列表：
+ * CREATE TABLE test1 (a int, b varchar(50));
+ */
+
+EXEC SQL BEGIN DECLARE SECTION;
+int v1;
+VARCHAR v2;
+EXEC SQL END DECLARE SECTION;
+
+ ...
+
+EXEC SQL SELECT a, b INTO :v1, :v2 FROM test;
+</programlisting>
+    那么<literal>INTO</literal>子句出现在选择列表和<literal>FROM</literal>子句之间。选择列表中的元素数量必须和<literal>INTO</literal>后面列表（也被称为目标列表）的元素数量相等。
+   </para>
+
+   <para>
+    这里有一个使用命令<command>FETCH</command>的例子：
+<programlisting>
+EXEC SQL BEGIN DECLARE SECTION;
+int v1;
+VARCHAR v2;
+EXEC SQL END DECLARE SECTION;
+
+ ...
+
+EXEC SQL DECLARE foo CURSOR FOR SELECT a, b FROM test;
+
+ ...
+
+do
+{
+    ...
+    EXEC SQL FETCH NEXT FROM foo INTO :v1, :v2;
+    ...
+} while (...);
+</programlisting>
+    这里<literal>INTO</literal>子句出现在所有正常子句的后面。
+   </para>
+
+  </sect2>
+
+  <sect2>
+   <title>指示符</title>
+
+   <para>上面的示例没有处理空值。实际上，如果读取示例从数据库取得空值，就会抛出错误。要向数据库传入空值或从数据库取得空值，需要在每个包含数据的主变量后，再指定第二个主变量。第二个主变量称为<firstterm>指示符</firstterm>，其中包含一个标志，表示该数据是否为空值；如果为空值，就会忽略实际主变量的值。下面的示例能正确处理空值的读取：<programlisting>
+EXEC SQL BEGIN DECLARE SECTION;
+VARCHAR val;
+int val_ind;
+EXEC SQL END DECLARE SECTION:
+
+ ...
+
+EXEC SQL SELECT b INTO :val :val_ind FROM test1;
+</programlisting>指示符变量 <varname>val_ind</varname> 在数据非空时为零，在数据为空值时为负数。</para>
+
+   <para>
+    指示符有另一种功能：如果指示符值为正，它表示值不为空，但是当它被存储在主变量中时已被截断。
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="ecpg-dynamic">
+  <title>动态 SQL</title>
+
+  <para>
+   在很多情况中，一个应用必须要执行的特定 SQL 语句在编写该应用时就已知。不过在某些情况中，SQL 语句在运行时构造或者由一个外部来源提供。这样你就不能直接把 SQL 语句嵌入到 C 源代码，不过有一种功能允许你调用在一个字符串变量中提供的任意 SQL 语句。
+  </para>
+
+  <para>
+   执行一个任意 SQL 语句的最简单方法是使用命令<command>EXECUTE IMMEDIATE</command>。例如：
+<programlisting>
+EXEC SQL BEGIN DECLARE SECTION;
+const char *stmt = "CREATE TABLE test1 (...);";
+EXEC SQL END DECLARE SECTION;
+
+EXEC SQL EXECUTE IMMEDIATE :stmt;
+</programlisting>
+   你不能用这种方法执行检索数据的语句（例如<command>SELECT</command>）。
+  </para>
+
+  <para>
+   执行任意 SQL 语句的一种更强大的方法是将语句预备一次，然后在每次需要时执行该预备语句。也可以预备一个一般化的语句，然后通过替换参数执行它的特定版本。在预备语句时，在你想要稍后替换参数的地方写上问号。例如：
+<programlisting>
+EXEC SQL BEGIN DECLARE SECTION;
+const char *stmt = "INSERT INTO test1 VALUES(?, ?);";
+EXEC SQL END DECLARE SECTION;
+
+EXEC SQL PREPARE mystmt FROM :stmt;
+ ...
+EXEC SQL EXECUTE mystmt USING 42, 'foobar';
+</programlisting>
+   如果你正在执行的语句返回值，那么加上一个<literal>INTO</literal>子句：
+<programlisting><![CDATA[
+EXEC SQL BEGIN DECLARE SECTION;
+const char *stmt = "SELECT a, b, c FROM test1 WHERE a > ?";
+int v1, v2;
+VARCHAR v3;
+EXEC SQL END DECLARE SECTION;
+
+EXEC SQL PREPARE mystmt FROM :stmt;
+ ...
+EXEC SQL EXECUTE mystmt INTO v1, v2, v3 USING 37;
+]]>
+</programlisting>
+   一个<command>EXECUTE</command>命令可以带<literal>INTO</literal>子句、<literal>USING</literal>子句、两者都带或两者都不带。
+  </para>
+
+  <para>
+    当你不再需要该预备语句时，你应该释放它：
+<programlisting>
+EXEC SQL DEALLOCATE PREPARE <replaceable>name</replaceable>;
+</programlisting>
+   </para>
+ </sect1>
+
+
+ <sect1 id="ecpg-pgtypes">
+  <title>pgtypes library</title>
+
+  <para>
+   pgtypes 库将<productname>PostgreSQL</productname>数据库类型映射到 C 中等价的类型以便在 C 程序中使用。它还提供在 C 中对这些类型进行基本计算的函数，即不依赖<productname>PostgreSQL</productname>服务器进行计算。请看下面的例子：
+<programlisting><![CDATA[
+EXEC SQL BEGIN DECLARE SECTION;
+   date date1;
+   timestamp ts1, tsout;
+   interval iv1;
+   char *out;
+EXEC SQL END DECLARE SECTION;
+
+PGTYPESdate_today(&date1);
+EXEC SQL SELECT started, duration INTO :ts1, :iv1 FROM datetbl WHERE d=:date1;
+PGTYPEStimestamp_add_interval(&ts1, &iv1, &tsout);
+out = PGTYPEStimestamp_to_asc(&tsout);
+printf("Started + duration: %s\n", out);
+free(out);
+]]>
+</programlisting>
+  </para>
+
+  <sect2>
+   <title>The numeric type</title>
+   <para>
+    numeric 类型支持任意精度计算。<productname>PostgreSQL</productname>服务器中的等效类型见<xref linkend="datatype-numeric">。为了支持任意精度，这类变量需要能够动态扩展和收缩。因此，numeric 变量只能在堆上创建，并通过<function>PGTYPESnumeric_new</function>和<function>PGTYPESnumeric_free</function>函数管理。decimal 类型与之相似，但精度有限，既可以在栈上创建，也可以在堆上创建。
+   </para>
+   <para>下列函数可用于处理 numeric 类型：<variablelist>
+    <varlistentry>
+     <term><function>PGTYPESnumeric_new</function></term>
+     <listitem>
+      <para>
+      请求一个指向新分配的numeric变量的指针。
+<synopsis>
+numeric *PGTYPESnumeric_new(void);
+</synopsis>
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_free</function></term>
+     <listitem>
+      <para>
+      释放一个 numeric 变量及其占用的全部内存。
+<synopsis>
+void PGTYPESnumeric_free(numeric *var);
+</synopsis>
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_from_asc</function></term>
+     <listitem>
+      <para>
+       从字符串表示中解析一个 numeric 值。
+<synopsis>
+numeric *PGTYPESnumeric_from_asc(char *str, char **endptr);
+</synopsis>
+       例如，可用的格式是：
+        <literal>-2</literal>、
+        <literal>.794</literal>、
+        <literal>+3.44</literal>、
+        <literal>592.49E07</literal>或者
+        <literal>-32.84e-4</literal>。
+       如果值能被成功地解析，将返回一个有效的指针，否则返回 NULL 指针。目前 ECPG 总是解析整个字符串并且因此当前不支持把第一个非法字符的地址存储在<literal>*endptr</literal>中。你可以安全地把<literal>endptr</literal>设置为 NULL。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_to_asc</function></term>
+     <listitem>
+      <para>
+       返回由<function>malloc</function>分配的字符串的指针，它包含numeric类型<literal>num</literal>的字符串表示。
+<synopsis>
+char *PGTYPESnumeric_to_asc(numeric *num, int dscale);
+</synopsis>
+       numeric 值将以<literal>dscale</literal>位小数输出，必要时进行舍入。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_add</function></term>
+     <listitem>
+      <para>
+       把两个numeric变量相加放到第三个numeric变量中。
+<synopsis>
+int PGTYPESnumeric_add(numeric *var1, numeric *var2, numeric *result);
+</synopsis>
+       该函数把变量<literal>var1</literal>和<literal>var2</literal>相加放到结果变量<literal>result</literal>中。成功时该函数返回 0，出错时返回 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_sub</function></term>
+     <listitem>
+      <para>
+       把两个numeric变量相减并且把结果返回到第三个numeric变量。
+<synopsis>
+int PGTYPESnumeric_sub(numeric *var1, numeric *var2, numeric *result);
+</synopsis>
+       该函数把变量<literal>var2</literal>从变量<literal>var1</literal>中减除。该操作的结果被存储在变量<literal>result</literal>中。成功时该函数返回 0，出错时返回 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_mul</function></term>
+     <listitem>
+      <para>
+       把两个numeric变量相乘并且把结果返回到第三个numeric变量。
+<synopsis>
+int PGTYPESnumeric_mul(numeric *var1, numeric *var2, numeric *result);
+</synopsis>
+       该函数把变量<literal>var1</literal>和<literal>var2</literal>相乘。该操作的结果被存储在变量<literal>result</literal>中。成功时该函数返回 0，出错时返回 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_div</function></term>
+     <listitem>
+      <para>
+       把两个numeric变量相除并且把结果返回到第三个numeric变量。
+<synopsis>
+int PGTYPESnumeric_div(numeric *var1, numeric *var2, numeric *result);
+</synopsis>
+       该函数用变量<literal>var2</literal>除变量<literal>var1</literal>。该操作的结果被存储在变量<literal>result</literal>中。成功时该函数返回 0，出错时返回 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_cmp</function></term>
+     <listitem>
+      <para>
+       比较两个numeric变量。
+<synopsis>
+int PGTYPESnumeric_cmp(numeric *var1, numeric *var2)
+</synopsis>
+       这个函数比较两个numeric变量。错误时会返回<literal>INT_MAX</literal>。成功时，该函数返回三种可能结果之一：
+       <itemizedlist>
+        <listitem>
+         <para>
+          <literal>var1</literal>大于<literal>var2</literal>则返回 1
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          如果<literal>var1</literal>小于<literal>var2</literal>则返回 -1
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          如果<literal>var1</literal>和<literal>var2</literal>相等则返回 0
+         </para>
+        </listitem>
+       </itemizedlist>
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_from_int</function></term>
+     <listitem>
+      <para>
+       将一个 int 变量转换为 numeric 变量。
+<synopsis>
+int PGTYPESnumeric_from_int(signed int int_val, numeric *var);
+</synopsis>
+       该函数接收一个 signed int 类型的变量，并将其值存入 numeric 变量<literal>var</literal>中。成功时返回 0，失败时返回 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_from_long</function></term>
+     <listitem>
+      <para>
+       将一个 long int 变量转换为 numeric 变量。
+<synopsis>
+int PGTYPESnumeric_from_long(signed long int long_val, numeric *var);
+</synopsis>
+       该函数接收一个 signed long int 类型的变量，并将其值存入 numeric 变量<literal>var</literal>中。成功时返回 0，失败时返回 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_copy</function></term>
+     <listitem>
+      <para>
+       把一个numeric变量复制到另一个中。
+<synopsis>
+int PGTYPESnumeric_copy(numeric *src, numeric *dst);
+</synopsis>
+       这个函数把<literal>src</literal>指向的变量的值复制到<literal>dst</literal>指向的变量中。成功时该函数返回 0，出错时返回 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_from_double</function></term>
+     <listitem>
+      <para>
+       将一个 double 类型的变量转换为 numeric 变量。
+<synopsis>
+int  PGTYPESnumeric_from_double(double d, numeric *dst);
+</synopsis>
+       该函数接收一个 double 类型的变量，并将结果存入<literal>dst</literal>指向的变量中。成功时返回 0，出错时返回 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_to_double</function></term>
+     <listitem>
+      <para>将一个 numeric 类型的变量转换为 double。<synopsis>
+int PGTYPESnumeric_to_double(numeric *nv, double *dp)
+</synopsis>该函数将<literal>nv</literal>指向的变量中的 numeric 值转换为 double，并存入<literal>dp</literal>指向的变量中。成功时返回 0，发生错误（包括溢出）时返回 -1。发生溢出时，还会将全局变量<literal>errno</literal>设为<literal>PGTYPES_NUM_OVERFLOW</literal>。</para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_to_int</function></term>
+     <listitem>
+      <para>将一个 numeric 类型的变量转换为 int。<synopsis>
+int PGTYPESnumeric_to_int(numeric *nv, int *ip);
+</synopsis>该函数将<literal>nv</literal>指向的变量中的 numeric 值转换为 int，并存入<literal>ip</literal>指向的变量中。成功时返回 0，发生错误（包括溢出）时返回 -1。发生溢出时，还会将全局变量<literal>errno</literal>设为<literal>PGTYPES_NUM_OVERFLOW</literal>。</para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_to_long</function></term>
+     <listitem>
+      <para>将一个 numeric 类型的变量转换为 long。<synopsis>
+int PGTYPESnumeric_to_long(numeric *nv, long *lp);
+</synopsis>该函数将 <literal>nv</literal> 所指变量中的 numeric 值转换为 long，并存入 <literal>lp</> 所指的变量。成功时返回 0，发生错误（包括溢出）时返回 -1。发生溢出时，还会将全局变量 <literal>errno</literal> 设为 <literal>PGTYPES_NUM_OVERFLOW</literal>。</para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_to_decimal</function></term>
+     <listitem>
+      <para>将一个 numeric 类型的变量转换为 decimal。<synopsis>
+int PGTYPESnumeric_to_decimal(numeric *src, decimal *dst);
+</synopsis>该函数将<literal>src</literal>指向的变量中的 numeric 值转换成<literal>dst</literal>指向的 decimal 变量。成功时该函数返回 0，出错时返回 -1，包括溢出。发生溢出时，全局变量<literal>errno</literal>会被设置为<literal>PGTYPES_NUM_OVERFLOW</literal>。</para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><function>PGTYPESnumeric_from_decimal</function></term>
+     <listitem>
+      <para>
+       将一个 decimal 类型的变量转换为 numeric。
+<synopsis>
+int PGTYPESnumeric_from_decimal(decimal *src, numeric *dst);
+</synopsis>
+       该函数将<literal>src</literal>指向的变量中的 decimal 值转换成<literal>dst</literal>指向的 numeric 变量。成功时该函数返回 0，出错时返回 -1。由于 decimal 类型被实现为 numeric 类型的一个受限版本，这种转换不会发生溢出。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>The date type</title>
+   <para>
+    C 中的 date 类型让程序能够处理 SQL date 类型的数据。<productname>PostgreSQL</productname>服务器中的等效类型见<xref linkend="datatype-datetime">。
+   </para>
+   <para>
+    下列函数可用于处理 date 类型：
+    <variablelist>
+     <varlistentry id="PGTYPESdatefromtimestamp">
+      <term><function>PGTYPESdate_from_timestamp</function></term>
+      <listitem>
+       <para>
+        从一个时间戳中抽取日期部分。
+<synopsis>
+date PGTYPESdate_from_timestamp(timestamp dt);
+</synopsis>
+        该函数接收一个时间戳作为它的唯一参数并且从这个时间戳返回抽取的日期部分。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPESdatefromasc">
+      <term><function>PGTYPESdate_from_asc</function></term>
+      <listitem>
+       <para>
+       从日期的文本表示解析一个日期。
+<synopsis>
+date PGTYPESdate_from_asc(char *str, char **endptr);
+</synopsis>
+        该函数接收一个 C char* 字符串<literal>str</literal>以及一个指向 C char* 字符串的指针<literal>endptr</literal>。目前 ECPG 始终解析整个字符串，因此尚不支持将第一个无效字符的地址存入<literal>*endptr</literal>中。可以放心地将<literal>endptr</literal>设为 NULL。
+       </para>
+       <para>
+        注意，该函数始终假定日期采用 MDY 格式，目前 ECPG 中没有变量可以改变这一点。
+       </para>
+       <para>
+        <xref linkend="ecpg-pgtypesdate-from-asc-table">展示了所有允许的输入格式。
+       </para>
+        <table id="ecpg-pgtypesdate-from-asc-table">
+         <title>Valid input formats for <function>PGTYPESdate_from_asc</function></title>
+         <tgroup cols="2">
+          <thead>
+           <row>
+            <entry>输入</entry>
+            <entry>结果</entry>
+           </row>
+          </thead>
+          <tbody>
+           <row>
+            <entry><literal>January 8, 1999</literal></entry>
+            <entry><literal>January 8, 1999</literal></entry>
+           </row>
+           <row>
+            <entry><literal>1999-01-08</literal></entry>
+            <entry><literal>January 8, 1999</literal></entry>
+           </row>
+           <row>
+            <entry><literal>1/8/1999</literal></entry>
+            <entry><literal>January 8, 1999</literal></entry>
+           </row>
+           <row>
+            <entry><literal>1/18/1999</literal></entry>
+            <entry><literal>January 18, 1999</literal></entry>
+           </row>
+           <row>
+            <entry><literal>01/02/03</literal></entry>
+            <entry><literal>February 1, 2003</literal></entry>
+           </row>
+           <row>
+            <entry><literal>1999-Jan-08</literal></entry>
+            <entry><literal>January 8, 1999</literal></entry>
+           </row>
+           <row>
+            <entry><literal>Jan-08-1999</literal></entry>
+            <entry><literal>January 8, 1999</literal></entry>
+           </row>
+           <row>
+            <entry><literal>08-Jan-1999</literal></entry>
+            <entry><literal>January 8, 1999</literal></entry>
+           </row>
+           <row>
+            <entry><literal>99-Jan-08</literal></entry>
+            <entry><literal>January 8, 1999</literal></entry>
+           </row>
+           <row>
+            <entry><literal>08-Jan-99</literal></entry>
+            <entry><literal>January 8, 1999</literal></entry>
+           </row>
+           <row>
+            <entry><literal>08-Jan-06</literal></entry>
+            <entry><literal>January 8, 2006</literal></entry>
+           </row>
+           <row>
+            <entry><literal>Jan-08-99</literal></entry>
+            <entry><literal>January 8, 1999</literal></entry>
+           </row>
+           <row>
+            <entry><literal>19990108</literal></entry>
+            <entry><literal>ISO 8601; January 8, 1999</literal></entry>
+           </row>
+           <row>
+            <entry><literal>990108</literal></entry>
+            <entry><literal>ISO 8601; January 8, 1999</literal></entry>
+           </row>
+           <row>
+            <entry><literal>1999.008</literal></entry>
+            <entry><literal>year and day of year</literal></entry>
+           </row>
+           <row>
+            <entry><literal>J2451187</literal></entry>
+            <entry><literal>Julian day</literal></entry>
+           </row>
+           <row>
+            <entry><literal>January 8, 99 BC</literal></entry>
+            <entry><literal>year 99 before the Common Era</literal></entry>
+           </row>
+          </tbody>
+         </tgroup>
+        </table>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPESdatetoasc">
+      <term><function>PGTYPESdate_to_asc</function></term>
+      <listitem>
+       <para>
+        返回一个日期变量的文本表示。
+<synopsis>
+char *PGTYPESdate_to_asc(date dDate);
+</synopsis>
+        该函数接收日期<literal>dDate</literal>作为它的唯一参数。它将以形式<literal>1999-01-18</literal>输出该日期，即以<literal>YYYY-MM-DD</literal>格式输出。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPESdatejulmdy">
+      <term><function>PGTYPESdate_julmdy</function></term>
+      <listitem>
+       <para>
+        从一个 date 类型的变量中提取日、月和年的值。
+<synopsis>
+void PGTYPESdate_julmdy(date d, int *mdy);
+</synopsis>
+       <!-- almost same description as for rjulmdy() -->
+        该函数接收日期<literal>d</literal>以及一个指向有 3 个整数值的数组<literal>mdy</literal>的指针。变量名就表明了顺序：<literal>mdy[0]</literal>将被设置为包含月份，<literal>mdy[1]</literal>将被设置为日的值，而<literal>mdy[2]</literal>将包含年。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPESdatemdyjul">
+      <term><function>PGTYPESdate_mdyjul</function></term>
+      <listitem>
+       <para>
+        根据一个包含 3 个整数的数组创建日期值，这些整数指定日期的日、月和年。
+<synopsis>
+void PGTYPESdate_mdyjul(int *mdy, date *jdate);
+</synopsis>
+        该函数的第一个参数是包含 3 个整数的数组（<literal>mdy</literal>），第二个参数是一个指向 date 类型变量的指针，用来保存操作结果。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPESdatedayofweek">
+      <term><function>PGTYPESdate_dayofweek</function></term>
+      <listitem>
+       <para>
+        为一个日期值返回表示它是星期几的数字。
+<synopsis>
+int PGTYPESdate_dayofweek(date d);
+</synopsis>
+        这个函数接收日期变量<literal>d</literal>作为它唯一的参数并且返回一个整数说明这个日期是星期几。
+        <itemizedlist>
+         <listitem>
+          <para>
+           0 - 星期日
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           1 - 星期一
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           2 - 星期二
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           3 - 星期三
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           4 - 星期四
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           5 - 星期五
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           6 - 星期六
+          </para>
+         </listitem>
+        </itemizedlist>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPESdatetoday">
+      <term><function>PGTYPESdate_today</function></term>
+      <listitem>
+       <para>
+        得到当前日期。
+<synopsis>
+void PGTYPESdate_today(date *d);
+</synopsis>
+        该函数接收一个指向 date 变量的指针（<literal>d</literal>），并将其指向的变量设为当前日期。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPESdatefmtasc">
+      <term><function>PGTYPESdate_fmt_asc</function></term>
+      <listitem>
+       <para>
+        使用格式掩码将一个 date 类型的变量转换为文本表示。
+<synopsis>
+int PGTYPESdate_fmt_asc(date dDate, char *fmtstring, char *outbuf);
+</synopsis>
+        该函数接收要转换的日期（<literal>dDate</literal>）、格式掩码（<literal>fmtstring</literal>）以及将要保存日期的文本表示的字符串（<literal>outbuf</literal>）。
+       </para>
+       <para>
+        成功时，返回 0；如果发生错误，则返回一个负值。
+       </para>
+       <para>
+        下列字面量是可用的字段说明符：
+        <itemizedlist>
+         <listitem>
+          <para>
+           <literal>dd</literal> - 一个月中的第几天。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>mm</literal> - 一年中的第几个月。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>yy</literal> - 两位数的年份。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>yyyy</literal> - 四位数的年份。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>ddd</literal> - 星期几的名称（简写）。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>mmm</literal> - 月份的名称（简写）。
+          </para>
+         </listitem>
+        </itemizedlist>
+        所有其他字符都会被 1:1 复制到输出字符串中。
+       </para>
+       <para>
+        <xref linkend="ecpg-pgtypesdate-fmt-asc-example-table">给出了一些可用格式，有助于理解此函数的用法。所有输出行都基于同一个日期：1959 年 11 月 23 日。
+       </para>
+        <table id="ecpg-pgtypesdate-fmt-asc-example-table">
+         <title>Valid input formats for <function>PGTYPESdate_fmt_asc</function></title>
+         <tgroup cols="2">
+          <thead>
+           <row>
+            <entry>格式</entry>
+            <entry>结果</entry>
+           </row>
+          </thead>
+          <tbody>
+           <row>
+            <entry><literal>mmddyy</literal></entry>
+            <entry><literal>112359</literal></entry>
+           </row>
+           <row>
+            <entry><literal>ddmmyy</literal></entry>
+            <entry><literal>231159</literal></entry>
+           </row>
+           <row>
+            <entry><literal>yymmdd</literal></entry>
+            <entry><literal>591123</literal></entry>
+           </row>
+           <row>
+            <entry><literal>yy/mm/dd</literal></entry>
+            <entry><literal>59/11/23</literal></entry>
+           </row>
+           <row>
+            <entry><literal>yy mm dd</literal></entry>
+            <entry><literal>59 11 23</literal></entry>
+           </row>
+           <row>
+            <entry><literal>yy.mm.dd</literal></entry>
+            <entry><literal>59.11.23</literal></entry>
+           </row>
+           <row>
+            <entry><literal>.mm.yyyy.dd.</literal></entry>
+            <entry><literal>.11.1959.23.</literal></entry>
+           </row>
+           <row>
+            <entry><literal>mmm. dd, yyyy</literal></entry>
+            <entry><literal>Nov. 23, 1959</literal></entry>
+           </row>
+           <row>
+            <entry><literal>mmm dd yyyy</literal></entry>
+            <entry><literal>Nov 23 1959</literal></entry>
+           </row>
+           <row>
+            <entry><literal>yyyy dd mm</literal></entry>
+            <entry><literal>1959 23 11</literal></entry>
+           </row>
+           <row>
+            <entry><literal>ddd, mmm. dd, yyyy</literal></entry>
+            <entry><literal>Mon, Nov. 23, 1959</literal></entry>
+           </row>
+           <row>
+            <entry><literal>(ddd) mmm. dd, yyyy</literal></entry>
+            <entry><literal>(Mon) Nov. 23, 1959</literal></entry>
+           </row>
+          </tbody>
+         </tgroup>
+        </table>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPESdatedefmtasc">
+      <term><function>PGTYPESdate_defmt_asc</function></term>
+      <listitem>
+       <para>使用格式掩码把一个 C <type>char*</type> 字符串转换成 date 类型的值。<synopsis>
+int PGTYPESdate_defmt_asc(date *d, char *fmt, char *str);
+</synopsis>        <!-- same description as rdefmtdate -->
+        该函数接收一个指向用于保存操作结果的 date 值的指针（<literal>d</literal>）、用于解析日期的格式掩码（<literal>fmt</literal>），以及包含日期文本表示的 C char* 字符串（<literal>str</literal>）。文本表示应与格式掩码匹配，但字符串与格式掩码无需一一对应。该函数只分析先后顺序，并查找表示年份位置的<literal>yy</literal>或<literal>yyyy</literal>、表示月份位置的<literal>mm</literal>以及表示日位置的<literal>dd</literal>。</para>
+       <para>
+        <xref linkend="ecpg-rdefmtdate-example-table">给出了一些可用格式，有助于理解此函数的用法。
+       </para>
+        <table id="ecpg-rdefmtdate-example-table">
+         <title>Valid input formats for <function>rdefmtdate</function></title>
+         <tgroup cols="3">
+          <thead>
+           <row>
+            <entry>格式</entry>
+            <entry>字符串</entry>
+            <entry>结果</entry>
+           </row>
+          </thead>
+          <tbody>
+           <row>
+            <entry><literal>ddmmyy</literal></entry>
+            <entry><literal>21-2-54</literal></entry>
+            <entry><literal>1954-02-21</literal></entry>
+           </row>
+           <row>
+            <entry><literal>ddmmyy</literal></entry>
+            <entry><literal>2-12-54</literal></entry>
+            <entry><literal>1954-12-02</literal></entry>
+           </row>
+           <row>
+            <entry><literal>ddmmyy</literal></entry>
+            <entry><literal>20111954</literal></entry>
+            <entry><literal>1954-11-20</literal></entry>
+           </row>
+           <row>
+            <entry><literal>ddmmyy</literal></entry>
+            <entry><literal>130464</literal></entry>
+            <entry><literal>1964-04-13</literal></entry>
+           </row>
+           <row>
+            <entry><literal>mmm.dd.yyyy</literal></entry>
+            <entry><literal>MAR-12-1967</literal></entry>
+            <entry><literal>1967-03-12</literal></entry>
+           </row>
+           <row>
+            <entry><literal>yy/mm/dd</literal></entry>
+            <entry><literal>1954, February 3rd</literal></entry>
+            <entry><literal>1954-02-03</literal></entry>
+           </row>
+           <row>
+            <entry><literal>mmm.dd.yyyy</literal></entry>
+            <entry><literal>041269</literal></entry>
+            <entry><literal>1969-04-12</literal></entry>
+           </row>
+           <row>
+            <entry><literal>yy/mm/dd</literal></entry>
+            <entry><literal>In the year 2525, in the month of July, mankind will be alive on the 28th day</literal></entry>
+            <entry><literal>2525-07-28</literal></entry>
+           </row>
+           <row>
+            <entry><literal>dd-mm-yy</literal></entry>
+            <entry><literal>I said on the 28th of July in the year 2525</literal></entry>
+            <entry><literal>2525-07-28</literal></entry>
+           </row>
+           <row>
+            <entry><literal>mmm.dd.yyyy</literal></entry>
+            <entry><literal>9/14/58</literal></entry>
+            <entry><literal>1958-09-14</literal></entry>
+           </row>
+           <row>
+            <entry><literal>yy/mm/dd</literal></entry>
+            <entry><literal>47/03/29</literal></entry>
+            <entry><literal>1947-03-29</literal></entry>
+           </row>
+           <row>
+            <entry><literal>mmm.dd.yyyy</literal></entry>
+            <entry><literal>oct 28 1975</literal></entry>
+            <entry><literal>1975-10-28</literal></entry>
+           </row>
+           <row>
+            <entry><literal>mmddyy</literal></entry>
+            <entry><literal>Nov 14th, 1985</literal></entry>
+            <entry><literal>1985-11-14</literal></entry>
+           </row>
+          </tbody>
+         </tgroup>
+        </table>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+  </sect2>
+ 
+  <sect2>
+   <title>The timestamp type</title>
+   <para>
+    C 中的 timestamp 类型让程序能够处理 SQL timestamp 类型的数据。<productname>PostgreSQL</productname>服务器中的等效类型见<xref linkend="datatype-datetime">。
+   </para>
+   <para>
+    下列函数可用于处理 timestamp 类型：
+    <variablelist>
+     <varlistentry id="PGTYPEStimestampfromasc">
+      <term><function>PGTYPEStimestamp_from_asc</function></term>
+      <listitem>
+       <para>将时间戳的文本表示解析为 timestamp 变量。<synopsis>
+timestamp PGTYPEStimestamp_from_asc(char *str, char **endptr);
+</synopsis>该函数接收要解析的字符串（<literal>str</literal>）和一个指向 C char* 的指针（<literal>endptr</literal>）。目前 ECPG 始终解析整个字符串，因此尚不支持将第一个无效字符的地址存入<literal>*endptr</literal>中。可以放心地将<literal>endptr</literal>设为 NULL。</para>
+       <para>
+        该函数在成功时返回解析后的时间戳。出错时返回<literal>PGTYPESInvalidTimestamp</literal>，
+        并将<varname>errno</>设置为<literal>PGTYPES_TS_BAD_TIMESTAMP</>。
+        关于该值的重要说明，见<xref linkend="PGTYPESInvalidTimestamp">。
+</para>
+       <para>
+        通常，输入字符串可以包含允许的日期规范、空白字符和允许的时间规范的任意组合。请注意，ECPG 不支持时区。它可以解析时区，但不像<productname>PostgreSQL</productname>服务器那样应用任何计算。时区标识符会被静默丢弃。
+       </para>
+       <para>
+        <xref linkend="ecpg-pgtypestimestamp-from-asc-example-table">包含了一些输入字符串的示例。
+       </para>
+        <table id="ecpg-pgtypestimestamp-from-asc-example-table">
+         <title>Valid input formats for <function>PGTYPEStimestamp_from_asc</function></title>
+         <tgroup cols="2">
+          <thead>
+           <row>
+            <entry>输入</entry>
+            <entry>结果</entry>
+           </row>
+          </thead>
+          <tbody>
+           <row>
+            <entry><literal>1999-01-08 04:05:06</literal></entry>
+            <entry><literal>1999-01-08 04:05:06</literal></entry>
+           </row>
+           <row>
+            <entry><literal>January 8 04:05:06 1999 PST</literal></entry>
+            <entry><literal>1999-01-08 04:05:06</literal></entry>
+           </row>
+           <row>
+            <entry><literal>1999-Jan-08 04:05:06.789-8</literal></entry>
+            <entry><literal>1999-01-08 04:05:06.789 (time zone specifier ignored)</literal></entry>
+           </row>
+           <row>
+            <entry><literal>J2451187 04:05-08:00</literal></entry>
+            <entry><literal>1999-01-08 04:05:00 (time zone specifier ignored)</literal></entry>
+           </row>
+          </tbody>
+         </tgroup>
+        </table>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPEStimestamptoasc">
+      <term><function>PGTYPEStimestamp_to_asc</function></term>
+      <listitem>
+       <para>将时间戳转换为 C char* 字符串。<synopsis>
+char *PGTYPEStimestamp_to_asc(timestamp tstamp);
+</synopsis>该函数接收时间戳<literal>tstamp</literal>作为其唯一参数，并返回一个包含时间戳文本表示的已分配字符串。
+        
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPEStimestampcurrent">
+      <term><function>PGTYPEStimestamp_current</function></term>
+      <listitem>
+       <para>
+        检索当前时间戳。
+<synopsis>
+void PGTYPEStimestamp_current(timestamp *ts);
+</synopsis>
+        该函数检索当前时间戳，并将其保存到<literal>ts</literal>指向的时间戳变量中。
+</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPEStimestampfmtasc">
+      <term><function>PGTYPEStimestamp_fmt_asc</function></term>
+      <listitem>
+       <para>
+        使用格式掩码将时间戳变量转换为 C char*。
+<synopsis>
+int PGTYPEStimestamp_fmt_asc(timestamp *ts, char *output, int str_len, char *fmtstr);
+</synopsis>
+        该函数接收一个指向要转换的时间戳的指针作为第一个参数（<literal>ts</literal>），
+        一个指向输出缓冲区的指针（<literal>output</literal>），已为输出缓冲区分配的最大长度
+        （<literal>str_len</literal>），以及用于转换的格式掩码（<literal>fmtstr</literal>）。
+</para>
+       <para>
+        成功时返回 0，发生错误时返回负值。
+       </para>
+       <para>
+        格式掩码可以使用以下格式说明符。它们与<productname>libc</productname>中<function>strftime</function>函数使用的格式说明符相同。不是格式说明符的内容都会被复制到输出缓冲区中。
+        <!-- This is from the FreeBSD man page:
+             http://www.freebsd.org/cgi/man.cgi?query=strftime&apropos=0&sektion=3&manpath=FreeBSD+7.0-current&format=html
+        -->
+        <itemizedlist>
+         <listitem>
+          <para>
+           <literal>%A</literal> - 替换为完整星期名称的本地化表示。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%a</literal> - 替换为缩写星期名称的本地化表示。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%B</literal> - 替换为完整月份名称的本地化表示。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%b</literal> - 替换为缩写月份名称的本地化表示。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%C</literal> - 替换为年份除以 100 的结果，以十进制数表示；一位数前补零。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%c</literal> - 替换为时间和日期的本地化表示。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%D</literal> - 等同于
+           <literal>%m/%d/%y</literal>。
+          </para>
+         </listitem>
+         <listitem>
+          <para><literal>%d</literal> - 替换为一个月中的日，以十进制数表示（01-31）。</para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%E*</literal> <literal>%O*</literal> -  POSIX 区域设置扩展。序列
+           <literal>%Ec</literal>
+           <literal>%EC</literal>
+           <literal>%Ex</literal>
+           <literal>%EX</literal>
+           <literal>%Ey</literal>
+           <literal>%EY</literal>
+           <literal>%Od</literal>
+           <literal>%Oe</literal>
+           <literal>%OH</literal>
+           <literal>%OI</literal>
+           <literal>%Om</literal>
+           <literal>%OM</literal>
+           <literal>%OS</literal>
+           <literal>%Ou</literal>
+           <literal>%OU</literal>
+           <literal>%OV</literal>
+           <literal>%Ow</literal>
+           <literal>%OW</literal>
+           <literal>%Oy</literal>
+           应该提供替代表示。
+          </para>
+          <para>
+           此外，<literal>%OB</literal>提供月份名称的替代形式，用于单独显示月份、不提及具体日的场合。
+          </para>
+         </listitem>
+         <listitem>
+          <para><literal>%e</literal> - 替换为一个月中的日，以十进制数表示（1-31）；一位数前补空格。</para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%F</literal> - 等同于<literal>%Y-%m-%d</literal>。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%G</literal> - 替换为包含世纪的年份，以十进制数表示。该年份是这一周中多数天所在的年份（以星期一为每周第一天）。
+          </para>
+         </listitem>
+         <listitem>
+          <para><literal>%g</literal> - 替换为与 <literal>%G</literal> 相同的年份，但以不带世纪的十进制数表示（00-99）。</para>
+         </listitem>
+         <listitem>
+          <para><literal>%H</literal> - 替换为小时（24 小时制），以十进制数表示（00-23）。</para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%h</literal> - 与<literal>%b</literal>相同。
+          </para>
+         </listitem>
+         <listitem>
+          <para><literal>%I</literal> - 替换为小时（12 小时制），以十进制数表示（01-12）。</para>
+         </listitem>
+         <listitem>
+          <para><literal>%j</literal> - 替换为一年中的第几天，以十进制数表示（001-366）。</para>
+         </listitem>
+         <listitem>
+          <para><literal>%k</literal> - 替换为小时（24 小时制），以十进制数表示（0-23）；一位数前补空格。</para>
+         </listitem>
+         <listitem>
+          <para><literal>%l</literal> - 替换为小时（12 小时制），以十进制数表示（1-12）；一位数前补空格。</para>
+         </listitem>
+         <listitem>
+          <para><literal>%M</literal> - 替换为分钟，以十进制数表示（00-59）。</para>
+         </listitem>
+         <listitem>
+          <para><literal>%m</literal> - 替换为月份，以十进制数表示（01-12）。</para>
+         </listitem>
+         <listitem>
+          <para>
+          <literal>%n</literal> - 被换行符替换。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%O*</literal> - 与<literal>%E*</literal>相同。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%p</literal> - 按需要替换为"上午"（ante meridiem）或"下午"（post meridiem）的本地化表示。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%R</literal> - 等同于<literal>%H:%M</literal>。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%r</literal> - 等同于<literal>%I:%M:%S %p</literal>。
+          </para>
+         </listitem>
+         <listitem>
+          <para><literal>%S</literal> - 替换为秒，以十进制数表示（00-60）。</para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%s</literal> - 替换为从 UTC 纪元起经过的秒数。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%T</literal> - 等同于<literal>%H:%M:%S</literal>
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%t</literal> - 被替换为一个制表符。
+          </para>
+         </listitem>
+         <listitem>
+          <para><literal>%U</literal> - 替换为一年中的周数，以星期日为每周第一天，以十进制数表示（00-53）。</para>
+         </listitem>
+         <listitem>
+          <para><literal>%u</literal> - 替换为星期几，以星期一为每周第一天，以十进制数表示（1-7）。</para>
+         </listitem>
+         <listitem>
+          <para><literal>%V</literal> - 替换为一年中的周数，以星期一为每周第一天，以十进制数表示（01-53）。如果包含 1 月 1 日的那一周有四天或更多天属于新年，该周就是第 1 周；否则，该周是上一年的最后一周，下一周才是第 1 周。</para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%v</literal> - 等同于
+           <literal>%e-%b-%Y</literal>。
+          </para>
+         </listitem>
+         <listitem>
+          <para><literal>%W</literal> - 替换为一年中的周数，以星期一为每周第一天，以十进制数表示（00-53）。</para>
+         </listitem>
+         <listitem>
+          <para><literal>%w</literal> - 替换为星期几，以星期日为每周第一天，以十进制数表示（0-6）。</para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%X</literal> - 被时间的本地化表示替换。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%x</literal> - 替换为日期的本地化表示。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%Y</literal> - 替换为包含世纪的年份，以十进制数表示。
+          </para>
+         </listitem>
+         <listitem>
+          <para><literal>%y</literal> - 替换为不带世纪的年份，以十进制数表示（00-99）。</para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%Z</literal> - 被时区名称替换。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%z</literal> - 替换为时区相对于 UTC 的偏移量；前导加号表示 UTC 以东，减号表示 UTC 以西，后接小时和分钟，各占两位数字，中间没有分隔符（RFC 822日期头的常见形式）。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%+</literal> - 被日期和时间的本地化表示所替换。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%-*</literal> - GNU libc扩展。在执行数字输出时不进行任何填充。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           $_* - GNU libc扩展。明确指定填充空间。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%0*</literal> - GNU libc 扩展。显式指定用零填充。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>%%</literal> - 被<literal>%</literal>替换。
+          </para>
+         </listitem>
+        </itemizedlist>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPEStimestampsub">
+      <term><function>PGTYPEStimestamp_sub</function></term>
+      <listitem>
+       <para>
+        从一个时间戳减去另一个时间戳，并将结果保存在 interval 类型变量中。
+<synopsis>
+int PGTYPEStimestamp_sub(timestamp *ts1, timestamp *ts2, interval *iv);
+</synopsis>
+        该函数从<literal>ts1</literal>指向的时间戳变量中减去<literal>ts2</literal>指向的时间戳变量，并将结果存入<literal>iv</literal>指向的 interval 变量中。
+       </para>
+       <para>
+        成功时返回 0，发生错误时返回负值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPEStimestampdefmtasc">
+      <term><function>PGTYPEStimestamp_defmt_asc</function></term>
+      <listitem>
+       <para>
+        使用格式掩码从文本表示中解析时间戳值。
+<synopsis>
+int PGTYPEStimestamp_defmt_asc(char *str, char *fmt, timestamp *d);
+</synopsis>
+        该函数接收变量<literal>str</>中的时间戳文本表示，以及变量<literal>fmt</>中的格式掩码。结果存入<literal>d</>指向的变量中。
+       </para>
+       <para>
+        如果格式掩码<literal>fmt</>为 NULL，函数将退回到默认格式掩码，即<literal>%Y-%m-%d %H:%M:%S</literal>。
+       </para>
+       <para>
+        这是<xref
+        linkend="PGTYPEStimestampfmtasc">的逆函数。可用的格式掩码项见该函数的说明。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPEStimestampaddinterval">
+      <term><function>PGTYPEStimestamp_add_interval</function></term>
+      <listitem>
+       <para>
+        向时间戳变量加上一个 interval 变量。
+<synopsis>
+int PGTYPEStimestamp_add_interval(timestamp *tin, interval *span, timestamp *tout);
+</synopsis>
+        该函数接收一个指向 timestamp 变量<literal>tin</literal>的指针，以及一个指向 interval 变量<literal>span</literal>的指针。它将时间间隔加到时间戳上，并将得到的时间戳存入<literal>tout</literal>指向的变量中。
+       </para>
+       <para>
+        成功时返回 0，发生错误时返回负值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPEStimestampsubinterval">
+      <term><function>PGTYPEStimestamp_sub_interval</function></term>
+      <listitem>
+       <para>
+        从时间戳变量中减去一个 interval 变量。
+<synopsis>
+int PGTYPEStimestamp_sub_interval(timestamp *tin, interval *span, timestamp *tout);
+</synopsis>
+        该函数从<literal>tin</literal>指向的时间戳变量中减去<literal>span</literal>指向的时间间隔变量，并将结果存入<literal>tout</literal>指向的变量中。
+       </para>
+       <para>
+        成功时返回 0，发生错误时返回负值。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>The interval type</title>
+   <para>
+    C 中的 interval 类型允许程序处理 SQL interval 类型的数据。<productname>PostgreSQL</productname>服务器中的等效类型见<xref linkend="datatype-datetime">。
+   </para>
+   <para>下列函数可用于处理 interval 类型：<variablelist>
+
+     <varlistentry id="PGTYPESintervalnew">
+      <term><function>PGTYPESinterval_new</function></term>
+      <listitem>
+       <para>
+        返回一个指向新分配 interval 变量的指针。
+<synopsis>
+interval *PGTYPESinterval_new(void);
+</synopsis>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPESintervalfree">
+      <term><function>PGTYPESinterval_free</function></term>
+      <listitem>
+       <para>
+        释放先前分配的 interval 变量所占用的内存。
+<synopsis>
+void PGTYPESinterval_new(interval *intvl);
+</synopsis>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPESintervalfromasc">
+      <term><function>PGTYPESinterval_from_asc</function></term>
+      <listitem>
+       <para>
+        从文本表示中解析一个 interval 值。
+<synopsis>
+interval *PGTYPESinterval_from_asc(char *str, char **endptr);
+</synopsis>
+        该函数解析输入字符串<literal>str</literal>，并返回一个已分配 interval 变量的指针。目前 ECPG 总是解析整个字符串，因此暂不支持把第一个非法字符的地址存储在<literal>*endptr</literal>中。可以安全地把<literal>endptr</literal>设为 NULL。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPESintervaltoasc">
+      <term><function>PGTYPESinterval_to_asc</function></term>
+      <listitem>
+       <para>将 interval 类型变量转换成文本表示。<synopsis>
+char *PGTYPESinterval_to_asc(interval *span);
+</synopsis>该函数把<literal>span</literal>指向的 interval 变量转换成 C char*。输出形式类似于：
+        <literal>@ 1 day 12 hours 59 mins 10 secs</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="PGTYPESintervalcopy">
+      <term><function>PGTYPESinterval_copy</function></term>
+      <listitem>
+       <para>
+        复制一个 interval 类型变量。
+<synopsis>
+int PGTYPESinterval_copy(interval *intvlsrc, interval *intvldest);
+</synopsis>
+        该函数把<literal>intvlsrc</literal>指向的 interval 变量复制到<literal>intvldest</literal>指向的 interval 变量中。注意，需要事先为目标变量分配好内存。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>The decimal type</title>
+   <para>
+     decimal类型和numeric类型相似。不过，它被限制为最大精度是 30 个有效位。与numeric类型只能在堆上创建相反，decimal类型既可以在栈上也可以在堆上创建（使用函数<function>PGTYPESdecimal_new</function> 和<function>PGTYPESdecimal_free</function>）。在<xref linkend="ecpg-informix-compat">中描述的<productname>Informix</productname>兼容模式中有很多其它函数可以处理decimal类型。
+   </para>
+   <para>下列函数可用于处理 decimal 类型，并非仅在<literal>libcompat</literal>库中提供。<variablelist>
+     <varlistentry>
+      <term><function>PGTYPESdecimal_new</function></term>
+      <listitem>
+       <para>
+       要求一个指向新分配的decimal变量的指针。
+<synopsis>
+decimal *PGTYPESdecimal_new(void);
+</synopsis>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>PGTYPESdecimal_free</function></term>
+      <listitem>
+       <para>
+       释放一个 decimal 变量及其占用的全部内存。
+<synopsis>
+void PGTYPESdecimal_free(decimal *var);
+</synopsis>
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+  </sect2>
+ 
+   <sect2>
+    <title>errno values of pgtypeslib</title>
+   <para>
+    <variablelist>
+     <varlistentry>
+      <term><literal>PGTYPES_NUM_BAD_NUMERIC</literal></term>
+      <listitem>
+       <para>
+        一个参数应该包含一个numeric变量（或者指向一个numeric变量），但是实际上它的内存表示非法。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PGTYPES_NUM_OVERFLOW</literal></term>
+      <listitem>
+       <para>
+        发生一次溢出。由于numeric类型可以处理几乎任何精度，将一个numeric变量转换成其他类型可能导致溢出。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PGTYPES_NUM_UNDERFLOW</literal></term>
+      <listitem>
+       <para>
+        发生一次下溢。由于numeric类型可以处理几乎任何精度，将一个numeric变量转换成其他类型可能导致下溢。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PGTYPES_NUM_DIVIDE_ZERO</literal></term>
+      <listitem>
+       <para>
+        尝试了一次除零。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PGTYPES_DATE_BAD_DATE</literal></term>
+      <listitem>
+       <para>
+        
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PGTYPES_DATE_ERR_EARGS</literal></term>
+      <listitem>
+       <para>
+        
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PGTYPES_DATE_ERR_ENOSHORTDATE</literal></term>
+      <listitem>
+       <para>
+        
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PGTYPES_INTVL_BAD_INTERVAL</literal></term>
+      <listitem>
+       <para>
+        
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PGTYPES_DATE_ERR_ENOTDMY</literal></term>
+      <listitem>
+       <para>
+        
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PGTYPES_DATE_BAD_DAY</literal></term>
+      <listitem>
+       <para>
+        
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PGTYPES_DATE_BAD_MONTH</literal></term>
+      <listitem>
+       <para>
+        
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PGTYPES_TS_BAD_TIMESTAMP</literal></term>
+      <listitem>
+       <para>
+        
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+  </sect2>
+
+   <sect2>
+    <title>Special constants of pgtypeslib</title>
+   <para>
+    <variablelist>
+     <varlistentry id="PGTYPESInvalidTimestamp">
+      <term><literal>PGTYPESInvalidTimestamp</literal></term>
+      <listitem>
+       <para>
+        一个表示无效时间戳的 timestamp 类型值。<function>PGTYPEStimestamp_from_asc</function>函数在解析出错时返回此值。注意，由于<type>timestamp</type>数据类型的内部表示，<literal>PGTYPESInvalidTimestamp</literal>同时也是一个有效的时间戳，其值为<literal>1899-12-31 23:59:59</literal>。为了检测错误，应用程序每次调用<function>PGTYPEStimestamp_from_asc</function>后，不仅要检查<literal>PGTYPESInvalidTimestamp</literal>，还要检查<literal>errno != 0</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="ecpg-descriptors">
+  <title>使用描述符区域</title>
+
+  <para>
+   SQL 描述符区域是一种处理<command>SELECT</command>、<command>FETCH</command>或<command>DESCRIBE</command>语句结果的高级方法。SQL 描述符区域将一行数据及其元数据项组合到一个数据结构中。在执行动态 SQL 语句时，结果列的性质可能无法提前获知，此时元数据特别有用。PostgreSQL 提供两种使用描述符区域的方式：命名 SQL 描述符区域和 C 结构体 SQLDA。
+  </para>
+
+  <sect2 id="ecpg-named-descriptors">
+   <title>命名 SQL 描述符区域</title>
+
+   <para>
+    一个命名 SQL 描述符区域由一个头部以及一个或多个条目描述符区域构成，头部包含与整个描述符相关的信息，而条目描述符区域则描述结果行中的每一列。
+   </para>
+
+   <para>
+    在使用 SQL 描述符区域之前，需要先分配一个：
+<programlisting>
+EXEC SQL ALLOCATE DESCRIPTOR <replaceable>identifier</replaceable>;
+</programlisting>
+    identifier 会作为该描述符区域的<quote>变量名</quote>。<remark>分配的描述符的作用域是什么？</remark>当不再需要该描述符时，应当释放它：
+<programlisting>
+EXEC SQL DEALLOCATE DESCRIPTOR <replaceable>identifier</replaceable>;
+</programlisting>
+   </para>
+
+   <para>
+    要使用一个描述符区域，把它指定为<literal>INTO</literal>子句的存储目标（而不是列出主变量）：
+<programlisting>
+EXEC SQL FETCH NEXT FROM mycursor INTO SQL DESCRIPTOR mydesc;
+</programlisting>
+    如果结果集为空，该描述符区域仍然会包含查询的元数据，即字段的名称。
+   </para>
+
+   <para>
+    对于还没有执行的预备查询，<command>DESCRIBE</command>可以被用来得到其结果集的元数据：
+<programlisting>
+EXEC SQL BEGIN DECLARE SECTION;
+char *sql_stmt = "SELECT * FROM table1";
+EXEC SQL END DECLARE SECTION;
+
+EXEC SQL PREPARE stmt1 FROM :sql_stmt;
+EXEC SQL DESCRIBE stmt1 INTO SQL DESCRIPTOR mydesc;
+</programlisting>
+   </para>
+
+   <para>
+    在 PostgreSQL 9.0 之前，<literal>SQL</literal>关键词是可选的，因此使用<literal>DESCRIPTOR</literal>和<literal>SQL DESCRIPTOR</literal>都会产生命名 SQL 描述符区域。现在该关键词是强制性的，省略<literal>SQL</literal>关键词会产生 SQLDA 描述符区域（见<xref linkend="ecpg-sqlda-descriptors">）。
+   </para>
+
+   <para>
+    在<command>DESCRIBE</command>和<command>FETCH</command>语句中，<literal>INTO</literal>和<literal>USING</literal>关键词的用法相似：它们在描述符区域中生成结果集和元数据。
+   </para>
+
+   <para>
+    那么如何从描述符区域中取得数据呢？你可以把描述符区域当作一个包含命名字段的结构。要从头部取得某个字段的值并存入一个主变量，可使用以下命令：
+<programlisting>
+EXEC SQL GET DESCRIPTOR <replaceable>name</replaceable> :<replaceable>hostvar</replaceable> = <replaceable>field</replaceable>;
+</programlisting>
+    目前只定义了一个头部字段：<replaceable>COUNT</replaceable>，它表示存在多少个条目描述符区域（即结果中包含多少列）。主变量需要是整数类型。要从条目描述符区域取得一个字段，可使用以下命令：
+<programlisting>
+EXEC SQL GET DESCRIPTOR <replaceable>name</replaceable> VALUE <replaceable>num</replaceable> :<replaceable>hostvar</replaceable> = <replaceable>field</replaceable>;
+</programlisting>
+    <replaceable>num</replaceable>可以是一个整数字面量或者一个包含整数的宿主变量。可能的字段有：
+
+    <variablelist>
+     <varlistentry>
+      <term><literal>CARDINALITY</literal> (integer)</term>
+      <listitem>
+       <para>
+        结果集中的行数
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>DATA</literal></term>
+      <listitem>
+       <para>
+        实际的数据项（因此，这个字段的数据类型取决于查询）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>DATETIME_INTERVAL_CODE</literal> (integer)</term>
+      <listitem>
+       <para>
+        ?
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>DATETIME_INTERVAL_PRECISION</literal> (integer)</term>
+      <listitem>
+       <para>
+        没有实现
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>INDICATOR</literal> (integer)</term>
+      <listitem>
+       <para>
+        指示符（表示一个空值或者一个值截断）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>KEY_MEMBER</literal> (integer)</term>
+      <listitem>
+       <para>
+        没有实现
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>LENGTH</literal> (integer)</term>
+      <listitem>
+       <para>
+        以字符计的数据长度
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>NAME</literal> (string)</term>
+      <listitem>
+       <para>
+        列名
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>NULLABLE</literal> (integer)</term>
+      <listitem>
+       <para>
+        没有实现
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>OCTET_LENGTH</literal> (integer)</term>
+      <listitem>
+       <para>
+        以字节计的数据字符表示的长度
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>PRECISION</literal> (integer)</term>
+      <listitem>
+       <para>
+        精度（用于类型<type>numeric</type>）
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>RETURNED_LENGTH</literal> (integer)</term>
+      <listitem>
+       <para>
+        以字符计的数据长度
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>RETURNED_OCTET_LENGTH</literal> (integer)</term>
+      <listitem>
+       <para>
+        以字节计的数据字符表示的长度
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>SCALE</literal> (integer)</term>
+      <listitem>
+       <para>小数位数（用于类型 <type>numeric</type>）</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>TYPE</literal> (integer)</term>
+      <listitem>
+       <para>
+        列的数据类型的数字编码
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    在<command>EXECUTE</command>、<command>DECLARE</command>以及<command>OPEN</command>语句中，<literal>INTO</literal>和<literal>USING</literal>关键词的效果不同。也可以手工建立一个描述符区域来为一个查询或者游标提供输入参数，并且<literal>USING SQL DESCRIPTOR <replaceable>name</replaceable></literal>是用来传递输入参数给参数化查询的方法。建立一个命名 SQL 描述符区域的语句如下：
+<programlisting>
+EXEC SQL SET DESCRIPTOR <replaceable>name</replaceable> VALUE <replaceable>num</replaceable> <replaceable>field</replaceable> = :<replaceable>hostvar</replaceable>;
+</programlisting>
+   </para>
+
+   <para>
+    PostgreSQL 支持在一条<command>FETCH</command>语句中检索多条记录。在这种情况下，要将数据存入主变量，该变量必须是数组。例如：
+<programlisting>
+EXEC SQL BEGIN DECLARE SECTION;
+int id[5];
+EXEC SQL END DECLARE SECTION;
+
+EXEC SQL FETCH 5 FROM mycursor INTO SQL DESCRIPTOR mydesc;
+
+EXEC SQL GET DESCRIPTOR mydesc VALUE 1 :id = DATA;
+</programlisting>
+
+   </para>
+
+  </sect2>
+
+  <sect2 id="ecpg-sqlda-descriptors">
+   <title>SQLDA 描述符区域</title>
+
+   <para>
+    SQLDA 描述符区域是一个 C 语言结构体，它也能被用来得到一个查询的结果集和元数据。一个结构体存储一个来自结果集的记录。
+<programlisting>
+EXEC SQL include sqlda.h;
+sqlda_t         *mysqlda;
+
+EXEC SQL FETCH 3 FROM mycursor INTO DESCRIPTOR mysqlda;
+</programlisting>
+    注意，这里省略了<literal>SQL</literal>关键词。<xref linkend="ecpg-named-descriptors">中关于<literal>INTO</literal>和<literal>USING</literal>关键词用法的说明也适用于这里，并有一项补充规则：在<command>DESCRIBE</command>语句中，如果使用了<literal>INTO</literal>关键词，就可以完全省略<literal>DESCRIPTOR</literal>关键词：
+<programlisting>
+EXEC SQL DESCRIBE prepared_statement INTO mysqlda;
+</programlisting>
+   </para>
+
+   <para>
+    The structure of SQLDA is:
+<programlisting>
+#define NAMEDATALEN 64
+
+struct sqlname
+{
+        short           length;
+        char            data[NAMEDATALEN];
+};
+
+struct sqlvar_struct
+{
+        short           sqltype;
+        short           sqllen;
+        char       *sqldata;
+        short      *sqlind;
+        struct sqlname sqlname;
+};
+
+struct sqlda_struct
+{
+        char            sqldaid[8];
+        long            sqldabc;
+        short           sqln;
+        short           sqld;
+        struct sqlda_struct *desc_next;
+        struct sqlvar_struct    sqlvar[1];
+};
+
+typedef struct sqlvar_struct    sqlvar_t;
+typedef struct sqlda_struct     sqlda_t;
+</programlisting>
+   </para>
+
+   <para>
+    为一个 SQLDA 结构体分配的数据是可变的，因为它取决于一个结果集中字段的数量，也取决于一条记录中字符串数据值的长度。<literal>SQLDA</literal>结构的各个字段是：
+
+    <variablelist>
+     <varlistentry>
+      <term><literal>sqldaid</></term>
+      <listitem>
+       <para>
+        它包含"<literal>SQLDA  </literal>"字面字符串。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>sqldabc</></term>
+      <listitem>
+       <para>
+        它包含已分配空间的尺寸（以字节计）。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>sqln</></term>
+      <listitem>
+       <para>
+        当它通过<literal>USING</literal>关键词传递给<command>OPEN</command>、<command>DECLARE</command>或<command>EXECUTE</command>语句时，它包含参数化查询的输入参数个数。如果它用作<command>SELECT</command>、<command>EXECUTE</command>或<command>FETCH</command>语句的输出，其值与<literal>sqld</literal>相同。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>sqld</></term>
+      <listitem>
+       <para>
+        它包含一个结果集中的域的数量。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>desc_next</></term>
+      <listitem>
+       <para>
+        如果查询返回不止一个记录，会返回多个链接在一起的 SQLDA 结构体，并且<literal>desc_next</literal>保存一个指向下一个项的指针。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>sqlvar</></term>
+      <listitem>
+       <para>
+        这是结果集中字段的数组。这些字段是：
+
+        <variablelist>
+
+         <varlistentry>
+         <term><literal>sqltype</></term>
+          <listitem>
+           <para>
+            包含该字段的类型标识符。值可以参考<literal>ecpgtype.h</literal>中的<literal>enum ECPGttype</literal>。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry>
+         <term><literal>sqllen</></term>
+          <listitem>
+           <para>
+            包含字段的二进制长度，例如<type>ECPGt_int</type>是 4 字节。
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry>
+         <term><literal>sqldata</></term>
+          <listitem>
+           <para>
+            <literal>(char *)sqldata</literal> points to the data.
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry>
+         <term><literal>sqlind</></term>
+          <listitem>
+           <para>
+            <literal>(char *)sqlind</literal> points to the NULL indicator for data.
+            0 means NOT NULL, -1 means NULL.
+           </para>
+          </listitem>
+         </varlistentry>
+
+         <varlistentry>
+         <term><literal>sqlname</></term>
+          <listitem>
+           <para>
+            <literal>struct sqlname sqlname</literal>在一个结构体中包含该字段的名称：
+<programlisting>
+struct sqlname
+{
+        short           length;
+        char            data[NAMEDATALEN];
+};
+</programlisting>
+
+            <variablelist>
+             <varlistentry>
+              <term><literal>length</></term>
+               <listitem>
+                <para>
+                 <literal>sqlname.length</literal>包含字段名的长度。
+                </para>
+               </listitem>
+              </varlistentry>
+             <varlistentry>
+              <term><literal>data</></term>
+               <listitem>
+                <para>
+                 <literal>sqlname.data</literal>包含实际的字段名。
+                </para>
+               </listitem>
+              </varlistentry>
+            </variablelist>
+           </para>
+          </listitem>
+         </varlistentry>
+
+        </variablelist>
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+  </sect2>
+
+ </sect1>
+
+ <sect1 id="ecpg-informix-compat">
+  <title><productname>Informix</productname> compatibility mode</title>
+  <para>
+   <command>ecpg</command>可以运行在一种所谓的<firstterm>Informix 兼容模式</firstterm>中。如果这种模式被激活，它的行为就好像它是一个用于<productname>Informix</productname> E/SQL 的<productname>Informix</productname>预处理器。一般而言，这将允许你使用美元符号替代<literal>EXEC SQL</literal>来引入嵌入式 SQL 命令：
+<programlisting>
+$int j = 3;
+$CONNECT TO :dbname;
+$CREATE TABLE test(i INT PRIMARY KEY, j INT);
+$INSERT INTO test(i, j) VALUES (7, :j);
+$COMMIT;
+</programlisting>
+  </para>
+  <para>
+   有两种兼容性模式：<literal>INFORMIX</literal>、<literal>INFORMIX_SE</literal>
+  </para>
+  <para>
+   在链接使用这种兼容性模式的程序时，要记得链接上和 ECPG 一起发布的<literal>libcompat</literal>。
+  </para>
+  <para>
+   除了之前解释过的语法糖，<productname>Informix</productname>兼容模式从 E/SQL 中移植了一些用于输入、输出和数据转换的函数以及嵌入式 SQL 语句到 ECPG 中。
+  </para>
+  <para>
+   <productname>Informix</productname>兼容模式与 ECPG 的 pgtypeslib 库密切相关。pgtypeslib 将 SQL 数据类型映射到 C 主程序中的数据类型，<productname>Informix</productname>兼容模式中的大多数附加函数用于操作这些 C 主程序类型。但兼容范围有限。它并不试图复制<productname>Informix</productname>的行为，而是允许执行大致相同的操作，并提供名称和基本行为相同的函数；如果目前使用的是<productname>Informix</productname>，则不能用它直接替代。此外，有些数据类型也有差异。例如，<productname>PostgreSQL</productname>的日期时间和 interval 类型不支持<literal>YEAR TO MINUTE</literal>这样的范围，ECPG 也不支持。
+  </para>
+
+  <sect2>
+   <title>Additional types</title>
+   <para>
+    Informix 模式现在支持 Informix 特有的“string”伪类型，用于存储去除尾随空格的字符串数据，无需使用<literal>typedef</literal>。事实上，在 Informix 模式中，ECPG 拒绝处理包含<literal>typedef sometype string;</literal>的源文件。
+<programlisting>
+EXEC SQL BEGIN DECLARE SECTION;
+string userid; /* 此变量将包含去除尾随空格的数据 */
+EXEC SQL END DECLARE SECTION;
+
+EXEC SQL FETCH MYCUR INTO :userid;
+</programlisting>
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>Additional/missing embedded SQL statements</title>
+   <para>
+    <variablelist>
+     <varlistentry>
+      <term><literal>CLOSE DATABASE</literal></term>
+      <listitem>
+       <para>
+        这个语句关闭当前连接。实际上，这是ECPG的<literal>DISCONNECT CURRENT</literal>的同义词：
+<programlisting>
+$CLOSE DATABASE;                /* close the current connection */
+EXEC SQL CLOSE DATABASE;
+</programlisting>
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>FREE cursor_name</literal></term>
+      <listitem>
+       <para>
+        由于ECPG的工作方式与Informix的ESQL/C有所不同（即，哪些步骤纯粹是语法转换，哪些步骤依赖于底层运行时库），
+        在ECPG中没有<literal>FREE cursor_name</literal>语句。这是因为在ECPG中，
+        <literal>DECLARE CURSOR</literal>不会转换为使用游标名称的运行时库的函数调用。
+        这意味着在ECPG运行时库中没有SQL游标的运行时记录，只在PostgreSQL服务器中有。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>FREE statement_name</literal></term>
+      <listitem>
+       <para>
+        <literal>FREE statement_name</literal>是<literal>DEALLOCATE PREPARE statement_name</literal>的同义词。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>Informix-兼容的 SQLDA 描述符区域</title>
+   <para>
+    Informix 兼容模式支持的结构体与<xref linkend="ecpg-sqlda-descriptors">中所述的不同，如下所示：
+<programlisting>
+struct sqlvar_compat
+{
+    short   sqltype;
+    int     sqllen;
+    char   *sqldata;
+    short  *sqlind;
+    char   *sqlname;
+    char   *sqlformat;
+    short   sqlitype;
+    short   sqlilen;
+    char   *sqlidata;
+    int     sqlxid;
+    char   *sqltypename;
+    short   sqltypelen;
+    short   sqlownerlen;
+    short   sqlsourcetype;
+    char   *sqlownername;
+    int     sqlsourceid;
+    char   *sqlilongdata;
+    int     sqlflags;
+    void   *sqlreserved;
+};
+
+struct sqlda_compat
+{
+    short  sqld;
+    struct sqlvar_compat *sqlvar;
+    char   desc_name[19];
+    short  desc_occ;
+    struct sqlda_compat *desc_next;
+    void  *reserved;
+};
+
+typedef struct sqlvar_compat    sqlvar_t;
+typedef struct sqlda_compat     sqlda_t;
+</programlisting>
+   </para>
+
+   <para>全局属性是：<variablelist>
+
+     <varlistentry>
+     <term><literal>sqld</literal></term>
+      <listitem>
+       <para>
+        <literal>SQLDA</literal>描述符中的字段数量。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>sqlvar</literal></term>
+      <listitem>
+       <para>
+        每一个域属性的指针。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>desc_name</literal></term>
+      <listitem>
+       <para>
+        未使用，用零字节填充。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>desc_occ</literal></term>
+      <listitem>
+       <para>
+        已分配结构体的尺寸。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>desc_next</literal></term>
+      <listitem>
+       <para>
+        如果结果集包含多于一个记录，这个域是下一个 SQLDA 结构体的指针。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>reserved</literal></term>
+      <listitem>
+       <para>
+        未使用的指针，包含 NULL。为 Informix-兼容性而保留。
+       </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>每个字段的属性如下，它们存储在 <literal>sqlvar</literal> 数组中：<variablelist>
+
+     <varlistentry>
+     <term><literal>sqltype</literal></term>
+      <listitem>
+       <para>
+        域的类型。可以使用的常量定义在<literal>sqltypes.h</literal>中。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>sqllen</literal></term>
+      <listitem>
+       <para>
+        域数据的长度。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>sqldata</literal></term>
+      <listitem>
+       <para>指向字段数据的指针，类型为<literal>char *</literal>，所指的数据采用二进制格式。例如：<programlisting>
+int intval;
+
+switch (sqldata->sqlvar[i].sqltype)
+{
+    case SQLINTEGER:
+        intval = *(int *)sqldata->sqlvar[i].sqldata;
+        break;
+  ...
+}
+</programlisting>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>sqlind</literal></term>
+      <listitem>
+       <para>指向 NULL 指示符的指针。如果由 DESCRIBE 或 FETCH 返回，它始终是有效指针。如果作为<literal>EXECUTE ... USING sqlda;</literal>的输入，则 NULL 指针表示此字段的值不是 NULL。否则，必须正确设置有效指针和<literal>sqlitype</literal>。例如：<programlisting>
+if (*(int2 *)sqldata->sqlvar[i].sqlind != 0)
+    printf("value is NULL\n");
+</programlisting>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>sqlname</literal></term>
+      <listitem>
+       <para>
+        域的名称。以 0 终止的字符串。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>sqlformat</literal></term>
+      <listitem>
+       <para>在 Informix 中保留；这里是对该字段调用 <function>PQfformat()</function> 所得的值。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>sqlitype</literal></term>
+      <listitem>
+       <para>
+        NULL 指示符数据的类型。从服务器返回数据时，它始终是 SQLSMINT。将<literal>SQLDA</literal>用于参数化查询时，按所设置的类型处理数据。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>sqlilen</literal></term>
+      <listitem>
+       <para>
+        NULL 指示符数据的长度。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>sqlxid</literal></term>
+      <listitem>
+       <para>字段的扩展类型，即 <function>PQftype()</function> 的结果。</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>sqltypename</literal></term>
+     <term><literal>sqltypelen</literal></term>
+     <term><literal>sqlownerlen</literal></term>
+     <term><literal>sqlsourcetype</literal></term>
+     <term><literal>sqlownername</literal></term>
+     <term><literal>sqlsourceid</literal></term>
+     <term><literal>sqlflags</literal></term>
+     <term><literal>sqlreserved</literal></term>
+      <listitem>
+       <para>
+        未使用。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+     <term><literal>sqlilongdata</literal></term>
+      <listitem>
+       <para>
+        如果<literal>sqllen</literal>大于 32KB，它等于<literal>sqldata</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+    </variablelist>示例：<programlisting>
+EXEC SQL INCLUDE sqlda.h;
+
+    sqlda_t        *sqlda; /* 这不需要在嵌入式 DECLARE SECTION 下 */
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    char *prep_stmt = "select * from table1";
+    int i;
+    EXEC SQL END DECLARE SECTION;
+
+    ...
+
+    EXEC SQL PREPARE mystmt FROM :prep_stmt;
+
+    EXEC SQL DESCRIBE mystmt INTO sqlda;
+
+    printf("# of fields: %d\n", sqlda-&gt;sqld);
+    for (i = 0; i &lt; sqlda-&gt;sqld; i++)
+      printf("field %d: \"%s\"\n", sqlda-&gt;sqlvar[i]-&gt;sqlname);
+
+    EXEC SQL DECLARE mycursor CURSOR FOR mystmt;
+    EXEC SQL OPEN mycursor;
+    EXEC SQL WHENEVER NOT FOUND GOTO out;
+
+    while (1)
+    {
+      EXEC SQL FETCH mycursor USING sqlda;
+    }
+
+    EXEC SQL CLOSE mycursor;
+
+    free(sqlda); /* 主结构完全被 free()，sqlda 和 sqlda-&gt;sqlvar 在一个已分配区域中 */
+</programlisting>更多信息参见 <literal>sqlda.h</literal> 头文件和 <literal>src/interfaces/ecpg/test/compat_informix/sqlda.pgc</literal> 回归测试。</para>
+  </sect2>
+
+  <sect2>
+   <title>Additional functions</title>
+   <para>
+    <variablelist>
+     <varlistentry>
+      <term><function>decadd</function></term>
+      <listitem>
+<para>
+        将两个 decimal 类型的值相加。
+<synopsis>
+int decadd(decimal *arg1, decimal *arg2, decimal *sum);
+</synopsis>
+        该函数接收指向第一个 decimal 类型操作数的指针（<literal>arg1</literal>）、指向第二个 decimal 类型操作数的指针（<literal>arg2</literal>），以及指向用于保存和的 decimal 类型值的指针（<literal>sum</literal>）。成功时返回 0，发生溢出时返回<symbol>ECPG_INFORMIX_NUM_OVERFLOW</symbol>，发生下溢时返回<symbol>ECPG_INFORMIX_NUM_UNDERFLOW</symbol>。其他失败情况下返回 -1，并将<varname>errno</varname>设为 pgtypeslib 中对应的<varname>errno</varname>值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>deccmp</function></term>
+      <listitem>
+<para>
+        比较两个 decimal 类型的变量。
+<synopsis>
+int deccmp(decimal *arg1, decimal *arg2);
+</synopsis>
+        该函数接收指向第一个 decimal 值的指针（<literal>arg1</literal>）和指向第二个 decimal 值的指针（<literal>arg2</literal>），并返回一个整数值，表示哪个值更大。
+        <itemizedlist>
+         <listitem>
+          <para>
+           1，如果<literal>arg1</literal>指向的值大于<literal>var2</literal>指向的值
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           -1，如果<literal>arg1</literal>指向的值小于<literal>arg2</literal>指向的值
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           0，如果<literal>arg1</literal>指向的值和<literal>arg2</literal>指向的值相等
+          </para>
+         </listitem>
+        </itemizedlist>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>deccopy</function></term>
+      <listitem>
+<para>
+        复制一个 decimal 值。
+<synopsis>
+void deccopy(decimal *src, decimal *target);
+</synopsis>
+        该函数的第一个参数是指向待复制 decimal 值的指针（<literal>src</literal>），第二个参数是指向目标 decimal 类型结构体的指针（<literal>target</literal>）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>deccvasc</function></term>
+      <listitem>
+<para>
+        将一个值的 ASCII 表示转换为 decimal 类型。
+<synopsis>
+int deccvasc(char *cp, int len, decimal *np);
+</synopsis>
+        该函数接收指向待转换数值的字符串表示的指针（<literal>cp</literal>）及其长度<literal>len</literal>。<literal>np</literal>是指向用于保存操作结果的 decimal 值的指针。
+       </para>
+<para>
+        例如，有效的格式包括：
+         <literal>-2</literal>、
+         <literal>.794</literal>、
+         <literal>+3.44</literal>、
+         <literal>592.49E07</literal>或
+         <literal>-32.84e-4</literal>。
+       </para>
+<para>
+        该函数成功返回0。如果发生溢出或下溢，则返回<literal>ECPG_INFORMIX_NUM_OVERFLOW</literal>或
+        <literal>ECPG_INFORMIX_NUM_UNDERFLOW</literal>。如果ASCII表示无法解析，
+        则返回<literal>ECPG_INFORMIX_BAD_NUMERIC</literal>，或者如果在解析指数时出现问题，则返回
+        <literal>ECPG_INFORMIX_BAD_EXPONENT</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>deccvdbl</function></term>
+      <listitem>
+<para>
+        将 double 类型的值转换为 decimal 类型的值。
+<synopsis>
+int deccvdbl(double dbl, decimal *np);
+</synopsis>
+        该函数接收应该被转换的 double 类型变量作为其第一个参数（<literal>dbl</literal>）。
+        作为第二个参数（<literal>np</literal>），该函数接收一个指向应该保存操作结果的 decimal 变量的指针。
+       </para>
+<para>
+        该函数在成功时返回0，在转换失败时返回负值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>deccvint</function></term>
+      <listitem>
+<para>
+        将 int 类型的值转换为 decimal 类型的值。
+<synopsis>
+int deccvint(int in, decimal *np);
+</synopsis>
+        该函数接收应该被转换的 int 类型变量作为其第一个参数（<literal>in</literal>）。
+        作为第二个参数（<literal>np</literal>），该函数接收一个指向应该保存操作结果的 decimal 变量的指针。
+       </para>
+<para>
+        该函数在成功时返回0，在转换失败时返回负值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>deccvlong</function></term>
+      <listitem>
+<para>
+        将类型为 long 的值转换为类型为 decimal 的值。
+<synopsis>
+int deccvlong(long lng, decimal *np);
+</synopsis>
+        该函数接收应该被转换的类型为 long 的变量作为其第一个参数（<literal>lng</literal>）。
+        作为第二个参数（<literal>np</literal>），该函数接收一个指向应该保存操作结果的 decimal 变量的指针。
+       </para>
+<para>
+        该函数在成功时返回0，在转换失败时返回负值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>decdiv</function></term>
+      <listitem>
+<para>
+        将两个 decimal 类型的变量相除。
+<synopsis>
+int decdiv(decimal *n1, decimal *n2, decimal *result);
+</synopsis>
+        该函数接收指向第一个（<literal>n1</literal>）和第二个（<literal>n2</literal>）操作数的变量的指针，
+        并计算<literal>n1</literal>/<literal>n2</literal>。 <literal>result</literal>是应该保存操作结果的变量的指针。
+       </para>
+<para>
+        在成功时返回0，如果除法失败则返回负值。
+        如果发生溢出或下溢，则函数分别返回
+        <literal>ECPG_INFORMIX_NUM_OVERFLOW</literal>或
+        <literal>ECPG_INFORMIX_NUM_UNDERFLOW</literal>。如果尝试
+        除以零，则函数返回<literal>ECPG_INFORMIX_DIVIDE_ZERO</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>decmul</function></term>
+      <listitem>
+<para>
+        将两个 decimal 值相乘。
+<synopsis>
+int decmul(decimal *n1, decimal *n2, decimal *result);
+</synopsis>
+        该函数接收指向第一个（<literal>n1</literal>）和第二个（<literal>n2</literal>）操作数的变量的指针，
+        并计算<literal>n1</literal>*<literal>n2</literal>。 <literal>result</literal>是一个指向应该保存操作结果的变量的指针。
+       </para>
+<para>
+        在成功时返回0，如果乘法失败则返回负值。如果发生溢出或下溢，函数分别返回
+        <literal>ECPG_INFORMIX_NUM_OVERFLOW</literal>或
+        <literal>ECPG_INFORMIX_NUM_UNDERFLOW</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>decsub</function></term>
+      <listitem>
+<para>
+        从一个 decimal 值中减去另一个 decimal 值。
+<synopsis>
+int decsub(decimal *n1, decimal *n2, decimal *result);
+</synopsis>
+        该函数接收指向第一个（<literal>n1</literal>）和第二个（<literal>n2</literal>）操作数的变量的指针，
+        并计算<literal>n1</literal>-<literal>n2</literal>。 <literal>result</literal>是应该保存操作结果的变量的指针。
+       </para>
+<para>
+        在成功时返回0，如果减法失败则返回负值。如果发生溢出或下溢，函数分别返回
+        <literal>ECPG_INFORMIX_NUM_OVERFLOW</literal>或
+        <literal>ECPG_INFORMIX_NUM_UNDERFLOW</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>dectoasc</function></term>
+      <listitem>
+<para>
+        将 decimal 类型变量转换为 C char* 字符串中的 ASCII 表示。
+<synopsis>
+int dectoasc(decimal *np, char *cp, int len, int right)
+</synopsis>
+        该函数接收指向 decimal 类型变量的指针（<literal>np</literal>），并将该变量转换为文本表示。<literal>cp</literal>是用于保存操作结果的缓冲区。参数<literal>right</literal>指定输出中小数点右侧的位数，结果将舍入到这个小数位数。将<literal>right</literal>设为 -1 表示输出所有可用的小数位。如果<literal>len</literal>指定的输出缓冲区长度不足以容纳文本表示及末尾的零字节，则只在结果中存入一个<literal>*</literal>字符，并返回 -1。
+</para>
+<para>
+        如果缓冲区<literal>cp</literal>太小，函数返回 -1；如果内存耗尽，则返回<literal>ECPG_INFORMIX_OUT_OF_MEMORY</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>dectodbl</function></term>
+      <listitem>
+       <para>将 decimal 类型的变量转换为 double。<synopsis>
+int dectodbl(decimal *np, double *dblp);
+</synopsis>该函数接受指向待转换 decimal 值的指针（<literal>np</literal>），以及指向用于保存操作结果的 double 变量的指针（<literal>dblp</literal>）。
+       </para>
+       <para>
+        当成功时，返回0；如果转换失败，则返回负值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>dectoint</function></term>
+      <listitem>
+       <para>将 decimal 类型的变量转换为整数。<synopsis>
+int dectoint(decimal *np, int *ip);
+</synopsis>该函数接受指向待转换 decimal 值的指针（<literal>np</literal>），以及指向用于保存操作结果的整数变量的指针（<literal>ip</literal>）。
+       </para>
+       <para>
+        当成功时，返回0；如果转换失败，则返回负值。如果发生溢出，将返回<literal>ECPG_INFORMIX_NUM_OVERFLOW</literal>。
+       </para>
+       <para>
+        请注意，ECPG实现与<productname>Informix</productname>实现不同。
+        <productname>Informix</productname>将整数限制在-32767到32767的范围内，
+        而ECPG实现中的限制取决于架构（<literal>-INT_MAX .. INT_MAX</literal>）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>dectolong</function></term>
+      <listitem>
+       <para>将 decimal 类型的变量转换为长整数。<synopsis>
+int dectolong(decimal *np, long *lngp);
+</synopsis>该函数接受指向待转换 decimal 值的指针（<literal>np</literal>），以及指向用于保存操作结果的 long 变量的指针（<literal>lngp</literal>）。
+       </para>
+       <para>
+        当成功时，返回0；如果转换失败，则返回负值。如果发生溢出，将返回<literal>ECPG_INFORMIX_NUM_OVERFLOW</literal>。
+       </para>
+       <para>
+        请注意，ECPG实现与<productname>Informix</productname>实现不同。
+        <productname>Informix</productname>将长整型限制在-2,147,483,647到2,147,483,647的范围内，
+        而ECPG实现中的限制取决于架构（<literal>-LONG_MAX .. LONG_MAX</literal>）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rdatestr</function></term>
+      <listitem>
+       <para>将日期转换成 C char* 字符串。<synopsis>
+int rdatestr(date d, char *str);
+</synopsis>该函数接受两个参数，第一个是待转换的日期（<literal>d</literal>），第二个是指向目标字符串的指针。输出格式始终为 <literal>yyyy-mm-dd</>，因此必须为字符串分配至少 11 字节（包括值为零的终止字节）。</para>
+       <para>
+        该函数在成功时返回0，在错误时返回负值。
+       </para>
+       <para>
+        请注意，ECPG的实现与<productname>Informix</productname>的实现不同。在<productname>Informix</productname>中，
+        格式可以通过设置环境变量来影响。然而，在ECPG中，你无法更改输出格式。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rstrdate</function></term>
+      <listitem>
+<para>
+        解析日期的文本表示。
+<synopsis>
+int rstrdate(char *str, date *d);
+</synopsis>
+        该函数接收要转换的日期的文本表示（<literal>str</literal>）和指向类型为 date 的变量的指针
+        （<literal>d</literal>）。此函数不允许你指定格式掩码。它使用<productname>Informix</productname>的默认格式掩码，
+        即<literal>mm/dd/yyyy</literal>。在内部，此函数通过<function>rdefmtdate</function>实现。
+        因此，<function>rstrdate</function>不会更快，如果可以选择，应选择允许你显式指定格式掩码的
+        <function>rdefmtdate</function>。
+       </para>
+<para>
+        这个函数返回与<function>rdefmtdate</function>相同的值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rtoday</function></term>
+      <listitem>
+<para>
+        得到当前日期。
+<synopsis>
+void rtoday(date *d);
+</synopsis>
+        该函数接收一个指向 date 变量的指针（<literal>d</>），并将其指向的变量设为当前日期。
+       </para>
+<para>
+        在内部，此函数使用<xref linkend="PGTYPESdatetoday">函数。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rjulmdy</function></term>
+      <listitem>
+<para>
+        从一个 date 类型的变量中提取日、月和年的值。
+<synopsis>
+int rjulmdy(date d, short mdy[3]);
+</synopsis>
+        该函数接收日期<literal>d</>和一个指向包含 3 个 short 整数值的数组<literal>mdy</>的指针。变量名表明了顺序：<literal>mdy[0]</>设为月份数，<literal>mdy[1]</>设为日，<literal>mdy[2]</>包含年份。
+</para>
+<para>
+        这个函数目前总是返回0。
+       </para>
+<para>
+        在内部，该函数使用<xref linkend="PGTYPESdatejulmdy">函数。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rdefmtdate</function></term>
+      <listitem>
+<para>
+        使用格式掩码将字符串转换为日期类型的值。
+<synopsis>
+int rdefmtdate(date *d, char *fmt, char *str);
+</synopsis>
+        该函数接收一个指向用于保存操作结果的 date 值的指针（<literal>d</literal>）、用于解析日期的格式掩码（<literal>fmt</literal>），以及包含日期文本表示的 C char* 字符串（<literal>str</literal>）。文本表示应与格式掩码匹配，但字符串与格式掩码无需一一对应。该函数只分析先后顺序，并查找表示年份位置的<literal>yy</literal>或<literal>yyyy</literal>、表示月份位置的<literal>mm</literal>以及表示日位置的<literal>dd</literal>。
+       </para>
+<para>
+        该函数返回以下值：
+        <itemizedlist>
+         <listitem>
+          <para>
+           0 - 函数成功终止。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>ECPG_INFORMIX_ENOSHORTDATE</> - 日期不包含
+           日、月和年之间的分隔符。在这种情况下，输入
+           字符串必须恰好为6或8个字节长，但实际不是。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>ECPG_INFORMIX_ENOTDMY</> - 格式字符串未正确指示
+           年、月和日的顺序。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>ECPG_INFORMIX_BAD_DAY</> - 输入字符串不包含
+           有效的日。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>ECPG_INFORMIX_BAD_MONTH</> - 输入字符串不包含
+           有效的月。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>ECPG_INFORMIX_BAD_YEAR</> - 输入字符串不包含
+           有效的年。
+          </para>
+         </listitem>
+        </itemizedlist>
+       </para>
+<para>
+        在内部，此函数实现为使用<xref
+        linkend="PGTYPESdatedefmtasc">函数。请参阅那里的参考资料，了解示例输入表。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rfmtdate</function></term>
+      <listitem>
+<para>
+        使用格式掩码将 date 类型的变量转换为文本表示。
+<synopsis>
+int rfmtdate(date d, char *fmt, char *str);
+</synopsis>
+        该函数接收要转换的日期（<literal>d</>）、格式掩码（<literal>fmt</>）和将保存日期文本表示的字符串（<literal>str</>）。
+       </para>
+       <para>
+        成功时返回 0，发生错误时返回负值。
+       </para>
+<para>
+        在内部，此函数使用<xref linkend="PGTYPESdatefmtasc">函数，有关示例，请参阅那里的参考资料。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rmdyjul</function></term>
+      <listitem>
+<para>
+        根据一个包含 3 个 short 整数的数组创建日期值，这些整数指定日期的日、月和年。
+<synopsis>
+int rmdyjul(short mdy[3], date *d);
+</synopsis>
+        该函数接收包含 3 个 short 整数的数组（<literal>mdy</>）和一个指向 date 类型变量的指针，用来保存操作结果。
+</para>
+<para>
+        目前该函数始终返回0。
+       </para>
+<para>
+        在内部，该函数实现为使用函数<xref
+        linkend="PGTYPESdatemdyjul">。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rdayofweek</function></term>
+      <listitem>
+<para>
+        为一个日期值返回表示它是星期几的数字。
+<synopsis>
+int rdayofweek(date d);
+</synopsis>
+        这个函数接收日期变量<literal>d</>作为它唯一的参数并且返回一个整数说明这个日期是星期几。
+        <itemizedlist>
+         <listitem>
+          <para>
+           0 - 星期日
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           1 - 星期一
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           2 - 星期二
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           3 - 星期三
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           4 - 星期四
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           5 - 星期五
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           6 - 星期六
+          </para>
+         </listitem>
+        </itemizedlist>
+       </para>
+<para>
+        在内部，该函数被实现为使用函数<xref
+        linkend="PGTYPESdatedayofweek">。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>dtcurrent</function></term>
+      <listitem>
+<para>
+        检索当前时间戳。
+<synopsis>
+void dtcurrent(timestamp *ts);
+</synopsis>
+        该函数检索当前时间戳，并将其保存到<literal>ts</literal>指向的时间戳变量中。
+</para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>dtcvasc</function></term>
+      <listitem>
+<para>
+        将时间戳的文本表示解析为 timestamp 变量。
+<synopsis>
+int dtcvasc(char *str, timestamp *ts);
+</synopsis>
+        该函数接收要解析的字符串（<literal>str</>），以及指向用于保存操作结果的 timestamp 变量的指针（<literal>ts</>）。
+       </para>
+<para>
+        该函数在成功时返回0，在错误时返回负值。
+       </para>
+<para>
+        在内部，此函数使用<xref
+        linkend="PGTYPEStimestampfromasc">函数。请参阅那里的参考资料，了解包含示例输入的表格。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>dtcvfmtasc</function></term>
+      <listitem>
+<para>
+        使用格式掩码将时间戳的文本表示解析为 timestamp 变量。
+<synopsis>
+dtcvfmtasc(char *inbuf, char *fmtstr, timestamp *dtvalue)
+</synopsis>
+        该函数接收要解析的字符串（<literal>inbuf</>）、使用的格式掩码（<literal>fmtstr</>），以及指向用于保存操作结果的 timestamp 变量的指针（<literal>dtvalue</>）。
+       </para>
+<para>
+        这个函数是通过<xref
+        linkend="PGTYPEStimestampdefmtasc">函数实现的。请参阅那里的文档，了解可用的格式说明符列表。
+       </para>
+<para>
+        该函数在成功时返回0，在错误时返回负值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>dtsub</function></term>
+      <listitem>
+<para>
+        从一个时间戳中减去另一个时间戳，并返回一个 interval 类型的变量。
+<synopsis>
+int dtsub(timestamp *ts1, timestamp *ts2, interval *iv);
+</synopsis>
+        该函数从<literal>ts1</literal>指向的时间戳变量中减去<literal>ts2</literal>指向的时间戳变量，并将结果存入<literal>iv</literal>指向的 interval 变量中。
+       </para>
+<para>
+        成功时返回 0，发生错误时返回负值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>dttoasc</function></term>
+      <listitem>
+       <para>将 timestamp 变量转换为 C char* 字符串。<synopsis>
+int dttoasc(timestamp *ts, char *output);
+</synopsis>该函数接收指向待转换 timestamp 变量的指针（<literal>ts</literal>），以及用于保存操作结果的字符串（<literal>output</>）。它将<literal>ts</literal>转换为符合 SQL 标准的文本表示，格式为<literal>YYYY-MM-DD HH:MM:SS</literal>。
+       </para>
+       <para>
+        成功时返回 0，发生错误时返回负值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>dttofmtasc</function></term>
+      <listitem>
+       <para>使用格式掩码将 timestamp 变量转换为 C char*。<synopsis>
+int dttofmtasc(timestamp *ts, char *output, int str_len, char *fmtstr);
+</synopsis>该函数的第一个参数是指向待转换时间戳的指针（<literal>ts</literal>），随后是指向输出缓冲区的指针（<literal>output</>）、为输出缓冲区分配的最大长度（<literal>str_len</literal>），以及转换所用的格式掩码（<literal>fmtstr</literal>）。
+       </para>
+       <para>
+        成功时返回 0，发生错误时返回负值。
+       </para>
+       <para>
+        在内部，此函数使用<xref
+        linkend="PGTYPEStimestampfmtasc">函数。请参阅那里的参考资料，了解可以使用哪些格式掩码说明符。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>intoasc</function></term>
+      <listitem>
+       <para>将 interval 变量转换为 C char* 字符串。<synopsis>
+int intoasc(interval *i, char *str);
+</synopsis>该函数接受指向待转换 interval 变量的指针（<literal>i</>），以及用于保存操作结果的字符串（<literal>str</literal>）。它将 <literal>i</> 转换为符合 SQL 标准的文本表示，格式为 <literal>YYYY-MM-DD HH:MM:SS</literal>。
+       </para>
+       <para>
+        成功时返回 0，发生错误时返回负值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rfmtlong</function></term>
+      <listitem>
+<para>
+        将长整型值使用格式掩码转换为其文本表示形式。
+<synopsis>
+int rfmtlong(long lng_val, char *fmt, char *outbuf);
+</synopsis>
+        该函数接收长整型值<literal>lng_val</literal>，格式掩码<literal>fmt</literal>和指向输出缓冲区<literal>outbuf</literal>的指针。
+        它根据格式掩码将长整型值转换为其文本表示形式。
+</para>
+<para>
+        格式掩码可以由以下格式指定字符组成：
+        <itemizedlist>
+         <listitem>
+          <para>
+           <literal>*</literal>（星号）- 如果此位置为空白，用星号填充。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>&amp;</literal>（和号）- 如果此位置为空白，用零填充。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>#</literal> - 将前导零转换为空格。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>&lt;</literal> - 将数字左对齐在字符串中。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>,</literal>（逗号）- 将四位或更多位的数字每三位分为一组，用逗号分隔。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>.</literal>（句点）- 此字符将整数部分与小数部分分隔开。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>-</literal>（减号）- 如果数字是负值，则显示减号。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>+</literal>（加号）- 如果数字是正值，则显示加号。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>(</literal> - 这个字符替换负数前面的减号。减号不会显示。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>)</literal> - 这个字符替换减号，并打印在负值后面。
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>$</literal> - 货币符号。
+          </para>
+         </listitem>
+        </itemizedlist>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rupshift</function></term>
+      <listitem>
+<para>
+        将字符串转换为大写。
+<synopsis>
+void rupshift(char *str);
+</synopsis>
+        该函数接收一个指向字符串的指针，并将每个小写字符转换为大写。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>byleng</function></term>
+      <listitem>
+<para>
+        返回字符串中字符的数量，不包括末尾的空格。
+<synopsis>
+int byleng(char *str, int len);
+</synopsis>
+        该函数期望一个固定长度的字符串作为第一个参数
+        (<literal>str</literal>)，并将其长度作为第二个参数
+        (<literal>len</literal>)。它返回有效字符的数量，即不包括末尾空格的字符串长度。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>ldchar</function></term>
+      <listitem>
+<para>
+        将固定长度的字符串复制到以空字符结尾的字符串中。
+<synopsis>
+void ldchar(char *src, int len, char *dest);
+</synopsis>
+        该函数接收要复制的固定长度字符串（<literal>src</literal>）、其长度（<literal>len</literal>）和指向目标内存的指针（<literal>dest</literal>）。
+        请注意，你需要为<literal>dest</literal>指向的字符串保留至少<literal>len+1</literal>字节。
+        该函数最多复制<literal>len</literal>字节到新位置（如果源字符串具有尾随空格，则会少一些），并添加空字符终止符。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rgetmsg</function></term>
+      <listitem>
+<para>
+<synopsis>
+int rgetmsg(int msgnum, char *s, int maxsize);
+</synopsis>
+        这个函数存在，但目前尚未实现！
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rtypalign</function></term>
+      <listitem>
+<para>
+<synopsis>
+int rtypalign(int offset, int type);
+</synopsis>
+        这个函数存在，但目前尚未实现！
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rtypmsize</function></term>
+      <listitem>
+<para>
+<synopsis>
+int rtypmsize(int type, int len);
+</synopsis>
+        这个函数存在，但目前尚未实现！
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>rtypwidth</function></term>
+      <listitem>
+<para>
+<synopsis>
+int rtypwidth(int sqltype, int sqllen);
+</synopsis>
+        这个函数存在，但目前尚未实现！
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="rsetnull">
+      <term><function>rsetnull</function></term>
+      <listitem>
+<para>
+        将一个变量设置为NULL。
+<synopsis>
+int rsetnull(int t, char *ptr);
+</synopsis>
+        该函数接收一个整数，表示变量的类型，以及一个指向变量本身的指针，该指针被转换为C中的char*指针。
+       </para>
+<para>
+        下列类型存在：
+        <itemizedlist>
+         <listitem>
+          <para>
+           <literal>CCHARTYPE</literal> - 用于<type>char</type>或<type>char*</type>类型的变量
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>CSHORTTYPE</literal> - 用于<type>short int</type>类型的变量
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>CINTTYPE</literal> - 用于<type>int</type>类型的变量
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>CBOOLTYPE</literal> - 用于<type>boolean</type>类型的变量
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>CFLOATTYPE</literal> - 用于<type>float</type>类型的变量
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>CLONGTYPE</literal> - 用于<type>long</type>类型的变量
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>CDOUBLETYPE</literal> - 用于<type>double</type>类型的变量
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>CDECIMALTYPE</literal> - 用于<type>decimal</type>类型的变量
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>CDATETYPE</literal> - 用于<type>date</type>类型的变量
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           <literal>CDTIMETYPE</literal> - 用于<type>timestamp</type>类型的变量
+          </para>
+         </listitem>
+        </itemizedlist>
+       </para>
+
+<para>
+        这是调用此函数的示例：
+<programlisting><![CDATA[
+$char c[] = "abc       ";
+$short s = 17;
+$int i = -74874;
+
+rsetnull(CCHARTYPE, (char *) c);
+rsetnull(CSHORTTYPE, (char *) &s);
+rsetnull(CINTTYPE, (char *) &i);
+]]>
+</programlisting>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><function>risnull</function></term>
+      <listitem>
+<para>
+        测试变量是否为NULL。
+<synopsis>
+int risnull(int t, char *ptr);
+</synopsis>
+        该函数接收要测试的变量类型（<literal>t</literal>）以及指向该变量的指针（<literal>ptr</literal>）。
+        请注意，后者需要转换为char*类型。查看函数<xref linkend="rsetnull">以获取可能的变量类型列表。
+</para>
+<para>
+        这是如何使用这个函数的示例：
+<programlisting><![CDATA[
+$char c[] = "abc       ";
+$short s = 17;
+$int i = -74874;
+
+risnull(CCHARTYPE, (char *) c);
+risnull(CSHORTTYPE, (char *) &s);
+risnull(CINTTYPE, (char *) &i);
+]]>
+</programlisting>
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>Additional constants</title>
+   <para>注意这里所有的常量都描述错误并且它们都被定义为表示负值。在每一种不同常量的描述中，你还可以找到在当前实现中该常量表示的值。不过你不应该依赖于这个数字。但是你可以相信所有的这些常量都是被定义为表示负值。<variablelist>
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_NUM_OVERFLOW</literal></term>
+      <listitem>
+       <para>
+        如果在一次计算中发生了溢出，函数会返回这个值。在内部它被定义为 -1200（<productname>Informix</productname>定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_NUM_UNDERFLOW</literal></term>
+      <listitem>
+       <para>
+        如果在一次计算中发生了下溢，函数会返回这个值。在内部它被定义为 -1201（<productname>Informix</productname>定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_DIVIDE_ZERO</literal></term>
+      <listitem>
+       <para>
+        如果发现尝试除零，函数会返回这个值。在内部它被定义为 -1202（<productname>Informix</productname>定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_BAD_YEAR</literal></term>
+      <listitem>
+       <para>
+        如果解析日期时发现无效的年份值，函数返回此值。其内部定义为 -1204（<productname>Informix</productname>的定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_BAD_MONTH</literal></term>
+      <listitem>
+       <para>
+        如果解析日期时发现无效的月份值，函数返回此值。其内部定义为 -1205（<productname>Informix</productname>的定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_BAD_DAY</literal></term>
+      <listitem>
+       <para>
+        如果解析日期时发现无效的日值，函数返回此值。其内部定义为 -1206（<productname>Informix</productname>的定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_ENOSHORTDATE</literal></term>
+      <listitem>
+       <para>
+        如果解析例程需要短日期表示，但未得到长度正确的日期字符串，函数返回此值。其内部定义为 -1209（<productname>Informix</productname>的定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_DATE_CONVERT</literal></term>
+      <listitem>
+       <para>
+        如果在日期格式化时产生了一个错误，函数会返回这个值。在内部它被定义为 -1210（<productname>Informix</productname>定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_OUT_OF_MEMORY</literal></term>
+      <listitem>
+       <para>
+        如果在操作时内存被耗尽，函数会返回这个值。在内部它被定义为 -1211（<productname>Informix</productname>定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_ENOTDMY</literal></term>
+      <listitem>
+       <para>
+        如果一个解析例程被假定为得到一个格式掩码（如<literal>mmddyy</literal>）但是列出的域并不是全部正确，函数会返回这个值。在内部它被定义为 -1212（<productname>Informix</productname>定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_BAD_NUMERIC</literal></term>
+      <listitem>
+       <para>
+        如果解析例程因 numeric 值的文本表示有误而无法解析，或者例程因至少一个 numeric 变量无效而无法完成涉及 numeric 变量的计算，函数返回此值。其内部定义为 -1213（<productname>Informix</productname>的定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_BAD_EXPONENT</literal></term>
+      <listitem>
+       <para>
+        如果一个解析例程不能解析一个指数，函数会返回这个值。在内部它被定义为 -1216（<productname>Informix</productname>定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_BAD_DATE</literal></term>
+      <listitem>
+       <para>
+        如果一个解析例程不能解析一个日期，函数会返回这个值。在内部它被定义为 -1218（<productname>Informix</productname>定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>ECPG_INFORMIX_EXTRA_CHARS</literal></term>
+      <listitem>
+       <para>
+        如果一个解析例程被传递了它不能解析的额外字符，函数会返回这个值。在内部它被定义为 -1264（<productname>Informix</productname>定义）。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="ecpg-errors">
+  <title>错误处理</title>
+
+  <para>
+   本节描述如何在嵌入式 SQL 程序中处理异常情况和警告。为此有几种可以同时使用的机制。
+  </para>
+
+  <sect2>
+   <title>设置回调</title>
+
+   <para>
+    捕获错误和警告的一种简单方法是指定一个动作，在特定条件发生时执行。一般形式如下：
+<programlisting>
+EXEC SQL WHENEVER <replaceable>condition</replaceable> <replaceable>action</replaceable>;
+</programlisting>
+   </para>
+
+   <para>
+    <replaceable>condition</replaceable>可以是以下值之一：<variablelist>
+     <varlistentry>
+      <term><literal>SQLERROR</literal></term>
+      <listitem>
+       <para>
+        只要在 SQL 语句执行期间发生一个错误就调用指定的动作。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>SQLWARNING</literal></term>
+      <listitem>
+       <para>
+        只要在 SQL 语句执行期间发生一个警告就调用指定的动作。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>NOT FOUND</literal></term>
+      <listitem>
+       <para>
+        只要一个 SQL 语句检索或者影响零行就调用指定的动作（这种情况不是一个错误，但是你可能需要特别地处理它）。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    <replaceable>action</replaceable>可以是以下值之一：<variablelist>
+     <varlistentry>
+      <term><literal>CONTINUE</literal></term>
+      <listitem>
+       <para>
+        这实际上表示该情况被忽略。这是默认值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>GOTO <replaceable>label</replaceable></literal></term>
+      <term><literal>GO TO <replaceable>label</replaceable></literal></term>
+      <listitem>
+       <para>
+        跳到指定的标签（使用一个 C <literal>goto</literal>语句）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>SQLPRINT</literal></term>
+      <listitem>
+       <para>
+        把一个消息打印到标准错误。对于简单程序或原型开发中这很有用。消息的细节无法配置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>STOP</literal></term>
+      <listitem>
+       <para>
+        调用<literal>exit(1)</literal>终止程序。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>DO BREAK</literal></term>
+      <listitem>
+       <para>
+        执行 C 语句<literal>break</literal>。只应被用在循环或<literal>switch</literal>语句中。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><literal>CALL <replaceable>name</replaceable> (<replaceable>args</replaceable>)</literal></term>
+      <term><literal>DO <replaceable>name</replaceable> (<replaceable>args</replaceable>)</literal></term>
+      <listitem>
+       <para>使用指定参数调用指定的 C 函数。</para>
+      </listitem>
+     </varlistentry>
+    </variablelist>SQL 标准只规定了以下动作：<literal>CONTINUE</literal> 和 <literal>GOTO</literal>（以及 <literal>GO TO</literal>）。
+   </para>
+
+   <para>
+    这里有一个可能会用在简单程序中的例子。当一个警告发生时它打印一个简单消息，而发生一个错误时它会中止程序：
+<programlisting>
+EXEC SQL WHENEVER SQLWARNING SQLPRINT;
+EXEC SQL WHENEVER SQLERROR STOP;
+</programlisting>
+   </para>
+
+   <para>
+    语句<literal>EXEC SQL WHENEVER</literal>是 SQL 预处理器的指令，而不是 C 语句。它设置的错误或警告动作适用于源代码中出现在处理器设置位置之后的所有嵌入式 SQL 语句，除非在第一个<literal>EXEC SQL WHENEVER</literal>与触发该条件的 SQL 语句之间，为同一条件设置了其他动作。这与 C 程序的控制流无关。因此，下面两个 C 程序片段都不会产生预期效果：
+<programlisting>
+/*
+ * 错误
+ */
+int main(int argc, char *argv[])
+{
+    ...
+    if (verbose) {
+        EXEC SQL WHENEVER SQLWARNING SQLPRINT;
+    }
+    ...
+    EXEC SQL SELECT ...;
+    ...
+}
+</programlisting>
+
+<programlisting>
+/*
+ * 错误
+ */
+int main(int argc, char *argv[])
+{
+    ...
+    set_error_handler();
+    ...
+    EXEC SQL SELECT ...;
+    ...
+}
+
+static void set_error_handler(void)
+{
+    EXEC SQL WHENEVER SQLERROR STOP;
+}
+</programlisting>
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>sqlca</title>
+
+   <para>
+    为了支持更强大的错误处理，嵌入式 SQL 接口提供了一个名为<varname>sqlca</varname>（SQL 通信区域）的全局变量，其结构如下：
+<programlisting>
+struct
+{
+    char sqlcaid[8];
+    long sqlabc;
+    long sqlcode;
+    struct
+    {
+        int sqlerrml;
+        char sqlerrmc[SQLERRMC_LEN];
+    } sqlerrm;
+    char sqlerrp[8];
+    long sqlerrd[6];
+    char sqlwarn[8];
+    char sqlstate[5];
+} sqlca;
+</programlisting>
+    （在一个多线程程序中，每一个线程会自动得到它自己的<varname>sqlca</varname>副本。这和对于标准 C 全局变量<varname>errno</varname>的处理相似。）
+   </para>
+
+   <para>
+    <varname>sqlca</varname>覆盖了警告和错误。如果执行一个语句时发生了多个警告或错误，那么<varname>sqlca</varname>将只包含关于最后一个的信息。
+   </para>
+
+   <para>
+    如果在上一个<acronym>SQL</acronym>语句中没有产生错误，<literal>sqlca.sqlcode</literal>将为 0 并且<literal>sqlca.sqlstate</literal>将为<literal>"00000"</literal>。如果发生一个警告或错误，则<literal>sqlca.sqlcode</literal>将为负并且<literal>sqlca.sqlstate</literal>将不为<literal>"00000"</literal>。一个正的<literal>sqlca.sqlcode</literal>表示一种无害的情况，例如上一个查询返回零行。<literal>sqlcode</literal>和<literal>sqlstate</literal>是两种不同的错误编码方案，详见下文。
+   </para>
+
+   <para>
+    如果上一个 SQL 语句成功，则<literal>sqlca.sqlerrd[1]</literal>包含所处理行的 OID（如果适用），<literal>sqlca.sqlerrd[2]</literal>包含处理或返回的行数（如果适用于该命令）。
+   </para>
+
+   <para>
+    发生错误或警告时，<literal>sqlca.sqlerrm.sqlerrmc</literal>包含描述该错误的字符串。字段<literal>sqlca.sqlerrm.sqlerrml</literal>包含存储在<literal>sqlca.sqlerrm.sqlerrmc</literal>中的错误消息的长度（即<function>strlen()</function>的结果，对于 C 程序员通常没有多少用处）。注意，有些消息太长，无法存入定长的<literal>sqlerrmc</literal>数组，因此会被截断。
+   </para>
+
+   <para>
+    发生警告时，<literal>sqlca.sqlwarn[2]</literal>被设为<literal>W</literal>（其他情况下，它被设为非<literal>W</literal>的值）。如果<literal>sqlca.sqlwarn[1]</literal>被设为<literal>W</literal>，说明某个值在存入主变量时被截断了。如果其他任一元素被设置为指示警告，<literal>sqlca.sqlwarn[0]</literal>就会被设为<literal>W</literal>。
+   </para>
+
+   <para>
+    字段<structfield>sqlcaid</structfield>、<structfield>sqlabc</structfield>、<structfield>sqlerrp</structfield>，以及<structfield>sqlerrd</structfield>和<structfield>sqlwarn</structfield>的其余元素，目前不包含有用信息。
+   </para>
+
+   <para>
+    SQL 标准中没有定义<varname>sqlca</varname>结构体，但是在一些其他的 SQL 数据库系统中都有实现。在核心上这些定义都相似，但是如果你想要编写可移植的应用，那么你应该仔细研究不同的实现。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title><literal>SQLSTATE</literal> vs <literal>SQLCODE</literal></title>
+
+   <para>
+    字段<literal>sqlca.sqlstate</literal>和<literal>sqlca.sqlcode</literal>采用两种不同的错误编码方案。两者都源自 SQL 标准，但<literal>SQLCODE</literal>在 SQL-92 标准中已被标记为弃用，并在后续版本中被删除。因此，强烈建议新应用使用<literal>SQLSTATE</literal>。
+   </para>
+
+   <para>
+    <literal>SQLSTATE</literal>是一个包含五个字符的数组。这五个字符由数字或大写字母组成，表示各种错误和警告条件的代码。<literal>SQLSTATE</literal>采用分层编码方案：前两个字符表示条件所属的大类，后三个字符表示该大类中的子类。代码<literal>00000</literal>表示成功状态。大部分<literal>SQLSTATE</literal>代码由 SQL 标准定义。<productname>PostgreSQL</productname>服务器原生支持<literal>SQLSTATE</literal>错误码，因此在所有应用中统一使用这种错误编码方案，可以实现较高的一致性。更多信息见<xref linkend="errcodes-appendix">。
+   </para>
+
+   <para>
+    已弃用的错误编码方案<literal>SQLCODE</literal>使用一个简单的整数。0 表示成功，正值表示成功并有附加信息，负值表示错误。SQL 标准只定义了正值 +100，表示上一个命令返回或影响了零行，没有定义具体的负值。因此，这种方案的可移植性较差，也不采用分层编码。历史上，<productname>PostgreSQL</productname>的嵌入式 SQL 处理器为自身使用分配了一些特定的<literal>SQLCODE</literal>值，下文列出了它们的数值和符号名称。注意，这些值不能移植到其他 SQL 实现。为了便于将应用迁移到<literal>SQLSTATE</literal>方案，还列出了对应的<literal>SQLSTATE</literal>。不过，两种方案之间不存在一对一或一对多的映射关系（实际上是多对多），因此每次都应查阅<xref linkend="errcodes-appendix">中的完整<literal>SQLSTATE</literal>列表。
+   </para>
+
+   <para>
+    These are the assigned <literal>SQLCODE</literal> values:
+
+    <variablelist>
+     <varlistentry>
+      <term>-12 (<symbol>ECPG_OUT_OF_MEMORY</symbol>)</term>
+      <listitem>
+       <para>
+        表示你的虚拟内存已被耗尽。（SQLSTATE YE001）
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-200 (<symbol>ECPG_UNSUPPORTED</symbol>)</term>
+     <listitem>
+      <para>
+       表示预处理器生成了该库无法识别的内容。可能是所用的预处理器与库的版本不兼容（SQLSTATE YE002）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-201 (<symbol>ECPG_TOO_MANY_ARGUMENTS</symbol>)</term>
+     <listitem>
+      <para>
+       这表示命令指定了超过该命令预期数量的主变量（SQLSTATE 07001 或 07002）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-202 (<symbol>ECPG_TOO_FEW_ARGUMENTS</symbol>)</term>
+     <listitem>
+      <para>
+       这表示命令指定的主变量数量低于该命令的预期（SQLSTATE 07001 或 07002）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-203 (<symbol>ECPG_TOO_MANY_MATCHES</symbol>)</term>
+     <listitem>
+      <para>
+       这意味着一个查询已经返回了多个行，但是该语句只准备存储一个结果行（例如，因为指定的变量不是数组）（SQLSTATE 21000）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-204 (<symbol>ECPG_INT_FORMAT</symbol>)</term>
+     <listitem>
+      <para>
+       主变量是类型<type>int</type>而数据库中的数据是一种不同的类型并且含有一个不能被解释为<type>int</type>的值。该库使用<function>strtol()</function>进行这种转换（SQLSTATE 42804）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-205 (<symbol>ECPG_UINT_FORMAT</symbol>)</term>
+     <listitem>
+      <para>
+       主变量是类型<type>unsigned int</type>而数据库中的数据是一种不同的类型并且含有一个不能被解释为<type>unsigned int</type>的值。该库使用<function>strtoul()</function>进行这种转换（SQLSTATE 42804）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-206 (<symbol>ECPG_FLOAT_FORMAT</symbol>)</term>
+     <listitem>
+      <para>
+       主变量是类型<type>float</type>而数据库中的数据是另一种类型并且含有一个不能被解释为<type>float</type>的值。该库使用<function>strtod()</function>进行这种转换（SQLSTATE 42804）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-211 (<symbol>ECPG_CONVERT_BOOL</symbol>)</term>
+     <listitem>
+      <para>
+       这表示主变量是类型<type>bool</type>而数据库中的数据既不是<literal>'t'</literal>也不是<literal>'f'</literal>（SQLSTATE 42804）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-212 (<symbol>ECPG_EMPTY</symbol>)</term>
+     <listitem>
+      <para>
+       发送给<productname>PostgreSQL</productname>服务器的语句是空的（通常在一个嵌入式 SQL 程序中不会发生，因此它可能指向一个内部错误）（SQLSTATE YE002）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-213 (<symbol>ECPG_MISSING_INDICATOR</symbol>)</term>
+     <listitem>
+      <para>
+       返回了一个空值，但未提供空值指示符变量（SQLSTATE 22002）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-214 (<symbol>ECPG_NO_ARRAY</symbol>)</term>
+     <listitem>
+      <para>
+       在要求一个数组的地方使用了一个普通变量（SQLSTATE 42804）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-215 (<symbol>ECPG_DATA_NOT_ARRAY</symbol>)</term>
+     <listitem>
+      <para>
+       在一个要求数组值的地方数据库返回了一个普通变量（SQLSTATE 42804）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-220 (<symbol>ECPG_NO_CONN</symbol>)</term>
+     <listitem>
+      <para>
+       程序尝试访问一个不存在的连接（SQLSTATE 08003）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-221 (<symbol>ECPG_NOT_CONN</symbol>)</term>
+     <listitem>
+      <para>
+       程序尝试访问一个存在的连接但是它没有打开（这是一个内部错误）（SQLSTATE YE002）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-230 (<symbol>ECPG_INVALID_STMT</symbol>)</term>
+     <listitem>
+      <para>
+       尝试使用的语句尚未预备（SQLSTATE 26000）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-240 (<symbol>ECPG_UNKNOWN_DESCRIPTOR</symbol>)</term>
+     <listitem>
+      <para>
+       未找到指定的描述符。尝试使用的语句尚未预备（SQLSTATE 33000）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-241 (<symbol>ECPG_INVALID_DESCRIPTOR_INDEX</symbol>)</term>
+     <listitem>
+      <para>
+       指定的描述符超出范围（SQLSTATE 07009）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-242 (<symbol>ECPG_UNKNOWN_DESCRIPTOR_ITEM</symbol>)</term>
+     <listitem>
+      <para>
+       请求了一个无效的描述符条目（这是一个内部错误）（SQLSTATE YE002）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-243 (<symbol>ECPG_VAR_NOT_NUMERIC</symbol>)</term>
+     <listitem>
+      <para>
+       执行动态语句时，数据库返回了数值，而主变量不是数值类型（SQLSTATE 07006）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-244 (<symbol>ECPG_VAR_NOT_CHAR</symbol>)</term>
+     <listitem>
+      <para>
+       执行动态语句时，数据库返回了非数值的值，而主变量是数值类型（SQLSTATE 07006）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-400 (<symbol>ECPG_PGSQL</symbol>)</term>
+     <listitem>
+      <para>
+       <productname>PostgreSQL</productname>服务器导致了某个错误。该消息包含来自<productname>PostgreSQL</productname>服务器的错误消息。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-401 (<symbol>ECPG_TRANS</symbol>)</term>
+     <listitem>
+      <para>
+       <productname>PostgreSQL</productname>服务器通知我们不能启动、提交或回滚事务（SQLSTATE 08007）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>-402 (<symbol>ECPG_CONNECT</symbol>)</term>
+     <listitem>
+      <para>
+       到数据库的连接尝试没有成功（SQLSTATE 08001）。
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>100 (<symbol>ECPG_NOT_FOUND</symbol>)</term>
+     <listitem>
+      <para>
+       这是一种无害情况，它表示上一个命令检索或者处理了零行，或者你到达了游标的末尾（SQLSTATE 02000）。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="ecpg-preproc">
+  <title>Preprocessor directives</title>
+
+  <sect2>
+   <title>Including files</title>
+
+   <para>
+    要在嵌入式 SQL 程序中包含外部文件，可使用：
+<programlisting>
+EXEC SQL INCLUDE <replaceable>filename</replaceable>;
+</programlisting>
+    嵌入式 SQL 预处理器会查找名为<literal><replaceable>filename</replaceable>.h</literal>的文件，对它进行预处理，并将其包含在生成的 C 输出中。这样，被包含文件中的嵌入式 SQL 语句就能得到正确处理。
+   </para>
+
+   <para>
+    注意这<emphasis>不</emphasis>同于：
+<programlisting>
+#include &lt;<replaceable>filename</replaceable>.h&gt;
+</programlisting>
+    因为这样包含的文件不会经过 SQL 命令预处理。当然，仍可使用 C 的<literal>#include</literal>指令包含其他头文件。
+   </para>
+
+   <note>
+    <para>
+     被包含文件的名称区分大小写，尽管<literal>EXEC SQL INCLUDE</literal>命令的其他部分遵循通常的 SQL 大小写规则。
+    </para>
+   </note>
+  </sect2>
+
+  <sect2>
+   <title>The #define and #undef directives</title>
+   <para>
+    与 C 中我们熟知的指令<literal>#define</literal>相似，嵌入式 SQL 具有类似的概念：
+<programlisting>
+EXEC SQL DEFINE <replaceable>name</replaceable>;
+EXEC SQL DEFINE <replaceable>name</replaceable> <replaceable>value</replaceable>;
+</programlisting>
+    因此你可以定义一个名称：
+<programlisting>
+EXEC SQL DEFINE HAVE_FEATURE;
+</programlisting>
+    并且你也可以定义常量：
+<programlisting>
+EXEC SQL DEFINE MYNUMBER 12;
+EXEC SQL DEFINE MYSTRING 'abc';
+</programlisting>
+    使用<literal>undef</literal>来移除一个之前的定义：
+<programlisting>
+EXEC SQL UNDEF MYNUMBER;
+</programlisting>
+   </para>
+
+   <para>
+    当然在你的嵌入式 SQL 程序中你可以继续使用 C 版本的<literal>#define</literal>和<literal>#undef</literal>。区别在于你定义的值会在哪里被计算。如果你使用<literal>EXEC SQL DEFINE</literal>，那么<command>ecpg</command>预处理器会计算这些定义并且替换值。例如，如果你写：
+<programlisting>
+EXEC SQL DEFINE MYNUMBER 12;
+...
+EXEC SQL UPDATE Tbl SET col = MYNUMBER;
+</programlisting>
+    那么<command>ecpg</command>将已经做过替换并且你的 C 编译器将永远不会看见名为<literal>MYNUMBER</literal>的任何名称或标识符。注意你不能把<literal>#define</literal>用于一个将要在一个嵌入式 SQL 查询中使用的常量，因为在这种情况下嵌入式 SQL 预处理器不能看到这个声明。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>ifdef, ifndef, else, elif, and endif directives</title>
+   <para>可以使用以下指令对代码区段进行条件编译：<variablelist>
+    <varlistentry>
+     <term><literal>EXEC SQL ifdef <replaceable>name</replaceable>;</literal></term>
+     <listitem>
+     <para>检查 <replaceable>name</replaceable>，如果已通过 <literal>EXEC SQL define <replaceable>name</replaceable></literal> 创建了 <replaceable>name</replaceable>，就处理后续各行。</para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>EXEC SQL ifndef <replaceable>name</replaceable>;</literal></term>
+     <listitem>
+     <para>检查 <replaceable>name</replaceable>，如果<emphasis>尚未</emphasis>通过 <literal>EXEC SQL define <replaceable>name</replaceable></literal> 创建 <replaceable>name</replaceable>，就处理后续各行。</para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>EXEC SQL else;</literal></term>
+     <listitem>
+     <para>开始处理一个备选区段，对应由 <literal>EXEC SQL ifdef <replaceable>name</replaceable></literal> 或 <literal>EXEC SQL ifndef <replaceable>name</replaceable></literal> 引入的区段。</para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>EXEC SQL elif <replaceable>name</replaceable>;</literal></term>
+     <listitem>
+     <para>检查 <replaceable>name</replaceable>，如果已通过 <literal>EXEC SQL define <replaceable>name</replaceable></literal> 创建了 <replaceable>name</replaceable>，就开始一个备选区段。</para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>EXEC SQL endif;</literal></term>
+     <listitem>
+     <para>结束备选区段。</para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   </para>
+
+   <para>示例：<programlisting>
+EXEC SQL ifndef TZVAR;
+EXEC SQL SET TIMEZONE TO 'GMT';
+EXEC SQL elif TZNAME;
+EXEC SQL SET TIMEZONE TO TZNAME;
+EXEC SQL else;
+EXEC SQL SET TIMEZONE TO TZVAR;
+EXEC SQL endif;
+</programlisting>
+   </para>
+
+  </sect2>
+ </sect1>
+ 
+  <sect1 id="ecpg-process">
+  <title>处理嵌入式 SQL 程序</title>
+
+  <para>
+   现在你已经对如何构造嵌入式 SQL C 程序有所了解了，你可能希望知道如何编译它们。在编译之前，你需要让该文件通过嵌入式<acronym>SQL</acronym> <acronym>C</acronym>预处理器，它会把你用到的<acronym>SQL</acronym>转换成特殊的函数调用。在编译之后，你必须链接一个包含所需函数的特殊库。这些函数从参数中取得信息、使用<application>libpq</application>执行<acronym>SQL</acronym>命令并且把结果放在指定的参数中用来输出。
+  </para>
+
+  <para>
+   该预处理器程序被称作<filename>ecpg</filename>并且被包括在一个正常的<productname>PostgreSQL</productname>安装中。嵌入式 SQL 程序通常带有扩展名<filename>.pgc</filename>。如果你有一个程序文件<filename>prog1.pgc</filename>，你可以调用下面的命令对它进行预处理：
+<programlisting>
+ecpg prog1.pgc
+</programlisting>
+   这将创建一个文件<filename>prog1.c</filename>。如果你的输入文件不遵循建议的命名模式，你可以用<option>-o</option>选项显式地指定输出文件。
+  </para>
+
+  <para>
+   预处理过的文件可以被正常地编译，例如：
+<programlisting>
+cc -c prog1.c
+</programlisting>
+   生成的 C 源文件会包含<productname>PostgreSQL</productname>安装中的头文件。因此，如果<productname>PostgreSQL</productname>安装在默认搜索路径之外，就必须在编译命令行中添加类似<literal>-I/usr/local/pgsql/include</literal>的选项。
+  </para>
+
+  <para>
+   要链接嵌入式 SQL 程序，需要链接<filename>libecpg</filename>库，例如：
+<programlisting>
+cc -o myprog prog1.o prog2.o ... -lecpg
+</programlisting>
+   同样，可能需要在该命令行中添加类似<literal>-L/usr/local/pgsql/lib</literal>的选项。
+  </para>
+
+  <para>
+   如果你使用<application>make</application>来管理一个大工程的构建过程，把下面的隐式规则包括在你的 makefile 中将会很方便：
+<programlisting>
+ECPG = ecpg
+
+%.c: %.pgc
+        $(ECPG) $&lt;
+</programlisting>
+  </para>
+
+  <para>
+   <command>ecpg</command>命令的完整语法可见<xref linkend="app-ecpg">。
+  </para>
+
+  <para>
+   <application>ecpg</application>库默认是线程安全的。不过，你可能需要使用一些线程命令行选项来编译你的客户端代码。
+  </para>
+ </sect1>
+
+ <sect1 id="ecpg-library">
+  <title>库函数</title>
+
+  <para>
+   <filename>libecpg</filename>库主要包含用于实现嵌入式 SQL 命令功能的<quote>隐藏</quote>函数，也有一些适合直接调用的函数。注意，直接调用这些函数会使代码失去可移植性。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     调用<function>ECPGdebug(int <replaceable>on</replaceable>, FILE *<replaceable>stream</replaceable>)</function>时，如果第一个参数非零，就会启用调试日志。日志写入<replaceable>stream</replaceable>，包含代入全部输入变量后的所有<acronym>SQL</acronym>语句，以及<productname>PostgreSQL</productname>服务器返回的结果。这对于查找<acronym>SQL</acronym>语句中的错误很有用。
+    </para>
+    <note>
+    <para>
+    在 Windows 上，如果<application>ecpg</application>库和应用使用不同标志编译的，这个函数调用将会使应用崩溃，因为<literal>FILE</literal>指针的内部表示不同。特别地，库和使用库的应用应该使用相同的多线程/单线程、发行/调试以及静态/动态标志。
+    </para>
+    </note>
+   </listitem>
+
+   <listitem>
+     <para>
+       <function>ECPGget_PGconn(const char *<replaceable>connection_name</replaceable>)
+       </function>返回由给定名称标识的库数据库连接句柄。如果<replaceable>connection_name</replaceable>被设置为<literal>NULL</literal>，当前连接句柄将被返回。如果无法定位到连接句柄，该函数返回<literal>NULL</literal>。如果需要，返回的连接句柄可以被用来调用任何其他来自于<application>libpq</application>的函数。
+     </para>
+     <note>
+     <para>
+       直接使用<application>libpq</application>例程来操纵<application>ecpg</application>中建立的数据库连接句柄是一种糟糕的做法。
+     </para>
+     </note>
+   </listitem>
+
+   <listitem>
+     <para><function>ECPGtransactionStatus(const char *<replaceable>connection_name</replaceable>)</function> 返回由 <replaceable>connection_name</replaceable> 标识的连接的当前事务状态。返回状态码的详细信息，参见 <xref linkend="libpq-status"> 和 libpq 的 <function>PQtransactionStatus()</function>。</para>
+   </listitem>
+
+   <listitem>
+    <para>
+     如果你连接到了一个数据库，<function>ECPGstatus(int <replaceable>lineno</replaceable>,
+     const char* <replaceable>connection_name</replaceable>)</function>会返回真；否则返回假。
+     如果使用的是一个单一连接，<replaceable>connection_name</replaceable>可以为<literal>NULL</literal>。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+
+ <sect1 id="ecpg-develop">
+  <title>内部</title>
+
+  <para>
+   这一节解释<application>ECPG</application>在内部如何工作。这些信息有时有助于用户理解如何使用<application>ECPG</application>。
+  </para>
+
+   <para>
+    <command>ecpg</command>写入输出的前四行是固定的：其中两行是注释，另外两行是与库接口所必需的包含行。随后预处理器会通读整个文件并写出输出，通常它只是把所有内容原样回显到输出中。
+   </para>
+
+   <para>
+    当它看到<command>EXEC SQL</command>语句时，就会介入并对其进行改写。命令以<command>EXEC SQL</command>开始，以<command>;</command>结束。其间的所有内容都会被视为一条<acronym>SQL</acronym>语句，并进行变量替换解析。
+   </para>
+
+   <para>
+    当某个符号以冒号（<literal>:</literal>）开头时，就会发生变量替换。系统会在此前于<literal>EXEC SQL DECLARE</literal>声明节中声明的变量里查找同名变量。
+   </para>
+
+   <para>
+    库中最重要的函数是<function>ECPGdo</function>，负责执行大多数命令。它接收可变数量的参数，参数数量很容易达到 50 个左右；我们希望这在任何平台上都不会造成问题。
+   </para>
+
+   <para>参数是：<variablelist>
+     <varlistentry>
+      <term>一个行号</term>
+      <listitem>
+       <para>
+        这是原始行的行号，只用于错误消息。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>一个字符串</term>
+      <listitem>
+       <para>
+        这是将要发出的<acronym>SQL</acronym>命令。输入变量会对它进行修改，也就是那些在编译时尚未知晓、但要填入命令中的变量。字符串中的<literal>?</literal>表示变量应当放置的位置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>输入变量</term>
+      <listitem>
+       <para>
+        每个输入变量都会生成十个参数（见下文）。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><parameter>ECPGt_EOIT</parameter></term>
+      <listitem>
+       <para>
+        一个表明后面没有更多输入变量的<type>enum</type>值。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>输出变量</term>
+      <listitem>
+       <para>
+        每个输出变量都会生成十个参数（见下文）。这些变量将由该函数填充。
+       </para>
+      </listitem>
+     </varlistentry>
+
+      <varlistentry>
+       <term><parameter>ECPGt_EORT</parameter></term>
+       <listitem>
+       <para>
+        一个表明后面没有更多变量的<type>enum</type>值。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </para>
+
+   <para>
+    对于每一个作为<acronym>SQL</acronym>命令一部分的变量，该函数得到十个参数：
+
+    <orderedlist>
+     <listitem>
+      <para>
+       用特殊符号表示的类型。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       一个值的指针或者一个指针的指针。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       如果变量是一个<type>char</type>或者<type>varchar</type>，这是它的尺寸。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       数组中元素的数量（用于数组获取）。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       数组中下一个元素的偏移量（用于数组获取）。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       作为一个特殊符号的指示符变量的类型。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       一个指示符变量的指针。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       0
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       指示符数组中的元素数量（用于数组取数）。
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       到指示符数组中下一个元素的偏移量（用于数组取数）。
+      </para>
+     </listitem>
+    </orderedlist>
+   </para>
+
+   <para>
+    注意并非所有 SQL 命令都被以这种方式对待。例如，一个打开游标语句：
+<programlisting>
+EXEC SQL OPEN <replaceable>cursor</replaceable>;
+</programlisting>
+    它不会被复制到输出中。相反，游标的<command>DECLARE</command>命令会被放在<command>OPEN</command>命令的位置上，因为真正打开游标的正是它。
+   </para>
+
+   <para>
+    这里有一个完整的例子，它描述了一个文件<filename>foo.pgc</filename>的预处理器输出（对预处理器的每一个特定版本细节可能不同）：
+<programlisting>
+EXEC SQL BEGIN DECLARE SECTION;
+int index;
+int result;
+EXEC SQL END DECLARE SECTION;
+...
+EXEC SQL SELECT res INTO :result FROM mytable WHERE index = :index;
+</programlisting>
+    会被转换成：
+<programlisting><![CDATA[
+/* Processed by ecpg (2.6.0) */
+/* These two include files are added by the preprocessor */
+#include <ecpgtype.h>;
+#include <ecpglib.h>;
+
+/* 声明节开始 */
+
+#line 1 "foo.pgc"
+
+ int index;
+ int result;
+/* 声明节结束 */
+...
+ECPGdo(__LINE__, NULL, "SELECT res FROM mytable WHERE index = ?     ",
+        ECPGt_int,&(index),1L,1L,sizeof(int),
+        ECPGt_NO_INDICATOR, NULL , 0L, 0L, 0L, ECPGt_EOIT,
+        ECPGt_int,&(result),1L,1L,sizeof(int),
+        ECPGt_NO_INDICATOR, NULL , 0L, 0L, 0L, ECPGt_EORT);
+#line 147 "foo.pgc"
+]]>
+</programlisting>
+    （这里的缩进是为了可读性而添加的，并非是预处理器做的处理）。
+   </para>
+ </sect1>
+</chapter>

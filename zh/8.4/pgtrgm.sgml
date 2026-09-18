@@ -1,0 +1,221 @@
+<!-- $PostgreSQL: pgsql/doc/src/sgml/pgtrgm.sgml,v 2.2.16.2 2010/08/17 04:37:17 petere Exp $ -->
+
+<sect1 id="pgtrgm">
+ <title>pg_trgm</title>
+
+ <indexterm zone="pgtrgm">
+  <primary>pg_trgm</primary>
+ </indexterm>
+
+ <para>
+  <filename>pg_trgm</filename> 模块提供函数和操作符，用于基于三元组
+  匹配确定 <acronym>ASCII</> 字母数字文本的相似度，同时还提供支持快速搜索相似
+  字符串的索引操作符类。
+ </para>
+
+ <sect2>
+  <title>三字符组（Trigram 或 Trigraph）概念</title>
+
+  <para>
+   三字符组是一组从字符串中取出的三个连续字符。我们可以通过统计两个字符串共享的三字符组数量来度量它们的相似度。
+   这个简单的思想在度量许多自然语言中词的相似度时都非常有效。
+  </para>
+
+  <note>
+   <para>
+    在确定字符串所包含的三元组集合时，认为字符串前面有两个空格，
+    后面有一个空格。例如，字符串
+    <quote><literal>cat</literal></quote> 的三元组集合是
+    <quote><literal>  c</literal></quote>、
+    <quote><literal> ca</literal></quote>、
+    <quote><literal>cat</literal></quote> 和
+    <quote><literal>at </literal></quote>.
+   </para>
+  </note>
+ </sect2>
+
+ <sect2>
+  <title>函数和操作符</title>
+
+  <table id="pgtrgm-func-table">
+   <title><filename>pg_trgm</filename> functions</title>
+   <tgroup cols="3">
+    <thead>
+     <row>
+      <entry>Function</entry>
+      <entry>Returns</entry>
+      <entry>Description</entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry><function>similarity(text, text)</function></entry>
+      <entry><type>real</type></entry>
+      <entry>
+       返回一个数值，表示两个参数的相似程度。结果的范围是从零
+       （表示两个字符串完全不同）到一（表示两个字符串完全相同）。
+      </entry>
+     </row>
+     <row>
+      <entry><function>show_trgm(text)</function></entry>
+      <entry><type>text[]</type></entry>
+      <entry>
+       返回由给定字符串中所有三元组构成的数组。（实际应用中，除了
+       调试之外很少有用。）
+      </entry>
+     </row>
+     <row>
+      <entry><function>show_limit()</function></entry>
+      <entry><type>real</type></entry>
+      <entry>
+       返回 <literal>%</> 操作符当前使用的相似度阈值。它设置两个
+       单词被视为足够相似（例如可以看作彼此的拼写错误）所需的最小
+       相似度。
+      </entry>
+     </row>
+     <row>
+      <entry><function>set_limit(real)</function></entry>
+      <entry><type>real</type></entry>
+      <entry>
+       设置 <literal>%</> 操作符当前使用的相似度阈值。阈值必须介于
+       0 和 1 之间（默认值为 0.3）。返回传入的相同值。
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <table id="pgtrgm-op-table">
+   <title><filename>pg_trgm</filename> operators</title>
+   <tgroup cols="3">
+    <thead>
+     <row>
+      <entry>Operator</entry>
+      <entry>Returns</entry>
+      <entry>Description</entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry><type>text</> <literal>%</literal> <type>text</></entry>
+      <entry><type>boolean</type></entry>
+      <entry>
+       如果参数之间的相似度大于 <function>set_limit</> 设置的当前
+       相似度阈值，则返回 <literal>true</>。
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+ </sect2>
+
+ <sect2>
+  <title>索引支持</title>
+
+  <para>
+   <filename>pg_trgm</filename> 模块提供 GiST 和 GIN 索引操作符类，
+   允许你为文本列创建索引，以实现非常快速的相似度搜索。这些索引类型
+   支持相似度操作符 <literal>%</literal>（而不支持其他操作符，因此
+   你可能还需要一个常规的 B-tree 索引）。
+  </para>
+
+  <para>
+   示例：
+
+<programlisting>
+CREATE TABLE test_trgm (t text);
+CREATE INDEX trgm_idx ON test_trgm USING gist (t gist_trgm_ops);
+</programlisting>
+或者
+<programlisting>
+CREATE INDEX trgm_idx ON test_trgm USING gin (t gin_trgm_ops);
+</programlisting>
+  </para>
+
+  <para>此时，你已经在<structfield>t</structfield>列上有了一个可用于相似度搜索的索引。典型查询如下：<programlisting>
+SELECT t, similarity(t, '<replaceable>word</replaceable>') AS sml
+  FROM test_trgm
+  WHERE t % '<replaceable>word</replaceable>'
+  ORDER BY sml DESC, t;
+</programlisting>这将返回文本列中所有与以下词足够相似的值：<replaceable>word</replaceable>，按从最佳匹配到最差匹配的顺序排序。即使在非常大的数据集上，索引也会让这一操作保持高效。</para>
+
+  <para>
+   GiST 和 GIN 索引之间如何取舍，取决于二者各自的相对性能特征；相关讨论见其他章节。
+   作为经验法则，GIN 索引的搜索速度快于 GiST 索引，但构建或更新较慢；
+   因此 GIN 更适合静态数据，而 GiST 更适合经常更新的数据。
+  </para>
+ </sect2>
+
+ <sect2>
+  <title>文本检索集成</title>
+
+  <para>
+   与全文索引结合使用时，三字符组匹配是非常有用的工具。
+   尤其是，它有助于识别那些因拼写错误而无法被全文检索机制直接匹配的输入词。
+  </para>
+
+  <para>
+   第一步是生成一个辅助表，其中包含文档中的全部唯一词：
+
+<programlisting>
+CREATE TABLE words AS SELECT word FROM
+        ts_stat('SELECT to_tsvector(''simple'', bodytext) FROM documents');
+</programlisting>
+
+   其中<structname>documents</structname>是一个表，包含我们希望搜索的文本字段<structfield>bodytext</structfield>。
+   之所以对<function>to_tsvector</function>函数使用<literal>simple</literal>配置，而不是使用特定语言的配置，
+   是因为我们需要原始的（未经词干提取的）词列表。
+  </para>
+
+  <para>
+   接下来，在词列上创建一个三字符组索引：
+
+<programlisting>
+CREATE INDEX words_idx ON words USING gin (word gin_trgm_ops);
+</programlisting>
+
+   现在，可以使用与前面示例类似的<command>SELECT</command>查询，为用户搜索词中拼错的单词提供拼写建议。
+   一个有用的附加测试是要求选出的词长度也与该拼错单词相近。
+  </para>
+
+  <note>
+   <para>
+    由于<structname>words</structname>表是作为一张独立的静态表生成的，因此需要定期重新生成，
+    以便与文档集合保持大致同步。
+    通常没有必要让它始终保持精确同步。
+   </para>
+  </note>
+ </sect2>
+
+ <sect2>
+  <title>参考</title>
+
+  <para>
+   GiST 开发站点
+   <ulink url="http://www.sai.msu.su/~megera/postgres/gist/"></ulink>
+  </para>
+  <para>
+   Tsearch2 开发站点
+   <ulink url="http://www.sai.msu.su/~megera/postgres/gist/tsearch/V2/"></ulink>
+  </para>
+ </sect2>
+
+ <sect2>
+  <title>作者</title>
+
+  <para>
+   Oleg Bartunov <email>oleg@sai.msu.su</email>，俄罗斯莫斯科，莫斯科大学
+  </para>
+  <para>
+   Teodor Sigaev <email>teodor@sigaev.ru</email>，俄罗斯莫斯科，Delta-Soft Ltd.
+  </para>
+  <para>
+   文档：Christopher Kings-Lynne
+  </para>
+  <para>
+   本模块由俄罗斯莫斯科的 Delta-Soft Ltd. 赞助。</para>
+ </sect2>
+
+</sect1>
