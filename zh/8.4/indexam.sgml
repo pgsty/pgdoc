@@ -1,4 +1,4 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/indexam.sgml,v 2.33.6.2 2010/08/17 04:37:16 petere Exp $ -->
+<!-- $PostgreSQL: pgsql/doc/src/sgml/indexam.sgml,v 2.30 2009/03/24 20:17:08 tgl Exp $ -->
 
 <chapter id="indexam">
  <title>索引访问方法接口定义</title>
@@ -65,7 +65,7 @@
    <structfield>amindexnulls</structfield> 设为真。设置了
    <structfield>amindexnulls</structfield> 的索引访问方法还可以设置
    <structfield>amsearchnulls</structfield>，表示它支持把
-   <literal>IS NULL</literal> 和 <literal>IS NOT NULL</literal> 子句
+   <literal>IS NULL</literal> 子句
    作为搜索条件。
   </para>
 
@@ -94,14 +94,8 @@ aminsert (Relation indexRelation,
           bool *isnull,
           ItemPointer heap_tid,
           Relation heapRelation,
-          IndexUniqueCheck checkUnique);
-</programlisting>将一个新元组插入已有索引。<literal>values</literal>和<literal>isnull</literal>数组给出要索引的键值，<literal>heap_tid</literal>则是要索引的 TID。如果访问方法支持唯一索引（其<structname>pg_am</structname>.<structfield>amcanunique</structfield>标志为 true），则<literal>checkUnique</literal>指明要执行的唯一性检查类型，具体取决于唯一约束是否可延迟；详情参见<xref linkend="index-unique-checks">。通常，访问方法只在执行唯一性检查时才需要<literal>heapRelation</literal>参数（因为此时必须查看堆以确认元组是否存活）。</para>
-
-  <para>只有当<literal>checkUnique</literal>为<literal>UNIQUE_CHECK_PARTIAL</literal>时，该函数的布尔返回值才有意义。在这种情况下，TRUE 表示已知新条目唯一，而 FALSE 表示它可能不唯一（并且必须安排一次延迟唯一性检查）。对于其他情况，建议始终返回 FALSE。</para>
-
-  <para>
-   某些索引可能不会为所有元组建立索引。如果某个元组不应被索引，<function>aminsert</function> 应当直接返回而不做任何事。
-  </para>
+          bool check_uniqueness);
+</programlisting>将一个新元组插入已有索引。<literal>values</literal>和<literal>isnull</literal>数组给出要索引的键值，<literal>heap_tid</literal>则是要索引的 TID。如果访问方法支持唯一索引（其<structname>pg_am</structname>.<structfield>amcanunique</structfield>标志为 true），则<literal>check_uniqueness</literal>可能为真，此时访问方法必须验证不存在冲突的行；这也是访问方法通常唯一需要<literal>heapRelation</literal>参数的情形。详情参见<xref linkend="index-unique-checks">。如果插入了索引条目则结果为 TRUE，否则为 FALSE。（FALSE 结果并不表示错误条件，而是用于诸如索引方法拒绝索引 NULL 值之类的情况。）</para>
 
   <para>
 <programlisting>
@@ -194,7 +188,7 @@ int64
 amgetbitmap (IndexScanDesc scan,
              TIDBitmap *tbm);
 </programlisting>
-   取出给定扫描中的所有元组，并将其加入调用者提供的 <type>TIDBitmap</type> 中（也就是把这组元组 ID 与位图中已有的集合做 OR）。返回值是取得的元组数量（这可能只是近似计数，例如某些 AM 不会检测重复项）。在把元组 ID 插入位图时，<function>amgetbitmap</function> 可以指出某些具体的元组 ID 需要重新检查扫描条件。这类似于 <function>amgettuple</function> 的 <literal>xs_recheck</literal> 输出参数。注意：在当前实现中，对这一特性的支持与位图自身的有损存储支持混在一起，因此调用者会对需要重检的元组同时重新检查扫描条件和部分索引谓词（如果有）。不过，这并不一定永远如此。<function>amgetbitmap</function> 和 <function>amgettuple</function> 不能在同一次索引扫描中同时使用；使用 <function>amgetbitmap</function> 时还有其他限制，详见 <xref linkend="index-scanning">。
+   取出给定扫描中的所有元组，并将其加入调用者提供的 TIDBitmap 中（也就是把这组元组 ID 与位图中已有的集合做 OR）。返回值是取得的元组数量（这可能只是近似计数，例如某些 AM 不会检测重复项）。在把元组 ID 插入位图时，<function>amgetbitmap</function> 可以指出某些具体的元组 ID 需要重新检查扫描条件。这类似于 <function>amgettuple</function> 的 <literal>xs_recheck</literal> 输出参数。注意：在当前实现中，对这一特性的支持与位图自身的有损存储支持混在一起，因此调用者会对需要重检的元组同时重新检查扫描条件和部分索引谓词（如果有）。不过，这并不一定永远如此。<function>amgetbitmap</function> 和 <function>amgettuple</function> 不能在同一次索引扫描中同时使用；使用 <function>amgetbitmap</function> 时还有其他限制，详见 <xref linkend="index-scanning">。
   </para>
 
   <para>
@@ -321,7 +315,7 @@ amrestrpos (IndexScanDesc scan);
   <title>索引锁定注意事项</title>
 
   <para>
-   索引访问方法必须处理多个进程并发更新同一个索引的情况。<productname>PostgreSQL</productname> 核心系统会在索引扫描期间对索引获取 <literal>AccessShareLock</literal>，并在更新索引时（包括普通的 <command>VACUUM</command>）获取 <literal>RowExclusiveLock</literal>。由于这些锁类型彼此不冲突，所以访问方法必须自行处理它可能需要的任何细粒度锁定。对整个索引的排他锁只会在索引创建、销毁或 <command>REINDEX</command> 期间获取。
+   索引访问方法必须处理多个进程并发更新同一个索引的情况。<productname>PostgreSQL</productname> 核心系统会在索引扫描期间对索引获取 <literal>AccessShareLock</literal>，并在更新索引时（包括普通的 <command>VACUUM</command>）获取 <literal>RowExclusiveLock</literal>。由于这些锁类型彼此不冲突，所以访问方法必须自行处理它可能需要的任何细粒度锁定。对整个索引的排他锁只会在索引创建、销毁、<command>REINDEX</command> 或 <command>VACUUM FULL</command> 期间获取。
   </para>
 
   <para>
@@ -427,38 +421,8 @@ amrestrpos (IndexScanDesc scan);
   </para>
 
   <para>
-   如果唯一约束是可延迟的，情况会更复杂：我们需要能够为新行插入一个索引条目，但把任何唯一性违背错误延迟到语句结束时甚至更晚才报告。为了避免对索引进行不必要的重复搜索，索引访问方法应在初始插入期间执行一次初步唯一性检查。如果这表明确实不存在冲突的存活元组，那么事情就结束了。否则，我们会安排在真正强制约束时再做一次重检。若在重检时，插入的元组与另外某个具有相同键值的元组都仍然存活，就必须报告错误。（注意，就此用途而言，<quote>存活</quote>实际上是指<quote>索引条目 HOT 链中至少有一个元组是存活的</quote>。）为实现这一点，传给 <function>aminsert</function> 函数的 <literal>checkUnique</literal> 参数会取以下值之一：
-
-    <itemizedlist>
-     <listitem>
-      <para>
-       <literal>UNIQUE_CHECK_NO</literal> 表示不应执行唯一性检查（这不是唯一索引）。
-      </para>
-     </listitem>
-     <listitem>
-      <para>
-       <literal>UNIQUE_CHECK_YES</literal> 表示这是一个不可延迟的唯一索引，必须按前述方式立即执行唯一性检查。
-      </para>
-     </listitem>
-     <listitem>
-      <para>
-       <literal>UNIQUE_CHECK_PARTIAL</literal> 表示该唯一约束是可延迟的。<productname>PostgreSQL</productname> 会使用此模式为每一行插入索引条目。访问方法必须允许索引中出现重复条目，并通过让 <function>aminsert</function> 返回 FALSE来报告任何潜在的重复。对于每一行返回 FALSE的情况，系统都会安排一次延迟重检。
-      </para>
-
-      <para>
-       访问方法必须识别任何可能违反唯一约束的行，但报告误报并不算错误。这使得检查可以在不等待其他事务结束的情况下完成；此处报告的冲突不会被当作错误处理，而会在之后重新检查，到那时它们可能已不再冲突。
-      </para>
-     </listitem>
-     <listitem>
-      <para>
-       <literal>UNIQUE_CHECK_EXISTING</literal> 表示这是对某一行的延迟重检，此前该行被报告为可能违反唯一性。虽然这同样是通过调用 <function>aminsert</function> 来实现，但访问方法在这种情况下<emphasis>不得</emphasis>插入新的索引条目。该索引条目已经存在。相反，访问方法必须检查是否存在另一个存活的索引条目；如果存在，并且目标行本身也仍然存活，就应报告错误。
-      </para>
-
-      <para>
-       建议在一次 <literal>UNIQUE_CHECK_EXISTING</literal> 调用中，访问方法进一步验证目标行在索引中确实已有现存条目；若没有，就报告错误。这样做是个好主意，因为传给 <function>aminsert</function> 的索引元组值会被重新计算。如果索引定义涉及并非真正 immutable 的函数，我们就可能在索引的错误区域上做检查。确认重检时确实找到了目标行，可以验证我们扫描的仍是原始插入时使用的同一组元组值。
-      </para>
-     </listitem>
-    </itemizedlist>
+   该方案的主要局限在于，它没有支持延迟唯一性检查的便捷方法。
+  </para>
   </para>
 
  </sect1>
@@ -467,17 +431,17 @@ amrestrpos (IndexScanDesc scan);
   <title>索引代价估算函数</title>
 
   <para>
-   <function>amcostestimate</> 函数会得到一个已被确定可用于该索引的
+   amcostestimate 函数会得到一个已被确定可用于该索引的
    WHERE 子句列表。它必须返回访问该索引的代价估计，以及 WHERE 子句
    的选择率估计（即在索引扫描期间将被检索的父表行所占的比例）。
    对于简单情况，代价估算器几乎全部工作都可以通过调用优化器中的
    标准例程来完成；之所以要提供
-   <function>amcostestimate</> 函数，是为了让索引访问方法能够提供与
+   amcostestimate 函数，是为了让索引访问方法能够提供与
    索引类型相关的知识，以便在可能的情况下改进标准估计。
   </para>
 
   <para>
-   每个 <function>amcostestimate</> 函数都必须具有下面的签名：
+   每个 amcostestimate 函数都必须具有下面的签名：
 
 <programlisting>
 void
@@ -495,7 +459,7 @@ amcostestimate (PlannerInfo *root,
 
    <variablelist>
     <varlistentry>
-     <term><parameter>root</></term>
+     <term>root</term>
      <listitem>
       <para>
        规划器关于当前正在处理查询的信息。
@@ -504,7 +468,7 @@ amcostestimate (PlannerInfo *root,
     </varlistentry>
 
     <varlistentry>
-     <term><parameter>index</></term>
+     <term>index</term>
      <listitem>
       <para>
        正在被考虑的索引。
@@ -513,23 +477,23 @@ amcostestimate (PlannerInfo *root,
     </varlistentry>
 
     <varlistentry>
-     <term><parameter>indexQuals</></term>
+     <term>indexQuals</term>
      <listitem>
       <para>
        索引限定子句的列表（隐含地做 AND 连接）；
-       <symbol>NIL</> 列表表示没有可用的限定条件。注意，该列表包含的
+       一个 NIL 列表表示没有可用的限定条件。注意，该列表包含的
        是表达式树，而不是 ScanKey。
       </para>
      </listitem>
     </varlistentry>
 
     <varlistentry>
-     <term><parameter>outer_rel</></term>
+     <term>outer_rel</term>
      <listitem>
       <para>
        如果该索引正被考虑用于连接的内层索引扫描，则为规划器关于
-       连接外侧的信息；否则为 <symbol>NULL</>。当不为
-       <symbol>NULL</> 时，部分限定子句将是与该关系的连接子句，而
+       连接外侧的信息；否则为 NULL。当不为
+       NULL 时，部分限定子句将是与该关系的连接子句，而
        不是简单的限制子句。此外，代价估算器应预期该索引扫描会对外层
        关系的每一行重复一次。
       </para>
@@ -543,7 +507,7 @@ amcostestimate (PlannerInfo *root,
 
    <variablelist>
     <varlistentry>
-     <term><parameter>*indexStartupCost</parameter></term>
+     <term>*indexStartupCost</term>
      <listitem>
       <para>
        设为索引启动处理的代价。
@@ -552,7 +516,7 @@ amcostestimate (PlannerInfo *root,
     </varlistentry>
 
     <varlistentry>
-     <term><parameter>*indexTotalCost</parameter></term>
+     <term>*indexTotalCost</term>
      <listitem>
       <para>
        设为索引处理的总代价。
@@ -561,7 +525,7 @@ amcostestimate (PlannerInfo *root,
     </varlistentry>
 
     <varlistentry>
-     <term><parameter>*indexSelectivity</parameter></term>
+     <term>*indexSelectivity</term>
      <listitem>
       <para>
        设为索引选择率。
@@ -570,7 +534,7 @@ amcostestimate (PlannerInfo *root,
     </varlistentry>
 
     <varlistentry>
-     <term><parameter>*indexCorrelation</parameter></term>
+     <term>*indexCorrelation</term>
      <listitem>
       <para>
        设为索引扫描顺序与底层表顺序之间的相关系数。
@@ -591,7 +555,7 @@ amcostestimate (PlannerInfo *root,
    来计算：顺序磁盘块访问的代价为 <varname>seq_page_cost</>，非顺序
    访问的代价为 <varname>random_page_cost</>，而处理一个索引行的代价
    通常取为 <varname>cpu_index_tuple_cost</>。此外，对于索引处理
-   （尤其是 <literal>indexQuals</> 本身的求值）期间调用的每个比较
+   （尤其是 indexQuals 本身的求值）期间调用的每个比较
    操作符，都应计入 <varname>cpu_operator_cost</> 的适当倍数。
   </para>
 
@@ -604,11 +568,11 @@ amcostestimate (PlannerInfo *root,
   </para>
 
   <para>
-   <parameter>indexSelectivity</parameter> 应设为在索引扫描期间将从父表中检索出的行的估计比例。对于有损查询，这个值通常会高于实际通过给定限定条件的行比例。
+   indexSelectivity 应设为在索引扫描期间将从父表中检索出的行的估计比例。对于有损查询，这个值通常会高于实际通过给定限定条件的行比例。
   </para>
 
   <para>
-   <parameter>indexCorrelation</parameter> 应设为索引顺序与表顺序之间的相关性（范围从 -1.0 到 1.0）。该值用于调整从父表取行代价的估计。
+   indexCorrelation 应设为索引顺序与表顺序之间的相关性（范围从 -1.0 到 1.0）。该值用于调整从父表取行代价的估计。
   </para>
 
   <para>
@@ -638,15 +602,15 @@ amcostestimate (PlannerInfo *root,
    <step>
     <para>
      估计扫描期间将被访问的索引行数。对于许多索引类型，它等于
-     <parameter>indexSelectivity</> 乘以索引中的行数，但也可能更多。
+     indexSelectivity 乘以索引中的行数，但也可能更多。
      （注意，索引的大小（页数和行数）可以从
-     <structname>IndexOptInfo</> 结构体中获得。）
+     IndexOptInfo 结构体中获得。）
     </para>
    </step>
 
    <step>
     <para>
-     估计扫描期间将读取的索引页面数。它可能仅仅是 <parameter>indexSelectivity</parameter> 乘以索引总页面数。
+     估计扫描期间将读取的索引页面数。它可能仅仅是 indexSelectivity 乘以索引总页面数。
     </para>
    </step>
 
