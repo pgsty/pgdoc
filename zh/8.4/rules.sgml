@@ -358,7 +358,7 @@ CREATE VIEW shoe_ready AS
     
     <note>
     <para>
-    你在<structname>pg_rewrite</structname>项中看到的、用于<literal>NEW</literal>和<literal>OLD</literal>的两个额外范围表项，与<command>SELECT</command>规则无关。
+    你在<structname>pg_rewrite</structname>项中看到的、用于<literal>NEW</literal>和<literal>OLD</literal>的两个额外范围表项（在打印出的查询树中，它们因历史原因被命名为<literal>*NEW*</literal>和<literal>*OLD*</literal>），与<command>SELECT</command>规则无关。
     </para>
     </note>
 
@@ -414,7 +414,7 @@ SELECT shoelace.sl_name, shoelace.sl_avail,
 SELECT s.sl_name, s.sl_avail,
        s.sl_color, s.sl_len, s.sl_unit,
        s.sl_len * u.un_fact AS sl_len_cm
-  FROM shoelace old, shoelace new,
+  FROM shoelace *OLD*, shoelace *NEW*,
        shoelace_data s, unit u
  WHERE s.sl_unit = u.un_name;
 </programlisting>
@@ -432,11 +432,11 @@ SELECT shoelace.sl_name, shoelace.sl_avail,
                s.sl_len * u.un_fact AS sl_len_cm
           FROM shoelace_data s, unit u
          WHERE s.sl_unit = u.un_name) shoelace;
-</programlisting>不过有一点不同：子查询的范围表中有两个额外条目，<literal>shoelace old</literal> 和
-    <literal>shoelace new</literal>。这些条目不直接参与查询，因为子查询的连接树或目标列表并未引用它们。重写器用它们保存原先引用视图的范围表条目中的访问权限检查信息。这样，即使重写后的查询没有直接使用视图，执行器仍会检查用户是否具有访问该视图所需的权限。</para>
+</programlisting>不过有一点不同：子查询的范围表中有两个额外条目，<literal>shoelace *OLD*</literal> 和
+    <literal>shoelace *NEW*</literal>。这些条目不直接参与查询，因为子查询的连接树或目标列表并未引用它们。重写器用它们保存原先引用视图的范围表条目中的访问权限检查信息。这样，即使重写后的查询没有直接使用视图，执行器仍会检查用户是否具有访问该视图所需的权限。</para>
 
 <para>
-    这就是应用的第一条规则。规则系统接着会检查顶层查询中剩余的范围表项（本例中已经没有了），并递归检查新增子查询中的范围表项，看它们是否引用了视图。（但它不会展开<literal>old</literal>或<literal>new</literal>，否则就会出现无限递归！）在这个例子中，<literal>shoelace_data</literal>和<literal>unit</literal>都没有重写规则，因此重写到此结束，上面的结果就是交给规划器的最终结果。
+    这就是应用的第一条规则。规则系统接着会检查顶层查询中剩余的范围表项（本例中已经没有了），并递归检查新增子查询中的范围表项，看它们是否引用了视图。（但它不会展开<literal>*OLD*</literal>或<literal>*NEW*</literal>，否则就会出现无限递归！）在这个例子中，<literal>shoelace_data</literal>和<literal>unit</literal>都没有重写规则，因此重写到此结束，上面的结果就是交给规划器的最终结果。
 </para>
 
 <para>
@@ -856,12 +856,12 @@ NEW.sl_avail &lt;&gt; OLD.sl_avail
 
 <programlisting>
 INSERT INTO shoelace_log VALUES (
-       new.sl_name, new.sl_avail,
+       *NEW*.sl_name, *NEW*.sl_avail,
        current_user, current_timestamp )
-  FROM shoelace_data new, shoelace_data old;
+  FROM shoelace_data *NEW*, shoelace_data *OLD*;
 </programlisting>
 
-    （这看起来有点奇怪，因为通常你不能写<literal>INSERT ... VALUES ... FROM</literal>。这里的<literal>FROM</literal>子句只是为了表明查询树中存在用于<literal>new</literal>和<literal>old</literal>的范围表项。之所以需要这些项，是为了让<command>INSERT</command>命令查询树中的变量能够引用它们。）
+    （这看起来有点奇怪，因为通常你不能写<literal>INSERT ... VALUES ... FROM</literal>。这里的<literal>FROM</literal>子句只是为了表明查询树中存在用于<literal>*NEW*</literal>和<literal>*OLD*</literal>的范围表项。之所以需要这些项，是为了让<command>INSERT</command>命令查询树中的变量能够引用它们。）
 </para>
 
 <para>
@@ -869,9 +869,9 @@ INSERT INTO shoelace_log VALUES (
 
 <programlisting>
 INSERT INTO shoelace_log VALUES (
-       new.sl_name, new.sl_avail,
+       *NEW*.sl_name, *NEW*.sl_avail,
        current_user, current_timestamp )
-  FROM shoelace_data new, shoelace_data old,
+  FROM shoelace_data *NEW*, shoelace_data *OLD*,
        <emphasis>shoelace_data shoelace_data</emphasis>;
 </programlisting>
 
@@ -879,11 +879,11 @@ INSERT INTO shoelace_log VALUES (
 
 <programlisting>
 INSERT INTO shoelace_log VALUES (
-       new.sl_name, new.sl_avail,
+       *NEW*.sl_name, *NEW*.sl_avail,
        current_user, current_timestamp )
-  FROM shoelace_data new, shoelace_data old,
+  FROM shoelace_data *NEW*, shoelace_data *OLD*,
        shoelace_data shoelace_data
- <emphasis>WHERE new.sl_avail &lt;&gt; old.sl_avail</emphasis>;
+ <emphasis>WHERE *NEW*.sl_avail &lt;&gt; *OLD*.sl_avail</emphasis>;
 </programlisting>
 
     （这看起来更奇怪，因为<literal>INSERT ... VALUES</literal>同样没有<literal>WHERE</literal>子句，但规划器和执行器处理它并无困难。反正它们本来也需要为<literal>INSERT ... SELECT</literal>支持相同功能。）
@@ -894,11 +894,11 @@ INSERT INTO shoelace_log VALUES (
 
 <programlisting>
 INSERT INTO shoelace_log VALUES (
-       new.sl_name, new.sl_avail,
+       *NEW*.sl_name, *NEW*.sl_avail,
        current_user, current_timestamp )
-  FROM shoelace_data new, shoelace_data old,
+  FROM shoelace_data *NEW*, shoelace_data *OLD*,
        shoelace_data shoelace_data
- WHERE new.sl_avail &lt;&gt; old.sl_avail
+ WHERE *NEW*.sl_avail &lt;&gt; *OLD*.sl_avail
    <emphasis>AND shoelace_data.sl_name = 'sl7'</emphasis>;
 </programlisting>
    </para>
@@ -910,9 +910,9 @@ INSERT INTO shoelace_log VALUES (
 INSERT INTO shoelace_log VALUES (
        <emphasis>shoelace_data.sl_name</emphasis>, <emphasis>6</emphasis>,
        current_user, current_timestamp )
-  FROM shoelace_data new, shoelace_data old,
+  FROM shoelace_data *NEW*, shoelace_data *OLD*,
        shoelace_data shoelace_data
- WHERE <emphasis>6</emphasis> &lt;&gt; old.sl_avail
+ WHERE <emphasis>6</emphasis> &lt;&gt; *OLD*.sl_avail
    AND shoelace_data.sl_name = 'sl7';
 </programlisting>
 
@@ -925,7 +925,7 @@ INSERT INTO shoelace_log VALUES (
 INSERT INTO shoelace_log VALUES (
        shoelace_data.sl_name, 6,
        current_user, current_timestamp )
-  FROM shoelace_data new, shoelace_data old,
+  FROM shoelace_data *NEW*, shoelace_data *OLD*,
        shoelace_data shoelace_data
  WHERE 6 &lt;&gt; <emphasis>shoelace_data.sl_avail</emphasis>
    AND shoelace_data.sl_name = 'sl7';
@@ -1192,8 +1192,8 @@ UPDATE shoelace_data
        sl_unit = shoelace.sl_unit
   FROM shoelace_arrive shoelace_arrive, shoelace_ok shoelace_ok,
        shoelace_ok old, shoelace_ok new,
-       shoelace shoelace, shoelace old,
-       shoelace new, shoelace_data shoelace_data
+       shoelace shoelace, shoelace *OLD*,
+       shoelace *NEW*, shoelace_data shoelace_data
  WHERE shoelace.sl_name = shoelace_arrive.arr_name
    AND shoelace_data.sl_name = shoelace.sl_name;
 </programlisting>
@@ -1209,9 +1209,9 @@ UPDATE shoelace_data
        sl_unit = s.sl_unit
   FROM shoelace_arrive shoelace_arrive, shoelace_ok shoelace_ok,
        shoelace_ok old, shoelace_ok new,
-       shoelace shoelace, shoelace old,
-       shoelace new, shoelace_data shoelace_data,
-       shoelace old, shoelace new,
+       shoelace shoelace, shoelace *OLD*,
+       shoelace *NEW*, shoelace_data shoelace_data,
+       shoelace *OLD*, shoelace *NEW*,
        shoelace_data s, unit u
  WHERE s.sl_name = shoelace_arrive.arr_name
    AND shoelace_data.sl_name = s.sl_name;
@@ -1227,11 +1227,11 @@ SELECT s.sl_name,
        current_timestamp
   FROM shoelace_arrive shoelace_arrive, shoelace_ok shoelace_ok,
        shoelace_ok old, shoelace_ok new,
-       shoelace shoelace, shoelace old,
-       shoelace new, shoelace_data shoelace_data,
-       shoelace old, shoelace new,
+       shoelace shoelace, shoelace *OLD*,
+       shoelace *NEW*, shoelace_data shoelace_data,
+       shoelace *OLD*, shoelace *NEW*,
        shoelace_data s, unit u,
-       shoelace_data old, shoelace_data new
+       shoelace_data *OLD*, shoelace_data *NEW*
        shoelace_log shoelace_log
  WHERE s.sl_name = shoelace_arrive.arr_name
    AND shoelace_data.sl_name = s.sl_name
@@ -1582,7 +1582,7 @@ Nestloop
    </para>
 
    <para>
-    在下一个删除场景中，我们想去掉全部 2000 台<structfield>hostname</structfield>以<literal>old</literal>开头的计算机。有两种命令可以做到这件事。其中一种是：
+    在下一个删除场景中，我们想去掉全部 2000 台<structfield>hostname</structfield>以<literal>*OLD*</literal>开头的计算机。有两种命令可以做到这件事。其中一种是：
 
 <programlisting>
 DELETE FROM computer WHERE hostname &gt;= 'old'
