@@ -52,6 +52,15 @@ SED_RECIPE_83 = (
     "\t      -e '1a\\' -e '<!DOCTYPE book PUBLIC \"-//OASIS//DTD DocBook XML V4.2//EN\" \"http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd\">' \\\n"
     "\t  >$@\n"
 )
+# PG 8.0/8.1 use the same osx|sed recipe but order the entity alternation
+# lt-first; keep both spellings so the normalization applies to them too.
+SED_RECIPE_80 = (
+    "\npostgres.xml: postgres.sgml $(GENERATED_SGML)\n"
+    "\t$(OSX) -x lower $< | \\\n"
+    "\t  sed -e 's/\\[\\(lt\\|gt\\|amp\\|nbsp\\|copy\\|quot\\|ouml\\|uuml\\|egrave\\) *\\]/\\&\\1;/g' \\\n"
+    "\t      -e '1a\\' -e '<!DOCTYPE book PUBLIC \"-//OASIS//DTD DocBook XML V4.2//EN\" \"http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd\">' \\\n"
+    "\t  >$@\n"
+)
 PERL_RECIPE_84 = (
     "\npostgres.xml: postgres.sgml $(GENERATED_SGML)\n"
     "\t$(OSX) -D. -x lower $< | \\\n"
@@ -71,6 +80,11 @@ OSX_DEF_8X_WRAPPED = ("ifndef OSX\n"
 HTML_84 = ("\nhtml: html-output\n"
            "# Re-run this target until HTML.index does not change\n"
            "\t@cmp -s HTML.index.start HTML.index || $(MAKE) $@\n")
+# PG <= 8.2 routes html straight through jade with no index re-run loop.
+HTML_82 = ("\nhtml: postgres.sgml $(ALLSGML) stylesheet.dsl\n"
+           "\t@rm -f *.html\n"
+           "\t$(JADE) $(JADEFLAGS) $(SPFLAGS) $(SGMLINCLUDE) $(CATALOG)"
+           " -d stylesheet.dsl -i output-html -t sgml $<\n")
 HTML_NEW = "\nhtml: xslthtml-stamp\n"
 # PG <= 8.4 builds postgres.xml from $(GENERATED_SGML), which contains
 # bookindex.sgml -- only producible via the jade HTML.index chain.  9.x uses
@@ -111,9 +125,19 @@ def main():
         return  # PG >= 9.2 already ships the XSL pipeline
     if "postgres.xml:" not in mf:
         return  # nothing to backport onto
+    # PG <= 8.2 ships stylesheet.xsl + a bare "XSLTPROC = xsltproc"
+    # assignment (no ifndef wrapper, no xslthtml target at all).  Wrap the
+    # assignment so the deps tools can override it, and note that the
+    # XSLTHTML_BLOCK below synthesizes the xslthtml/stamp targets.
     if "\nxslthtml:" not in mf:
-        return  # PG >= 10 html pipeline is native XSL (html-stamp, no
-                # xslthtml target); only <= 9.6-era makefiles need the backport
+        if "XSLTPROC = xsltproc\n" in mf:
+            mf = mf.replace("XSLTPROC = xsltproc\n",
+                            "ifndef XSLTPROC\nXSLTPROC = xsltproc\nendif\n", 1)
+        if "XSLTPROC_HTML_FLAGS" not in mf:
+            mf = mf.replace("XSLTHTML_BLOCK_PLACEHOLDER", "", 1)  # no-op
+            mf += ("\noverride XSLTPROCFLAGS += --stringparam"
+                   " pg.version '$(VERSION)'\n"
+                   "XSLTPROC_HTML_FLAGS = --path .\n")
 
     # filelist.sgml: declare the marked-section keywords (9.4 form).  PG <= 8.4
     # has no %include-index declaration at all, so the fallback adds both --
@@ -155,9 +179,13 @@ def main():
             print("patch_legacy_xsl_pipeline: WARNING: bookindex anchor not found in postgres.sgml",
                   file=sys.stderr)
 
-    # Makefile: normalize the PG <= 8.3 osx|sed recipe to the 8.4 perl form
+    # Makefile: normalize the PG <= 8.3 osx|sed recipe to the 8.4 perl form.
+    # 8.2/8.3 order the sed entity alternation amp-first (SED_RECIPE_83);
+    # 8.0/8.1 order it lt-first (SED_RECIPE_80).
     if SED_RECIPE_83 in mf:
         mf = mf.replace(SED_RECIPE_83, PERL_RECIPE_84, 1)
+    elif SED_RECIPE_80 in mf:
+        mf = mf.replace(SED_RECIPE_80, PERL_RECIPE_84, 1)
     # Makefile: flip the section on in the SGML->XML step
     assert OSX_OLD in mf, "osx recipe line not found"
     mf = mf.replace(OSX_OLD, OSX_NEW, 1)
@@ -186,6 +214,8 @@ def main():
         mf = mf.replace("\nhtml: html-stamp\n", HTML_NEW, 1)
     elif HTML_84 in mf:
         mf = mf.replace(HTML_84, HTML_NEW, 1)
+    elif HTML_82 in mf:
+        mf = mf.replace(HTML_82, HTML_NEW, 1)
     else:
         assert False, "html target line not found"
     mf += XSLTHTML_BLOCK
