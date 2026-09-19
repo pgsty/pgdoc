@@ -42,6 +42,23 @@ PERL_94_PIPE = (r"""	  $(PERL) -p -e 's/\[(aacute|acirc|aelig|agrave|amp|aring|a
 """)
 OSX_OLD = "\t$(OSX) -D. -x lower $<"
 OSX_NEW = "\t$(OSX) -D. -x lower -i include-xslt-index $<"
+# PG <= 8.3 pipes osx into sed (entity fixup + DOCTYPE append) instead of
+# 8.4's perl.  Normalize that recipe to the 8.4 form first so the anchors
+# below (OSX_OLD / PERL_84 / PGXML_OLD) all apply unchanged.
+SED_RECIPE_83 = (
+    "\npostgres.xml: postgres.sgml $(GENERATED_SGML)\n"
+    "\t$(OSX) -x lower $< | \\\n"
+    "\t  sed -e 's/\\[\\(amp\\|copy\\|egrave\\|gt\\|lt\\|mdash\\|nbsp\\|ouml\\|pi\\|quot\\|uuml\\) *\\]/\\&\\1;/g' \\\n"
+    "\t      -e '1a\\' -e '<!DOCTYPE book PUBLIC \"-//OASIS//DTD DocBook XML V4.2//EN\" \"http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd\">' \\\n"
+    "\t  >$@\n"
+)
+PERL_RECIPE_84 = (
+    "\npostgres.xml: postgres.sgml $(GENERATED_SGML)\n"
+    "\t$(OSX) -D. -x lower $< | \\\n"
+    "\t  $(PERL) -p -e 's/\\[(amp|copy|egrave|gt|lt|mdash|nbsp|ouml|pi|quot|uuml) *\\]/\\&\\1;/g;' \\\n"
+    "\t             -e '$$_ .= qq{<!DOCTYPE book PUBLIC \"-//OASIS//DTD DocBook XML V4.2//EN\" \"http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd\">\\n} if $$. == 1;' \\\n"
+    "\t  >$@\n"
+)
 # PG <= 8.4 assigns OSX/XSLTPROC unconditionally, so the tool paths exported
 # by the zh Makefile (deps/bin) cannot reach the recipes.  9.x wraps them in
 # ifndef; do the same here.
@@ -138,6 +155,9 @@ def main():
             print("patch_legacy_xsl_pipeline: WARNING: bookindex anchor not found in postgres.sgml",
                   file=sys.stderr)
 
+    # Makefile: normalize the PG <= 8.3 osx|sed recipe to the 8.4 perl form
+    if SED_RECIPE_83 in mf:
+        mf = mf.replace(SED_RECIPE_83, PERL_RECIPE_84, 1)
     # Makefile: flip the section on in the SGML->XML step
     assert OSX_OLD in mf, "osx recipe line not found"
     mf = mf.replace(OSX_OLD, OSX_NEW, 1)
