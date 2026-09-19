@@ -20,8 +20,9 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-CLUSTER [VERBOSE] <replaceable class="PARAMETER">tablename</replaceable> [ USING <replaceable class="PARAMETER">indexname</replaceable> ]
-CLUSTER [VERBOSE]
+CLUSTER <replaceable class="PARAMETER">indexname</replaceable> ON <replaceable class="PARAMETER">tablename</replaceable>
+CLUSTER <replaceable class="PARAMETER">tablename</replaceable>
+CLUSTER
 </synopsis>
  </refsynopsisdiv>
 
@@ -39,10 +40,8 @@ CLUSTER [VERBOSE]
   <para>
    当一个表被聚簇时，它会根据索引信息在物理上重新排序。聚簇是一次性
    操作：之后如果表再被更新，这些更改不会再次被聚簇。也就是说，系
-   统不会试图按照索引顺序存储新行或更新后的行。（如果需要，可以定期
-   再次执行该命令来重新聚簇。此外，将表的 <literal>FILLFACTOR</literal>
-   存储参数设置为小于 100%，有助于在更新期间保持聚簇顺序，因为如果
-   页面上有足够空间，更新后的行会保留在同一页面中。）
+   统不会试图按照索引顺序存储新行或更新后的行。如果需要，可以定期
+   再次执行该命令来重新聚簇。
   </para>
 
   <para>
@@ -53,8 +52,8 @@ CLUSTER [VERBOSE]
   </para>
 
   <para>
-   不带任何参数的 <command>CLUSTER</command> 会对当前数据库中所有此前已聚簇且属于调用用户的表重新执行聚簇；如果由超级用户调用，则会对所有此前已聚簇的表重新执行聚簇。
-   这种形式的 <command>CLUSTER</command> 不能在事务块内执行。
+   不带任何参数的 <command>CLUSTER</command> 会对当前数据库中属于调用用户的所有表重新执行聚簇；如果由超级用户调用，则会对所有表重新执行聚簇。（从未聚簇过的表不包括在内。）
+   这种形式的 <command>CLUSTER</command> 不能在事务或函数内调用。
   </para>
 
   <para>
@@ -69,15 +68,6 @@ CLUSTER [VERBOSE]
 
   <variablelist>
    <varlistentry>
-    <term><replaceable class="PARAMETER">tablename</replaceable></term>
-    <listitem>
-     <para>
-      表的名称（可能是模式限定的）。
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
     <term><replaceable class="PARAMETER">indexname</replaceable></term>
     <listitem>
      <para>
@@ -87,9 +77,11 @@ CLUSTER [VERBOSE]
    </varlistentry>
 
    <varlistentry>
-    <term><literal>VERBOSE</literal></term>
+    <term><replaceable class="PARAMETER">tablename</replaceable></term>
     <listitem>
-     <para>在每个表被聚簇时打印进度报告。</para>
+     <para>
+      表的名称（可能是模式限定的）。
+     </para>
     </listitem>
    </varlistentry>
   </variablelist>
@@ -98,7 +90,11 @@ CLUSTER [VERBOSE]
  <refsect1>
   <title>注解</title>
 
-   <para>当你在表中随机访问单行时，数据在表中的实际顺序并不重要。但是，如果访问某些数据比其他数据更频繁，并且存在将这些数据放在一起的索引，使用<command>CLUSTER</command>就会有益。如果要从表中获取一段索引值范围，或者获取有多行匹配的单个索引值，<command>CLUSTER</command>会有帮助，因为一旦索引确定第一个匹配行所在的表页，其他匹配行很可能已在同一个表页中，从而减少磁盘访问并加快查询。</para>
+   <para>
+    <command>CLUSTER</command>会丢失元组的全部可见性信息，这使得在<command>CLUSTER</command>命令完成之前获取的任何快照看来，该表都是空的。这使得<command>CLUSTER</command>不适合在访问被聚簇表的事务与<command>CLUSTER</command>并发运行的应用中使用。这一点在可串行化事务中最为明显，因为它们在事务开始时只取一个快照，但读已提交事务也会受到影响。
+   </para>
+
+   <para>当你在表中随机访问单行时，数据在表中的实际顺序并不重要。但是，如果访问某些数据比其他数据更频繁，并且存在将这些数据放在一起的索引，使用<command>CLUSTER</command>就会有益。如果要从表中获取一段索引值范围，或者获取有多行匹配的单个索引值，<command>CLUSTER</command>会有帮助，因为一旦索引确定第一个匹配行所在的表页，其他匹配行很可能已在同一个堆页面中，从而减少磁盘访问并加快查询。</para>
 
    <para>使用索引扫描时，会创建一个表的临时副本，其中表数据按索引顺序排列。还会为表上的每个索引创建临时副本。因此，所需的磁盘空闲空间至少应等于表大小与索引大小之和。</para>
 
@@ -113,14 +109,14 @@ CLUSTER [VERBOSE]
    </para>
 
    <para>
-    还有另一种聚簇数据的方法。<command>CLUSTER</command>命令通过使用你指定的索引扫描原始表来对它重新排序。这对于大型表可能很慢，因为行是按索引顺序从表中取得的，而如果表是无序的，条目就散布在随机页面中，因此每移动一行都要检索一个磁盘页。（<productname>PostgreSQL</productname>有缓存，但一个大表的绝大部分放不进缓存。）另一种聚簇表的方法是使用：
+    还有另一种聚簇数据的方法。<command>CLUSTER</command>命令通过使用你指定的索引扫描原始表来对它重新排序。这对于大型表可能很慢，因为行是按索引顺序从堆中取得的，而如果堆表是无序的，条目就散布在随机页面中，因此每移动一行都要检索一个磁盘页。（<productname>PostgreSQL</productname>有缓存，但一个大表的绝大部分放不进缓存。）另一种聚簇表的方法是使用：
 
 <programlisting>
 CREATE TABLE <replaceable class="parameter">newtable</replaceable> AS
-    SELECT * FROM <replaceable class="parameter">table</replaceable> ORDER BY <replaceable class="parameter">columnlist</replaceable>;
+    SELECT <replaceable class="parameter">columnlist</replaceable> FROM <replaceable class="parameter">table</replaceable> ORDER BY <replaceable class="parameter">columnlist</replaceable>;
 </programlisting>
 
-    它使用<productname>PostgreSQL</productname>的排序代码产生想要的顺序；对于无序数据，这通常比索引扫描快得多。然后你删除旧表，使用<command>ALTER TABLE ... RENAME</command>把<replaceable class="parameter">newtable</replaceable>改名为旧表的名字，并重建该表的索引。这种方法的最大缺点是它不保留 OID、约束、外键关系、被授予的权限以及表的其他附属属性&mdash;所有这些项都必须手工重建。另一个缺点是这种方式需要一个与表本身大小大致相同的排序临时文件，因此峰值磁盘用量约为表大小的三倍，而不是两倍。
+    它使用<literal>ORDER BY</literal>子句中<productname>PostgreSQL</productname>的排序代码产生想要的顺序；对于无序数据，这通常比索引扫描快得多。然后你删除旧表，使用<command>ALTER TABLE ... RENAME</command>把<replaceable class="parameter">newtable</replaceable>改名为旧表的名字，并重建该表的索引。不过，这种方法不保留 OID、约束、外键关系、被授予的权限以及表的其他附属属性&mdash;所有这些项都必须手工重建。
    </para>
  </refsect1>
 
@@ -128,22 +124,22 @@ CREATE TABLE <replaceable class="parameter">newtable</replaceable> AS
   <title>示例</title>
 
   <para>
-   按照索引 <literal>employees_ind</literal> 对表
-   <literal>employees</literal> 进行聚簇：
+   按照索引 <literal>emp_ind</literal> 对表
+   <literal>emp</literal> 进行聚簇：
 <programlisting>
-CLUSTER employees USING employees_ind;
+CLUSTER emp_ind ON emp;
 </programlisting>
   </para>
 
   <para>
-   使用之前用过的同一个索引对 <literal>employees</literal> 表进行聚簇：
+   使用之前用过的同一个索引对 <literal>emp</literal> 表进行聚簇：
 <programlisting>
-CLUSTER employees;
+CLUSTER emp;
 </programlisting>
   </para>
 
   <para>
-   对数据库中此前已聚簇过的所有表执行聚簇：
+   对数据库中已聚簇过的所有表执行聚簇：
 <programlisting>
 CLUSTER;
 </programlisting></para>
@@ -155,10 +151,6 @@ CLUSTER;
   <para>
    SQL 标准中没有 <command>CLUSTER</command> 语句。
   </para>
-
-  <para>语法 <synopsis>
-CLUSTER <replaceable class="PARAMETER">indexname</replaceable> ON <replaceable class="PARAMETER">tablename</replaceable>
-</synopsis> 也受支持，以兼容 8.3 之前的 <productname>PostgreSQL</productname> 版本。</para>
  </refsect1>
 
  <refsect1>

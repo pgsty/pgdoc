@@ -11,8 +11,8 @@
   <para>
    <productname>PostgreSQL</productname> 中的聚合函数是依据
    <firstterm>状态值</firstterm>和<firstterm>状态转移函数</firstterm>
-   来定义的。也就是说，聚合通过一个状态值来工作，并在处理每个
-   后续输入行时更新该状态值。要定义一个新的聚合函数，需要为状态值
+   来定义的。也就是说，聚合可以定义为一种状态，在处理每个输入项时
+   修改该状态。要定义一个新的聚合函数，需要为状态值
    选定一种数据类型、为状态选定一个初始值，并指定一个状态转移
    函数。状态转移函数只是普通函数，也可以在聚合的上下文之外使用。
    如果聚合的期望结果不同于运行状态值中需要保存的数据，还可以指定
@@ -31,23 +31,23 @@
    复数数据类型，那么只需要该数据类型的加法函数。聚合定义如下：
 
 <screen>
-CREATE AGGREGATE sum (complex)
-(
+CREATE AGGREGATE complex_sum (
     sfunc = complex_add,
+    basetype = complex,
     stype = complex,
     initcond = '(0,0)'
 );
 
-SELECT sum(a) FROM test_complex;
+SELECT complex_sum(a) FROM test_complex;
 
-   sum
------------
+ complex_sum
+-------------
  (34,53.9)
 </screen>
 
-   （注意，这里我们依赖的是函数重载：名为 <function>sum</> 的聚合
-   不止一个，但 <productname>PostgreSQL</productname> 能判断出哪种
-   sum 适用于 <type>complex</type> 类型的列。）
+   （实际上，我们会直接把这个聚合命名为<function>sum</>，并依靠
+   <productname>PostgreSQL</productname> 来判断对 <type>complex</type>
+   类型的列应用哪种 sum。）
   </para>
 
   <para>
@@ -71,45 +71,38 @@ SELECT sum(a) FROM test_complex;
   <para>
    <function>avg</>（平均值）是更复杂的聚合示例。它需要两个运行
    状态：输入的总和与输入的个数。最终结果由二者相除得到。平均值
-   通常用数组作为状态值来实现。例如，<function>avg(float8)</function>
+   通常用双元素数组作为状态值来实现。例如，<function>avg(float8)</function>
    的内置实现如下所示：
 
 <programlisting>
-CREATE AGGREGATE avg (float8)
-(
+CREATE AGGREGATE avg (
     sfunc = float8_accum,
+    basetype = float8,
     stype = float8[],
     finalfunc = float8_avg,
-    initcond = '{0,0,0}'
+    initcond = '{0,0}'
 );
 </programlisting>
-
-   （<function>float8_accum</> 需要一个三元素数组，而不只是两个
-   元素，因为它累积的不仅是输入值的和与计数，还有平方和。这样它
-   除了可用于 <function>avg</> 之外，也可用于其他一些聚合。）
   </para>
 
   <para>
    聚合函数可以使用多态的状态转移函数或最终函数，这样同一组函数
    就能用于实现多个聚合。关于多态函数的解释，请参见
    <xref linkend="extend-types-polymorphic">。再进一步，聚合函数自身
-   也可以指定为具有多态输入类型和状态类型，从而让同一个聚合定义
+   也可以指定为具有多态基类型和状态类型，从而让同一个聚合定义
    服务于多种输入数据类型。下面是一个多态聚合的示例：
 
 <programlisting>
-CREATE AGGREGATE array_accum (anyelement)
-(
+CREATE AGGREGATE array_accum (
     sfunc = array_append,
+    basetype = anyelement,
     stype = anyarray,
     initcond = '{}'
 );
 </programlisting>
 
    对于任何给定的聚合调用，其实际状态类型都是一种数组类型，该
-   数组以实际输入类型为元素类型。这个聚合的行为是把所有输入串接
-   成这种类型的一个数组。（注意：内置聚合
-   <function>array_agg</> 提供了类似的功能，而且性能比这个定义
-   更好。）
+   数组以实际输入类型为元素类型。
   </para>
 
   <para>
@@ -126,34 +119,30 @@ SELECT attrelid::regclass, array_accum(attname)
  pg_tablespace | {spcname,spcowner,spclocation,spcacl}
 (1 row)
 
-SELECT attrelid::regclass, array_accum(atttypid::regtype)
+SELECT attrelid::regclass, array_accum(atttypid)
     FROM pg_attribute
     WHERE attnum &gt; 0 AND attrelid = 'pg_tablespace'::regclass
     GROUP BY attrelid;
 
-   attrelid    |        array_accum        
----------------+---------------------------
- pg_tablespace | {name,oid,text,aclitem[]}
+   attrelid    |   array_accum   
+---------------+-----------------
+ pg_tablespace | {19,26,25,1034}
 (1 row)
 </programlisting>
   </para>
 
   <para>
    用 C 编写的函数可以通过检查函数调用的<quote>上下文</quote>是否被传入了一个
-   <structname>AggState</structname>或<structname>WindowAggState</structname>节点，
+   <structname>AggState</structname>节点，
    来检测自己是否作为聚合转移函数或最终函数被调用，例如：
 <programlisting>
-        if (fcinfo-&gt;context &amp;&amp;
-            (IsA(fcinfo-&gt;context, AggState) ||
-             IsA(fcinfo-&gt;context, WindowAggState)))
+        if (fcinfo-&gt;context &amp;&amp; IsA(fcinfo-&gt;context, AggState))
 </programlisting>
-   检查这一点的一个原因是，如果对状态转移函数来说结果为真，那么
-   第一个输入一定是临时转移值，因此可以安全地原地修改，而不必
+   检查这一点的一个原因是，如果结果为真，那么
+   左输入一定是临时转移值，因此可以安全地原地修改，而不必
    分配一个新副本。
    示例见 <literal>int8inc()</>。（这是函数可以安全地修改按引用
-   传递的输入的<emphasis>唯一</>情况。特别是，聚合的最终函数在任何
-   情况下都不得修改其输入，因为在某些情况下，它们会在同一个最终
-   转移值上被再次执行。）
+   传递的输入的<emphasis>唯一</>情况。）
   </para>
 
   <para>
