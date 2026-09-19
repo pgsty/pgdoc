@@ -12,14 +12,16 @@
    到目前为止所描述的过程使我们能够定义新类型、新函数以及新操作符。然而，我们还不能在一种新数据类型的列上定义索引。为此，必须为该新数据类型定义一个<firstterm>操作符类</firstterm>。本节稍后将用一个示例说明这一概念：为 B-树索引方法定义一个新的操作符类，以便按绝对值升序存储和排序复数。
   </para>
 
-  <para>
-   操作符类可以分组成<firstterm>操作符族</firstterm>，以展示语义兼容的类之间的关系。只涉及单一数据类型时，一个操作符类就已足够，因此我们先关注这种情况，然后再回到操作符族。
-  </para>
+  <note>
+   <para>
+    在<productname>PostgreSQL</productname> 7.3 之前的版本中，要创建用户定义的操作符类，必须手工向系统目录<classname>pg_amop</classname>、<classname>pg_amproc</classname>和<classname>pg_opclass</classname>中添加条目。这种做法现在已被弃用，取而代之的是使用<command>CREATE OPERATOR CLASS</command>，后者是一种更简单、更不易出错的创建所需目录条目的方式。
+   </para>
+  </note>
 
- <sect2 id="xindex-opclass">
+ <sect2 id="xindex-im">
   <title>索引方法和操作符类</title>
 
-  <para><classname>pg_am</classname> 表为每个索引方法（内部称为访问方法）保存一行。对表进行常规访问的支持内置于 <productname>PostgreSQL</productname> 中，但所有索引方法都在 <classname>pg_am</classname> 中描述。可以定义所需的接口例程，然后在 <classname>pg_am</classname> 中创建一行，从而添加新的索引方法 &mdash; 但这超出了本章的范围（参见<xref linkend="indexam">）。</para>
+  <para><classname>pg_am</classname> 表为每个索引方法（内部称为访问方法）保存一行。对表进行常规访问的支持内置于 <productname>PostgreSQL</productname> 中，但所有索引方法都在 <classname>pg_am</classname> 中描述。可以定义所需的接口例程，然后在 <classname>pg_am</classname> 中创建一行，从而添加新的索引方法 &mdash; 但这远远超出了本章的范围。</para>
 
   <para>
    索引方法的例程并不直接知道它将处理哪些数据类型。相反，一个<firstterm>操作符类</firstterm><indexterm><primary>操作符类</primary></indexterm>标识了索引方法在处理特定数据类型时需要使用的那组操作。之所以称为操作符类，是因为它指定的一项内容就是可与索引一起使用的 <literal>WHERE</literal> 子句操作符集合（也就是能被转换成索引扫描条件的操作符）。操作符类还可以指定索引方法内部操作所需的一些<firstterm>支持函数</firstterm>，但这些函数并不直接对应任何可与索引一起使用的 <literal>WHERE</literal> 子句操作符。
@@ -102,11 +104,11 @@
    </table>
 
   <para>
-   GiST 索引更加灵活：它们根本没有固定的策略集合。相反，每个特定 GiST 操作符类中负责<quote>一致性</quote>检查的支持例程会按自己的方式解释策略号。举例来说，一些内置的 GiST 索引操作符类会为二维几何对象建立索引，并提供<quote>R 树</quote>策略，如<xref linkend="xindex-rtree-strat-table">所示。其中四个是真正的二维测试（重叠、相同、包含、被包含），四个只考虑 X 方向，另外四个则在 Y 方向上提供相同测试。
+   R-tree 索引表达矩形包含关系。它们使用八种策略，如<xref linkend="xindex-rtree-strat-table">所示。
   </para>
 
    <table tocentry="1" id="xindex-rtree-strat-table">
-    <title>GiST Two-Dimensional <quote>R-tree</> Strategies</title>
+    <title>R-tree 策略</title>
     <tgroup cols="2">
      <thead>
       <row>
@@ -116,11 +118,11 @@
      </thead>
      <tbody>
       <row>
-       <entry>严格位于左侧</entry>
+       <entry>位于左侧</entry>
        <entry>1</entry>
       </row>
       <row>
-       <entry>不延伸到右侧</entry>
+       <entry>位于左侧或重叠</entry>
        <entry>2</entry>
       </row>
       <row>
@@ -128,11 +130,11 @@
        <entry>3</entry>
       </row>
       <row>
-       <entry>不延伸到左侧</entry>
+       <entry>位于右侧或重叠</entry>
        <entry>4</entry>
       </row>
       <row>
-       <entry>严格位于右侧</entry>
+       <entry>位于右侧</entry>
        <entry>5</entry>
       </row>
       <row>
@@ -147,67 +149,26 @@
        <entry>被包含</entry>
        <entry>8</entry>
       </row>
-      <row>
-       <entry>不延伸到上方</entry>
-       <entry>9</entry>
-      </row>
-      <row>
-       <entry>严格位于下方</entry>
-       <entry>10</entry>
-      </row>
-      <row>
-       <entry>严格位于上方</entry>
-       <entry>11</entry>
-      </row>
-      <row>
-       <entry>不延伸到下方</entry>
-       <entry>12</entry>
-      </row>
      </tbody>
     </tgroup>
    </table>
 
   <para>
-   GIN 索引在灵活性方面与 GiST 索引类似：它们没有固定的策略集合。
-   相反，每个操作符类的支持例程会根据该操作符类的定义解释策略号。
-   举例来说，内置数组操作符类所使用的策略号如
-   <xref linkend="xindex-gin-array-strat-table"> 所示。
+   GiST 索引更加灵活：它们根本没有固定的策略集合。相反，每个特定 GiST 操作符类中负责<quote>一致性</quote>检查的支持例程会按自己的方式解释策略号。
   </para>
 
-   <table tocentry="1" id="xindex-gin-array-strat-table">
-    <title>GIN 数组策略</title>
-    <tgroup cols="2">
-     <thead>
-      <row>
-       <entry>Operation</entry>
-       <entry>Strategy Number</entry>
-      </row>
-     </thead>
-     <tbody>
-      <row>
-       <entry>overlap</entry>
-       <entry>1</entry>
-      </row>
-      <row>
-       <entry>包含</entry>
-       <entry>2</entry>
-      </row>
-      <row>
-       <entry>is contained by</entry>
-       <entry>3</entry>
-      </row>
-      <row>
-       <entry>equal</entry>
-       <entry>4</entry>
-      </row>
-     </tbody>
-    </tgroup>
-   </table>
 
   <para>
    注意，所有策略操作符都返回布尔值。实际上，所有被定义为索引方法
    策略的操作符都必须返回 <type>boolean</type> 类型，因为要与索引
    配合使用，它们必须出现在 <literal>WHERE</> 子句的顶层。
+  </para>
+
+  <para>
+   顺便说一下，<classname>pg_am</classname> 中的
+   <structfield>amorderstrategy</structfield>列表明该索引方法是否支持有序扫描。零表示不支持；如果支持，
+   <structfield>amorderstrategy</structfield>就是与排序操作符对应的策略号。例如，B-树的
+   <structfield>amorderstrategy</structfield> = 1，也就是它的<quote>小于</quote>策略号。
   </para>
  </sect2>
 
@@ -215,7 +176,7 @@
   <title>索引方法支持例程</title>
 
   <para>
-   仅靠策略信息通常不足以让系统知道如何使用索引。实际上，索引方法还需要额外的支持例程才能工作。例如，B-树索引方法必须能够比较两个键，并判断其中一个是大于、等于还是小于另一个。类似地，哈希索引方法必须能够为键值计算哈希码。这些操作并不对应 SQL 命令条件中使用的操作符；它们是索引方法内部使用的管理例程。
+   仅靠策略信息通常不足以让系统知道如何使用索引。实际上，索引方法还需要额外的支持例程才能工作。例如，B-树索引方法必须能够比较两个键，并判断其中一个是大于、等于还是小于另一个。类似地，R-tree 索引方法必须能够计算矩形的交集、并集和大小。这些操作并不对应 SQL 命令条件中使用的操作符；它们是索引方法内部使用的管理例程。
   </para>
 
   <para>
@@ -272,6 +233,37 @@
    </table>
 
   <para>
+   R-tree 索引要求三个支持函数，如
+   <xref linkend="xindex-rtree-support-table"> 所示。
+  </para>
+
+   <table tocentry="1" id="xindex-rtree-support-table">
+    <title>R-tree 支持函数</title>
+    <tgroup cols="2">
+     <thead>
+      <row>
+       <entry>函数</entry>
+       <entry>支持号</entry>
+      </row>
+     </thead>
+     <tbody>
+      <row>
+       <entry>union</entry>
+       <entry>1</entry>
+      </row>
+      <row>
+       <entry>intersection</entry>
+       <entry>2</entry>
+      </row>
+      <row>
+       <entry>size</entry>
+       <entry>3</entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
+
+  <para>
    GiST 索引要求七个支持函数，如
    <xref linkend="xindex-gist-support-table"> 所示。
   </para>
@@ -287,32 +279,31 @@
      </thead>
      <tbody>
       <row>
-       <entry>consistent - 确定键是否满足查询条件</entry>
+       <entry>consistent</entry>
        <entry>1</entry>
       </row>
       <row>
-       <entry>union - 计算一组键的并集</entry>
+       <entry>union</entry>
        <entry>2</entry>
       </row>
       <row>
-       <entry>compress - 计算将被索引的键或值的压缩表示</entry>
+       <entry>compress</entry>
        <entry>3</entry>
       </row>
       <row>
-       <entry>decompress - 计算压缩键的解压表示</entry>
+       <entry>decompress</entry>
        <entry>4</entry>
       </row>
       <row>
-       <entry>penalty - 计算把新键插入具有给定子树键的子树时的罚值</entry>
+       <entry>penalty</entry>
        <entry>5</entry>
       </row>
       <row>
-       <entry>picksplit - 确定页面中的哪些项要移到新页面，并计算
-       结果页面的并集键</entry>
+       <entry>picksplit</entry>
        <entry>6</entry>
       </row>
       <row>
-       <entry>equal - 比较两个键，并在它们相等时返回真</entry>
+       <entry>equal</entry>
        <entry>7</entry>
       </row>
      </tbody>
@@ -320,55 +311,7 @@
    </table>
 
   <para>
-   GIN 索引要求四个支持函数，如
-   <xref linkend="xindex-gin-support-table"> 所示。
-  </para>
-
-   <table tocentry="1" id="xindex-gin-support-table">
-    <title>GIN 支持函数</title>
-    <tgroup cols="2">
-     <thead>
-      <row>
-       <entry>函数</entry>
-       <entry>支持号</entry>
-      </row>
-     </thead>
-     <tbody>
-      <row>
-       <entry>
-        compare - 比较两个键，并返回一个小于零、等于零或大于零的整数，用以
-        表示第一个键是小于、等于还是大于第二个键
-       </entry>
-       <entry>1</entry>
-      </row>
-      <row>
-       <entry>extractValue - 从待索引值中提取键</entry>
-       <entry>2</entry>
-      </row>
-      <row>
-       <entry>extractQuery - 从查询条件中提取键</entry>
-       <entry>3</entry>
-      </row>
-      <row>
-       <entry>consistent - 确定值是否匹配查询条件</entry>
-       <entry>4</entry>
-      </row>
-      <row>
-       <entry>comparePartial - （可选方法）比较查询中的部分键与索引中的键，并返回一个
-        小于零、等于零或大于零的整数，用以指示 GIN 应忽略该索引项、
-        将该项视为匹配，还是停止索引扫描</entry>
-       <entry>5</entry>
-      </row>
-     </tbody>
-    </tgroup>
-   </table>
-
-  <para>
-   与策略操作符不同，支持函数返回的是特定索引方法所期望的数据
-   类型；例如，对 B-tree 的比较函数来说，就是一个有符号整数。每个
-   支持函数的参数个数和类型也同样取决于索引方法。对于 B-tree 和
-   哈希，支持函数接受的输入数据类型与操作符类中包含的操作符相同，
-   但对大多数 GIN 和 GiST 支持函数来说并非如此。
+   与策略操作符不同，支持函数返回的是特定索引方法所期望的数据类型；例如，对 B-tree 的比较函数来说，就是一个有符号整数。
   </para>
  </sect2>
 
@@ -390,8 +333,7 @@
   <para>
    定义一组相关比较操作符时，最不容易出错的方式是先编写 B-树比较支持函数，再把其他函数写成围绕该支持函数的一行包装器函数。这样可以降低在边界情况下得到不一致结果的概率。按照这种方法，我们首先编写：
 
-<programlisting><![CDATA[
-#define Mag(c)  ((c)->x*(c)->x + (c)->y*(c)->y)
+<programlisting>#define Mag(c)  ((c)-&gt;x*(c)-&gt;x + (c)-&gt;y*(c)-&gt;y)
 
 static int
 complex_abs_cmp_internal(Complex *a, Complex *b)
@@ -399,19 +341,17 @@ complex_abs_cmp_internal(Complex *a, Complex *b)
     double      amag = Mag(a),
                 bmag = Mag(b);
 
-    if (amag < bmag)
+    if (amag &lt; bmag)
         return -1;
-    if (amag > bmag)
+    if (amag &gt; bmag)
         return 1;
     return 0;
 }
-]]>
 </programlisting>
 
    现在，小于函数如下所示：
 
-<programlisting><![CDATA[
-PG_FUNCTION_INFO_V1(complex_abs_lt);
+<programlisting>PG_FUNCTION_INFO_V1(complex_abs_lt);
 
 Datum
 complex_abs_lt(PG_FUNCTION_ARGS)
@@ -419,9 +359,8 @@ complex_abs_lt(PG_FUNCTION_ARGS)
     Complex    *a = (Complex *) PG_GETARG_POINTER(0);
     Complex    *b = (Complex *) PG_GETARG_POINTER(1);
 
-    PG_RETURN_BOOL(complex_abs_cmp_internal(a, b) < 0);
+    PG_RETURN_BOOL(complex_abs_cmp_internal(a, b) &lt; 0);
 }
-]]>
 </programlisting>
 
    其他四个函数的区别只在于它们如何比较内部函数的结果与 0。
@@ -451,13 +390,13 @@ CREATE OPERATOR &lt; (
 
    <listitem>
     <para>
-     尽管 <productname>PostgreSQL</productname> 能处理 SQL 名称相同但参数数据类型不同的函数，C 却只能处理给定名称的一个全局函数。因此，我们不应该把 C 函数简单命名成 <filename>abs_eq</filename> 之类。通常，在 C 函数名中包含数据类型名称是个好习惯，这样就不会与其他数据类型的函数发生冲突。
+     尽管 <productname>PostgreSQL</productname> 能处理名称相同但参数数据类型不同的函数，C 却只能处理给定名称的一个全局函数。因此，我们不应该把 C 函数简单命名成 <filename>abs_eq</filename> 之类。通常，在 C 函数名中包含数据类型名称是个好习惯，这样就不会与其他数据类型的函数发生冲突。
     </para>
    </listitem>
 
    <listitem>
     <para>
-     我们原本也可以把该函数的 SQL 名称取为 <filename>abs_eq</filename>，并依靠 <productname>PostgreSQL</productname> 通过参数数据类型把它与其他同名 SQL 函数区分开。为了让示例保持简单，这里我们让 C 层和 SQL 层的函数使用相同的名称。
+     我们原本也可以把该函数的 <productname>PostgreSQL</productname> 名称取为 <filename>abs_eq</filename>，并依靠 <productname>PostgreSQL</productname> 通过参数数据类型把它与任何其他同名的 <productname>PostgreSQL</productname> 函数区分开。为了让示例保持简单，这里我们让 C 层和 <productname>PostgreSQL</productname> 层的函数使用相同的名称。
     </para>
    </listitem>
   </itemizedlist>
@@ -477,16 +416,14 @@ CREATE FUNCTION complex_abs_cmp(complex, complex)
   <para>
    现在我们已经有了所需的操作符和支持例程，就可以最终创建操作符类：
 
-<programlisting><![CDATA[
-CREATE OPERATOR CLASS complex_abs_ops
+<programlisting>CREATE OPERATOR CLASS complex_abs_ops
     DEFAULT FOR TYPE complex USING btree AS
-        OPERATOR        1       < ,
-        OPERATOR        2       <= ,
+        OPERATOR        1       &lt; ,
+        OPERATOR        2       &lt;= ,
         OPERATOR        3       = ,
-        OPERATOR        4       >= ,
-        OPERATOR        5       > ,
+        OPERATOR        4       &gt;= ,
+        OPERATOR        5       &gt; ,
         FUNCTION        1       complex_abs_cmp(complex, complex);
-]]>
 </programlisting>
   </para>
 
@@ -507,156 +444,52 @@ CREATE OPERATOR CLASS complex_abs_ops
   </para>
  </sect2>
 
- <sect2 id="xindex-opfamily">
-  <title>操作符类和操作符族</title>
+ <sect2 id="xindex-opclass-crosstype">
+  <title>跨数据类型的操作符类</title>
 
   <para>
-   到目前为止，我们一直隐含地假定一个操作符类只处理一种数据类型。虽然某个特定的索引列当然只能有一种数据类型，但对把被索引列与另一种数据类型的值进行比较的操作建立索引往往也很有用。此外，如果某个与操作符类相关的跨数据类型操作符有用，通常另一种数据类型本身也会有一个相关的操作符类。把相关类之间的联系显式表示出来会很有帮助，因为这有助于规划器优化 SQL 查询（尤其是对 B-树操作符类而言，因为规划器中包含大量有关如何使用它们的知识）。
+   到目前为止，我们一直隐含地假定一个操作符类只处理一种数据类型。虽然某个特定的索引列当然只能有一种数据类型，但对把被索引列与另一种数据类型的值进行比较的操作建立索引往往也很有用。目前 B-树和 GiST 索引方法支持这一点。
   </para>
 
   <para>
-   为了满足这些需求，<productname>PostgreSQL</productname>使用<firstterm>操作符族</firstterm><indexterm><primary>操作符族</primary></indexterm>这一概念。一个操作符族包含一个或多个操作符类，还可以包含属于整个族、但不属于族中任何单一类的可索引操作符及其相应的支持函数。我们称这样的操作符和函数在该族中是<quote>松散</quote>的，而不是绑定在某个特定类中。通常，每个操作符类只包含单一数据类型的操作符，而跨数据类型操作符则作为操作符族中的松散成员存在。
-  </para>
+   B-树要求每个操作符的左操作数是被索引的数据类型，但右操作数可以是另一种类型。此时必须存在一个具有匹配签名
+   的支持函数。例如，<type>bigint</type>（<type>int8</type>）类型的内建操作符类允许与<type>int4</type>和
+   <type>int2</type>进行跨类型比较。可以用下面的定义复制出它：
 
-  <para>
-   一个操作符族中的所有操作符和函数都必须具有兼容的语义，而兼容性的要求由索引方法设定。因此，你也许会疑惑，为什么还要把该族的某些子集单独划成操作符类；事实上，对很多用途而言，类的划分并不重要，真正有意义的分组只有操作符族。之所以定义操作符类，是因为它们规定了支持特定索引所需的操作符族内容。如果某个索引使用了某个操作符类，那么在不删除该索引的情况下就不能删除该操作符类 &mdash; 但操作符族中的其他部分，也就是其他操作符类和松散操作符，则可以被删除。因此，一个操作符类应当只包含在特定数据类型上支持索引所合理需要的最小操作符和函数集合，而那些相关但非必需的操作符，则可以作为操作符族的松散成员加入。
-  </para>
-
-  <para>
-   As an example, <productname>PostgreSQL</productname> has a built-in
-   B-tree operator family <literal>integer_ops</>, which includes operator
-   classes <literal>int8_ops</>, <literal>int4_ops</>, and
-   <literal>int2_ops</> for indexes on <type>bigint</> (<type>int8</>),
-   <type>integer</> (<type>int4</>), and <type>smallint</> (<type>int2</>)
-   列上的索引。该族还包含跨数据类型比较操作符，允许这些类型中的
-   任意两个相互比较，这样其中一种类型上的索引就可以用另一种类型的
-   比较值来搜索。该族可以用这些定义复制出来：
-
-<programlisting><![CDATA[
-CREATE OPERATOR FAMILY integer_ops USING btree;
-
+<programlisting>
 CREATE OPERATOR CLASS int8_ops
-DEFAULT FOR TYPE int8 USING btree FAMILY integer_ops AS
+DEFAULT FOR TYPE int8 USING btree AS
   -- standard int8 comparisons
-  OPERATOR 1 < ,
-  OPERATOR 2 <= ,
+  OPERATOR 1 &lt; ,
+  OPERATOR 2 &lt;= ,
   OPERATOR 3 = ,
-  OPERATOR 4 >= ,
-  OPERATOR 5 > ,
-  FUNCTION 1 btint8cmp(int8, int8) ;
+  OPERATOR 4 &gt;= ,
+  OPERATOR 5 &gt; ,
+  FUNCTION 1 btint8cmp(int8, int8) ,
 
-CREATE OPERATOR CLASS int4_ops
-DEFAULT FOR TYPE int4 USING btree FAMILY integer_ops AS
-  -- standard int4 comparisons
-  OPERATOR 1 < ,
-  OPERATOR 2 <= ,
-  OPERATOR 3 = ,
-  OPERATOR 4 >= ,
-  OPERATOR 5 > ,
-  FUNCTION 1 btint4cmp(int4, int4) ;
-
-CREATE OPERATOR CLASS int2_ops
-DEFAULT FOR TYPE int2 USING btree FAMILY integer_ops AS
-  -- standard int2 comparisons
-  OPERATOR 1 < ,
-  OPERATOR 2 <= ,
-  OPERATOR 3 = ,
-  OPERATOR 4 >= ,
-  OPERATOR 5 > ,
-  FUNCTION 1 btint2cmp(int2, int2) ;
-
-ALTER OPERATOR FAMILY integer_ops USING btree ADD
-  -- cross-type comparisons int8 vs int2
-  OPERATOR 1 < (int8, int2) ,
-  OPERATOR 2 <= (int8, int2) ,
+  -- cross-type comparisons to int2 (smallint)
+  OPERATOR 1 &lt; (int8, int2) ,
+  OPERATOR 2 &lt;= (int8, int2) ,
   OPERATOR 3 = (int8, int2) ,
-  OPERATOR 4 >= (int8, int2) ,
-  OPERATOR 5 > (int8, int2) ,
+  OPERATOR 4 &gt;= (int8, int2) ,
+  OPERATOR 5 &gt; (int8, int2) ,
   FUNCTION 1 btint82cmp(int8, int2) ,
 
-  -- cross-type comparisons int8 vs int4
-  OPERATOR 1 < (int8, int4) ,
-  OPERATOR 2 <= (int8, int4) ,
+  -- cross-type comparisons to int4 (integer)
+  OPERATOR 1 &lt; (int8, int4) ,
+  OPERATOR 2 &lt;= (int8, int4) ,
   OPERATOR 3 = (int8, int4) ,
-  OPERATOR 4 >= (int8, int4) ,
-  OPERATOR 5 > (int8, int4) ,
-  FUNCTION 1 btint84cmp(int8, int4) ,
-
-  -- cross-type comparisons int4 vs int2
-  OPERATOR 1 < (int4, int2) ,
-  OPERATOR 2 <= (int4, int2) ,
-  OPERATOR 3 = (int4, int2) ,
-  OPERATOR 4 >= (int4, int2) ,
-  OPERATOR 5 > (int4, int2) ,
-  FUNCTION 1 btint42cmp(int4, int2) ,
-
-  -- cross-type comparisons int4 vs int8
-  OPERATOR 1 < (int4, int8) ,
-  OPERATOR 2 <= (int4, int8) ,
-  OPERATOR 3 = (int4, int8) ,
-  OPERATOR 4 >= (int4, int8) ,
-  OPERATOR 5 > (int4, int8) ,
-  FUNCTION 1 btint48cmp(int4, int8) ,
-
-  -- cross-type comparisons int2 vs int8
-  OPERATOR 1 < (int2, int8) ,
-  OPERATOR 2 <= (int2, int8) ,
-  OPERATOR 3 = (int2, int8) ,
-  OPERATOR 4 >= (int2, int8) ,
-  OPERATOR 5 > (int2, int8) ,
-  FUNCTION 1 btint28cmp(int2, int8) ,
-
-  -- cross-type comparisons int2 vs int4
-  OPERATOR 1 < (int2, int4) ,
-  OPERATOR 2 <= (int2, int4) ,
-  OPERATOR 3 = (int2, int4) ,
-  OPERATOR 4 >= (int2, int4) ,
-  OPERATOR 5 > (int2, int4) ,
-  FUNCTION 1 btint24cmp(int2, int4) ;
-]]>
+  OPERATOR 4 &gt;= (int8, int4) ,
+  OPERATOR 5 &gt; (int8, int4) ,
+  FUNCTION 1 btint84cmp(int8, int4) ;
 </programlisting>
 
-   注意，此定义<quote>重载</quote>了操作符策略号和支持函数号：每个
-   编号在操作符族中出现多次。只要同一编号的每个实例具有不同的输入
-   数据类型，这就是允许的。两个输入类型都等于某个操作符类输入类型
-   的实例，是该操作符类的主要操作符和支持函数，通常应声明为操作符
-   类的一部分，而不是操作符族的松散成员。
+   注意，此定义<quote>重载</quote>了操作符策略号和支持函数号。只要同一编号的每个实例具有不同的右操作数数据类型，就允许这样做（仅限 B-树操作符类）。非跨类型的实例是该操作符类的默认或主要操作符。
   </para>
 
   <para>
-   在一个 B-tree 操作符族中，该族中的所有操作符都必须以兼容的方式
-   排序，也就是说，传递律必须适用于该族支持的所有数据类型：
-   <quote>如果 A = B 且 B = C，则 A = C</>，以及
-   <quote>如果 A &lt; B 且 B &lt; C，则 A &lt; C</>。对族中的每一个
-   操作符，都必须有一个具有相同两个输入数据类型的支持函数。建议
-   让操作符族保持完整，也就是说，对每一种数据类型组合都应包含全部
-   操作符。每个操作符类只应包含其数据类型对应的非跨数据类型操作符
-   和支持函数。
+   GiST 索引不允许重载策略号或支持函数号，但仍然可以通过为每个需要支持的操作符分配不同的策略号，来实现支持多种右操作数数据类型的效果。<literal>consistent</literal>支持函数必须根据策略号判断自己该做什么，并且必须准备好接受相应数据类型的比较值。
   </para>
-
-  <para>
-   要构建一个多数据类型的哈希操作符族，必须为该族支持的每一种数据
-   类型创建相互兼容的哈希支持函数。这里的兼容性是指：对任意两个被
-   该族中的等值操作符视为相等的值，这些函数都保证返回相同的哈希码，
-   即使这两个值属于不同类型也是如此。当这些类型具有不同的物理表示
-   时，这通常难以实现，但在某些情况下可以做到。注意，每种数据类型
-   只有一个支持函数，而不是每个等值操作符一个。建议让操作符族保持
-   完整，也就是说，对每一种数据类型组合都提供一个等值操作符。每个
-   操作符类只应包含其数据类型对应的非跨数据类型等值操作符和支持
-   函数。
-  </para>
-
-  <para>
-   GIN 和 GiST 索引没有任何显式的跨数据类型操作概念。它们所支持
-   的操作符集合，就是给定操作符类的主要支持函数所能处理的那些
-   操作符。
-  </para>
-
-  <note>
-   <para>
-    在 <productname>PostgreSQL</productname> 8.3 之前，并没有操作符族这一概念，因此任何打算与索引一起使用的跨数据类型操作符都必须直接绑定到该索引的操作符类中。虽然这种做法仍然有效，但已被弃用，因为它会使索引的依赖关系过于宽泛，而且当两种数据类型都在同一操作符族中拥有操作符时，规划器能更有效地处理跨数据类型比较。
-   </para>
-  </note>
  </sect2>
 
  <sect2 id="xindex-opclass-dependencies">
@@ -688,7 +521,6 @@ ALTER OPERATOR FAMILY integer_ops USING btree ADD
     </para>
    </note>
 
-  <para>另一个重要点在于，出现在哈希操作符族中的操作符，都是哈希连接、哈希聚合以及相关优化的候选对象。这里哈希操作符族至关重要，因为它标识了应当使用的哈希函数。</para>
  </sect2>
 
  <sect2 id="xindex-opclass-features">
@@ -707,18 +539,15 @@ SELECT * FROM table WHERE integer_column &lt; 4;
 </programlisting>
    可以由整数列上的 B-tree 索引精确满足。但也存在这样的情况：索引
    只是查找匹配行的不精确向导。例如，如果一个
-   GiST 索引只为几何对象存储包围盒，那么它就无法精确满足测试多边形
+   R-tree 索引只为几何对象存储包围盒，那么它就无法精确满足测试多边形
    等非矩形对象之间重叠的 <literal>WHERE</> 条件。不过，我们可以用
    索引找出包围盒与目标对象的包围盒重叠的对象，然后只对索引找到的
    对象做精确的重叠测试。如果适用这种情形，就称该索引对该操作符是
-   <quote>有损</quote>的。有损索引搜索的实现方式是：当某行可能真正
-   满足、也可能不满足查询条件时，由索引方法返回一个
-   <firstterm>recheck</firstterm>（重新检查）标志。随后，核心系统会
-   在检索到的行上测试原始查询条件，看它是否应作为有效匹配返回。只要
-   索引保证返回所有需要的行（可能还外加一些额外的行，它们可以通过
-   执行原始操作符调用来排除），这种方法就是可行的。支持有损搜索的
-   索引方法（目前是 GiST 和 GIN）允许各个操作符类的支持函数设置
-   recheck 标志，因此这实质上是操作符类层面的特性。
+   <quote>有损</quote>的。这种情况下，我们可以在
+   <command>CREATE OPERATOR CLASS</command>命令的<literal>OPERATOR</literal>
+   子句中加上<literal>RECHECK</literal>。如果索引保证返回所有需要的行
+   （外加可能的一些额外行，它们可以通过执行原始操作符调用来排除），
+   那么<literal>RECHECK</literal>就是有效的。
   </para>
 
   <para>再次考虑只在索引中存储多边形等复杂对象的包围盒的情况。此时，在索引条目中存储整个多边形没有多少价值，不如只存储一个更简单的对象，其类型为<type>box</type>。这种情况由<literal>STORAGE</literal>选项表达，该选项位于<command>CREATE OPERATOR CLASS</command>：可以写成如下形式：<programlisting>
@@ -726,7 +555,24 @@ CREATE OPERATOR CLASS polygon_ops
     DEFAULT FOR TYPE polygon USING gist AS
         ...
         STORAGE box;
-</programlisting>目前，只有 GiST 和 GIN 索引方法支持与列数据类型不同的<literal>STORAGE</literal>类型。GiST 的<function>compress</function>和<function>decompress</function>支持函数在使用<literal>STORAGE</literal>时必须处理数据类型转换。在 GIN 中，<literal>STORAGE</literal>类型标识<quote>键</quote>值的类型，通常与被索引列的类型不同。例如，整数数组列的操作符类可以只使用整数作为键。GIN 的<function>extractValue</function>和<function>extractQuery</function>支持函数负责从被索引值中提取键。</para>
+</programlisting>目前，只有 GiST 索引方法支持与列数据类型不同的<literal>STORAGE</literal>类型。GiST 的<literal>compress</literal>和<literal>decompress</literal>支持函数在使用<literal>STORAGE</literal>时必须处理数据类型转换。</para>
  </sect2>
 
 </sect1>
+
+<!-- Keep this comment at the end of the file
+Local variables:
+mode:sgml
+sgml-omittag:nil
+sgml-shorttag:t
+sgml-minimize-attributes:nil
+sgml-always-quote-attributes:t
+sgml-indent-step:1
+sgml-indent-data:t
+sgml-parent-document:nil
+sgml-default-dtd-file:"./reference.ced"
+sgml-exposed-tags:nil
+sgml-local-catalogs:("/usr/lib/sgml/catalog")
+sgml-local-ecat-files:nil
+End:
+-->
