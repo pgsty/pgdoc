@@ -11,7 +11,7 @@
   <firstterm>服务器编程接口</firstterm>（<acronym>SPI</acronym>）使用户定义
   <acronym>C</acronym> 函数的编写者能够在其函数中运行
   <acronym>SQL</acronym> 命令。<acronym>SPI</acronym> 是一组接口函数，
-  用于简化对解析器、规划器和执行器的访问。<acronym>SPI</acronym>
+  用于简化对解析器、规划器/优化器和执行器的访问。<acronym>SPI</acronym>
   还负责一部分内存管理工作。
  </para>
 
@@ -247,7 +247,7 @@ void SPI_pop(void)
 
  <refsynopsisdiv>
 <synopsis>
-int SPI_execute(const char * <parameter>command</parameter>, bool <parameter>read_only</parameter>, long <parameter>count</parameter>)
+int SPI_execute(const char * <parameter>command</parameter>, bool <parameter>read_only</parameter>, int <parameter>count</parameter>)
 </synopsis>
  </refsynopsisdiv>
 
@@ -275,9 +275,7 @@ SPI_execute("INSERT INTO foo SELECT * FROM bar", false, 5);
   </para>
 
   <para>
-   你可以在一个字符串中传递多条命令，但后面的命令不能依赖于该字符
-   串中先前命令所创建的对象，因为整个字符串会在执行开始之前被完整
-   解析和规划。<function>SPI_execute</function> 返回最后执行的那条
+   你可以在一个字符串中传递多条命令。<function>SPI_execute</function> 返回最后执行的那条
    命令的结果。<parameter>count</parameter> 限制会分别作用于每条
    命令（尽管实际返回的只有最后一条命令的结果）。该限制不适用于
    规则生成的任何隐藏命令。
@@ -309,14 +307,10 @@ SPI_execute("INSERT INTO foo SELECT * FROM bar", false, 5);
 
   <para>
    （最后一条）命令实际执行所处理的行数，会通过全局变量
-   <varname>SPI_processed</varname> 返回。如果函数返回值是
-   <symbol>SPI_OK_SELECT</symbol>、
-   <symbol>SPI_OK_INSERT_RETURNING</symbol>、
-   <symbol>SPI_OK_DELETE_RETURNING</symbol> 或
-   <symbol>SPI_OK_UPDATE_RETURNING</symbol>，则可以通过全局指针
-   <literal>SPITupleTable *SPI_tuptable</literal> 访问结果行。有些
-   工具命令（如 <command>EXPLAIN</>）也会返回结果行集，此时
-   <literal>SPI_tuptable</literal> 同样会保存结果。
+   <varname>SPI_processed</varname> 返回（除非函数的返回值是
+   <symbol>SPI_OK_UTILITY</symbol>）。如果函数返回值是
+   <symbol>SPI_OK_SELECT</symbol>，则可以通过全局指针
+   <literal>SPITupleTable *SPI_tuptable</literal> 访问结果行。
   </para>
 
   <para>
@@ -364,7 +358,7 @@ typedef struct
    </varlistentry>
 
    <varlistentry>
-    <term><literal>long <parameter>count</parameter></literal></term>
+    <term><literal>int <parameter>count</parameter></literal></term>
     <listitem>
      <para>
       要处理或返回的最大行数
@@ -401,19 +395,19 @@ typedef struct
     </varlistentry>
 
     <varlistentry>
-     <term><symbol>SPI_OK_INSERT</symbol></term>
+     <term><symbol>SPI_OK_DELETE</symbol></term>
      <listitem>
       <para>
-       执行了 <command>INSERT</command>
+       执行了 <command>DELETE</command>
       </para>
      </listitem>
     </varlistentry>
 
     <varlistentry>
-     <term><symbol>SPI_OK_DELETE</symbol></term>
+     <term><symbol>SPI_OK_INSERT</symbol></term>
      <listitem>
       <para>
-       执行了 <command>DELETE</command>
+       执行了 <command>INSERT</command>
       </para>
      </listitem>
     </varlistentry>
@@ -428,48 +422,10 @@ typedef struct
     </varlistentry>
 
     <varlistentry>
-     <term><symbol>SPI_OK_INSERT_RETURNING</symbol></term>
-     <listitem>
-      <para>
-       执行了 <command>INSERT RETURNING</command>
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><symbol>SPI_OK_DELETE_RETURNING</symbol></term>
-     <listitem>
-      <para>
-       执行了 <command>DELETE RETURNING</command>
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><symbol>SPI_OK_UPDATE_RETURNING</symbol></term>
-     <listitem>
-      <para>
-       执行了 <command>UPDATE RETURNING</command>
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
      <term><symbol>SPI_OK_UTILITY</symbol></term>
      <listitem>
       <para>
        执行了工具命令（例如 <command>CREATE TABLE</command>）
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><symbol>SPI_OK_REWRITTEN</symbol></term>
-     <listitem>
-      <para>
-       命令被 <link linkend="rules">规则</link> 重写成了另一类命令
-       （例如 <command>UPDATE</command> 变成了
-       <command>INSERT</command>）
       </para>
      </listitem>
     </varlistentry>
@@ -501,15 +457,20 @@ typedef struct
     </varlistentry>
 
     <varlistentry>
+     <term><symbol>SPI_ERROR_CURSOR</symbol></term>
+     <listitem>
+      <para>
+       尝试执行了 <command>DECLARE</>、<command>CLOSE</> 或 <command>FETCH</>
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
      <term><symbol>SPI_ERROR_TRANSACTION</symbol></term>
      <listitem>
       <para>
-       尝试执行了事务控制命令（<command>BEGIN</command>、
-       <command>COMMIT</command>、<command>ROLLBACK</command>、
-       <command>SAVEPOINT</command>、
-       <command>PREPARE TRANSACTION</command>、
-       <command>COMMIT PREPARED</command>、
-       <command>ROLLBACK PREPARED</command> 及其各种变体）
+       尝试执行了 <command>BEGIN</>、<command>COMMIT</> 或
+       <command>ROLLBACK</>
       </para>
      </listitem>
     </varlistentry>
@@ -565,7 +526,7 @@ typedef struct
 
  <refsynopsisdiv>
 <synopsis>
-int SPI_exec(const char * <parameter>command</parameter>, long <parameter>count</parameter>)
+int SPI_exec(const char * <parameter>command</parameter>, int <parameter>count</parameter>)
 </synopsis>
  </refsynopsisdiv>
 
@@ -594,7 +555,7 @@ int SPI_exec(const char * <parameter>command</parameter>, long <parameter>count<
    </varlistentry>
 
    <varlistentry>
-    <term><literal>long <parameter>count</parameter></literal></term>
+    <term><literal>int <parameter>count</parameter></literal></term>
     <listitem>
      <para>
       要处理或返回的最大行数
@@ -609,144 +570,6 @@ int SPI_exec(const char * <parameter>command</parameter>, long <parameter>count<
 
   <para>
    见<function>SPI_execute</function>。
-  </para>
- </refsect1>
-</refentry>
-
-<!-- *********************************************** -->
-
-<refentry id="spi-spi-execute-with-args">
- <refmeta>
-  <refentrytitle>SPI_execute_with_args</refentrytitle>
-  </refmeta>
-
- <refnamediv>
-  <refname>SPI_execute_with_args</refname>
-  <refpurpose>执行使用外部参数的命令</refpurpose>
- </refnamediv>
-
- <indexterm><primary>SPI_execute_with_args</primary></indexterm>
-
- <refsynopsisdiv>
-<synopsis>
-int SPI_execute_with_args(const char *<parameter>command</parameter>,
-                          int <parameter>nargs</parameter>, Oid *<parameter>argtypes</parameter>,
-                          Datum *<parameter>values</parameter>, const char *<parameter>nulls</parameter>,
-                          bool <parameter>read_only</parameter>, long <parameter>count</parameter>)
-</synopsis>
- </refsynopsisdiv>
-
- <refsect1>
-  <title>描述</title>
-
-  <para>
-   <function>SPI_execute_with_args</function> 执行一条可能包含外部提供参数引
-   用的命令。命令文本中的参数引用写作
-   <literal>$<replaceable>n</replaceable></literal>，而该调用会为每个这
-   类符号指定数据类型和值。<parameter>read_only</parameter> 和
-   <parameter>count</parameter> 的含义与
-   <function>SPI_execute</function> 中相同。
-  </para>
-
-  <para>
-   相比 <function>SPI_execute</function>，这个例程的主要优点在于可将数据
-   值插入命令而无需繁琐的引用和转义，因此能够显著降低 SQL 注入攻击的风险。
-  </para>
-
-  <para>
-   也可以通过先调用 <function>SPI_prepare</>，再调用
-   <function>SPI_execute_plan</function> 达到类似效果。不过，使用本函数
-   时，查询计划会针对所提供的具体参数值进行定制。对于一次性查询执行，
-   应优先选择本函数。如果同一条命令要用许多不同参数重复执行，则两种
-   方式孰快取决于重新规划的代价与定制计划收益之间的权衡。
-  </para>
- </refsect1>
-
- <refsect1>
-  <title>参数</title>
-
-  <variablelist>
-   <varlistentry>
-    <term><literal>const char * <parameter>command</parameter></literal></term>
-    <listitem>
-     <para>
-      命令字符串
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>int <parameter>nargs</parameter></literal></term>
-    <listitem>
-     <para>
-      输入参数的数量（<literal>$1</literal>、<literal>$2</literal> 等）
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>Oid * <parameter>argtypes</parameter></literal></term>
-    <listitem>
-     <para>
-      一个数组，包含各参数数据类型的
-      <acronym>OID</acronym>
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>Datum * <parameter>values</parameter></literal></term>
-    <listitem>
-     <para>
-      一个实际参数值的数组
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>const char * <parameter>nulls</parameter></literal></term>
-    <listitem>
-     <para>
-      一个描述哪些参数为空值的数组
-     </para>
-
-     <para>
-      如果 <parameter>nulls</parameter> 为
-      <symbol>NULL</symbol>，则 <function>SPI_execute_with_args</function>
-      假定没有参数为空值。
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>bool <parameter>read_only</parameter></literal></term>
-    <listitem>
-     <para><literal>true</literal> 表示只读执行</para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>long <parameter>count</parameter></literal></term>
-    <listitem>
-     <para>
-      要处理或返回的最大行数
-     </para>
-    </listitem>
-   </varlistentry>
-  </variablelist>
- </refsect1>
-
- <refsect1>
-  <title>返回值</title>
-
-  <para>
-   返回值与 <function>SPI_execute</function> 相同。
-  </para>
-
-  <para>
-   成功时，<varname>SPI_processed</varname> 和
-   <varname>SPI_tuptable</varname> 的设置方式与
-   <function>SPI_execute</function> 相同。
   </para>
  </refsect1>
 </refentry>
@@ -854,12 +677,6 @@ SPIPlanPtr SPI_prepare(const char * <parameter>command</parameter>, int <paramet
   <title>注解</title>
 
   <para>
-   <type>SPIPlanPtr</type> 在 <filename>spi.h</filename> 中被声明为指向不
-   透明结构体类型的指针。尝试直接访问其内容并不明智，因为这会让你的代码在
-   <productname>PostgreSQL</productname> 后续版本中更容易失效。
-  </para>
-
-  <para>
    使用参数有一个不利之处：由于规划器不知道将为参数提供什么值，
    它做出的规划选择可能比在所有常量都可见的普通命令下更差。
   </para>
@@ -867,107 +684,6 @@ SPIPlanPtr SPI_prepare(const char * <parameter>command</parameter>, int <paramet
 </refentry>
 
 <!-- *********************************************** -->
-
-<refentry id="spi-spi-prepare-cursor">
- <refmeta>
-  <refentrytitle>SPI_prepare_cursor</refentrytitle>
-  </refmeta>
-
- <refnamediv>
-  <refname>SPI_prepare_cursor</refname>
-  <refpurpose>为命令准备一个计划，但暂不执行</refpurpose>
- </refnamediv>
-
- <indexterm><primary>SPI_prepare_cursor</primary></indexterm>
-
- <refsynopsisdiv>
-<synopsis>
-SPIPlanPtr SPI_prepare_cursor(const char * <parameter>command</parameter>, int <parameter>nargs</parameter>,
-                              Oid * <parameter>argtypes</parameter>, int <parameter>cursorOptions</parameter>)
-</synopsis>
- </refsynopsisdiv>
-
- <refsect1>
-  <title>描述</title>
-
-  <para>
-   <function>SPI_prepare_cursor</function> 与
-   <function>SPI_prepare</function> 相同，但额外允许指定规划器的
-   <quote>游标选项</quote>参数。该参数是一个位掩码，其可取值对应于
-   <filename>nodes/parsenodes.h</filename> 中
-   <structname>DeclareCursorStmt</structname> 的
-   <structfield>options</structfield> 字段。<function>SPI_prepare</function>
-   总是把游标选项设为零。
-  </para>
- </refsect1>
-
- <refsect1>
-  <title>参数</title>
-
-  <variablelist>
-   <varlistentry>
-    <term><literal>const char * <parameter>command</parameter></literal></term>
-    <listitem>
-     <para>
-      命令字符串
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>int <parameter>nargs</parameter></literal></term>
-    <listitem>
-     <para>
-      输入参数的数量（<literal>$1</literal>、<literal>$2</literal> 等）
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>Oid * <parameter>argtypes</parameter></literal></term>
-    <listitem>
-     <para>
-      一个数组指针，它指向的数组包含参数的数据类型的
-      <acronym>OID</acronym>
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>int <parameter>cursorOptions</parameter></literal></term>
-    <listitem>
-     <para>
-      整数形式的游标选项位掩码，零会导致默认行为
-     </para>
-    </listitem>
-   </varlistentry>
-  </variablelist>
- </refsect1>
-
- <refsect1>
-  <title>返回值</title>
-
-  <para>
-   <function>SPI_prepare_cursor</function> 的返回约定与
-   <function>SPI_prepare</function> 相同。
-  </para>
- </refsect1>
-
- <refsect1>
-  <title>注解</title>
-
-  <para>
-   在 <parameter>cursorOptions</parameter> 中可设置的有用位包括
-   <symbol>CURSOR_OPT_SCROLL</symbol>、
-   <symbol>CURSOR_OPT_NO_SCROLL</symbol> 和
-   <symbol>CURSOR_OPT_FAST_PLAN</symbol>。特别要注意，
-   <symbol>CURSOR_OPT_HOLD</symbol> 会被忽略。
-  </para>
- </refsect1>
-</refentry>
-
-<!-- *********************************************** -->
-
 
 
 <!-- *********************************************** -->
@@ -986,7 +702,7 @@ SPIPlanPtr SPI_prepare_cursor(const char * <parameter>command</parameter>, int <
 
  <refsynopsisdiv>
 <synopsis>
-int SPI_getargcount(SPIPlanPtr <parameter>plan</parameter>)
+int SPI_getargcount(void * <parameter>plan</parameter>)
 </synopsis>
  </refsynopsisdiv>
 
@@ -1004,7 +720,7 @@ int SPI_getargcount(SPIPlanPtr <parameter>plan</parameter>)
 
   <variablelist>
    <varlistentry>
-    <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
+    <term><literal>void * <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
       执行计划（由 <function>SPI_prepare</function> 返回）
@@ -1017,10 +733,9 @@ int SPI_getargcount(SPIPlanPtr <parameter>plan</parameter>)
  <refsect1>
   <title>返回值</title>
   <para>
-    <parameter>plan</parameter> 所需参数的个数。如果
-    <parameter>plan</parameter> 为 <symbol>NULL</symbol> 或无效，
-    <varname>SPI_result</varname> 会被设为
-    <symbol>SPI_ERROR_ARGUMENT</symbol>，并返回 <literal>-1</literal>。
+    <parameter>plan</parameter> 所需参数的个数；如果
+    <parameter>plan
+    </parameter> 为 <symbol>NULL</symbol>，则返回 <symbol>SPI_ERROR_ARGUMENT</symbol>
   </para>
  </refsect1>
 </refentry>
@@ -1041,7 +756,7 @@ int SPI_getargcount(SPIPlanPtr <parameter>plan</parameter>)
 
  <refsynopsisdiv>
 <synopsis>
-Oid SPI_getargtypeid(SPIPlanPtr <parameter>plan</parameter>, int <parameter>argIndex</parameter>)
+Oid SPI_getargtypeid(void * <parameter>plan</parameter>, int <parameter>argIndex</parameter>)
 </synopsis>
  </refsynopsisdiv>
 
@@ -1061,7 +776,7 @@ Oid SPI_getargtypeid(SPIPlanPtr <parameter>plan</parameter>, int <parameter>argI
 
   <variablelist>
    <varlistentry>
-    <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
+    <term><literal>void * <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
       执行计划（由 <function>SPI_prepare</function> 返回）
@@ -1086,10 +801,7 @@ Oid SPI_getargtypeid(SPIPlanPtr <parameter>plan</parameter>, int <parameter>argI
     给定索引处参数的类型 ID。如果
     <parameter>plan</parameter> 为 <symbol>NULL</symbol> 或无效，或者
     <parameter>argIndex</parameter> 小于 0 或不小于该
-    <parameter>plan</parameter> 声明的参数个数，
-    <varname>SPI_result</varname> 会被设为
-    <symbol>SPI_ERROR_ARGUMENT</symbol>，并返回
-    <symbol>InvalidOid</symbol>。
+    <parameter>plan</parameter> 声明的参数个数，则返回 <symbol>SPI_ERROR_ARGUMENT</symbol>
   </para>
  </refsect1>
 </refentry>
@@ -1112,7 +824,7 @@ Oid SPI_getargtypeid(SPIPlanPtr <parameter>plan</parameter>, int <parameter>argI
 
  <refsynopsisdiv>
 <synopsis>
-bool SPI_is_cursor_plan(SPIPlanPtr <parameter>plan</parameter>)
+bool SPI_is_cursor_plan(void * <parameter>plan</parameter>)
 </synopsis>
  </refsynopsisdiv>
 
@@ -1124,10 +836,8 @@ bool SPI_is_cursor_plan(SPIPlanPtr <parameter>plan</parameter>)
    <function>SPI_cursor_open</function>，则
    <function>SPI_is_cursor_plan</function> 返回
    <symbol>true</symbol>；否则返回 <symbol>false</symbol>。判定标准是
-   <parameter>plan</parameter> 必须表示单条命令，并且该命令会向调用者
-   返回元组。例如，不包含 <literal>INTO</> 子句的
-   <command>SELECT</> 是允许的，而 <command>UPDATE</> 只包含
-   <literal>RETURNING</> 子句时才允许。
+   <parameter>plan</parameter> 必须表示单条命令，并且该命令是一条不带
+   <command>INTO</command> 的 <command>SELECT</command>
   </para>
  </refsect1>
 
@@ -1136,7 +846,7 @@ bool SPI_is_cursor_plan(SPIPlanPtr <parameter>plan</parameter>)
 
   <variablelist>
    <varlistentry>
-    <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
+    <term><literal>void * <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
       执行计划（由 <function>SPI_prepare</function> 返回）
@@ -1150,11 +860,9 @@ bool SPI_is_cursor_plan(SPIPlanPtr <parameter>plan</parameter>)
   <title>返回值</title>
   <para>
    返回 <symbol>true</symbol> 或 <symbol>false</symbol>，表示
-   <parameter>plan</parameter> 能否产生游标，同时将
-    <varname>SPI_result</varname> 设为零。如果无法确定答案（例如
-    <parameter>plan</parameter> 为 <symbol>NULL</symbol> 或无效，或者在
-    未连接到 SPI 时调用），则会将 <varname>SPI_result</varname> 设为合适
-    的错误码，并返回 <symbol>false</symbol>。
+   <parameter>plan</parameter> 能否产生游标；如果
+   <parameter>plan</parameter>
+   为 <symbol>NULL</symbol>，则返回 <symbol>SPI_ERROR_ARGUMENT</symbol>
   </para>
  </refsect1>
 </refentry>
@@ -1175,8 +883,8 @@ bool SPI_is_cursor_plan(SPIPlanPtr <parameter>plan</parameter>)
 
  <refsynopsisdiv>
 <synopsis>
-int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>values</parameter>, const char * <parameter>nulls</parameter>,
-                     bool <parameter>read_only</parameter>, long <parameter>count</parameter>)
+int SPI_execute_plan(void * <parameter>plan</parameter>, Datum * <parameter>values</parameter>, const char * <parameter>nulls</parameter>,
+                     bool <parameter>read_only</parameter>, int <parameter>count</parameter>)
 </synopsis>
  </refsynopsisdiv>
 
@@ -1197,7 +905,7 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
 
   <variablelist>
    <varlistentry>
-    <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
+    <term><literal>void * <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
       执行计划（由 <function>SPI_prepare</function> 返回）
@@ -1240,7 +948,7 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
    </varlistentry>
 
    <varlistentry>
-    <term><literal>long <parameter>count</parameter></literal></term>
+    <term><literal>int <parameter>count</parameter></literal></term>
     <listitem>
      <para>
       要处理或返回的最大行数
@@ -1300,10 +1008,6 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
 
 <!-- *********************************************** -->
 
-
-
-<!-- *********************************************** -->
-
 <refentry id="spi-spi-execp">
  <refmeta>
   <refentrytitle>SPI_execp</refentrytitle>
@@ -1318,7 +1022,7 @@ int SPI_execute_plan(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>
 
  <refsynopsisdiv>
 <synopsis>
-int SPI_execp(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>values</parameter>, const char * <parameter>nulls</parameter>, long <parameter>count</parameter>)
+int SPI_execp(void * <parameter>plan</parameter>, Datum * <parameter>values</parameter>, const char * <parameter>nulls</parameter>, int <parameter>count</parameter>)
 </synopsis>
  </refsynopsisdiv>
 
@@ -1338,7 +1042,7 @@ int SPI_execp(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>values<
 
   <variablelist>
    <varlistentry>
-    <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
+    <term><literal>void * <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
       执行计划（由 <function>SPI_prepare</function> 返回）
@@ -1374,7 +1078,7 @@ int SPI_execp(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>values<
    </varlistentry>
 
    <varlistentry>
-    <term><literal>long <parameter>count</parameter></literal></term>
+    <term><literal>int <parameter>count</parameter></literal></term>
     <listitem>
      <para>
       要处理或返回的最大行数
@@ -1416,7 +1120,7 @@ int SPI_execp(SPIPlanPtr <parameter>plan</parameter>, Datum * <parameter>values<
 
  <refsynopsisdiv>
 <synopsis>
-Portal SPI_cursor_open(const char * <parameter>name</parameter>, SPIPlanPtr <parameter>plan</parameter>,
+Portal SPI_cursor_open(const char * <parameter>name</parameter>, void * <parameter>plan</parameter>,
                        Datum * <parameter>values</parameter>, const char * <parameter>nulls</parameter>,
                        bool <parameter>read_only</parameter>)
 </synopsis>
@@ -1440,10 +1144,6 @@ Portal SPI_cursor_open(const char * <parameter>name</parameter>, SPIPlanPtr <par
    结果返回的方法。
   </para>
 
-  <para>
-   传入的参数数据会被复制到该游标的 portal 中，因此即使该游标仍然存在，
-   也可以释放这些参数数据。
-  </para>
  </refsect1>
 
  <refsect1>
@@ -1460,7 +1160,7 @@ Portal SPI_cursor_open(const char * <parameter>name</parameter>, SPIPlanPtr <par
    </varlistentry>
 
    <varlistentry>
-    <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
+    <term><literal>void * <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
       执行计划（由 <function>SPI_prepare</function> 返回）
@@ -1508,156 +1208,10 @@ Portal SPI_cursor_open(const char * <parameter>name</parameter>, SPIPlanPtr <par
   <title>返回值</title>
 
   <para>
-   指向包含该游标的 portal 的指针。注意这里没有错误返回约定，
-   任何错误都将通过<function>elog</function>报告。
+   指向包含该游标的 portal 的指针，出错时为 <symbol>NULL</symbol>
   </para>
  </refsect1>
 </refentry>
-
-<!-- *********************************************** -->
-
-<refentry id="spi-spi-cursor-open-with-args">
- <refmeta>
-  <refentrytitle>SPI_cursor_open_with_args</refentrytitle>
-  </refmeta>
-
- <refnamediv>
-  <refname>SPI_cursor_open_with_args</refname>
-  <refpurpose>使用一个查询和参数建立一个游标</refpurpose>
- </refnamediv>
-
- <indexterm><primary>SPI_cursor_open_with_args</primary></indexterm>
-
- <refsynopsisdiv>
-<synopsis>
-Portal SPI_cursor_open_with_args(const char *<parameter>name</parameter>,
-                                 const char *<parameter>command</parameter>,
-                                 int <parameter>nargs</parameter>, Oid *<parameter>argtypes</parameter>,
-                                 Datum *<parameter>values</parameter>, const char *<parameter>nulls</parameter>,
-                                 bool <parameter>read_only</parameter>, int <parameter>cursorOptions</parameter>)
-</synopsis>
- </refsynopsisdiv>
-
- <refsect1>
-  <title>描述</title>
-
-  <para>
-   <function>SPI_cursor_open_with_args</function>建立一个将
-   执行指定查询的游标（在内部是一个 portal）。大部分参数具有和
-   <function>SPI_prepare_cursor</function>
-   和<function>SPI_cursor_open</function>中相应参数相同的含
-   义。
-  </para>
-
-  <para>
-   对于一次性查询执行，应优先使用此函数，而不是先调用
-   <function>SPI_prepare_cursor</function> 再调用
-   <function>SPI_cursor_open</function>。如果同一条命令要用许多不同参数执行，
-   哪种方法更快取决于重新规划的代价与定制计划收益之间的权衡。
-  </para>
-
-  <para>
-   传入的参数数据会被复制到该游标的 portal 中，因此即使该游标仍然存在，
-   也可以释放这些参数数据。
-  </para>
- </refsect1>
-
- <refsect1>
-  <title>参数</title>
-
-  <variablelist>
-   <varlistentry>
-    <term><literal>const char * <parameter>name</parameter></literal></term>
-    <listitem>
-     <para>
-      portal 的名称，或为<symbol>NULL</symbol>以让系统选择名称
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>const char * <parameter>command</parameter></literal></term>
-    <listitem>
-     <para>
-      命令字符串
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>int <parameter>nargs</parameter></literal></term>
-    <listitem>
-     <para>
-      输入参数的数量（<literal>$1</literal>、<literal>$2</literal> 等）
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>Oid * <parameter>argtypes</parameter></literal></term>
-    <listitem>
-     <para>
-      一个数组，包含各参数数据类型的
-      <acronym>OID</acronym>
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>Datum * <parameter>values</parameter></literal></term>
-    <listitem>
-     <para>
-      一个实际参数值的数组
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>const char * <parameter>nulls</parameter></literal></term>
-    <listitem>
-     <para>
-      一个描述哪些参数为空值的数组
-     </para>
-
-     <para>
-      如果 <parameter>nulls</parameter> 为
-      <symbol>NULL</symbol>，则 <function>SPI_cursor_open_with_args</function>
-      假定没有参数为空值。
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>bool <parameter>read_only</parameter></literal></term>
-    <listitem>
-     <para><literal>true</literal> 表示只读执行</para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>int <parameter>cursorOptions</parameter></literal></term>
-    <listitem>
-     <para>
-      整数形式的游标选项位掩码，零会导致默认行为
-     </para>
-    </listitem>
-   </varlistentry>
-  </variablelist>
- </refsect1>
-
- <refsect1>
-  <title>返回值</title>
-
-  <para>
-   指向包含该游标的 portal 的指针。注意这里没有错误返回约定，
-   任何错误都将通过<function>elog</function>报告。
-  </para>
- </refsect1>
-</refentry>
-
-<!-- *********************************************** -->
-
-
 
 <!-- *********************************************** -->
 
@@ -1729,7 +1283,7 @@ Portal SPI_cursor_find(const char * <parameter>name</parameter>)
 
  <refsynopsisdiv>
 <synopsis>
-void SPI_cursor_fetch(Portal <parameter>portal</parameter>, bool <parameter>forward</parameter>, long <parameter>count</parameter>)
+void SPI_cursor_fetch(Portal <parameter>portal</parameter>, bool <parameter>forward</parameter>, int <parameter>count</parameter>)
 </synopsis>
  </refsynopsisdiv>
 
@@ -1738,8 +1292,7 @@ void SPI_cursor_fetch(Portal <parameter>portal</parameter>, bool <parameter>forw
 
   <para>
    <function>SPI_cursor_fetch</function>从一个游标取得一些行。
-   这等效于 SQL 命令<command>FETCH</command>的一个子集（更多功能
-   见<function>SPI_scroll_cursor_fetch</function>）。
+   这等效于 SQL 命令<command>FETCH</command>。
   </para>
  </refsect1>
 
@@ -1766,7 +1319,7 @@ void SPI_cursor_fetch(Portal <parameter>portal</parameter>, bool <parameter>forw
    </varlistentry>
 
    <varlistentry>
-    <term><literal>long <parameter>count</parameter></literal></term>
+    <term><literal>int <parameter>count</parameter></literal></term>
     <listitem>
      <para>
       要取得的最大行数
@@ -1786,14 +1339,6 @@ void SPI_cursor_fetch(Portal <parameter>portal</parameter>, bool <parameter>forw
   </para>
  </refsect1>
 
- <refsect1>
-  <title>注解</title>
-
-  <para>
-   如果该游标的计划不是用<symbol>CURSOR_OPT_SCROLL</symbol>
-   选项创建的，向后获取可能失败。
-  </para>
- </refsect1>
 </refentry>
 
 <!-- *********************************************** -->
@@ -1812,7 +1357,7 @@ void SPI_cursor_fetch(Portal <parameter>portal</parameter>, bool <parameter>forw
 
  <refsynopsisdiv>
 <synopsis>
-void SPI_cursor_move(Portal <parameter>portal</parameter>, bool <parameter>forward</parameter>, long <parameter>count</parameter>)
+void SPI_cursor_move(Portal <parameter>portal</parameter>, bool <parameter>forward</parameter>, int <parameter>count</parameter>)
 </synopsis>
  </refsynopsisdiv>
 
@@ -1821,8 +1366,7 @@ void SPI_cursor_move(Portal <parameter>portal</parameter>, bool <parameter>forwa
 
   <para>
    <function>SPI_cursor_move</function>跳过一个游标中的一些行。
-   这等效于 SQL 命令<command>MOVE</command>的一个子集（更多的功能
-   请见<function>SPI_scroll_cursor_move</function>）。
+   这等效于 SQL 命令<command>MOVE</command>。
   </para>
  </refsect1>
 
@@ -1849,7 +1393,7 @@ void SPI_cursor_move(Portal <parameter>portal</parameter>, bool <parameter>forwa
    </varlistentry>
 
    <varlistentry>
-    <term><literal>long <parameter>count</parameter></literal></term>
+    <term><literal>int <parameter>count</parameter></literal></term>
     <listitem>
      <para>
       要移动的最大行数
@@ -1859,206 +1403,13 @@ void SPI_cursor_move(Portal <parameter>portal</parameter>, bool <parameter>forwa
   </variablelist>
  </refsect1>
 
- <refsect1>
-  <title>注解</title>
-
-  <para>
-   如果该游标的计划不是用<symbol>CURSOR_OPT_SCROLL</symbol>
-   选项创建的，向后移动可能失败。
-  </para>
- </refsect1>
 </refentry>
 
 <!-- *********************************************** -->
 
-<refentry id="spi-spi-scroll-cursor-fetch">
- <refmeta>
-  <refentrytitle>SPI_scroll_cursor_fetch</refentrytitle>
-  </refmeta>
-
- <refnamediv>
-  <refname>SPI_scroll_cursor_fetch</refname>
-  <refpurpose>从一个游标取出一些行</refpurpose>
- </refnamediv>
-
- <indexterm><primary>SPI_scroll_cursor_fetch</primary></indexterm>
-
- <refsynopsisdiv>
-<synopsis>
-void SPI_scroll_cursor_fetch(Portal <parameter>portal</parameter>, FetchDirection <parameter>direction</parameter>,
-                             long <parameter>count</parameter>)
-</synopsis>
- </refsynopsisdiv>
-
- <refsect1>
-  <title>描述</title>
-
-  <para>
-   <function>SPI_scroll_cursor_fetch</function>从一个游标中取出一些行。
-   这等效于 SQL 命令<command>FETCH</command>。
-  </para>
- </refsect1>
-
- <refsect1>
-  <title>参数</title>
-
-  <variablelist>
-   <varlistentry>
-    <term><literal>Portal <parameter>portal</parameter></literal></term>
-    <listitem>
-     <para>
-      包含该游标的 portal
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>FetchDirection <parameter>direction</parameter></literal></term>
-    <listitem>
-     <para>
-      <symbol>FETCH_FORWARD</symbol>、
-      <symbol>FETCH_BACKWARD</symbol>、
-      <symbol>FETCH_ABSOLUTE</symbol>或者
-      <symbol>FETCH_RELATIVE</symbol>之一
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>long <parameter>count</parameter></literal></term>
-    <listitem>
-     <para>
-      <symbol>FETCH_FORWARD</symbol>或
-      <symbol>FETCH_BACKWARD</symbol>方式中要取出的行数；
-      <symbol>FETCH_ABSOLUTE</symbol>方式中要取出的绝对行号；
-      <symbol>FETCH_RELATIVE</symbol>方式中要取出的相对行号
-     </para>
-    </listitem>
-   </varlistentry>
-  </variablelist>
- </refsect1>
-
- <refsect1>
-  <title>返回值</title>
-
-  <para>
-   成功时，<varname>SPI_processed</varname> 和
-   <varname>SPI_tuptable</varname> 的设置方式与
-   <function>SPI_execute</function> 相同。
-  </para>
- </refsect1>
-
- <refsect1>
-  <title>注解</title>
-
-  <para>
-   参数<parameter>direction</parameter>和
-   <parameter>count</parameter>的详细解释请见
-   SQL <xref linkend="sql-fetch" endterm="sql-fetch-title">命令。
-  </para>
-
-  <para>
-   如果该游标的计划不是用<symbol>CURSOR_OPT_SCROLL</symbol>
-   选项创建的，除<symbol>FETCH_FORWARD</symbol>之外的方向值可能失败。
-  </para>
- </refsect1>
-</refentry>
 
 <!-- *********************************************** -->
 
-<refentry id="spi-spi-scroll-cursor-move">
- <refmeta>
-  <refentrytitle>SPI_scroll_cursor_move</refentrytitle>
-  </refmeta>
-
- <refnamediv>
-  <refname>SPI_scroll_cursor_move</refname>
-  <refpurpose>移动一个游标</refpurpose>
- </refnamediv>
-
- <indexterm><primary>SPI_scroll_cursor_move</primary></indexterm>
-
- <refsynopsisdiv>
-<synopsis>
-void SPI_scroll_cursor_move(Portal <parameter>portal</parameter>, FetchDirection <parameter>direction</parameter>,
-                            long <parameter>count</parameter>)
-</synopsis>
- </refsynopsisdiv>
-
- <refsect1>
-  <title>描述</title>
-
-  <para>
-   <function>SPI_scroll_cursor_move</function>在一个游标中跳过
-   一定数量的行。这等效于 SQL 命令<command>MOVE</command>。
-  </para>
- </refsect1>
-
- <refsect1>
-  <title>参数</title>
-
-  <variablelist>
-   <varlistentry>
-    <term><literal>Portal <parameter>portal</parameter></literal></term>
-    <listitem>
-     <para>
-      包含该游标的 portal
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>FetchDirection <parameter>direction</parameter></literal></term>
-    <listitem>
-     <para>
-      <symbol>FETCH_FORWARD</symbol>、
-      <symbol>FETCH_BACKWARD</symbol>、
-      <symbol>FETCH_ABSOLUTE</symbol>或者
-      <symbol>FETCH_RELATIVE</symbol>之一
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>long <parameter>count</parameter></literal></term>
-    <listitem>
-     <para>
-      <symbol>FETCH_FORWARD</symbol>或者
-      <symbol>FETCH_BACKWARD</symbol>方式中要移动的行数；
-      <symbol>FETCH_ABSOLUTE</symbol>方式中要移动到的绝对行号；
-      <symbol>FETCH_RELATIVE</symbol>方式中要移动到的相对行号
-     </para>
-    </listitem>
-   </varlistentry>
-  </variablelist>
- </refsect1>
-
- <refsect1>
-  <title>返回值</title>
-
-  <para>
-   成功时，<varname>SPI_processed</varname> 的设置方式与
-   <function>SPI_execute</function> 相同。
-   <varname>SPI_tuptable</varname> 会被设置为 <symbol>NULL</symbol>，
-   因为本函数不会返回任何行。
-  </para>
- </refsect1>
-
- <refsect1>
-  <title>注解</title>
-
-  <para>
-   参数<parameter>direction</parameter>和
-   <parameter>count</parameter>的详细解释请见
-   SQL <xref linkend="sql-fetch" endterm="sql-fetch-title">命令。
-  </para>
-
-  <para>
-   如果该游标的计划不是用<symbol>CURSOR_OPT_SCROLL</symbol>
-   选项创建的，除<symbol>FETCH_FORWARD</symbol>之外的方向值可能失败。
-  </para>
- </refsect1>
-</refentry>
 
 <!-- *********************************************** -->
 
@@ -2127,7 +1478,7 @@ void SPI_cursor_close(Portal <parameter>portal</parameter>)
 
  <refsynopsisdiv>
 <synopsis>
-SPIPlanPtr SPI_saveplan(SPIPlanPtr <parameter>plan</parameter>)
+void * SPI_saveplan(void * <parameter>plan</parameter>)
 </synopsis>
  </refsynopsisdiv>
 
@@ -2136,10 +1487,13 @@ SPIPlanPtr SPI_saveplan(SPIPlanPtr <parameter>plan</parameter>)
 
   <para>
    <function>SPI_saveplan</function> 会把传入的计划（由
-   <function>SPI_prepare</function> 准备）保存到不会被
-   <function>SPI_finish</function> 或事务管理器释放的内存中，并返回
-   指向所保存计划的指针。这让你能够在当前会话后续的过程调用中重用
-   预备计划。
+   <function>SPI_prepare</function> 准备）保存到受保护、不会被
+   <function>SPI_finish</function> 和事务管理器释放的内存中，并返回
+   指向所保存计划的指针。这让你能够在当前会话中当前过程的后续调用里
+   重用预备计划。你可以把返回的指针保存到一个局部变量中。无论是准备
+   计划时，还是在 <function>SPI_execute_plan</function> 中使用一个
+   已准备好的计划时，都应始终检查该指针是否为
+   <symbol>NULL</symbol>。
   </para>
  </refsect1>
 
@@ -2148,7 +1502,7 @@ SPIPlanPtr SPI_saveplan(SPIPlanPtr <parameter>plan</parameter>)
 
   <variablelist>
    <varlistentry>
-    <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
+    <term><literal>void * <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
       要保存的计划
@@ -2193,15 +1547,8 @@ SPIPlanPtr SPI_saveplan(SPIPlanPtr <parameter>plan</parameter>)
   <title>注解</title>
 
   <para>
-   原始传入的计划不会被释放，因此你可能需要对其调用
-   <function>SPI_freeplan</function>，以避免在
-   <function>SPI_finish</> 之前发生内存泄露。
-  </para>
-
-  <para>
-   如果预备计划所引用的对象（表、函数等）之一被删除或重新定义，
-   那么 <function>SPI_execute_plan</function> 未来的执行可能会失败，
-   或者返回与该计划最初指示不同的结果。
+   如果预备计划所引用的对象（表、函数等）之一在该会话期间被删除，
+   那么对该计划执行 <function>SPI_execute_plan</function> 的结果将是不可预测的。
   </para>
  </refsect1>
 </refentry>
@@ -2710,58 +2057,6 @@ char * SPI_getrelname(Relation <parameter>rel</parameter>)
  </refsect1>
 </refentry>
 
-<refentry id="spi-spi-getnspname">
- <refmeta>
-  <refentrytitle>SPI_getnspname</refentrytitle>
-  </refmeta>
-
- <refnamediv>
-  <refname>SPI_getnspname</refname>
-  <refpurpose>返回指定关系所属的名字空间</refpurpose>
- </refnamediv>
-
- <indexterm><primary>SPI_getnspname</primary></indexterm>
-
- <refsynopsisdiv>
-<synopsis>
-char * SPI_getnspname(Relation <parameter>rel</parameter>)
-</synopsis>
- </refsynopsisdiv>
-
- <refsect1>
-  <title>描述</title>
-
-  <para>
-   <function>SPI_getnspname</function> 返回指定
-   <structname>Relation</structname> 所属名字空间名称的一个副本。这等价于
-   该关系的模式名。用完该返回值后，应调用 <function>pfree</function> 释
-   放它。
-  </para>
- </refsect1>
-
- <refsect1>
-  <title>参数</title>
-
-  <variablelist>
-   <varlistentry>
-    <term><literal>Relation <parameter>rel</parameter></literal></term>
-    <listitem>
-     <para>
-      输入关系
-     </para>
-    </listitem>
-   </varlistentry>
-  </variablelist>
- </refsect1>
-
- <refsect1>
-  <title>返回值</title>
-
-  <para>
-   指定关系的名字空间的名称。
-  </para>
- </refsect1>
-</refentry>
 
  </sect1>
 
@@ -3360,7 +2655,7 @@ void SPI_freetuptable(SPITupleTable * <parameter>tuptable</parameter>)
 
  <refsynopsisdiv>
 <synopsis>
-int SPI_freeplan(SPIPlanPtr <parameter>plan</parameter>)
+int SPI_freeplan(void * <parameter>plan</parameter>)
 </synopsis>
  </refsynopsisdiv>
 
@@ -3379,7 +2674,7 @@ int SPI_freeplan(SPIPlanPtr <parameter>plan</parameter>)
 
   <variablelist>
    <varlistentry>
-    <term><literal>SPIPlanPtr <parameter>plan</parameter></literal></term>
+    <term><literal>void * <parameter>plan</parameter></literal></term>
     <listitem>
      <para>
       要释放的计划的指针
@@ -3465,14 +2760,7 @@ INSERT INTO a SELECT * FROM a;
   </para>
 
 <programlisting>
-#include "postgres.h"
-
 #include "executor/spi.h"
-#include "utils/builtins.h"
-
-#ifdef PG_MODULE_MAGIC
-PG_MODULE_MAGIC;
-#endif
 
 int execq(text *sql, int cnt);
 
@@ -3484,7 +2772,8 @@ execq(text *sql, int cnt)
     int proc;
 
     /* Convert given text object to a C string */
-    command = text_to_cstring(sql);
+    command = DatumGetCString(DirectFunctionCall1(textout,
+                                                  PointerGetDatum(sql)));
 
     SPI_connect();
 
@@ -3492,9 +2781,10 @@ execq(text *sql, int cnt)
 
     proc = SPI_processed;
     /*
-     * If some rows were fetched, print them via elog(INFO).
+     * If this is a SELECT and some rows were fetched,
+     * then the rows are printed via elog(INFO).
      */
-    if (ret &gt; 0 &amp;&amp; SPI_tuptable != NULL)
+    if (ret == SPI_OK_SELECT && SPI_processed &gt; 0)
     {
         TupleDesc tupdesc = SPI_tuptable-&gt;tupdesc;
         SPITupleTable *tuptable = SPI_tuptable;
@@ -3525,8 +2815,7 @@ execq(text *sql, int cnt)
   </para>
 
   <para>
-   将该函数编译成共享库之后（详见 <xref linkend="dfunc">），可以这样声
-   明它：
+   将该函数编译成共享库之后，可以这样声明它：
 
 <programlisting>
 CREATE FUNCTION execq(text, integer) RETURNS integer
@@ -3545,7 +2834,7 @@ CREATE FUNCTION execq(text, integer) RETURNS integer
 (1 row)
 
 =&gt; INSERT INTO a VALUES (execq('INSERT INTO a VALUES (0)', 0));
-INSERT 0 1
+INSERT 167631 1
 =&gt; SELECT execq('SELECT * FROM a', 0);
 INFO:  EXECQ:  0    -- 由 execq 插入
 INFO:  EXECQ:  1    -- 由 execq 返回并被外层 INSERT 插入
@@ -3574,7 +2863,7 @@ INFO:  EXECQ:  2    -- 0 + 2，按指定只插入一行
 =&gt; DELETE FROM a;
 DELETE 3
 =&gt; INSERT INTO a VALUES (execq('SELECT * FROM a', 0) + 1);
-INSERT 0 1
+INSERT 167712 1
 =&gt; SELECT * FROM a;
  x
 ---
@@ -3582,8 +2871,8 @@ INSERT 0 1
 (1 row)
 
 =&gt; INSERT INTO a VALUES (execq('SELECT * FROM a', 0) + 1);
-INFO:  EXECQ:  1
-INSERT 0 1
+INFO:  EXECQ:  0
+INSERT 167713 1
 =&gt; SELECT * FROM a;
  x
 ---
