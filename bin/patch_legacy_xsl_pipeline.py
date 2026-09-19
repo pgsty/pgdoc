@@ -20,14 +20,21 @@ Patches applied in place (all guarded; idempotent):
                   html: html-output (+HTML.index retry recipe,
                     PG <= 8.4) -> html: xslthtml-stamp
                   postgres.xml prerequisites: PG <= 8.4 depend on
-                    $(GENERATED_SGML) (pulls in the jade-only
+                  $(GENERATED_SGML) (pulls in the jade-only
                     bookindex.sgml chain) -> $(ALMOSTALLSGML) (9.x form)
                   append 9.4-recipe xslthtml-stamp target
+
+PG 6.x doc makefiles (jade/DSSSL-only: no html: target, no postgres.xml rule,
+uppercase-era sources relying on omitted end tags) get a self-contained
+appended block instead: osx (with an OMITTAG YES DocBook V3.0 declaration,
+see tmp/pg6x/deps) -> postgres.xml -> xsltproc chunked HTML.
 
 Usage: patch_legacy_xsl_pipeline.py <doc/src/sgml dir>
 No-op when the makefile already has xslthtml-stamp (PG >= 9.2) or lacks a
 postgres.xml rule.
 """
+import os
+import re
 import sys
 
 PERL_91 = (r"""	$(PERL) -p -e 's/\[(amp|copy|egrave|gt|lt|mdash|nbsp|ouml|pi|quot|uuml) *\]/\&\1;/g;' \
@@ -114,6 +121,94 @@ FILELIST_FALLBACK = (
     '<!ENTITY % include-xslt-index "IGNORE">\n'
 )
 
+# SDATA fixup names for the PG 6.x recipe: the 9.4 list (PERL_94) plus the
+# ISO names actually emitted when converting the 6.3-6.5 English trees
+# (math/set operators absent from modern docs: and cap cup exist ge isin
+# le mid minus prod setmn sigma sube tdot times) plus plausible additions
+# for zh reuse sources (divide infin plusmn sup); all verified ISO names.
+SDATA_6X = (
+    "aacute acirc aelig agrave amp and aring atilde auml bull cap copy cup "
+    "divide eacute egrave exist ge gt iacute infin isin le lt mdash mid "
+    "minus nbsp ntilde oacute ocirc oslash ouml pi plusmn prod quot scaron "
+    "setmn sigma sube sup tdot times uuml"
+)
+
+# PG 6.x block appended to the (static, jade-era) doc makefile.  Tool vars
+# use ?= so the deps environment wins; the SGML declaration is passed as an
+# explicit osx argument because 6.x sources rely on omitted end tags, which
+# the stock DocBook V3.0 declaration (OMITTAG NO) rejects.  -Dref covers the
+# 6.4 reference.sgml -> allfiles.sgml system id (jade's old -D ref DBOPTS).
+XSLTHTML_BLOCK_6X_TEMPLATE = """
+# -- begin pgdoc backport: XSL HTML pipeline for PG 6.x (patch_legacy_xsl_pipeline.py) --
+OSX ?= osx
+PERL ?= perl
+XSLTPROC ?= xsltproc
+XSLTPROCFLAGS ?= --nonet
+XSLTPROC_HTML_FLAGS ?= --path .
+PGDOC_VERSION ?= {version}
+override XSLTPROCFLAGS += --stringparam pg.version '$(PGDOC_VERSION)'
+PGDOC_SGML_DECL := {sgml_decl}
+PGDOC_ALLSGML := $(wildcard *.sgml ref/*.sgml)
+
+postgres.xml: postgres.sgml $(PGDOC_ALLSGML)
+\t$(OSX) -D. -Dref -x lower $(PGDOC_SGML_DECL) $< | \\
+\t  $(PERL) -p -e 's/\\[({sdata}) *\\]/\\&\\1;/g;' \\
+\t             -e '$$_ .= qq{{<!DOCTYPE book PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN" "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">\\n}} if $$. == 1;' \\
+\t  >$@
+
+html: xslthtml-stamp
+
+xslthtml: xslthtml-stamp
+
+xslthtml-stamp: stylesheet.xsl postgres.xml
+\t$(XSLTPROC) $(XSLTPROCFLAGS) $(XSLTPROC_HTML_FLAGS) $^
+\t-cp stylesheet.css html/
+\ttouch $@
+# -- end pgdoc backport --
+"""
+
+
+def patch_pg6x(sgml_dir):
+    """Append the synthesized XSL pipeline onto a PG 6.x jade-era makefile.
+
+    6.x is identified by the Davenport DocBook V3.0 doctype in postgres.sgml;
+    7.x jade-era makefiles (V3.1, same no-html/no-postgres.xml shape) are left
+    alone for the 7x program's own pipeline work.
+    """
+    makefile = f"{sgml_dir}/Makefile"
+    with open(makefile, encoding="utf-8") as f:
+        mf = f.read()
+    if "xslthtml-stamp:" in mf or "postgres.xml:" in mf or "\nhtml:" in mf:
+        return False
+    try:
+        with open(f"{sgml_dir}/postgres.sgml", encoding="utf-8", errors="replace") as f:
+            pg = f.read()
+    except OSError:
+        return False
+    if "-//Davenport//DTD DocBook V3.0//EN" not in pg:
+        return False
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sgml_decl = f"{repo_root}/tmp/pg6x/deps/docbk30/docbook-omittag.dcl"
+    if not os.path.exists(sgml_decl):
+        print("patch_legacy_xsl_pipeline: WARNING:"
+              f" {sgml_decl} missing; osx will fall back to OMITTAG NO",
+              file=sys.stderr)
+        sgml_decl = ""
+    # The build work tree name embeds the version (build_standalone_docsrc.sh
+    # mktemp pattern "standalone-<lang>-<version>.XXXXXX"); empty fallback is
+    # harmless (pg.version only drives the footer/devel switches).
+    m = re.search(r"standalone-(?:en|zh)-(\d+\.\d+(?:\.\d+)?)\.[A-Za-z0-9]+",
+                  os.path.abspath(sgml_dir))
+    version = m.group(1) if m else ""
+    sdata = "|".join(SDATA_6X.split())
+    mf += XSLTHTML_BLOCK_6X_TEMPLATE.format(
+        version=version, sgml_decl=sgml_decl, sdata=sdata)
+    with open(makefile, "w", encoding="utf-8") as f:
+        f.write(mf)
+    print("patch_legacy_xsl_pipeline: synthesized XSL pipeline onto PG 6.x"
+          f" doc makefile (pgdoc version '{version}')")
+    return True
+
 
 def main():
     sgml_dir = sys.argv[1]
@@ -124,7 +219,10 @@ def main():
     if "xslthtml-stamp:" in mf:
         return  # PG >= 9.2 already ships the XSL pipeline
     if "postgres.xml:" not in mf:
-        return  # nothing to backport onto
+        # PG 6.x jade-era makefiles have neither an html: target nor a
+        # postgres.xml rule; the 6.x branch synthesizes the whole pipeline.
+        patch_pg6x(sgml_dir)
+        return
     # PG <= 8.2 ships stylesheet.xsl + a bare "XSLTPROC = xsltproc"
     # assignment (no ifndef wrapper, no xslthtml target at all).  Wrap the
     # assignment so the deps tools can override it, and note that the

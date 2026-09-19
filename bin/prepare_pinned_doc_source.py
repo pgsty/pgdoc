@@ -16,12 +16,36 @@ def git(source, *args):
     return subprocess.check_output(['git', '-C', str(source), *args])
 
 
+def version_declarations_pg6x(source, requested):
+    # PG 6.x archives have no top-level Autoconf input; the version lives in
+    # src/include/version.h(.in).  6.3.x omits PG_SUBVERSION (branch patch
+    # level only in the archive name), so accept a prefix match there.
+    vh = source / 'src/include/version.h.in'
+    if not vh.is_file():
+        vh = source / 'src/include/version.h'
+    try:
+        text = vh.read_text()
+    except OSError:
+        raise ValueError('pinned source has no configure.ac, configure.in'
+                         ' or src/include/version.h(.in)')
+    parts = {key: re.search(rf'^#define\s+{key}\s+"?(\d+)', text, re.M)
+             for key in ('PG_RELEASE', 'PG_VERSION', 'PG_SUBVERSION')}
+    if not (parts['PG_RELEASE'] and parts['PG_VERSION']):
+        raise ValueError(f'cannot read PostgreSQL version from {vh.name}')
+    version = f"{parts['PG_RELEASE'][1]}.{parts['PG_VERSION'][1]}"
+    if parts['PG_SUBVERSION']:
+        version += f".{parts['PG_SUBVERSION'][1]}"
+    if requested != version and not requested.startswith(version + '.'):
+        raise ValueError(f'pinned source version mismatch: requested {requested}, got {version}')
+    return version, {vh.name: version}
+
+
 def version_declarations(source, requested):
     # Older releases name the Autoconf input configure.in, rather than .ac.
     autoconf_inputs = [name for name in ('configure.ac', 'configure.in')
                        if (source / name).is_file()]
     if not autoconf_inputs:
-        raise ValueError('pinned source has no configure.ac or configure.in')
+        return version_declarations_pg6x(source, requested)
     patterns = {name: r'AC_INIT\(\[PostgreSQL\],\s*\[([^]]+)\]'
                 for name in autoconf_inputs}
     patterns['configure'] = r"^PACKAGE_VERSION='([^']+)'"
@@ -116,7 +140,9 @@ def prepare_archive(archive, expected_sha256, requested, destination):
             raise ValueError('pinned archive must contain one source directory')
         source = roots[0]
         version, versions = version_declarations(source, requested)
-        if source.name != f'postgresql-{version}':
+        # 6.3.x archives name the root with the patch level (postgresql-6.3.2)
+        # while their version header only declares the branch (6.3).
+        if source.name not in (f'postgresql-{version}', f'postgresql-{requested}'):
             raise ValueError(f'pinned archive root does not match source version: {source.name}')
         names = [str(path.relative_to(source)) for path in source.rglob('*')
                  if path.is_file() or path.is_symlink()]

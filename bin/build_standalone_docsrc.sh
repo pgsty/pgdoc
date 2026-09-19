@@ -300,7 +300,15 @@ rsync -a \
 # --- Configure (minimal, just enough for docs) ---
 echo "Configuring source tree ..."
 extra_configure_flags="${CONFIGURE_FLAGS:-}"
-(cd "${work_tree}" && ./configure --without-icu --without-readline --without-zlib ${extra_configure_flags} >/dev/null)
+if [[ -f "${work_tree}/configure" ]]; then
+  (cd "${work_tree}" && ./configure --without-icu --without-readline --without-zlib ${extra_configure_flags} >/dev/null)
+elif [[ -f "${work_tree}/src/configure" ]]; then
+  # PG 6.x ships configure only under src/.  Its doc makefile treats
+  # Makefile.global as optional, so a configure failure (ancient config.guess
+  # on modern hosts) is non-fatal for the doc build.
+  (cd "${work_tree}/src" && ./configure --without-icu --without-readline --without-zlib ${extra_configure_flags} >/dev/null) || \
+    echo "NOTE: src/configure failed; 6.x doc makefile runs without Makefile.global" >&2
+fi
 
 # --- Relax XML validation for translated docs ---
 # Chinese translations may reference anchors from newer PG versions,
