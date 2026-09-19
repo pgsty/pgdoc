@@ -1,4 +1,4 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/xtypes.sgml,v 1.33 2010/04/14 02:36:04 momjian Exp $ -->
+<!-- $PostgreSQL: pgsql/doc/src/sgml/xtypes.sgml,v 1.31 2008/12/07 23:46:39 alvherre Exp $ -->
 
  <sect1 id="xtypes">
   <title>User-Defined Types</title>
@@ -66,7 +66,7 @@ typedef struct Complex {
   外部字符串表示时，请记住，你最终必须为该表示编写一个完整而
   健壮的解析器作为输入函数。例如：
 
-<programlisting><![CDATA[
+<programlisting>
 PG_FUNCTION_INFO_V1(complex_in);
 
 Datum
@@ -77,23 +77,23 @@ complex_in(PG_FUNCTION_ARGS)
                 y;
     Complex    *result;
 
-    if (sscanf(str, " ( %lf , %lf )", &x, &y) != 2)
+    if (sscanf(str, " ( %lf , %lf )", &amp;x, &amp;y) != 2)
         ereport(ERROR,
                 (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
                  errmsg("invalid input syntax for complex: \"%s\"",
                         str)));
 
     result = (Complex *) palloc(sizeof(Complex));
-    result->x = x;
-    result->y = y;
+    result-&gt;x = x;
+    result-&gt;y = y;
     PG_RETURN_POINTER(result);
 }
-]]>
-</programlisting>
+
+  </programlisting>
 
   输出函数可以简单地写成：
 
-<programlisting><![CDATA[
+<programlisting>
 PG_FUNCTION_INFO_V1(complex_out);
 
 Datum
@@ -103,11 +103,11 @@ complex_out(PG_FUNCTION_ARGS)
     char       *result;
 
     result = (char *) palloc(100);
-    snprintf(result, 100, "(%g,%g)", complex->x, complex->y);
+    snprintf(result, 100, "(%g,%g)", complex-&gt;x, complex-&gt;y);
     PG_RETURN_CSTRING(result);
 }
-]]>
-</programlisting>
+
+  </programlisting>
  </para>
 
  <para>
@@ -122,7 +122,7 @@ complex_out(PG_FUNCTION_ARGS)
   示。对于<type>complex</type>，我们将借助类型<type>float8</type>的二
   进制 I/O 转换器：
 
-<programlisting><![CDATA[
+<programlisting>
 PG_FUNCTION_INFO_V1(complex_recv);
 
 Datum
@@ -132,8 +132,8 @@ complex_recv(PG_FUNCTION_ARGS)
     Complex    *result;
 
     result = (Complex *) palloc(sizeof(Complex));
-    result->x = pq_getmsgfloat8(buf);
-    result->y = pq_getmsgfloat8(buf);
+    result-&gt;x = pq_getmsgfloat8(buf);
+    result-&gt;y = pq_getmsgfloat8(buf);
     PG_RETURN_POINTER(result);
 }
 
@@ -145,13 +145,13 @@ complex_send(PG_FUNCTION_ARGS)
     Complex    *complex = (Complex *) PG_GETARG_POINTER(0);
     StringInfoData buf;
 
-    pq_begintypsend(&buf);
-    pq_sendfloat8(&buf, complex->x);
-    pq_sendfloat8(&buf, complex->y);
-    PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
+    pq_begintypsend(&amp;buf);
+    pq_sendfloat8(&amp;buf, complex-&gt;x);
+    pq_sendfloat8(&amp;buf, complex-&gt;y);
+    PG_RETURN_BYTEA_P(pq_endtypsend(&amp;buf));
 }
-]]>
-</programlisting>
+
+  </programlisting>
  </para>
 
  <para>
@@ -206,8 +206,8 @@ CREATE TYPE complex (
   当你定义一种新的基本类型时，<productname>PostgreSQL</productname>
   会自动提供对该类型数组的支持。
   <indexterm><primary>array</primary><secondary>of user-defined
-  type</secondary></indexterm> 该数组类型的名称通常与基本类型相同，
-  只是在前面加一个下划线字符（<literal>_</literal>）。
+  type</secondary></indexterm> 由于历史原因，该数组类型的名称与
+  基本类型相同，只是在前面加一个下划线字符（<literal>_</>）。
  </para>
 
  <para>
@@ -221,48 +221,18 @@ CREATE TYPE complex (
     <primary>TOAST</primary>
     <secondary>and user-defined types</secondary>
    </indexterm>
-  如果你的数据类型的值在内部形式上的大小可变，就应该让该数据类型
-  支持 <acronym>TOAST</>（见 <xref
-  linkend="storage-toast">）。即使这些值总是小到不需要压缩或外部
-  存储，也应该这样做，因为 <acronym>TOAST</> 还可以通过减少头部
-  overhead.
+  如果你的数据类型的值在内部形式上可能超过几百字节，就应该让该数据类型
+  支持 <acronym>TOAST</>（见 <xref linkend="storage-toast">）。
+  为此，内部表示必须遵循可变长度数据的标准布局：前四个字节必须是
+  一个<type>int32</type>，其中包含该 datum 的总字节长度（包括其自身）。
+  操作该数据类型的 C 函数必须注意使用<function>PG_DETOAST_DATUM</>对
+  传给它们的任何已 TOAST 化的值执行去 TOAST 化处理。
+  （这一细节通常通过定义特定于该类型的<function>GETARG</function>宏来
+  隐藏。）然后，在执行<command>CREATE TYPE</command>命令时，把内部长度
+  指定为<literal>variable</>并选择合适的存储选项。
  </para>
 
  <para>
-  为此，内部表示必须遵循可变长度数据的标准布局：前四个字节必须是一个
-  从不直接访问的<type>char[4]</type>字段（惯例上命名为
-  <structfield>vl_len_</structfield>）。必须使用
-  <function>SET_VARSIZE()</function>在该字段中存储该 datum 的大小，并使用
-  <function>VARSIZE()</function>取回它。操作该数据类型的 C 级函数必须始
-  终使用<function>PG_DETOAST_DATUM</function>对传给它们的任何 TOAST 化
-  值执行去 TOAST 化处理。（这一细节通常通过定义特定于该类型的
-  <function>GETARG_DATATYPE_P</function>宏来隐藏。）然后，在执行
-  <command>CREATE TYPE</command>命令时，把内部长度指定为
-  <literal>variable</literal>并选择合适的存储选项。
- </para>
-
- <para>
-  如果数据对齐并不重要（无论只是对某个特定函数而言，还是因为该数据类型
-  本来就指定了字节对齐），那么就有可能避免
-  <function>PG_DETOAST_DATUM</function>的一部分开销。你可以改用
-  <function>PG_DETOAST_DATUM_PACKED</function>（通常通过定义
-  <function>GETARG_DATATYPE_PP</function>宏来隐藏），并使用
-  <function>VARSIZE_ANY_EXHDR</function>和<function>VARDATA_ANY</function>
-  宏访问一个可能采用打包形式的 datum。再次注意，即使数据类型定义指定了
-  对齐方式，这些宏返回的数据也不是对齐的。如果对齐很重要，就必须使用常
-  规的<function>PG_DETOAST_DATUM</function>接口。
- </para>
-
- <note>
-  <para>
-   较旧的代码常把<structfield>vl_len_</structfield>声明为
-   <type>int32</type>字段，而不是<type>char[4]</type>字段。只要结构体定
-   义中还有其他至少按<type>int32</type>对齐的字段，这样做是可以的。但
-   在处理可能未对齐的 datum 时使用这种结构体定义就很危险；编译器可能据此假定该 datum 实际上是对齐的，从而在对齐要求严格的体系结构上导致核心转储。
-  </para>
- </note>
-
- <para>
-  更多细节见<xref linkend="sql-createtype">命令的说明。
+  更多细节见<xref linkend="sql-createtype" endterm="sql-createtype-title">命令的说明。
  </para>
 </sect1>

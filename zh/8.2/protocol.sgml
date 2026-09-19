@@ -1,4 +1,4 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/protocol.sgml,v 1.89 2010/06/07 02:01:08 itagaki Exp $ -->
+<!-- $PostgreSQL: pgsql/doc/src/sgml/protocol.sgml,v 1.75 2008/11/09 00:28:34 tgl Exp $ -->
 
 <chapter id="protocol">
  <title>Frontend/Backend Protocol</title>
@@ -20,6 +20,10 @@
   器可以支持多个协议版本。最初的
   启动请求消息告诉服务器客户端试图使用哪个协议版本，然后服务器
   在有能力的情况下遵循该协议。
+ </para>
+
+ <para>
+  建立在该协议之上的更高层特性（例如 <application>libpq</application> 如何在建立连接时传递某些环境变量）将在别处介绍。
  </para>
 
   <para>
@@ -173,6 +177,18 @@
        <para>
         前端现在必须发送一个以明文形式包含密码的
         PasswordMessage。如果密码正确，服务器响应
+        AuthenticationOk；否则响应 ErrorResponse。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>AuthenticationCryptPassword</term>
+      <listitem>
+       <para>
+        前端现在必须发送一个 PasswordMessage，其中包含使用
+        AuthenticationCryptPassword 消息中指定的 2 字符盐经过
+        crypt(3) 加密的密码。如果密码正确，服务器响应
         AuthenticationOk；否则响应 ErrorResponse。
        </para>
       </listitem>
@@ -701,11 +717,9 @@
     <literal>server_version</literal>、
     <literal>server_encoding</literal>、
     <literal>client_encoding</literal>、
-    <literal>application_name</literal>、
     <literal>is_superuser</literal>、
     <literal>session_authorization</literal>、
     <literal>DateStyle</literal>、
-    <literal>IntervalStyle</literal>、
     <literal>TimeZone</literal>、
     <literal>integer_datetimes</literal> 和
     <literal>standard_conforming_strings</literal>。
@@ -713,10 +727,7 @@
     <literal>TimeZone</literal> 和
     <literal>integer_datetimes</literal> 在 8.0 之前的发行版中不报告；
     <literal>standard_conforming_strings</literal> 在 8.1 之前的
-    发行版中不报告；
-    <literal>IntervalStyle</literal> 在 8.4 之前的发行版中不报告；
-    <literal>application_name</literal> 在 9.0 之前的发行版中不
-    报告。）注意，
+    发行版中不报告。）注意，
     <literal>server_version</literal>、
     <literal>server_encoding</literal> 和
     <literal>integer_datetimes</literal>
@@ -726,7 +737,7 @@
    </para>
 
    <para>
-   如果前端发出<command>LISTEN</command>命令，那么每当针对同一通道名执行<command>NOTIFY</command>命令时，后端都会发送一条 NotificationResponse 消息（不要与 NoticeResponse 混淆）。
+   如果前端发出<command>LISTEN</command>命令，那么每当针对同一通知名执行<command>NOTIFY</command>命令时，后端都会发送一条 NotificationResponse 消息（不要与 NoticeResponse 混淆）。
   </para>
 
    <note>
@@ -817,168 +828,6 @@
   </para>
   </sect2>
  </sect1>
-
-<sect1 id="protocol-replication">
-<title>Streaming Replication Protocol</title>
-
-<para>
-要启动流复制，前端在
-startup 消息中发送
-<literal>replication</literal> 参数。它会告诉后端进入
-walsender 模式，在该模式下只能发出少量复制命令，而不能发出
-SQL 语句。walsender 模式下只能使用简单查询协议。
-
-walsender 模式下接受的命令有：
-
-<variablelist>
-  <varlistentry>
-    <term>IDENTIFY_SYSTEM</term>
-    <listitem>
-     <para>
-      请求服务器标识自身。服务器返回一个只有一行的结果集，包含两个
-      字段：
-     </para>
-
-     <para>
-      <variablelist>
-      <varlistentry>
-      <term>
-       systemid
-      </term>
-      <listitem>
-      <para>
-       标识集簇的唯一系统标识符。可用于检查初始化备库所用的基础
-       备份是否来自同一个集簇。
-      </para>
-      </listitem>
-      </varlistentry>
-
-      <varlistentry>
-      <term>
-       timeline
-      </term>
-      <listitem>
-      <para>
-       当前 TimelineID。也可用于检查备库是否与主库一致。
-      </para>
-      </listitem>
-      </varlistentry>
-      </variablelist>
-     </para>
-    </listitem>
-  </varlistentry>
-
-  <varlistentry>
-    <term>START_REPLICATION <replaceable>XXX</>/<replaceable>XXX</></term>
-    <listitem>
-     <para>
-      指示服务器开始流式传输 WAL，从 WAL 位置
-      <replaceable>XXX</>/<replaceable>XXX</> 开始。
-      服务器可能回复错误，例如所请求的 WAL 段已被回收。成功时，
-      服务器会回复一条
-      CopyOutResponse 消息，然后开始向前端流式传输 WAL。
-      WAL 将持续流式传输，直到连接断开为止；不会再接受其他命令。
-     </para>
-
-     <para>
-      WAL 数据以一系列 CopyData 消息发送。（这样可以混合发送其他
-      信息；尤其是服务器在开始流式传输后遇到故障时，可以发送
-      ErrorResponse 消息。）每条 CopyData 消息的有效载荷遵循以下
-      格式：
-     </para>
-
-     <para>
-      <variablelist>
-      <varlistentry>
-      <term>
-          XLogData (B)
-      </term>
-      <listitem>
-      <para>
-      <variablelist>
-      <varlistentry>
-      <term>
-          Byte1('w')
-      </term>
-      <listitem>
-      <para>
-          Identifies the message as WAL data.
-      </para>
-      </listitem>
-      </varlistentry>
-      <varlistentry>
-      <term>
-          Byte8
-      </term>
-      <listitem>
-      <para>
-          本消息中 WAL 数据的起始点，以
-          XLogRecPtr 格式给出。
-      </para>
-      </listitem>
-      </varlistentry>
-      <varlistentry>
-      <term>
-          Byte8
-      </term>
-      <listitem>
-      <para>
-          服务器上 WAL 的当前末尾，以
-          XLogRecPtr 格式给出。
-      </para>
-      </listitem>
-      </varlistentry>
-      <varlistentry>
-      <term>
-          Byte8
-      </term>
-      <listitem>
-      <para>
-          传输时服务器的系统时钟，以
-          TimestampTz 格式给出。
-      </para>
-      </listitem>
-      </varlistentry>
-      <varlistentry>
-      <term>
-          Byte<replaceable>n</replaceable>
-      </term>
-      <listitem>
-      <para>
-          WAL 数据流的一段。
-      </para>
-      </listitem>
-      </varlistentry>
-      </variablelist>
-      </para>
-      </listitem>
-      </varlistentry>
-      </variablelist>
-     </para>
-     <para>
-       单条 WAL 记录绝不会拆分到两条 CopyData 消息中。当一条 WAL
-       记录跨越 WAL 页边界（因而已经用继续记录拆分）时，它可以在页
-       边界处拆分。换句话说，第一条主 WAL 记录与它的
-       继续记录可以在不同的 CopyData 消息中发送。
-     </para>
-     <para>
-       注意，WAL 数据内部以及上面描述的头部中的所有字段，都采用
-       发送服务器的本机格式。字节序和时间戳的格式是不可预测的，
-       除非接收方已验证发送方的系统标识符与自己
-       <filename>pg_control</> 中的内容一致。
-     </para>
-     <para>
-       如果 WAL 发送进程正常终止（postmaster 关闭期间），它会在
-       退出前发送一条 CommandComplete 消息。当然，异常关闭时可能
-       不会发生这种情况。
-     </para>
-    </listitem>
-  </varlistentry>
-</variablelist>
-
-</para>
-
-</sect1>
 
 <sect1 id="protocol-message-types">
 <title>Message Data Types</title>
@@ -1162,6 +1011,45 @@ AuthenticationCleartextPassword (B)
 </listitem>
 </varlistentry>
 </variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+AuthenticationCryptPassword (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>Byte1('R')</term>
+<listitem>
+<para>将该消息标识为认证请求。</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>Int32(10)</term>
+<listitem>
+<para>消息内容的长度，以字节为单位，包括此长度字段本身。</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>Int32(4)</term>
+<listitem>
+<para>表示需要经过 crypt() 加密的密码。</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>Byte2</term>
+<listitem>
+<para>加密密码所用的盐。</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
 </para>
 </listitem>
 </varlistentry>
@@ -1651,11 +1539,6 @@ CommandComplete (B)
        </para>
 
        <para>
-        对于<command>SELECT</command>或<command>CREATE TABLE AS</command>命令，标签是<literal>SELECT <replaceable>rows</replaceable></literal>，
-        其中<replaceable>rows</replaceable>是检索到的行数。
-       </para>
-
-       <para>
         对于<command>MOVE</command>命令，标签是<literal>MOVE <replaceable>rows</replaceable></literal>，
         其中<replaceable>rows</replaceable>表示游标位置改变的行数。
        </para>
@@ -1814,7 +1697,7 @@ CopyInResponse (B)
 <para>
          0表示整体<command>COPY</command>格式是文本的（行由换行符分隔，列由分隔符分隔等）。
          1表示整体复制格式是二进制的（类似于DataRow格式）。
-         更多信息请参见<xref linkend="sql-copy">。
+         更多信息请参见<xref linkend="sql-copy" endterm="sql-copy-title">。
         </para>
 </listitem>
 </varlistentry>
@@ -1871,7 +1754,7 @@ CopyOutResponse (B)
 <para>
          0表示整体<command>COPY</command>格式是文本的（行由换行符分隔，列由分隔符分隔等）。
          1表示整体复制格式是二进制的（类似于DataRow格式）。
-         更多信息请参见<xref linkend="sql-copy">。
+         更多信息请参见<xref linkend="sql-copy" endterm="sql-copy-title">。
         </para>
 </listitem>
 </varlistentry>
@@ -2389,13 +2272,13 @@ NotificationResponse (B)
 <varlistentry>
 <term>String</term>
 <listitem>
-<para>发出该通知的通道名称。</para>
+<para>发出该通知的通知名。</para>
 </listitem>
 </varlistentry>
 <varlistentry>
 <term>String</term>
 <listitem>
-<para>通知进程传来的<quote>载荷</quote>字符串。</para>
+<para>通知进程传来的附加信息。</para>
 </listitem>
 </varlistentry>
 </variablelist>
@@ -2954,7 +2837,7 @@ StartupMessage (F)
 </term>
 <listitem>
 <para>
-                The parameter value.
+                参数的值。
 </para>
 </listitem>
 </varlistentry>
@@ -3214,12 +3097,7 @@ Terminate (F)
 
 <para>后端不再生成 CursorResponse（'<literal>P</literal>'）消息。</para>
 
-<para>
-NotificationResponse（'<literal>A</literal>'）消息还有一个额外的
-字符串字段，它可以携带从
-<command>NOTIFY</command> 事件发送方传递来的<quote>载荷</quote>
-字符串。
-</para>
+<para>NotificationResponse（'<literal>A</literal>'）消息增加了一个额外的字符串字段，该字段目前为空，但将来可能携带从 <command>NOTIFY</command> 事件发送方传来的附加数据。</para>
 
 <para>EmptyQueryResponse（'<literal>I</literal>'）消息以前包含一个空字符串参数，现在已将其移除。</para>
 
