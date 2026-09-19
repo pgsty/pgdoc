@@ -530,6 +530,19 @@ SELECT shoe_ready.shoename, shoe_ready.sh_avail,
     的行为，而这不是我们想要的。不过，折叠查询树属于一种优化，
     重写系统本身无须关心。
    </para>
+
+   <note>
+    <para>
+    目前规则系统对视图规则没有任何递归停止机制（其他类型的规则才有）。
+    这并不会造成太大问题，因为要把查询推入无限循环（使服务器进程不断
+    膨胀，直到达到内存上限）的唯一途径，是先创建一些表，然后手工用
+    <command>CREATE RULE</command> 设置视图规则，让其中一个视图选择
+    自另一个视图，而后者又选择自前者。如果使用<command>CREATE
+    VIEW</command>，这种情况永远不会发生，因为在执行第一个
+    <command>CREATE VIEW</command> 时，第二个关系尚不存在，因此第一个
+    视图无法从第二个视图中选择数据。
+    </para>
+   </note>
 </sect2>
 
 <sect2>
@@ -546,7 +559,7 @@ SELECT shoe_ready.shoename, shoe_ready.sh_avail,
 <programlisting>
 SELECT t2.b FROM t1, t2 WHERE t1.a = t2.a;
 
-UPDATE t1 SET b = t2.b FROM t2 WHERE t1.a = t2.a;
+UPDATE t1 SET b = t2.b WHERE t1.a = t2.a;
 </programlisting>
 
     几乎是一样的。特别是：
@@ -584,7 +597,7 @@ UPDATE t1 SET b = t2.b FROM t2 WHERE t1.a = t2.a;
     <literal>t1</> 中缺失的列补入目标列表，最终查询树会变成：
 
 <programlisting>
-UPDATE t1 SET a = t1.a, b = t2.b FROM t2 WHERE t1.a = t2.a;
+UPDATE t1 SET a = t1.a, b = t2.b WHERE t1.a = t2.a;
 </programlisting>
 
     因而，执行器在这个连接上运行时会产生与下面语句完全相同的
@@ -743,11 +756,20 @@ CREATE [ OR REPLACE ] RULE <replaceable class="parameter">name</replaceable> AS 
 </para>
 
    <para>
-    因此，对于只有一个动作的规则，有以下三种情况会产生相应的查询树。
+    因此，对于只有一个动作的规则，有以下四种情况会产生相应的查询树。
 
     <variablelist>
      <varlistentry>
-      <term>没有条件，有<literal>ALSO</literal>或<literal>INSTEAD</literal></term>
+      <term>没有条件，有<literal>ALSO</literal></term>
+      <listitem>
+       <para>
+        规则动作的查询树，再附加原始查询树的条件
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>没有条件，但有<literal>INSTEAD</literal></term>
       <listitem>
        <para>
         规则动作的查询树，再附加原始查询树的条件
@@ -1050,28 +1072,6 @@ CREATE RULE shoelace_del AS ON DELETE TO shoelace
     DELETE FROM shoelace_data
      WHERE sl_name = OLD.sl_name;
 </programlisting>
-   </para>
-
-   <para>
-    如果你想在视图上支持<literal>RETURNING</literal>查询，就需要让规则包含计算视图行的<literal>RETURNING</literal>子句。对于单表视图，这通常很简单；但对于像<literal>shoelace</literal>这样的连接视图，就会有点烦琐。插入场景的一个示例如下：
-
-<programlisting>
-CREATE RULE shoelace_ins AS ON INSERT TO shoelace
-    DO INSTEAD
-    INSERT INTO shoelace_data VALUES (
-           NEW.sl_name,
-           NEW.sl_avail,
-           NEW.sl_color,
-           NEW.sl_len,
-           NEW.sl_unit
-    )
-    RETURNING
-           shoelace_data.*,
-           (SELECT shoelace_data.sl_len * u.un_fact
-            FROM unit u WHERE shoelace_data.sl_unit = u.un_name);
-</programlisting>
-
-   请注意，这一条规则同时支持该视图上的<command>INSERT</command>和<command>INSERT RETURNING</command>查询；对于普通<command>INSERT</command>，<literal>RETURNING</literal>子句会被简单忽略。
    </para>
 
    <para>
@@ -1514,8 +1514,11 @@ SELECT * FROM phone_number WHERE tricky(person, phone);
 </para>
 
 <para>
-    另一方面，视图上不能创建触发器，因为视图关系中没有真实的
-    数据；但可以在视图上创建 INSERT、UPDATE 和 DELETE 规则。
+    另一方面，在视图上由<command>INSERT</command>触发的触发器可以做到
+    与规则相同的事情：把数据放到别处，并抑制对视图的插入。但在
+    <command>UPDATE</command>或<command>DELETE</command>上它做不到这一点，
+    因为视图关系中没有可以被扫描的真实数据，触发器因而永远不会被调用。
+    只有规则才能解决问题。
 </para>
 
 <para>
@@ -1651,7 +1654,9 @@ Nestloop
 <!-- What's happening with this?  If it doesn't come back, remove this section. -->
 <para>
     另一种情形是 <command>UPDATE</command> 中的这样一些情况：某个动作是否
-    应当执行，取决于某个属性的更改。要创建像 shoelace_log 示例中那样的
+    应当执行，取决于某个属性的更改。在 <productname>PostgreSQL</productname>
+    6.4 版中，规则事件上的属性说明被禁用了（最迟会在 6.5 版恢复，也可能
+    更早——敬请期待）。因此，目前要创建像 shoelace_log 示例中那样的
     规则，唯一的办法就是使用规则限定条件。这会导致一条额外的查询总是
     被执行，即使感兴趣的属性根本不可能更改（因为它没有出现在初始查询
     的目标列表中）也是如此。将来如果重新启用这一点，那将是规则相对于

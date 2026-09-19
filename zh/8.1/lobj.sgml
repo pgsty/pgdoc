@@ -14,24 +14,37 @@
     本章介绍<productname>PostgreSQL</productname>大对象数据的实现，以及相应的编程接口和查询语言接口。本章示例使用<application>libpq</application> C 库，但大多数<productname>PostgreSQL</productname>原生编程接口都支持等效的功能。其他接口也可能在内部使用大对象接口来为大值提供通用支持，这里不作说明。
    </para>
 
-  <sect1 id="lo-intro">
-   <title>简介</title>
-
-   <indexterm>
-    <primary>TOAST</primary>
-    <secondary>versus large objects</secondary>
-   </indexterm>
+  <sect1 id="lo-history">
+   <title>历史</title>
 
    <para>
-    所有大对象都存放在一个名为
+    <productname>PostgreSQL</productname> 的间接前身
+    <productname>POSTGRES 4.2</productname> 支持三种标准的大对象实现
+    方式：作为 <productname>POSTGRES</productname> 服务器外部的文件、
+    作为由 <productname>POSTGRES</productname> 服务器管理的外部文件，
+    以及作为存储在 <productname>POSTGRES</productname> 数据库内部的
+    数据。这在用户中引起了相当大的混乱。因此，
+    <productname>PostgreSQL</productname> 只保留了把大对象作为数据库
+    内部存储数据的方式。尽管这样访问速度较慢，但它提供了更严格的
+    数据完整性。由于历史原因，这种存储方案被称为
+    <firstterm>Inversion 大对象</firstterm>（Inversion
+    large objects）。（你会偶尔看到 Inversion 一词被用来表示与
+    大对象相同的含义。）从 <productname>PostgreSQL 7.1</productname>
+    开始，所有大对象都放在一个名为
     <classname>pg_largeobject</classname> 的系统表中。
-    <productname>PostgreSQL</productname> 还支持一种名为
-    <quote><acronym>TOAST</acronym></quote> 的存储系统，它会自动将
-    大于单个数据库页的值存储到每个表各自的二级存储区域中。这使得
-    大对象机制在一定程度上已经过时。大对象机制仍然保留的一个优势
-    是，它允许的值大小可达 2 GB，而经过 <acronym>TOAST</acronym>
-    处理的字段最大只能到 1 GB。此外，可以使用读写 API 随机修改
-    大对象，这比使用 <acronym>TOAST</acronym> 执行此类操作更高效。
+   </para>
+
+   <para>
+    <indexterm>
+     <primary>TOAST</primary>
+     <secondary>versus large objects</secondary>
+    </indexterm>
+    <productname>PostgreSQL</productname> 7.1 引入了一种（绰号为
+    <quote><acronym>TOAST</acronym></quote>的）机制，允许数据值远大于
+    单个页面。这使得大对象机制在一定程度上已经过时。大对象机制
+    仍然保留的一个优势是，它允许的值大小可达 2 GB，而经过
+    <acronym>TOAST</acronym> 处理的字段最大只能到 1 GB。此外，大对象
+    可以比普通数据字段更容易地逐段进行操作，因此实际的限制差别很大。
    </para>
 
   </sect1>
@@ -51,7 +64,9 @@
    <para>
     本节描述 <productname>PostgreSQL</productname> 客户端接口库为
     访问大对象所提供的功能。使用这些函数对大对象进行的所有操作
-    <emphasis>必须</emphasis>发生在一个 SQL 事务块内。
+    <emphasis>必须</emphasis>发生在一个 SQL 事务块内。（从
+    <productname>PostgreSQL 6.5</> 开始，这一要求被强制执行；不过在
+    更早的版本中它一直是一项隐含要求，忽略它会导致错误行为。）
     <productname>PostgreSQL</productname> 的大对象接口是仿照
     <acronym>Unix</acronym> 文件系统接口设计的，提供了与
     <function>open</function>、<function>read</function>、
@@ -66,7 +81,7 @@
     <application>libpq</application> 库链接。
    </para>
 
-   <sect2 id="lo-create">
+   <sect2>
     <title>创建一个大对象</title>
 
     <para>
@@ -76,7 +91,7 @@ Oid lo_creat(PGconn *conn, int mode);
 </synopsis>
      <indexterm><primary>lo_creat</></>
      创建一个新的大对象。返回值是分配给新大对象的 OID，失败时为
-     <symbol>InvalidOid</symbol>（零）。
+     InvalidOid（零）。
 
      自 <productname>PostgreSQL</productname> 8.1 起，
      <replaceable class="parameter">mode</replaceable> 未被使用且被
@@ -104,14 +119,14 @@ Oid lo_create(PGconn *conn, Oid lobjId);
      <replaceable class="parameter">lobjId</replaceable> 指定；如果
      指定了它，而该 OID 已经被某个大对象使用，则会失败。如果
      <replaceable class="parameter">lobjId</replaceable> 是
-     <symbol>InvalidOid</symbol>（零），则
+     InvalidOid（零），则
      <function>lo_create</> 会分配一个未使用的 OID（其行为与
      <function>lo_creat</> 相同）。返回值是分配给新大对象的 OID，
-     失败时为 <symbol>InvalidOid</symbol>（零）。
+     失败时为 InvalidOid（零）。
     </para>
 
     <para>
-     <function>lo_create</function>是<productname>PostgreSQL</productname> 8.1 新增的；如果将该函数用于更早版本的服务器，它会失败并返回<symbol>InvalidOid</symbol>。
+     <function>lo_create</function>是<productname>PostgreSQL</productname> 8.1 新增的；如果将该函数用于更早版本的服务器，它会失败并返回 InvalidOid。
     </para>
 
     <para>
@@ -122,7 +137,7 @@ inv_oid = lo_create(conn, desired_oid);
     </para>
    </sect2>
 
-   <sect2 id="lo-import">
+   <sect2>
     <title>导入一个大对象</title>
 
     <para>
@@ -133,33 +148,13 @@ Oid lo_import(PGconn *conn, const char *filename);
      <indexterm><primary>lo_import</></>
      <replaceable class="parameter">filename</replaceable>
      指定要作为大对象导入的操作系统文件名。返回值是分配给新大对象
-     的 OID，失败时为 <symbol>InvalidOid</symbol>（零）。注意，该
+     的 OID，失败时为 InvalidOid（零）。注意，该
      文件是由客户端接口库读取的，而不是由服务器读取的；因此它必须
      存在于客户端文件系统中，并且对客户端应用可读。
     </para>
-
-    <para>
-     The function
-<synopsis>
-Oid lo_import_with_oid(PGconn *conn, const char *filename, Oid lobjId);
-</synopsis>
-     <indexterm><primary>lo_import_with_oid</></>
-     也会导入一个新的大对象。要分配的 OID 可以由
-     <replaceable class="parameter">lobjId</replaceable> 指定；如果
-     指定了它，而该 OID 已经被某个大对象使用，则会失败。如果
-     <replaceable class="parameter">lobjId</replaceable> 是
-     <symbol>InvalidOid</symbol>（零），则
-     <function>lo_import_with_oid</> 会分配一个未使用的 OID（其行为
-     与 <function>lo_import</> 相同）。返回值是分配给新大对象的
-     OID，失败时为 <symbol>InvalidOid</symbol>（零）。
-    </para>
-
-    <para>
-     <function>lo_import_with_oid</function>是<productname>PostgreSQL</productname> 8.4 新增的，它在内部使用了 8.1 新增的<function>lo_create</function>；如果将该函数用于 8.0 或更早版本的服务器，它会失败并返回<symbol>InvalidOid</symbol>。
-    </para>
    </sect2>
 
-   <sect2 id="lo-export">
+   <sect2>
     <title>导出一个大对象</title>
 
     <para>
@@ -175,7 +170,7 @@ int lo_export(PGconn *conn, Oid lobjId, const char *filename);
     </para>
    </sect2>
 
-   <sect2 id="lo-open">
+   <sect2>
     <title>打开一个现有的大对象</title>
 
     <para>
@@ -221,7 +216,7 @@ inv_fd = lo_open(conn, inv_oid, INV_READ|INV_WRITE);
     </para>
 </sect2>
 
-<sect2 id="lo-write">
+<sect2>
 <title>向大对象写入数据</title>
 
 <para>
@@ -238,7 +233,7 @@ int lo_write(PGconn *conn, int fd, const char *buf, size_t len);
 </para>
 </sect2>
 
-<sect2 id="lo-read">
+<sect2>
 <title>从大对象读取数据</title>
 
 <para>
@@ -255,7 +250,7 @@ int lo_read(PGconn *conn, int fd, char *buf, size_t len);
 </para>
 </sect2>
 
-<sect2 id="lo-seek">
+<sect2>
 <title>在大对象中定位</title>
 
 <para>
@@ -274,7 +269,7 @@ int lo_lseek(PGconn *conn, int fd, int offset, int whence);
 </para>
 </sect2>
 
-<sect2 id="lo-tell">
+<sect2>
 <title>获取大对象的当前位置</title>
 
 <para>
@@ -286,39 +281,8 @@ int lo_tell(PGconn *conn, int fd);
 </para>
 </sect2>
 
-<sect2 id="lo-truncate">
-<title>截断一个大对象</title>
 
-<para>
-     要把大对象截断为给定长度，调用
-<synopsis>
-int lo_truncate(PGcon *conn, int fd, size_t len);
-</synopsis>
-     <indexterm><primary>lo_truncate</></> 把大对象描述符
-     <parameter>fd</> 对应的大对象截断为长度
-     <parameter>len</parameter>。<parameter>fd</parameter> 参数必须是
-     先前由 <function>lo_open</function> 返回的。如果
-     <parameter>len</parameter> 大于大对象当前的长度，则会用零字节
-     （'\0'）把该大对象扩展到指定长度。
-</para>
-
-<para>
-     文件偏移量不会改变。
-</para>
-
-<para>
-     成功时 <function>lo_truncate</function> 返回零。出错时，
-     返回值为负。
-</para>
-
-<para>
-     <function>lo_truncate</> 是
-     <productname>PostgreSQL</productname> 8.3 新增的；如果对更旧版本
-     的服务器运行该函数，它会失败并返回负值。
-</para>
-</sect2>
-
-<sect2 id="lo-close">
+<sect2>
 <title>关闭一个大对象描述符</title>
 
 <para>
@@ -337,7 +301,7 @@ int lo_close(PGconn *conn, int fd);
 </para>
 </sect2>
 
-   <sect2 id="lo-unlink">
+   <sect2>
     <title>移除一个大对象</title>
 
     <para>
@@ -382,9 +346,6 @@ SELECT lo_unlink(173454);  -- deletes large object with OID 173454
 INSERT INTO image (name, raster)
     VALUES ('beautiful image', lo_import('/etc/motd'));
 
-INSERT INTO image (name, raster)  -- same as above, but specify OID to use
-    VALUES ('beautiful image', lo_import('/etc/motd', 68583));
-
 SELECT lo_export(image.raster, '/tmp/motd') FROM image
     WHERE name = 'beautiful image';
 </programlisting>
@@ -392,9 +353,6 @@ SELECT lo_export(image.raster, '/tmp/motd') FROM image
 
   <para>服务器端 <function>lo_import</function> 和 <function>lo_export</function> 函数的行为与客户端对应函数有很大不同。这两个函数使用运行数据库服务器的操作系统用户的权限，读写服务器文件系统中的文件，因此仅限超级用户使用。相比之下，客户端导入和导出函数使用客户端程序的权限，读写客户端文件系统中的文件。客户端函数可以被任何 <productname>PostgreSQL</productname> 用户使用。</para>
 
-  <para>
-    <function>lo_read</function>和<function>lo_write</function>的功能也可以通过服务器端调用获得，但服务器端函数名与客户端接口不同，因为它们不包含下划线。必须将这些函数调用为<function>loread</function>和<function>lowrite</function>。
-  </para>
 
 </sect1>
 
@@ -407,7 +365,7 @@ SELECT lo_export(image.raster, '/tmp/motd') FROM image
 
   <example id="lo-example">
    <title>用 <application>libpq</application> 操作大对象的示例程序</title>
-<programlisting><![CDATA[
+<programlisting>
 /*--------------------------------------------------------------
  *
  * testlo.c--
@@ -417,7 +375,7 @@ SELECT lo_export(image.raster, '/tmp/motd') FROM image
  *
  *--------------------------------------------------------------
  */
-#include <stdio.h>
+#include &lt;stdio.h&gt;
 #include "libpq-fe.h"
 #include "libpq/libpq-fs.h"
 
@@ -442,7 +400,7 @@ importFile(PGconn *conn, char *filename)
      * open the file to be read in
      */
     fd = open(filename, O_RDONLY, 0666);
-    if (fd < 0)
+    if (fd &lt; 0)
     {                           /* error */
         fprintf(stderr, "cannot open unix file %s\n", filename);
     }
@@ -459,10 +417,10 @@ importFile(PGconn *conn, char *filename)
     /*
      * read in from the Unix file and write to the inversion file
      */
-    while ((nbytes = read(fd, buf, BUFSIZE)) > 0)
+    while ((nbytes = read(fd, buf, BUFSIZE)) &gt; 0)
     {
         tmp = lo_write(conn, lobj_fd, buf, nbytes);
-        if (tmp < nbytes)
+        if (tmp &lt; nbytes)
             fprintf(stderr, "error while reading large object\n");
     }
 
@@ -481,7 +439,7 @@ pickout(PGconn *conn, Oid lobjId, int start, int len)
     int         nread;
 
     lobj_fd = lo_open(conn, lobjId, INV_READ);
-    if (lobj_fd < 0)
+    if (lobj_fd &lt; 0)
     {
         fprintf(stderr, "cannot open large object %d\n",
                 lobjId);
@@ -491,11 +449,11 @@ pickout(PGconn *conn, Oid lobjId, int start, int len)
     buf = malloc(len + 1);
 
     nread = 0;
-    while (len - nread > 0)
+    while (len - nread &gt; 0)
     {
         nbytes = lo_read(conn, lobj_fd, buf, len - nread);
         buf[nbytes] = ' ';
-        fprintf(stderr, ">>> %s", buf);
+        fprintf(stderr, "&gt;&gt;&gt; %s", buf);
         nread += nbytes;
     }
     free(buf);
@@ -513,7 +471,7 @@ overwrite(PGconn *conn, Oid lobjId, int start, int len)
     int         i;
 
     lobj_fd = lo_open(conn, lobjId, INV_WRITE);
-    if (lobj_fd < 0)
+    if (lobj_fd &lt; 0)
     {
         fprintf(stderr, "cannot open large object %d\n",
                 lobjId);
@@ -522,12 +480,12 @@ overwrite(PGconn *conn, Oid lobjId, int start, int len)
     lo_lseek(conn, lobj_fd, start, SEEK_SET);
     buf = malloc(len + 1);
 
-    for (i = 0; i < len; i++)
+    for (i = 0; i &lt; len; i++)
         buf[i] = 'X';
     buf[i] = ' ';
 
     nwritten = 0;
-    while (len - nwritten > 0)
+    while (len - nwritten &gt; 0)
     {
         nbytes = lo_write(conn, lobj_fd, buf + nwritten, len - nwritten);
         nwritten += nbytes;
@@ -555,7 +513,7 @@ exportFile(PGconn *conn, Oid lobjId, char *filename)
      * open the large object
      */
     lobj_fd = lo_open(conn, lobjId, INV_READ);
-    if (lobj_fd < 0)
+    if (lobj_fd &lt; 0)
     {
         fprintf(stderr, "cannot open large object %d\n",
                 lobjId);
@@ -565,7 +523,7 @@ exportFile(PGconn *conn, Oid lobjId, char *filename)
      * open the file to be written to
      */
     fd = open(filename, O_CREAT | O_WRONLY, 0666);
-    if (fd < 0)
+    if (fd &lt; 0)
     {                           /* error */
         fprintf(stderr, "cannot open unix file %s\n",
                 filename);
@@ -574,10 +532,10 @@ exportFile(PGconn *conn, Oid lobjId, char *filename)
     /*
      * read in from the inversion file and write to the Unix file
      */
-    while ((nbytes = lo_read(conn, lobj_fd, buf, BUFSIZE)) > 0)
+    while ((nbytes = lo_read(conn, lobj_fd, buf, BUFSIZE)) &gt; 0)
     {
         tmp = write(fd, buf, nbytes);
-        if (tmp < nbytes)
+        if (tmp &lt; nbytes)
         {
             fprintf(stderr, "error while writing %s\n",
                     filename);
@@ -656,7 +614,6 @@ main(int argc, char **argv)
     PQfinish(conn);
     exit(0);
 }
-]]>
 </programlisting>
 </example>
 

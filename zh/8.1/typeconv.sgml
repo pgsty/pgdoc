@@ -90,7 +90,7 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 </para>
 
 <para>
-系统目录保存了哪些数据类型之间存在哪些<firstterm>类型转换</firstterm>，以及如何执行这些转换的信息。用户还可以使用<xref linkend="sql-createcast" endterm="sql-createcast-title">命令添加额外的类型转换。（这通常与定义新数据类型一并完成。内置类型之间的类型转换集合经过精心设计，最好不要改动。）
+系统目录保存了哪些数据类型之间的转换（称为<firstterm>类型转换</firstterm>）是有效的，以及如何执行这些转换的信息。用户可以使用 <command>CREATE CAST</command> 命令添加额外的类型转换。（这通常与定义新数据类型一并完成。内置类型之间的类型转换集合经过精心设计，最好不要改动。）
 </para>
 
 <indexterm>
@@ -99,7 +99,7 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 </indexterm>
 
 <para>
-解析器还提供了一种额外的启发式规则，可在存在隐式类型转换的一组类型之间更准确地判定适当的转换行为。数据类型被划分为若干基本的<firstterm>类型分类</firstterm>，包括<type>boolean</type>、<type>numeric</type>、<type>string</type>、<type>bitstring</type>、<type>datetime</type>、<type>timespan</type>、<type>geometric</type>、<type>network</type>以及用户定义类型。（列表见<xref linkend="catalog-typcategory-table">；不过也可以创建自定义类型分类。）每个分类中可以有一个或多个<firstterm>首选类型</firstterm>，当存在多种可能类型可选时，会优先选择它们。通过仔细选择首选类型和可用的隐式类型转换，可以确保有歧义的表达式（即存在多个候选解析方案的表达式）能够以有用的方式被解析。
+解析器中提供了一条额外的启发式规则，以便对 <acronym>SQL</acronym> 标准类型的正确行为做出更好的猜测。系统定义了若干基本的<firstterm>类型分类</firstterm>：<type>boolean</type>、<type>numeric</type>、<type>string</type>、<type>bitstring</type>、<type>datetime</type>、<type>timespan</type>、<type>geometric</type>、<type>network</type>以及用户定义类型。除用户定义分类外，每个分类都有一个或多个<firstterm>首选类型</firstterm>，在存在歧义时会优先选择它们。在用户定义分类中，每个类型都是自己的首选类型。因此，当多个可能的内建类型并存时，有歧义的表达式（即存在多个候选解析方案的表达式）往往仍能被解析；但当存在多个用户定义类型可供选择时，则会引发错误。
 </para>
 
 <para>
@@ -109,6 +109,18 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 <listitem>
 <para>
 隐式转换绝不应产生令人意外或无法预测的结果。
+</para>
+</listitem>
+
+<listitem>
+<para>
+解析器对其没有<foreignphrase>先验</foreignphrase>知识的用户定义类型，应当位于类型层次结构中<quote>更高</quote>的位置。在混合类型表达式中，原生类型总是应当被转换为用户定义类型（当然，仅在确需转换时）。
+</para>
+</listitem>
+
+<listitem>
+<para>
+用户定义类型之间没有关联。目前，<productname>PostgreSQL</productname>除了针对内建类型的硬编码启发式规则，以及基于可用函数和类型转换的隐式关系之外，没有关于类型之间关系的信息可用。
 </para>
 </listitem>
 
@@ -135,7 +147,7 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 </indexterm>
 
   <para>
-   操作符表达式所引用的具体操作符按照下述过程确定。注意，该过程还会间接受到相关操作符优先级的影响，因为优先级决定了哪些子表达式会被视为哪些操作符的输入。详见<xref linkend="sql-precedence">。
+   操作符调用中所使用的具体操作符由下面的过程确定。注意，该过程会间接受到相关操作符优先级的影响。详见<xref linkend="sql-precedence">。
   </para>
 
 <procedure>
@@ -165,7 +177,7 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 <substeps>
 <step performance="optional">
 <para>
-如果二元操作符调用的一个参数是<type>unknown</type>类型，则在本次检查中假定它与另一个参数类型相同。涉及两个<type>unknown</type>输入的调用，或带有<type>unknown</type>输入的一元操作符，在这一步都不可能找到匹配。
+如果二元操作符调用的一个参数是<type>unknown</type>类型，则在本次检查中假定它与另一个参数类型相同。其他涉及<type>unknown</type>的情况在这一步永远不会找到匹配。
 </para>
 </step>
 </substeps>
@@ -213,24 +225,24 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 </para>
 
 <example>
-<title>阶乘操作符类型解析</title>
+<title>指数操作符类型解析</title>
 
 <para>
-标准目录中只定义了一个阶乘操作符（后缀 <literal>!</literal>），它接受一个类型为
-<type>bigint</type> 的参数。扫描器为以下查询表达式中的参数赋予初始类型 <type>integer</type>：
+目录中只定义了一个指数操作符，它接受类型为 <type>double precision</type>
+的参数。扫描器对这个查询表达式的两个参数都赋予初始类型 <type>integer</type>：
 <screen>
-SELECT 40 ! AS "40 factorial";
+SELECT 2 ^ 3 AS "exp";
 
-                   40 factorial
---------------------------------------------------
- 815915283247897734345611269596115894272000000000
+ exp
+-----
+   8
 (1 row)
 </screen>
 
-因此，解析器会对操作数进行类型转换，该查询等价于：
+因此，解析器会对两个操作数都做类型转换，该查询等价于：
 
 <screen>
-SELECT CAST(40 AS bigint) ! AS "40 factorial";
+SELECT CAST(2 AS double precision) ^ CAST(3 AS double precision) AS "exp";
 </screen>
 </para>
 </example>
@@ -346,18 +358,6 @@ SELECT ~ CAST('20' AS int8) AS "negation";
 如果搜索路径中找到多个参数类型完全相同的函数，只考虑路径中最早出现的那一个。参数类型不同的函数则不受搜索路径位置影响，处于同等地位。
 </para>
 </step>
-<step performance="optional">
-<para>
-如果函数声明了一个<literal>VARIADIC</literal>数组参数，而调用时没有使用<literal>VARIADIC</literal>关键字，则把数组参数视为一个或多个其元素类型的参数，个数按匹配该调用的需要确定。扩展之后，该函数的有效参数类型可能与某个非variadic函数完全相同。在这种情况下，使用搜索路径中较早出现的函数；如果两个函数位于同一模式，则优先选择非variadic的那个。
-</para>
-</step>
-<step performance="optional">
-
-<para>
-带有参数默认值的函数，被认为可以匹配任何省略了零个或多个可使用默认值的参数位置的调用。如果不止一个这样的函数能匹配某个调用，则使用搜索路径中最早出现的那一个。如果同一模式中存在两个或更多这样的函数，并且它们在未使用默认值的参数位置上的参数类型相同（如果它们具有不同的带有默认值的参数集合，这种情况是可能的），系统就无法判断该偏好哪一个；如果找不到更好的匹配，就会报<quote>有歧义的函数调用</quote>错误。
-</para>
-
-</step>
 </substeps>
 </step>
 
@@ -370,12 +370,7 @@ SELECT ~ CAST('20' AS int8) AS "negation";
 
 <step performance="required">
 <para>
-如果没有找到精确匹配，就检查该函数调用是否看起来像一种特殊的类型转换请求。这种情况发生在：函数调用只有一个参数，且函数名与某个数据类型的（内部）名称相同。此外，函数参数必须是unknown类型字面量，或者是一种可以二进制强制转换为该命名数据类型的类型，或者是一种可以通过应用其 I/O 函数转换为该命名数据类型的类型（也就是说，该转换要么转到某种标准字符串类型，要么从某种标准字符串类型转来）。满足这些条件时，该函数调用会被当作一种<literal>CAST</literal>形式。
-  <footnote>
-   <para>
-    之所以有这一步，是为了在不存在实际类型转换函数的情况下仍支持函数风格的类型转换写法。如果存在类型转换函数，按惯例它会以其输出类型命名，因此无需为此设置特殊情况。更多说明见<xref linkend="sql-createcast" endterm="sql-createcast-title">。
-   </para>
-  </footnote>
+如果没有找到精确匹配，就检查该函数调用是否看起来像一个平凡的类型转换请求。这种情况发生在：函数调用只有一个参数，且函数名与某个数据类型的（内部）名称相同。此外，函数参数必须是unknown类型字面量，或者是一种与该命名数据类型二进制兼容的类型。满足这些条件时，函数参数会被直接转换为该命名数据类型，而不会发生实际的函数调用。
 </para>
 </step>
 <step performance="required">
@@ -495,20 +490,18 @@ SELECT substr(CAST (varchar '1234' AS text), 3);
 如果用<type>integer</type>类型参数调用该函数，解析器会尝试把它转换为<type>text</type>：
 <screen>
 SELECT substr(1234, 3);
-ERROR:  function substr(integer, integer) does not exist
-HINT:  No function matches the given name and argument types. You might need
-to add explicit type casts.
-</screen>
-
-这行不通，因为<type>integer</type>并没有到<type>text</type>的隐式类型转换。不过，显式类型转换可以：
-<screen>
-SELECT substr(CAST (1234 AS text), 3);
 
  substr
 --------
      34
 (1 row)
 </screen>
+
+它实际执行的是
+<screen>
+SELECT substr(CAST (1234 AS text), 3);
+</screen>
+这种自动转换之所以能够成功，是因为存在从<type>integer</type>到<type>text</type>的隐式可调用类型转换。
 </para>
 </example>
 
@@ -540,7 +533,7 @@ SELECT substr(CAST (1234 AS text), 3);
 <step performance="required">
 
 <para>
-检查目标类型是否有尺寸调整类型转换。尺寸调整类型转换是该类型到其自身的类型转换。如果在<structname>pg_cast</structname>目录中找到了这种转换，就在把表达式存入目标列之前先应用它。此类类型转换的实现函数总是额外接受一个<type>integer</type>参数，用来接收目标列的<structfield>atttypmod</structfield>值（通常是其声明长度，尽管不同数据类型对<structfield>atttypmod</structfield>的解释各不相同）；它还可能接受第三个<type>boolean</type>参数，用来说明该类型转换是显式还是隐式的。类型转换函数负责应用所有与长度相关的语义，例如长度检查或截断。
+检查目标类型是否有尺寸调整类型转换。尺寸调整类型转换是该类型到其自身的类型转换。如果在<structname>pg_cast</structname>目录中找到了这种转换，就在把表达式存入目标列之前先应用它。此类类型转换的实现函数总是额外接受一个<type>integer</type>参数，用来接收目标列的声明长度（实际上就是它的<structfield>atttypmod</structfield>值；不同数据类型对<structfield>atttypmod</structfield>的解释各不相同）。类型转换函数负责应用所有与长度相关的语义，例如长度检查或截断。
 </para>
 </step>
 
@@ -555,7 +548,7 @@ SELECT substr(CAST (1234 AS text), 3);
 <screen>
 CREATE TABLE vv (v character(20));
 INSERT INTO vv SELECT 'abc' || 'def';
-SELECT v, octet_length(v) FROM vv;
+SELECT v, length(v) FROM vv;
 
           v           | octet_length
 ----------------------+--------------
@@ -565,7 +558,7 @@ SELECT v, octet_length(v) FROM vv;
 </para>
 
 <para>
-这里实际发生的是，两个unknown类型字面量默认都被解析为<type>text</type>，从而使<literal>||</literal>操作符被解析为<type>text</type>的连接操作。然后，操作符得到的<type>text</type>结果被转换为<type>bpchar</type>（<quote>用空格填充的字符</quote>，blank-padded char，即<type>character</type>数据类型的内部名称），以匹配目标列类型。（由于从<type>text</type>到<type>bpchar</type>的转换是二进制可强制转换的，这一步不会插入任何真实的函数调用。）最后，系统从系统目录中找到尺寸调整函数<literal>bpchar(bpchar, integer, boolean)</literal>，并把它应用到操作符结果以及存储列长度上。这个特定于类型的函数会执行所需的长度检查并补齐填充空格。
+这里实际发生的是，两个unknown类型字面量默认都被解析为<type>text</type>，从而使<literal>||</literal>操作符被解析为<type>text</type>的连接操作。然后，操作符得到的<type>text</type>结果被转换为<type>bpchar</type>（<quote>用空格填充的字符</quote>，blank-padded char，即<type>character</type>数据类型的内部名称），以匹配目标列类型。（由于<type>text</type>和<type>bpchar</type>是二进制兼容的，这一步不会插入任何真实的函数调用。）最后，系统从系统目录中找到尺寸调整函数<literal>bpchar(bpchar, integer)</literal>，并把它应用到操作符结果以及存储列长度上。这个特定于类型的函数会执行所需的长度检查并补齐填充空格。
 </para>
 </example>
 </sect1>
@@ -589,11 +582,6 @@ SELECT v, octet_length(v) FROM vv;
 </indexterm>
 
 <indexterm zone="typeconv-union-case">
- <primary>VALUES</primary>
- <secondary>结果类型的确定</secondary>
-</indexterm>
-
-<indexterm zone="typeconv-union-case">
  <primary>GREATEST</primary>
  <secondary>结果类型的确定</secondary>
 </indexterm>
@@ -604,23 +592,15 @@ SELECT v, octet_length(v) FROM vv;
 </indexterm>
 
 <para>
-SQL 的<literal>UNION</literal>结构必须让可能不同的类型彼此匹配，以形成单一结果集。该解析算法会分别应用到联合查询的每个输出列。<literal>INTERSECT</literal>和<literal>EXCEPT</literal>结构以与<literal>UNION</literal>相同的方式解析不同类型。<literal>CASE</literal>、<literal>ARRAY</literal>、<literal>VALUES</literal>以及<function>GREATEST</function>和<function>LEAST</function>构造使用完全相同的算法来匹配其组成表达式并选择结果数据类型。
+SQL 的<literal>UNION</literal>结构必须让可能不同的类型彼此匹配，以形成单一结果集。该解析算法会分别应用到联合查询的每个输出列。<literal>INTERSECT</literal>和<literal>EXCEPT</literal>结构以与<literal>UNION</literal>相同的方式解析不同类型。<literal>CASE</literal>、<literal>ARRAY</literal>以及<function>GREATEST</function>和<function>LEAST</function>构造使用完全相同的算法来匹配其组成表达式并选择结果数据类型。
 </para>
 
 <procedure>
 <title><literal>UNION</literal>、<literal>CASE</literal>及相关结构的类型解析</title>
 
 <step performance="required">
-
 <para>
-如果所有输入都是同一类型，且该类型不是<type>unknown</type>，就解析为该类型；否则，将列表中的所有域类型替换为它们各自的基础类型。
-</para>
-</step>
-
-<step performance="required">
-
-<para>
-如果所有输入都是<type>unknown</type>类型，则解析为<type>text</type>类型（字符串分类的首选类型）。否则，忽略<type>unknown</type>输入。
+如果所有输入都是<type>unknown</type>类型，则解析为<type>text</type>类型（字符串分类的首选类型）。否则，在选择结果类型时忽略<type>unknown</type>输入。
 </para>
 </step>
 
@@ -632,20 +612,13 @@ SQL 的<literal>UNION</literal>结构必须让可能不同的类型彼此匹配�
 
 <step performance="required">
 <para>
-选择该分类中的首选类型（如果第一个非unknown输入类型恰好是首选类型，则选它）。
+选择第一个属于该分类首选类型、或者允许所有非unknown输入都隐式转换为它的非unknown输入类型。
 </para>
 </step>
 
 <step performance="required">
 <para>
-否则，选择最后一个能让所有在它之前的非unknown输入都隐式转换为它的非unknown输入类型。（这样的类型总是存在的，因为列表中至少第一个类型就满足这一条件。）
-</para>
-</step>
-
-<step performance="required">
-
-<para>
-把所有输入都转换为所选类型。如果某个输入到所选类型不存在转换，则失败。
+把所有输入都转换为所选类型。
 </para>
 </step>
 </procedure>

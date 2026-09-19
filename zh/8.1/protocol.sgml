@@ -3,11 +3,6 @@
 <chapter id="protocol">
  <title>Frontend/Backend Protocol</title>
 
- <indexterm zone="protocol">
-  <primary>protocol</primary>
-  <secondary>frontend-backend</secondary>
- </indexterm>
-
  <para>
   <productname>PostgreSQL</productname>使用一种基于消息的协议在前端和后端（客户端与服务器）之间进行通信。该协议既支持<acronym>TCP/IP</acronym>，也支持 Unix 域套接字。端口号 5432 已在 IANA 注册为支持该协议的服务器的惯用 TCP 端口号，但实际上任何非特权端口号都可以使用。
  </para>
@@ -130,7 +125,7 @@
    </para>
 
    <para>
-    接着服务器会发送适当的认证请求消息，前端必须以适当的认证响应消息进行回应（例如密码）。对于除 GSSAPI 和 SSPI 之外的认证方法，最多只会有一次请求和一次响应。在某些方法中，前端根本不需要发送响应，因此也不会出现认证请求。对于 GSSAPI 和 SSPI，则可能需要多轮报文交换才能完成认证。
+    接着服务器会发送适当的认证请求消息，前端必须以适当的认证响应消息进行回应（例如密码）。原则上，认证请求/响应周期可能需要多次往返，但目前的认证方法中没有一种会使用多于一次的请求和响应。在某些方法中，前端根本不需要发送响应，因此也不会出现认证请求。
    </para>
 
    <para>
@@ -182,7 +177,19 @@
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+          <varlistentry>
+      <term>AuthenticationCryptPassword</term>
+      <listitem>
+       <para>
+        前端现在必须发送一个 PasswordMessage，其中包含用 crypt(3)
+        加密的密码，加密时使用 AuthenticationCryptPassword 消息中指定的
+        2 字符盐。如果密码正确，服务器响应
+        AuthenticationOk；否则响应 ErrorResponse。
+       </para>
+      </listitem>
+     </varlistentry>
+
+<varlistentry>
       <term>AuthenticationMD5Password</term>
       <listitem>
        <para>
@@ -207,45 +214,9 @@
       </listitem>
      </varlistentry>
 
-     <varlistentry>
-      <term>AuthenticationGSS</term>
-      <listitem>
-       <para>
-        前端现在必须发起一次 GSSAPI 协商。前端将发送一条带有
-        GSSAPI 数据流第一部分的 PasswordMessage 消息作为响应。
-        如果还需要进一步的消息，服务器会响应
-        AuthenticationGSSContinue。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term>AuthenticationSSPI</term>
-      <listitem>
-       <para>
-        前端现在必须发起一次 SSPI 协商。前端将发送一条带有
-        SSPI 数据流第一部分的 PasswordMessage 作为响应。如果还
-        需要进一步的消息，服务器会响应
-        AuthenticationGSSContinue。
-       </para>
-      </listitem>
-
-     </varlistentry>
-     <varlistentry>
-      <term>AuthenticationGSSContinue</term>
-      <listitem>
-       <para>
-        该消息包含前一步 GSSAPI 或 SSPI 协商（AuthenticationGSS、
-        AuthenticationSSPI 或前一个 AuthenticationGSSContinue）的
-        响应数据。如果该消息中的 GSSAPI 或 SSPI 数据表明完成认证
-        还需要更多数据，前端必须把所需数据作为另一条
-        PasswordMessage 消息发送。如果该消息已完成 GSSAPI 或
-        SSPI 认证，服务器接下来会发送 AuthenticationOk 表示认证
-        成功，或发送 ErrorResponse 表示认证失败。
-       </para>
-      </listitem>
-     </varlistentry>
-
+     
+     
+     
     </variablelist>
    </para>
 
@@ -450,7 +421,7 @@
   </para>
   </sect2>
 
-  <sect2 id="protocol-flow-ext-query">
+  <sect2>
    <title>Extended Query</title>
 
    <para>
@@ -474,8 +445,7 @@
    </note>
 
    <para>
-    If successfully created, a named prepared-statement object lasts till
-    当前会话结束，除非被显式销毁。未命名
+    如果成功创建，命名预备语句对象会一直持续到当前会话结束，除非被显式销毁。未命名
     预备语句只会持续到下一条把未命名语句作为目标的 Parse 语句发出
     为止。（注意，简单
     Query 消息也会销毁未命名语句。）有名预备语句在被另一条
@@ -505,11 +475,10 @@
    </para>
 
    <para>
-    如果
-    Parse 消息未定义参数，未命名预备语句同样在 Parse 处理期间完成
-    规划。但如果存在参数，查询规划会在每次提供
-    Bind 参数时进行。这使得规划器可以利用每条
-    Bind 消息提供的实际参数值，而不是使用一般性估计。
+    对于未命名预备语句，如果
+    Parse 消息没有指定参数类型，查询规划会延迟到收到该语句的第一条
+    Bind 消息时才进行。规划器在规划查询时会考虑
+    Bind 消息中提供的参数实际值。
    </para>
 
    <note>
@@ -518,8 +487,14 @@
      查询生成的计划高效。在为分配给命名预备语句对象的参数化查询
      做规划时，查询规划器无法基于实际参数值（例如索引选择性）做
      决策。使用未命名语句可以避免这种可能的性能损失，因为直到有了
-     实际参数值之后才会进行规划。代价是每次
-     Bind 都必须重新规划，即使查询保持不变。
+     实际参数值之后才会进行规划。
+    </para>
+
+    <para>
+     如果在没有插入 Parse 的情况下，又收到了引用未命名预备语句对象的第二个
+     或后续 Bind，查询不会被重新规划。第一次 Bind 消息中使用的参数值所产生
+     的查询计划，可能只对可能的参数值中的一部分是高效的。要强制为新一组
+     参数重新规划查询，可以再发送一条 Parse 消息来替换未命名预备语句对象。
     </para>
    </note>
 
@@ -673,7 +648,7 @@
    </para>
 
    <para>
-   NoticeResponse 和 ParameterStatus 消息可能穿插在 CopyData 消息之间；前端必须处理这些情况，并应准备好处理其他异步消息类型（参见<xref linkend="protocol-async">）。除此之外，可以将任何除 CopyData 或 CopyDone 以外的消息类型视为拷贝出模式的终止标志。
+   NoticeResponse 消息有可能穿插在 CopyData 消息之间；前端必须处理这种情况，并应准备好处理其他异步消息类型（参见<xref linkend="protocol-async">）。除此之外，可以将任何除 CopyData 或 CopyDone 以外的消息类型视为拷贝出模式的终止标志。
   </para>
 
    <para>
@@ -708,16 +683,14 @@
     <literal>is_superuser</literal>、
     <literal>session_authorization</literal>、
     <literal>DateStyle</literal>、
-    <literal>IntervalStyle</literal>、
-    <literal>TimeZone</literal>、
+        <literal>TimeZone</literal>、
     <literal>integer_datetimes</literal> 和
     <literal>standard_conforming_strings</literal>。
     （<literal>server_encoding</literal>、
     <literal>TimeZone</literal> 和
     <literal>integer_datetimes</literal> 在 8.0 之前的发行版中不报告；
     <literal>standard_conforming_strings</literal> 在 8.1 之前的
-    发行版中不报告；
-    <literal>IntervalStyle</literal> 在 8.4 之前的发行版中不报告。）注意，
+    发行版中不报告。）注意，
     <literal>server_version</literal>、
     <literal>server_encoding</literal> 和
     <literal>integer_datetimes</literal>
@@ -1008,6 +981,60 @@ AuthenticationCleartextPassword (B)
 
 <varlistentry>
 <term>
+AuthenticationCryptPassword (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(10)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(4)
+</term>
+<listitem>
+<para>
+                Specifies that a crypt()-encrypted password is required.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte2
+</term>
+<listitem>
+<para>
+                The salt to use when encrypting the password.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
 AuthenticationMD5Password (B)
 </term>
 <listitem>
@@ -1076,110 +1103,6 @@ AuthenticationSCMCredential (B)
 </para>
 </listitem>
 </varlistentry>
-
-
-<varlistentry>
-<term>
-AuthenticationGSS (B)
-</term>
-<listitem>
-<para>
-
-<variablelist>
-<varlistentry>
-<term>Byte1('R')</term>
-<listitem>
-<para>将该消息标识为认证请求。</para>
-</listitem>
-</varlistentry>
-<varlistentry>
-<term>Int32(8)</term>
-<listitem>
-<para>消息内容的长度，以字节为单位，包括此长度字段本身。</para>
-</listitem>
-</varlistentry>
-<varlistentry>
-<term>Int32(7)</term>
-<listitem>
-<para>表示需要 GSSAPI 认证。</para>
-</listitem>
-</varlistentry>
-</variablelist>
-
-</para>
-</listitem>
-</varlistentry>
-
-
-<varlistentry>
-<term>
-AuthenticationSSPI (B)
-</term>
-<listitem>
-<para>
-
-<variablelist>
-<varlistentry>
-<term>Byte1('R')</term>
-<listitem>
-<para>将该消息标识为认证请求。</para>
-</listitem>
-</varlistentry>
-<varlistentry>
-<term>Int32(8)</term>
-<listitem>
-<para>消息内容的长度，以字节为单位，包括此长度字段本身。</para>
-</listitem>
-</varlistentry>
-<varlistentry>
-<term>Int32(9)</term>
-<listitem>
-<para>表示需要 SSPI 认证。</para>
-</listitem>
-</varlistentry>
-</variablelist>
-
-</para>
-</listitem>
-</varlistentry>
-<varlistentry>
-<term>
-AuthenticationGSSContinue (B)
-</term>
-<listitem>
-<para>
-
-<variablelist>
-<varlistentry>
-<term>Byte1('R')</term>
-<listitem>
-<para>将该消息标识为认证请求。</para>
-</listitem>
-</varlistentry>
-<varlistentry>
-<term>Int32</term>
-<listitem>
-<para>消息内容的长度，以字节为单位，包括此长度字段本身。</para>
-</listitem>
-</varlistentry>
-<varlistentry>
-<term>Int32(8)</term>
-<listitem>
-<para>表示此消息包含 GSSAPI 或 SSPI 数据。</para>
-</listitem>
-</varlistentry>
-<varlistentry>
-<term>Byte<replaceable>n</replaceable></term>
-<listitem>
-<para>GSSAPI 或 SSPI 认证数据。</para>
-</listitem>
-</varlistentry>
-</variablelist>
-
-</para>
-</listitem>
-</varlistentry>
-
 
 <varlistentry>
 <term>
@@ -1498,8 +1421,6 @@ CommandComplete (B)
         对于<command>FETCH</command>命令，标签是<literal>FETCH <replaceable>rows</replaceable></literal>，
         其中<replaceable>rows</replaceable>是从游标中检索出的行数。
        </para>
-
-       <para>对于 <command>COPY</command> 命令，标签为 <literal>COPY <replaceable>rows</replaceable></literal>，其中 <replaceable>rows</replaceable> 是复制的行数。（注意：行数仅出现在 <productname>PostgreSQL</productname> 8.2 及更高版本中。）</para>
 
 </listitem>
 </varlistentry>
@@ -2429,8 +2350,7 @@ PasswordMessage (F)
 </term>
 <listitem>
 <para>
-         标识消息为密码响应。请注意，这也用于GSSAPI、SSPI和SASL响应消息。
-         可以从上下文中推断出确切的消息类型。
+         标识消息为密码响应。
         </para>
 </listitem>
 </varlistentry>

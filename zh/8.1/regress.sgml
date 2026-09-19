@@ -30,24 +30,31 @@ gmake check
 </screen>（也可以切换到<filename>src/test/regress</filename>并在那里运行此命令。）这会首先构建若干辅助文件（例如示例用户定义触发器函数），然后运行测试驱动脚本。结束时应该会看到类似下面的结果：
 <screen>
 <computeroutput>
-=======================
- All 115 tests passed.
-=======================
+======================
+ All 98 tests passed.
+======================
 </computeroutput>
 </screen>
    否则会显示哪些测试失败的说明。在假定<quote>失败</quote>代表严重问题之前，请先阅读下面的<xref linkend="regress-evaluation">。
   </para>
 
-  <warning>
-   <para>
-    在缺少 Unix 域套接字的系统（特别是 Windows）上，这种测试方法会启动一个临时服务器，并将其配置为接受来自本地机器的任何连接。任何本地用户在连接该服务器时都能获得数据库超级用户权限，并且原则上可以利用运行测试的操作系统用户的全部权限。因此，在与不可信用户共享的系统上，不建议使用<literal>gmake check</literal>。取而代之，可以在安装完成后再运行测试，具体做法见下一节。
+  <para>
+    由于这种测试方法会运行一个临时服务器，当你以 root 用户身份运行时它
+    将无法工作（因为服务器不会以 root 身份启动）。如果你已经以 root 身份
+    完成了构建，也不必从头再来。只需让回归测试目录可被其他用户写入，以
+    该用户身份登录，然后重新启动测试即可。例如
+<screen>
+<prompt>root# </prompt><userinput>chmod -R a+w src/test/regress</userinput>
+<prompt>root# </prompt><userinput>chmod -R a+w contrib/spi</userinput>
+<prompt>root# </prompt><userinput>su - joeuser</userinput>
+<prompt>joeuser$ </prompt><userinput>cd <replaceable>top-level build directory</></userinput>
+<prompt>joeuser$ </prompt><userinput>gmake check</userinput>
+</screen>
+    （这里唯一可能的<quote>安全风险</quote>是其他用户可能在你不知情的情况
+    下篡改回归测试的结果。在管理用户权限时请运用常识。）
    </para>
-  </warning>
-
    <para>
-    由于这种测试方法会运行一个临时服务器，如果你以 root 用户身份进行构建，
-    它将无法工作，因为服务器不会以 root 身份启动。推荐做法是不要以 root
-    身份构建；否则应在安装完成后再执行测试。
+    或者，在安装完成后再运行测试。
    </para>
 
    <para>
@@ -56,11 +63,21 @@ gmake check
    </para>
 
    <para>
-    并行回归测试会在你的用户 ID 下启动相当多的进程。目前最大并发度为二十个并行测试脚本，也就是四十个进程：每个测试脚本都有一个服务器进程和一个<application>psql</application>进程。因此，如果你的系统对每个用户可创建的进程数施加限制，请确保该限制至少有五十个左右，否则并行测试中可能会出现看似随机的失败或挂起。如果无法提高该限制，可以通过设置<literal>MAX_CONNECTIONS</literal>参数来降低并行度。例如：
+    并行回归测试会在你的用户 ID 下启动相当多的进程。目前最大并发度为二十个并行测试脚本，也就是六十个进程：每个测试脚本都有一个服务器进程、一个<application>psql</application>进程，而且<application>psql</application>通常还有一个 shell 父进程。因此，如果你的系统对每个用户可创建的进程数施加限制，请确保该限制至少有七十五个左右，否则并行测试中可能会出现看似随机的失败。如果无法提高该限制，可以通过设置<literal>MAX_CONNECTIONS</literal>参数来降低并行度。例如：
 <screen>
 gmake MAX_CONNECTIONS=10 check
 </screen>
     这样最多同时运行十个测试。
+   </para>
+
+  <para>
+    在某些系统上，默认的与 Bourne 兼容的 shell（<filename>/bin/sh</filename>）在
+    需要并行管理太多子进程时会出问题，这可能导致并行测试挂起或失败。在这种
+    情况下，可以在命令行上指定另一个与 Bourne 兼容的 shell，例如：
+<screen>
+gmake SHELL=/bin/ksh check
+</screen>
+    如果找不到没有问题的 shell，也可以像上面那样通过限制连接数来绕过该问题。
    </para>
 
   <para>
@@ -127,25 +144,10 @@ gmake installcheck
     <title>Locale differences</title>
 
     <para>
-     如果你针对一个使用 C 以外排序规则顺序的区域设置初始化的服务器运行测试，
-     就可能因为排序顺序不同而出现差异，并导致后续失败。回归测试套件通过
-     提供备用结果文件来处理这个问题；这些文件已知可以覆盖大量区域设置。
-    </para>
-
-    <para>
-     使用临时安装方法时，若要在其他区域下运行测试，请在<command>make</command>命令行上传入适当的区域相关环境变量，例如：
-<programlisting>
-gmake check LANG=de_DE.utf8
-</programlisting>
-     （回归测试驱动程序会取消<envar>LC_ALL</envar>的设置，因此用该变量选择区域是无效的。）要不使用区域，可以取消所有区域相关环境变量的设置（或把它们设为<literal>C</literal>），或者使用下面的特殊调用方式：
-<programlisting>
-gmake check NO_LOCALE=1
-</programlisting>
-     针对已有安装运行测试时，区域设置由该已有安装决定。要更改它，请通过向<command>initdb</command>传入适当的选项，用不同的区域初始化数据库集簇。
-    </para>
-
-    <para>
-     一般而言，仍然建议尽量在生产环境将要使用的区域设置下运行回归测试，因为这会实际锻炼生产环境中将会用到的区域和编码相关代码部分。根据操作系统环境的不同，可能会出现失败，但这样你至少能了解运行真实应用时应预期哪些区域特定的行为。
+     如果你针对一个使用 C 以外排序规则顺序的区域设置初始化的已安装服务器
+     运行测试，就可能因为排序顺序不同而出现差异，并导致后续失败。回归
+     测试套件通过提供备用结果文件来处理这个问题；这些文件已知可以覆盖
+     大量区域设置。
     </para>
    </sect2>
     
@@ -213,7 +215,7 @@ gmake check NO_LOCALE=1
     <title>栈深度不足</title>
       
     <para>
-     如果<literal>errors</literal>测试在<literal>select infinite_recurse()</literal>命令处导致服务器崩溃，说明该平台的进程栈大小限制小于<![%standalone-ignore;[<xref linkend="guc-max-stack-depth">]]><![%standalone-include;[<literal>max_stack_depth</literal>]]>参数所指示的值。这可以通过在更高的栈大小限制下运行服务器来解决（在使用默认的<varname>max_stack_depth</varname>值时建议 4MB）。如果无法做到，另一种办法是减小<varname>max_stack_depth</varname>的值。
+     如果<literal>errors</literal>测试在<literal>select infinite_recurse()</literal>命令处导致服务器崩溃，说明该平台的进程栈大小限制小于<xref linkend="guc-max-stack-depth">参数所指示的值。这可以通过在更高的栈大小限制下运行 postmaster 来解决（在使用默认的<varname>max_stack_depth</varname>值时建议 4MB）。如果无法做到，另一种办法是减小<varname>max_stack_depth</varname>的值。
     </para>
    </sect2>
 
@@ -252,18 +254,18 @@ diff results/random.out expected/random.out
    <para>
     映射文件中的每一行都采用如下形式：
 <synopsis>
-testname:output:platformpattern=comparisonfilename
+testname/platformpattern=comparisonfilename
 </synopsis>
-    测试名就是相应回归测试模块的名称。输出值指明要检查哪个输出文件。
-    对标准回归测试而言，这里始终是<literal>out</literal>。该值对应于
-    输出文件的扩展名。平台模式是 Unix 工具<command>expr</command>风格
-    的模式（也就是在开头隐含<literal>^</literal>锚点的正则表达式）。
-    它会与<command>config.guess</command>打印出的平台名进行匹配。
-    比较文件名则是替代结果比较文件的基名。
+    测试名就是相应回归测试模块的名称。平台模式是 Unix 工具<command>expr</command>风格
+    的模式（也就是在开头隐含<literal>^</literal>锚点的正则表达式）。它会
+    与<command>config.guess</command>打印出的平台名进行比较，后跟
+    <literal>:gcc</literal>或<literal>:cc</literal>，这取决于你使用的是
+    GNU 编译器还是系统的原生编译器（在两者有差别的系统上）。比较文件名
+    则是替代结果比较文件的基名。
    </para>
 
    <para>例如：某些系统会把极小的浮点数值解释为零，而不是报告下溢错误。这会导致<filename>float8</>回归测试出现一些差异。因此，我们提供了一个变体比较文件<filename>float8-small-is-zero.out</filename>，其中包含这些系统上的预期结果。为了消除虚假的<quote>失败</quote>消息，在<systemitem>OpenBSD</systemitem>平台上，<filename>resultmap</filename>包含以下内容：<programlisting>
-float8:out:i.86-.*-openbsd=float8-small-is-zero.out
+float8/i.86-.*-openbsd=float8-small-is-zero
 </programlisting>如果一台机器上的<command>config.guess</command>输出匹配<literal>i.86-.*-openbsd</literal>，就会触发该规则。<filename>resultmap</filename>中的其他行会为其他适用的平台选择变体比较文件。</para>
 
    <para>
@@ -297,33 +299,5 @@ float8:out:i.86-.*-openbsd=float8-small-is-zero.out
     
   </sect1>
 
-  <sect1 id="regress-coverage">
-   <title>测试覆盖率检查</title>
-
-   <para>
-    可以用覆盖率测试插装编译 PostgreSQL 源代码，从而检查回归测试或任何
-    其他与该代码一起运行的测试套件覆盖了代码的哪些部分。目前，这只在使用
-    GCC 编译时受支持，并且需要<command>gcov</command>和
-    <command>lcov</command>程序。
-   </para>
-
-   <para>
-    典型的工作流程如下：
-<screen>
-./configure --enable-coverage ... OTHER OPTIONS ...
-gmake
-gmake check # or other test suite
-gmake coverage-html
-</screen>
-    然后把你的 HTML 浏览器指向<filename>coverage/index.html</filename>。
-   </para>
-
-   <para>
-    要在测试运行之间重置执行计数，请运行：
-<screen>
-gmake coverage-clean
-</screen>
-   </para>
-  </sect1>
 
 </chapter>

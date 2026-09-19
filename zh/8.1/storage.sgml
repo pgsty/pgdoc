@@ -76,11 +76,6 @@ Item
 </row>
 
 <row>
- <entry><filename>pg_stat_tmp</></entry>
- <entry>包含统计子系统临时文件的子目录</entry>
-</row>
-
-<row>
  <entry><filename>pg_subtrans</></entry>
  <entry>包含子事务状态数据的子目录</entry>
 </row>
@@ -102,13 +97,13 @@ Item
 
 <row>
  <entry><filename>postmaster.opts</></entry>
- <entry>记录服务器上次启动时所用命令行选项的文件</entry>
+ <entry>记录 postmaster 上次启动时所用命令行选项的文件</entry>
 </row>
 
 <row>
  <entry><filename>postmaster.pid</></entry>
- <entry>记录当前服务器 PID 和共享内存段 ID 的锁文件
-（服务器关闭后不存在）</entry>
+ <entry>记录当前 postmaster PID 和共享内存段 ID 的锁文件
+（postmaster 关闭后不存在）</entry>
 </row>
 
 </tbody>
@@ -124,14 +119,7 @@ Item
 <para>
 每个表和索引都存储在单独的文件中，文件以表或索引的
 <firstterm>filenode</> 编号命名，该编号可在
-<structname>pg_class</>.<structfield>relfilenode</> 中找到。除了主文件
-（也称主分支）之外，每个表和索引还有一个
-<firstterm>空闲空间映射</>（见 <xref linkend="storage-fsm">），用于
-存储该关系可用空闲空间的信息。空闲空间映射存放在以 filenode 编号
-加上 <literal>_fsm</> 后缀命名的文件中。表还拥有
-<firstterm>可见性映射</>，存放在带有 <literal>_vm</> 后缀的分支中，
-用于跟踪哪些页面已知不含死元组。可见性映射在
-<xref linkend="storage-vm"> 中有进一步说明。
+<structname>pg_class</>.<structfield>relfilenode</> 中找到。
 </para>
 
 <caution>
@@ -148,10 +136,6 @@ Item
 当表或索引超过 1 GB 时，会被划分成若干个 1 GB 大小的
 <firstterm>段</firstterm>。第一段的文件名与 filenode 相同，后续各段则命名为
 filenode.1、filenode.2，依此类推。这样的安排避免了在文件大小受限的平台上出现问题。
-（实际上，1 GB 只是默认段大小。段大小可以通过配置选项
-<option>--with-segsize</option> 在构建 <productname>PostgreSQL</productname>
-时调整。）
-原则上，空闲空间映射和可见性映射分支也可能需要多个段，不过在实践中这不太可能发生。
 表和索引的内容将在 <xref linkend="storage-page-layout"> 中进一步讨论。
 </para>
 
@@ -177,16 +161,6 @@ filenode.1、filenode.2，依此类推。这样的安排避免了在文件大小
 <varname>PGDATA</varname><filename>/global</filename>。
 </para>
 
-<para>
-临时文件（用于诸如排序的数据多于内存可容纳量之类的操作）会创建在
-<varname>PGDATA</varname><filename>/base/pgsql_tmp</filename> 中；或者创建在表空间目录下的
-<filename>pgsql_tmp</filename> 子目录中，如果为其指定的是不同于
-<literal>pg_default</literal> 的表空间。临时文件的名称形式为
-<filename>pgsql_tmp<replaceable>PPP</replaceable>.<replaceable>NNN</replaceable></filename>，
-其中 <replaceable>PPP</replaceable> 是所属后端的 PID，
-<replaceable>NNN</replaceable> 用来区分该后端的不同临时文件。
-</para>
-
 </sect1>
 
 <sect1 id="storage-toast">
@@ -203,9 +177,11 @@ filenode.1、filenode.2，依此类推。这样的安排避免了在文件大小
 </para>
 
 <para>
-<productname>PostgreSQL</productname> 使用固定页面大小（通常为 8 kB），并且不允许
-元组跨越多个页面。因此，无法直接存储非常大的字段值。为克服这一限制，大字段值会被
-压缩并且/或者拆分成多个物理行。这个过程对用户是透明的，而且对大部分后端代码的影响
+由于 <productname>PostgreSQL</productname> 使用固定页面大小（通常为
+8Kb），并且不允许元组跨越多个页面，因此无法直接存储非常大的字段值。
+在 <productname>PostgreSQL</> 7.1 之前，一个表行可以容纳的数据总量有
+一个略小于一页的硬性限制。在 7.1 及以后的版本中，这一限制通过允许
+压缩大字段值并且/或者把它们拆分成多个物理行来克服。这个过程对用户是透明的，而且对大部分后端代码的影响
 很小。这项技术被亲切地称为 <acronym>TOAST</acronym>（或者
 <quote>自切片面包问世以来最棒的东西</quote>）。
 </para>
@@ -221,22 +197,15 @@ filenode.1、filenode.2，依此类推。这样的安排避免了在文件大小
 </para>
 
 <para>
-<acronym>TOAST</acronym> 会占用 varlena 长度字中的两个位
-（在大端机器上是最高位，在小端机器上是最低位），从而把任何可
-<acronym>TOAST</acronym> 数据类型值的逻辑大小限制为 1 GB
+<acronym>TOAST</acronym> 占用 varlena 长度字的高阶两位，
+从而把任何可 <acronym>TOAST</acronym> 数据类型值的逻辑大小限制为 1Gb
 （2<superscript>30</superscript> - 1 字节）。当这两个位都为零时，
-该值就是这种数据类型的普通、未经 <acronym>TOAST</acronym> 处理的值，长度字的其余位
-给出该 datum 的总大小（包括长度字），以字节计。当最高位或最低位被置位时，
-该值使用的不是通常的四字节头部，而是单字节头部；该字节
-的其余位给出 datum 的总大小（包括长度字节），以字节计。作为特殊情况，
-如果其余位全为零（对于自包含长度而言这是不可能的），则该值是指向存储在单独
-TOAST 表中的线外数据的指针。（TOAST
-指针的大小由 datum 的第二个字节给出。）带单字节头部的值同样不按任何特定边界
-对齐。最后，当最高位或最低位为零、但相邻的一位被置位时，该 datum
-的内容已被压缩，使用前必须先解压。在这种情况下，长度字的其余位给出的
-是压缩后 datum 的总大小，而不是原始数据的大小。请注意，线外数据也可能被压缩，
-但 varlena 头部不会告诉你是否发生了压缩，这一点要由 TOAST
-指针的内容来说明。
+该值就是这种数据类型的普通、未经 <acronym>TOAST</acronym> 处理的值。
+其中一位如果被置位，就表示该值已经被压缩，使用前必须先解压。另一位如果被置位，
+则表示该值已采用线外存储。在这种情况下，值的其余部分实际上只是一个指针，
+正确的数据必须到别处查找。当两个位都被置位时，线外数据也已被压缩。
+在每种情况下，varlena 字低位中的长度指示的都是 datum 的实际大小，
+而不是经过解压或取回线外数据后所提取出的逻辑值的大小。
 </para>
 
 <para>
@@ -253,9 +222,9 @@ TOAST 表中的线外数据的指针。（TOAST
 </para>
 
 <para>
-线外值会被划分成最多 <symbol>TOAST_MAX_CHUNK_SIZE</symbol> 字节的块
-（如果启用了压缩，则在压缩之后再分块；默认情况下该值的选取方式是让四个块行
-可以装入一页，因此大约是 2000 字节）。每个块都作为独立的一行，存储在所属表的
+线外值会被划分成（如果启用了压缩，则在压缩之后划分）最多
+<literal>TOAST_MAX_CHUNK_SIZE</literal> 字节的块（该值略小于
+<literal>BLCKSZ/4</literal>，默认大约是 2000 字节）。每个块都作为独立的一行，存储在所属表的
 <acronym>TOAST</acronym> 表中。每个 <acronym>TOAST</acronym> 表都有
 <structfield>chunk_id</structfield> 列（标识某个特定
 <acronym>TOAST</acronym> 化值的 OID）、<structfield>chunk_seq</structfield> 列
@@ -265,15 +234,15 @@ TOAST 表中的线外数据的指针。（TOAST
 线外 <acronym>TOAST</acronym> 化值的指针 datum，需要存储要查找的
 <acronym>TOAST</acronym> 表的 OID，以及该特定值的 OID（即其
 <structfield>chunk_id</structfield>）。为方便起见，指针 datum 还会存储逻辑 datum 大小
-（原始未压缩数据长度）和物理存储大小（如果应用了压缩，这两者会不同）。再加上 varlena 头部字节，
-<acronym>TOAST</acronym> 指针 datum 的总大小因此恒为 18 字节，与所表示值的实际大小无关。
+（原始未压缩数据长度）和物理存储大小（如果应用了压缩，这两者会不同）。再加上 varlena 头部字，
+<acronym>TOAST</acronym> 指针 datum 的总大小因此恒为 20 字节，与所表示值的实际大小无关。
 </para>
 
 <para>
-<acronym>TOAST</acronym> 代码只有在要存入表中的行值宽于
-<symbol>TOAST_TUPLE_THRESHOLD</symbol> 字节（通常为 2 kB）时才会被触发。
+<acronym>TOAST</acronym> 代码只有在要存入表中的行值宽于 <literal>BLCKSZ/4</literal>
+字节（通常为 2Kb）时才会被触发。
 <acronym>TOAST</acronym> 代码会压缩并且/或者把字段值移到线外，直到该行值短于
-<symbol>TOAST_TUPLE_TARGET</symbol> 字节（通常也为 2 kB），
+<literal>BLCKSZ/4</literal> 字节，
 或者已经无法再获得更多收益。在 UPDATE 操作中，未更改字段的值通常会原样保留；
 因此，如果更新一行时其线外值都没有变化，便不会产生 <acronym>TOAST</acronym> 成本。
 </para>
@@ -284,8 +253,7 @@ TOAST 表中的线外数据的指针。（TOAST
    <itemizedlist>
     <listitem>
      <para>
-      <literal>PLAIN</literal> 既不允许压缩，也不允许线外存储；此外，它还会禁止 varlena 类型使用单字节头部。
-      这是不可 <acronym>TOAST</acronym> 数据类型列唯一可能的策略。
+      <literal>PLAIN</literal> 既不允许压缩，也不允许线外存储。这是不可 <acronym>TOAST</acronym> 数据类型列唯一可能的策略。
      </para>
     </listitem>
     <listitem>
@@ -327,72 +295,6 @@ TOAST 表中的线外数据的指针。（TOAST
 大约 10%（URL 以及一些较小的 HTML 页面）。与未进行
 <acronym>TOAST</acronym> 处理的对照表相比，运行时没有差异；在那个对照表中，
 所有 HTML 页面都被裁剪到 7 kB 以内以便放得下。
-</para>
-
-</sect1>
-
-<sect1 id="storage-fsm">
-
-<title>空闲空间映射</title>
-
-<indexterm>
- <primary>Free Space Map</primary>
-</indexterm>
-<indexterm><primary>FSM</><see>Free Space Map</></indexterm>
-
-<para>
-每个堆关系和索引关系（哈希索引除外）都有一个空闲空间映射
-（FSM），用于跟踪该关系中的可用空间。
-它与主关系数据并列存放在一个独立的关系分支中，其名称由该关系的 filenode 编号加上
-<literal>_fsm</literal> 后缀构成。例如，如果某关系的 filenode 是 12345，
-那么 FSM 就存储在名为 <filename>12345_fsm</filename>
-的文件中，与主关系文件位于同一目录。
-</para>
-
-<para>
-空闲空间映射被组织成一棵由 <acronym>FSM</acronym> 页面构成的树。最底层的
-<acronym>FSM</acronym> 页面存储每个堆页面（或索引页面）上的可用空闲空间，
-每个这样的页面用一个字节表示。上层页面则聚合来自下层的信息。
-</para>
-
-<para>
-每个 <acronym>FSM</acronym> 页面内部都有一棵二叉树，以数组形式存储，每个节点占一个字节。
-每个叶子节点表示一个堆页面或下层 <acronym>FSM</acronym> 页面。每个非叶子节点中保存其子节点值
-中较大的那个，因此叶子节点中的最大值会保存在根节点。
-</para>
-
-<para>
-See <filename>src/backend/storage/freespace/README</> for more details on
-how the <acronym>FSM</> is structured, and how it's updated and searched.
-<filename>contrib/pg_freespacemap</> 模块可用于检查空闲空间映射中
-存储的信息（见 <xref linkend="pgfreespacemap">）。
-</para>
-
-</sect1>
-
-<sect1 id="storage-vm">
-
-<title>可见性映射</title>
-
-<indexterm>
- <primary>Visibility Map</primary>
-</indexterm>
-<indexterm><primary>VM</><see>Visibility Map</></indexterm>
-
-<para>
-每个堆关系都有一个可见性映射（VM），用于跟踪哪些页面只包含已知对所有活动事务都可见的
-元组。它与主关系数据并列存放在一个独立的关系分支中，
-名称由关系的 filenode 编号加上 <literal>_vm</literal> 后缀构成。例如，如果某关系的
-filenode 是 12345，那么 VM 会存储在名为 <filename>12345_vm</filename> 的文件中，
-与主关系文件位于同一目录。请注意，索引没有 VM。
-</para>
-
-<para>
-可见性映射只是为每个堆页面存储一个位。该位被置位表示页面上的所有
-元组都已知对所有事务可见。这意味着该页面不包含任何需要被清理的
-元组；将来它还可以用来避免为可见性检查而访问该页面。这个映射是
-保守的，也就是说，只要某个位被置位，我们就能确定相应条件确实
-成立；但如果某个位没有置位，该条件既可能为真，也可能不为真。
 </para>
 
 </sect1>
@@ -447,7 +349,7 @@ Item
 
 <row>
  <entry>PageHeaderData</entry>
- <entry>长度为 24 字节。包含页面的一般信息，包括空闲空间指针。</entry>
+ <entry>长度为 20 字节。包含页面的一般信息，包括空闲空间指针。</entry>
 </row>
 
 <row>
@@ -485,11 +387,10 @@ Item
   到未分配空间起始位置、未分配空间结束位置以及特殊空间起始位置的
   字节偏移量。页头接下来的 2 个字节
   <structfield>pd_pagesize_version</structfield> 同时存储页面大小和
-  版本指示器。从 <productname>PostgreSQL</productname> 8.3 起，版本号
-  为 4；<productname>PostgreSQL</productname> 8.1 和 8.2 使用版本号 3；
+  版本指示器。从 <productname>PostgreSQL</productname> 8.1 起版本号为 3；
   <productname>PostgreSQL</productname> 8.0 使用版本号 2；
   <productname>PostgreSQL</productname> 7.3 和 7.4 使用版本号 1；更早的
-  版本使用版本号 0。（这些版本中的大多数，其基本页面布局和页头格式
+  版本使用版本号 0。（在这些版本中，基本页面布局和页头格式
   并未改变，但堆行头部的布局发生过变化。）页面大小字段基本上只是
   用于交叉检查；一个安装中并不支持同时存在多种页面大小。最后一个
   字段是一个提示，用于显示对页面进行剪枝是否可能有利：它跟踪页面上
@@ -518,15 +419,9 @@ Item
   </row>
   <row>
    <entry>pd_tli</entry>
-   <entry>uint16</entry>
-   <entry>2 字节</entry>
-   <entry>TimeLineID of last change (only its lowest 16 bits)</entry>
-  </row>
-  <row>
-   <entry>pd_flags</entry>
-   <entry>uint16</entry>
-   <entry>2 字节</entry>
-   <entry>Flag bits</entry>
+   <entry>TimeLineID</entry>
+   <entry>4 字节</entry>
+   <entry>TLI of last change</entry>
   </row>
   <row>
    <entry>pd_lower</entry>
@@ -551,12 +446,6 @@ Item
    <entry>uint16</entry>
    <entry>2 字节</entry>
    <entry>页面大小和布局版本号信息</entry>
-  </row>
-  <row>
-   <entry>pd_prune_xid</entry>
-   <entry>TransactionId</entry>
-   <entry>4 字节</entry>
-   <entry>Oldest unpruned XMAX on page, or zero if none</entry>
   </row>
  </tbody>
  </tgroup>
@@ -595,7 +484,7 @@ Item
 
  <para>
 
-  所有表行的结构都相同。它们都有一个固定大小的头部（在大多数机器上占 23 字节），
+  所有表行的结构都相同。它们都有一个固定大小的头部（在大多数机器上占 27 字节），
   后面跟着可选的空值位图、可选的对象 ID 字段以及用户数据。头部的详细格式见
   <xref linkend="heaptupleheaderdata-table">。实际用户数据（行的各列）从
   <structfield>t_hoff</structfield> 指示的偏移位置开始，它必须始终是该平台
@@ -632,16 +521,22 @@ Item
    <entry>insert XID stamp</entry>
   </row>
   <row>
+   <entry>t_cmin</entry>
+   <entry>CommandId</entry>
+   <entry>4 字节</entry>
+   <entry>insert CID stamp</entry>
+  </row>
+  <row>
    <entry>t_xmax</entry>
    <entry>TransactionId</entry>
    <entry>4 字节</entry>
    <entry>delete XID stamp</entry>
   </row>
   <row>
-   <entry>t_cid</entry>
+   <entry>t_cmax</entry>
    <entry>CommandId</entry>
    <entry>4 字节</entry>
-   <entry>insert and/or delete CID stamp (overlays with t_xvac)</entry>
+   <entry>delete CID stamp (overlays with t_xvac)</entry>
   </row>
   <row>
    <entry>t_xvac</entry>
@@ -656,10 +551,10 @@ Item
    <entry>本行版本或更新行版本的当前 TID</entry>
   </row>
   <row>
-   <entry>t_infomask2</entry>
+   <entry>t_natts</entry>
    <entry>int16</entry>
    <entry>2 字节</entry>
-   <entry>number of attributes, plus various flag bits</entry>
+   <entry>number of attributes</entry>
   </row>
   <row>
    <entry>t_infomask</entry>
@@ -698,7 +593,7 @@ Item
   读取数据时，需要依次检查每个属性。首先根据空值位图判断该字段是否为 NULL。
   如果是，就继续下一个。然后确认对齐是否正确。如果字段是定宽字段，那么它的所有字节
   都是直接摆放的；如果它是变长字段（attlen = -1），情况就会稍复杂一些。所有变长
-  数据类型都共享一个通用头部结构体 <type>struct varlena</type>，其中包含已存储值的
+  数据类型都共享一个通用头部结构 <type>varattrib</type>，其中包含已存储值的
   总长度以及一些标志位。根据这些标志，数据可能是线内存储的，也可能位于
   <acronym>TOAST</acronym> 表中；它也可能是经过压缩的（见
   <xref linkend="storage-toast">）。

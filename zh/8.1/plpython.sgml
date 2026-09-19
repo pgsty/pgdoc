@@ -35,275 +35,50 @@
   <title>PL/Python 函数</title>
 
   <para>
-   PL/Python 中的函数通过标准的<xref
-   linkend="sql-createfunction" endterm="sql-createfunction-title">语法声明：
+   PL/Python 中的函数通过常用的<xref
+   linkend="sql-createfunction" endterm="sql-createfunction-title">语法声明。例如：
+<programlisting>
+CREATE FUNCTION myfunc(text) RETURNS text
+    AS 'return args[0]'
+    LANGUAGE plpythonu;
+</programlisting>
+
+   作为函数体给出的 Python 代码会被转换成一个 Python 函数。例如，上面的定义会得到
 
 <programlisting>
-CREATE FUNCTION <replaceable>funcname</replaceable> (<replaceable>argument-list</replaceable>)
-  RETURNS <replaceable>return-type</replaceable>
-AS $$
-  # PL/Python function body
-$$ LANGUAGE plpythonu;
+def __plpython_procedure_myfunc_23456():
+        return args[0]
 </programlisting>
+
+   这里假定 23456 是 <productname>PostgreSQL</productname> 分配给该函数的 OID。
   </para>
 
   <para>
-   函数体就是一段 Python 脚本。调用函数时，参数作为列表 <varname>args[]</varname> 的元素传入；命名参数还会作为普通变量传给 Python 脚本。结果以通常的方式从 Python 代码中返回，使用 <literal>return</literal> 或（对于结果集语句）<literal>yield</literal>。
+   如果你不提供返回值，Python 会返回默认的 <symbol>None</symbol>。<application>PL/Python</application> 会把
+   Python 的 <symbol>None</symbol> 转换为 SQL 空值。<indexterm><primary>null value</><secondary
+   sortas="PL/Python">in PL/Python</></indexterm>
   </para>
 
   <para>
-   例如，一个返回两个整数中较大值的函数可以定义为：
-
-<programlisting>
-CREATE FUNCTION pymax (a integer, b integer)
-  RETURNS integer
-AS $$
-  if a &gt; b:
-    return a
-  return b
-$$ LANGUAGE plpythonu;
-</programlisting>
-
-   作为函数体给出的 Python 代码会被转换成一个 Python 函数。例如，上面的定义会得到：
-
-<programlisting>
-def __plpython_procedure_pymax_23456():
-  if a &gt; b:
-    return a
-  return b
-</programlisting>
-
-   这里假定 <productname>PostgreSQL</productname> 给该函数分配的 OID 是 23456。
+   <productname>PostgreSQL</productname> 函数的参数可以在全局 <varname>args</varname> 列表中获得。在
+   <function>myfunc</function> 示例中，<varname>args[0]</> 包含作为 text 参数传入的内容。对于
+   <literal>myfunc2(text, integer)</literal>，<varname>args[0]</> 将包含
+   <type>text</type> 参数，<varname>args[1]</> 包含 <type>integer</type> 参数。
   </para>
 
   <para>
-   <productname>PostgreSQL</productname> 的函数参数可以在全局列表 <varname>args</varname> 中获得。在上面的 <function>pymax</function> 示例中，<varname>args[0]</varname> 包含作为第一个参数传入的内容，<varname>args[1]</varname> 包含第二个参数的值。或者，也可以像上面的示例那样使用命名参数。使用命名参数通常可读性更好。
+   全局字典 <varname>SD</varname> 可用于在函数调用之间存储数据。这个变量是私有的静态数据。
+   全局字典 <varname>GD</varname> 是公共数据，同一会话中的所有 Python 函数都可以使用。请谨慎使用。<indexterm><primary>global data</><secondary>in
+   PL/Python</></indexterm>
   </para>
 
   <para>
-   如果把一个 SQL 空值<indexterm><primary>null value</primary><secondary
-   sortas="PL/Python">PL/Python</secondary></indexterm>传给函数，该参数值在 Python 中会表现为 <symbol>None</symbol>。上面的函数定义对空值输入会返回错误的答案。我们可以在函数定义中加上 <literal>STRICT</literal>，让 <productname>PostgreSQL</productname> 做更合理的事情：如果传入了空值，函数根本不会被调用，而是自动返回空结果。或者，我们也可以在函数体中检查空值输入：
-
-<programlisting>
-CREATE FUNCTION pymax (a integer, b integer)
-  RETURNS integer
-AS $$
-  if (a is None) or (b is None):
-    return None
-  if a &gt; b:
-    return a
-  return b
-$$ LANGUAGE plpythonu;
-</programlisting>
-
-   如上所示，要让 PL/Python 函数返回 SQL 空值，返回值 <symbol>None</symbol> 即可。无论函数是否为严格函数，都可以这样做。
-  </para>
-
-  <para>
-   复合类型的参数会作为 Python 映射传给函数。映射的元素名就是复合类型的属性名。如果传入行中的某个属性为空值，它在映射中的值就是 <symbol>None</symbol>。下面是一个例子：
-
-<programlisting>
-CREATE TABLE employee (
-  name text,
-  salary integer,
-  age integer
-);
-
-CREATE FUNCTION overpaid (e employee)
-  RETURNS boolean
-AS $$
-  if e["salary"] &gt; 200000:
-    return True
-  if (e["age"] &lt; 30) and (e["salary"] &gt; 100000):
-    return True
-  return False
-$$ LANGUAGE plpythonu;
-</programlisting>
-  </para>
-
-  <para>
-   有多种方法可以从 Python 函数返回行类型或复合类型。以下示例假定我们有：
-
-<programlisting>
-CREATE TYPE named_value AS (
-  name   text,
-  value  integer
-);
-</programlisting>
-
-   复合结果可以作为以下形式返回：
-
-   <variablelist>
-    <varlistentry>
-     <term>序列类型（元组或列表，但不能是集合，因为集合不可索引）</term>
-     <listitem>
-      <para>
-       返回的序列对象的项数必须与复合结果类型的字段数相同。索引为 0 的项赋给复合类型的第一个字段，1 赋给第二个，依此类推。例如：
-
-<programlisting>
-CREATE FUNCTION make_pair (name text, value integer)
-  RETURNS named_value
-AS $$
-  return [ name, value ]
-  # or alternatively, as tuple: return ( name, value )
-$$ LANGUAGE plpythonu;
-</programlisting>
-
-       要让某一列返回 SQL 空值，在相应位置插入 <symbol>None</symbol>。
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term>映射（字典）</term>
-     <listitem>
-      <para>
-       结果类型中每一列的值，都使用列名作为键从映射中取得。例如：
-
-<programlisting>
-CREATE FUNCTION make_pair (name text, value integer)
-  RETURNS named_value
-AS $$
-  return { "name": name, "value": value }
-$$ LANGUAGE plpythonu;
-</programlisting>
-
-       多余的字典键/值对会被忽略。缺失的键被视为错误。
-       要让某一列返回 SQL 空值，以相应的列名作为键插入 <symbol>None</symbol>。
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term>对象（任何提供 <literal>__getattr__</literal> 方法的对象）</term>
-     <listitem>
-      <para>
-       其工作方式与映射相同。
-       例如：
-
-<programlisting>
-CREATE FUNCTION make_pair (name text, value integer)
-  RETURNS named_value
-AS $$
-  class named_value:
-    def __init__ (self, n, v):
-      self.name = n
-      self.value = v
-  return named_value(name, value)
-
-  # or simply
-  class nv: pass
-  nv.name = name
-  nv.value = value
-  return nv
-$$ LANGUAGE plpythonu;
-</programlisting>
-      </para>
-     </listitem>
-    </varlistentry>
-   </variablelist>
-  </para>
-
-  <para>
-   如果你不提供返回值，Python 会返回默认的 <symbol>None</symbol>。<application>PL/Python</application> 会把 Python 的 <symbol>None</symbol> 转换为 SQL 空值。
-  </para>
-
-  <para>
-   PL/Python 函数也可以返回标量类型或复合类型的集合。实现方式有多种，因为返回的对象在内部会被转换成一个迭代器。以下示例假定我们有复合类型：
-
-<programlisting>
-CREATE TYPE greeting AS (
-  how text,
-  who text
-);
-</programlisting>
-
-   集合结果可以作为以下形式返回：
-
-   <variablelist>
-    <varlistentry>
-     <term>序列类型（元组、列表、集合）</term>
-     <listitem>
-      <para>
-<programlisting>
-CREATE FUNCTION greet (how text)
-  RETURNS SETOF greeting
-AS $$
-  # return tuple containing lists as composite types
-  # all other combinations work also
-  return ( [ how, "World" ], [ how, "PostgreSQL" ], [ how, "PL/Python" ] )
-$$ LANGUAGE plpythonu;
-</programlisting>
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term>迭代器（任何提供 <symbol>__iter__</symbol> 和 <symbol>next</symbol> 方法的对象）</term>
-     <listitem>
-      <para>
-<programlisting>
-CREATE FUNCTION greet (how text)
-  RETURNS SETOF greeting
-AS $$
-  class producer:
-    def __init__ (self, how, who):
-      self.how = how
-      self.who = who
-      self.ndx = -1
-
-    def __iter__ (self):
-      return self
-
-    def next (self):
-      self.ndx += 1
-      if self.ndx == len(self.who):
-        raise StopIteration
-      return ( self.how, self.who[self.ndx] )
-
-  return producer(how, [ "World", "PostgreSQL", "PL/Python" ] )
-$$ LANGUAGE plpythonu;
-</programlisting>
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term>生成器（<literal>yield</literal>）</term>
-     <listitem>
-      <para>
-<programlisting>
-CREATE FUNCTION greet (how text)
-  RETURNS SETOF greeting
-AS $$
-  for who in [ "World", "PostgreSQL", "PL/Python" ]:
-    yield ( how, who )
-$$ LANGUAGE plpythonu;
-</programlisting>
-
-       <warning>
-        <para>
-         目前，由于 Python 的
-         <ulink url="http://bugs.python.org/issue1483133">缺陷 #1483133</ulink>，
-         某些调试版本的 Python 2.4（配置并编译时使用了 <literal>--with-pydebug</literal> 选项）
-         在使用迭代器返回集合结果时会导致 <productname>PostgreSQL</productname> 服务器崩溃。
-         未打补丁的 Fedora 4 版本包含此缺陷。在正式版本的 Python 或打过补丁的 Fedora 4 上不会发生。
-        </para>
-       </warning>
-      </para>
-     </listitem>
-    </varlistentry>
-   </variablelist>
-  </para>
-
-  <para>
-   全局字典 <varname>SD</varname> 可用于在函数调用之间存储数据。这个变量是私有的静态数据。全局字典 <varname>GD</varname> 是公开数据，对一次会话中的所有 Python 函数可用。请谨慎使用。<indexterm><primary>global data</><secondary>in PL/Python</></indexterm>
-  </para>
-
-  <para>
-   每个函数在 Python 解释器中得到自己的执行环境，因此 <function>myfunc</function> 的全局数据和函数参数对 <function>myfunc2</function> 不可用。例外是上面提到的 <varname>GD</varname> 字典中的数据。
+   每个函数在 Python 解释器中都有自己独立的执行环境，因此
+   <function>myfunc</function> 的全局数据和函数参数对
+   <function>myfunc2</function> 不可用。例外是上面提到的 <varname>GD</varname> 字典中的数据。
   </para>
  </sect1>
+
  <sect1 id="plpython-trigger">
   <title>触发器函数</title>
 
@@ -313,27 +88,28 @@ $$ LANGUAGE plpythonu;
   </indexterm>
 
   <para>
-   当函数被用作触发器时，字典 <literal>TD</literal> 包含与触发器相关的值。
-   <literal>TD["event"]</> 以字符串形式包含事件（<literal>INSERT</>、<literal>UPDATE</>、<literal>DELETE</>、<literal>TRUNCATE</> 或 <literal>UNKNOWN</>）。
-   <literal>TD["when"]</> 包含 <literal>BEFORE</>、<literal>AFTER</> 或 <literal>UNKNOWN</> 之一。
-   <literal>TD["level"]</> 包含 <literal>ROW</>、<literal>STATEMENT</> 或 <literal>UNKNOWN</> 之一。
-   对于行级触发器，触发行位于 <literal>TD["new"]</> 和/或 <literal>TD["old"]</> 中，取决于触发器事件。
+   当函数被用作触发器时，字典 <literal>TD</literal> 包含与触发器相关的值。触发行位于
+   <literal>TD["new"]</> 和/或 <literal>TD["old"]</> 中，取决于触发器事件。
+   <literal>TD["event"]</> 以字符串形式包含事件（<literal>INSERT</>、<literal>UPDATE</>、
+   <literal>DELETE</> 或 <literal>UNKNOWN</>）。
+   <literal>TD["when"]</> 包含 <literal>BEFORE</>、
+   <literal>AFTER</> 和 <literal>UNKNOWN</> 之一。
+   <literal>TD["level"]</> 包含 <literal>ROW</>、
+   <literal>STATEMENT</> 和 <literal>UNKNOWN</> 之一。
    <literal>TD["name"]</> 包含触发器的名称，
-   <literal>TD["table_name"]</> 包含触发器所作用的表的名称，
-   <literal>TD["table_schema"]</> 包含触发器所作用的表的模式，
    <literal>TD["relid"]</> 包含触发器所作用的表的 OID。
    如果 <command>CREATE TRIGGER</> 命令包含参数，它们可以在 <literal>TD["args"][0]</> 到
-   <literal>TD["args"][<replaceable>n</>-1]</> 中获得。
+   <literal>TD["args"][(<replaceable>n</>-1)]</> 中获得。
   </para>
 
   <para>
-   如果 <literal>TD["when"]</literal> 是 <literal>BEFORE</> 并且
-   <literal>TD["level"]</literal> 是 <literal>ROW</>，你可以从 Python 函数返回
+   如果 <literal>TD["when"]</literal> 是 <literal>BEFORE</>，你可以从 Python 函数返回
    <literal>None</literal> 或 <literal>"OK"</literal> 表示行未修改，
    返回 <literal>"SKIP"</> 中止该事件，或返回 <literal>"MODIFY"</>
-   表示你修改了该行。否则返回值被忽略。
+   表示你修改了该行。
   </para>
  </sect1>
+
  <sect1 id="plpython-database">
   <title>数据库访问</title>
 
@@ -424,7 +200,7 @@ $$ LANGUAGE plpythonu;
   <title>受限环境</title>
 
   <para>
-   当前版本的 <application>PL/Python</application> 只作为可信语言发挥作用；对文件系统和其他本地资源的访问被禁用。具体来说，<application>PL/Python</application> 使用 Python 的受限执行环境，并进一步加以限制以防止使用文件 <function>open</> 调用，而且只允许导入特定列表中的模块。目前该列表包括：
+   当前版本的 <application>PL/Python</application> 只作为可信语言发挥作用；对文件系统和其他本地资源的访问被禁用。具体来说，PL/Python 使用 Python 的受限执行环境，并进一步加以限制以防止使用文件 <function>open</> 调用，而且只允许导入特定列表中的模块。目前该列表包括：
    <literal>array</>、<literal>bisect</>、<literal>binascii</>、
    <literal>calendar</>、<literal>cmath</>、<literal>codecs</>、
    <literal>errno</>、<literal>marshal</>、<literal>math</>、<literal>md5</>、
