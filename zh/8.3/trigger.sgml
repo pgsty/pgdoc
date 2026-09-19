@@ -28,8 +28,7 @@
     <command>INSERT</command>、<command>UPDATE</command> 或
     <command>DELETE</command> 操作之前或之后执行，执行方式既可以
     是每个被修改的行一次，也可以是每条 <acronym>SQL</acronym>
-    语句一次。触发器也可以由
-    <command>TRUNCATE</command> 语句触发。一旦触发器事件发生，
+    语句一次。一旦触发器事件发生，
     触发器函数就会在恰当的时机被调用以处理该事件。
    </para>
 
@@ -52,7 +51,6 @@
     触发器。这两类触发器有时也分别称为
     <firstterm>行级</firstterm> 触发器和
     <firstterm>语句级</firstterm> 触发器。
-    <command>TRUNCATE</command> 的触发器只能定义为语句级。
    </para>
 
    <para>
@@ -198,11 +196,6 @@
    </para>
 
    <para>
-    如果你的触发器函数是用任何一种标准过程语言编写的，那么只有在该函数被声明为 <literal>VOLATILE</literal> 时，上述说法才成立。被声明为
-    <literal>STABLE</literal> 或 <literal>IMMUTABLE</literal> 的函数在任何情况下都看不到调用命令所做的更改。
-   </para>
-
-   <para>
     有关数据可见性规则的更多信息可见 <xref linkend="spi-visibility">。
     <xref linkend="trigger-example"> 中的示例展示了这些规则。
    </para>
@@ -337,15 +330,6 @@ typedef struct TriggerData
           <listitem>
            <para>
             如果触发器是由 <command>DELETE</command> 命令触发，则返回真。
-           </para>
-          </listitem>
-         </varlistentry>
-
-         <varlistentry>
-          <term><literal>TRIGGER_FIRED_BY_TRUNCATE(tg_event)</literal></term>
-          <listitem>
-           <para>
-            如果触发器是由 <command>TRUNCATE</command> 命令触发，则返回真。
            </para>
           </listitem>
          </varlistentry>
@@ -490,7 +474,7 @@ CREATE TABLE ttest (
 
    <para>
     下面是触发器函数的源代码：
-<programlisting><![CDATA[
+<programlisting>
 #include "postgres.h"
 #include "executor/spi.h"       /* this is what you need to work with SPI */
 #include "commands/trigger.h"   /* ... and triggers */
@@ -506,7 +490,7 @@ PG_FUNCTION_INFO_V1(trigf);
 Datum
 trigf(PG_FUNCTION_ARGS)
 {
-    TriggerData *trigdata = (TriggerData *) fcinfo->context;
+    TriggerData *trigdata = (TriggerData *) fcinfo-&gt;context;
     TupleDesc   tupdesc;
     HeapTuple   rettuple;
     char       *when;
@@ -519,38 +503,38 @@ trigf(PG_FUNCTION_ARGS)
         elog(ERROR, "trigf: not called by trigger manager");
 
     /* tuple to return to executor */
-    if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-        rettuple = trigdata->tg_newtuple;
+    if (TRIGGER_FIRED_BY_UPDATE(trigdata-&gt;tg_event))
+        rettuple = trigdata-&gt;tg_newtuple;
     else
-        rettuple = trigdata->tg_trigtuple;
+        rettuple = trigdata-&gt;tg_trigtuple;
 
     /* check for null values */
-    if (!TRIGGER_FIRED_BY_DELETE(trigdata->tg_event)
-        && TRIGGER_FIRED_BEFORE(trigdata->tg_event))
+    if (!TRIGGER_FIRED_BY_DELETE(trigdata-&gt;tg_event)
+        &amp;&amp; TRIGGER_FIRED_BEFORE(trigdata-&gt;tg_event))
         checknull = true;
 
-    if (TRIGGER_FIRED_BEFORE(trigdata->tg_event))
+    if (TRIGGER_FIRED_BEFORE(trigdata-&gt;tg_event))
         when = "before";
     else
         when = "after ";
 
-    tupdesc = trigdata->tg_relation->rd_att;
+    tupdesc = trigdata-&gt;tg_relation-&gt;rd_att;
 
     /* connect to SPI manager */
-    if ((ret = SPI_connect()) < 0)
-        elog(ERROR, "trigf (fired %s): SPI_connect returned %d", when, ret);
+    if ((ret = SPI_connect()) &lt; 0)
+        elog(INFO, "trigf (fired %s): SPI_connect returned %d", when, ret);
 
     /* get number of rows in table */
     ret = SPI_exec("SELECT count(*) FROM ttest", 0);
 
-    if (ret < 0)
-        elog(ERROR, "trigf (fired %s): SPI_exec returned %d", when, ret);
+    if (ret &lt; 0)
+        elog(NOTICE, "trigf (fired %s): SPI_exec returned %d", when, ret);
 
     /* count(*) returns int8, so be careful to convert */
-    i = DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[0],
-                                    SPI_tuptable->tupdesc,
+    i = DatumGetInt64(SPI_getbinval(SPI_tuptable-&gt;vals[0],
+                                    SPI_tuptable-&gt;tupdesc,
                                     1,
-                                    &isnull));
+                                    &amp;isnull));
 
     elog (INFO, "trigf (fired %s): there are %d rows in ttest", when, i);
 
@@ -558,18 +542,17 @@ trigf(PG_FUNCTION_ARGS)
 
     if (checknull)
     {
-        SPI_getbinval(rettuple, tupdesc, 1, &isnull);
+        SPI_getbinval(rettuple, tupdesc, 1, &amp;isnull);
         if (isnull)
             rettuple = NULL;
     }
 
     return PointerGetDatum(rettuple);
 }
-]]>
 </programlisting>
    </para>
 
-   <para>编译完源代码后（参见<xref linkend="dfunc">），声明函数和触发器：<programlisting>
+   <para>编译完源代码后，声明函数和触发器：<programlisting>
 CREATE FUNCTION trigf() RETURNS trigger
     AS '<replaceable>filename</>'
     LANGUAGE C;

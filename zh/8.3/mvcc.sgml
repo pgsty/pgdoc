@@ -187,7 +187,7 @@
    </indexterm>
 
    <para>
-    <firstterm>读已提交</firstterm>是<productname>PostgreSQL</productname>中默认的隔离级别。当事务使用这一隔离级别时，<command>SELECT</command>查询（不带<literal>FOR UPDATE/SHARE</literal>子句）只能看到查询开始之前已经提交的数据；它既看不到未提交的数据，也看不到查询执行期间并发事务提交的更改。实际上，<command>SELECT</command>查询看到的是该查询开始运行瞬间的数据库快照。不过，<command>SELECT</command>能看到其自身事务中先前执行的更新效果，即使这些更新尚未提交。还要注意，即使两个连续的<command>SELECT</command>命令位于同一个事务中，如果其他事务在第一个<command>SELECT</command>执行期间提交了更改，这两个命令也可能看到不同的数据。
+    <firstterm>读已提交</firstterm>是<productname>PostgreSQL</productname>中默认的隔离级别。当事务使用这一隔离级别时，<command>SELECT</command>查询只能看到查询开始之前已经提交的数据；它既看不到未提交的数据，也看不到查询执行期间并发事务提交的更改。实际上，<command>SELECT</command>查询看到的是该查询开始运行瞬间的数据库快照。不过，<command>SELECT</command>能看到其自身事务中先前执行的更新效果，即使这些更新尚未提交。还要注意，即使两个连续的<command>SELECT</command>命令位于同一个事务中，如果其他事务在第一个<command>SELECT</command>执行期间提交了更改，这两个命令也可能看到不同的数据。
    </para>
 
    <para>
@@ -221,31 +221,9 @@ COMMIT;
    </para>
 
    <para>
-    在读已提交模式下，更复杂的用法可能产生不理想的结果。例如，考虑一个
-    <command>DELETE</command> 命令，另一个命令正在修改数据，使某些行开始满足其筛选条件、另一些行不再满足。
-    假设 <literal>website</literal> 是一个有两行的表，其中
-    <literal>website.hits</literal> 分别等于 <literal>9</literal> 和
-    <literal>10</literal>：
-
-<screen>
-BEGIN;
-UPDATE website SET hits = hits + 1;
--- 从另一个会话运行：  DELETE FROM website WHERE hits = 10;
-COMMIT;
-</screen>
-
-    该 <command>DELETE</command> 将不会产生任何效果，即使在
-    <command>UPDATE</command> 之前和之后都存在一行
-    <literal>website.hits = 10</literal>。这是因为更新前值为
-    <literal>9</literal> 的那一行被跳过了，而当 <command>UPDATE</command>
-    完成并且 <command>DELETE</command> 获得锁时，新行值已经不再是
-    <literal>10</literal> 而是 <literal>11</literal>，因此不再匹配条件。
-   </para>
-
-   <para>
-    因为在读已提交模式中，每个命令都从一个新快照开始，而该快照包含截至当时已提交的所有事务，
-    所以同一事务中的后续命令无论如何都会看到并发事务已提交的效果。上面真正的问题在于，
-    <emphasis>单个</emphasis>命令是否能看到数据库的绝对一致视图。
+    因为在读已提交模式中，每个新命令都从一个新快照开始，而该快照包含截至当时已提交的所有事务，
+    所以同一事务中的后续命令无论如何都会看到并发事务已提交的效果。这里讨论的问题在于，
+    在<emphasis>单个</emphasis>命令内部，我们是否能看到数据库的一个绝对一致视图。
    </para>
 
    <para>
@@ -267,7 +245,7 @@ COMMIT;
    </para>
 
    <para>
-    当事务使用可串行化级别时，<command>SELECT</command>查询只能看到事务开始之前已经提交的数据；它既看不到未提交的数据，也看不到事务执行期间并发事务提交的更改。（不过，查询能看到其自身事务中先前执行的更新效果，即使这些更新尚未提交。）这一点与读已提交不同：可串行化事务中的查询看到的是<emphasis>事务</emphasis>开始时刻的快照，而不是事务中当前查询开始时刻的快照。因此，<emphasis>单个</emphasis>事务中连续的<command>SELECT</command>命令看到相同的数据，也就是说，它们看不到在本事务启动之后由其他事务提交的更改。（这种行为对于报表类应用来说可能非常理想。）
+    当事务使用可串行化级别时，<command>SELECT</command>查询只能看到事务开始之前已经提交的数据；它既看不到未提交的数据，也看不到事务执行期间并发事务提交的更改。（不过，<command>SELECT</command>能看到其自身事务中先前执行的更新效果，即使这些更新尚未提交。）这一点与读已提交不同：<command>SELECT</command>看到的是事务开始时刻的快照，而不是事务中当前查询开始时刻的快照。因此，单个事务中连续的<command>SELECT</command>命令看到相同的数据，也就是说，它们看不到在本事务启动之后由其他事务提交的更改。（这种行为对于报表类应用来说可能非常理想。）
    </para>
 
    <para>
@@ -319,11 +297,11 @@ ERROR:  could not serialize access due to concurrent update
 <screen>
 SELECT SUM(value) FROM mytab WHERE class = 1;
 </screen>
-    然后将结果（30）作为新行的<structfield>value</structfield>插入，且该行满足<structfield>class</structfield><literal> = 2</literal>。与此同时，可串行化事务 B 执行以下计算：
+    然后将结果（30）作为新行的<structfield>value</structfield>插入，且该行的<structfield>class</structfield>为 2。与此同时，可串行化事务 B 执行以下计算：
 <screen>
 SELECT SUM(value) FROM mytab WHERE class = 2;
 </screen>
-    得到结果 300，并将它插入一个新行，该行满足<structfield>class</structfield><literal> = 1</literal>。然后两个事务都提交。上面列出的任何不受欢迎的行为都没有发生，然而我们得到的结果，却不可能由任何一种串行顺序产生。如果 A 先于 B 执行，B 计算出的总和将是 330 而不是 300；类似地，另一种执行顺序也会使 A 计算出不同的总和。
+    得到结果 300，并将它插入一个新行，该行的<structfield>class</structfield>为 1。然后两个事务都提交。上面列出的任何不受欢迎的行为都没有发生，然而我们得到的结果，却不可能由任何一种串行顺序产生。如果 A 先于 B 执行，B 计算出的总和将是 330 而不是 300；类似地，另一种执行顺序也会使 A 计算出不同的总和。
    </para>
 
    <para>
@@ -389,7 +367,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
         </para>
 
         <para>
-         <command>SELECT</command> 命令会在被引用的表上获取这种模式的锁。通常，任何只<emphasis>读取</emphasis>表而不修改它的查询都会获取这种锁模式。
+         <command>SELECT</command> 命令会在被引用的表上获取这种模式的锁。通常，任何只读取表而不修改它的查询都会获取这种锁模式。
         </para>
        </listitem>
       </varlistentry>
@@ -417,7 +395,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
         </para>
 
         <para>
-         <command>UPDATE</command>、<command>DELETE</command> 和 <command>INSERT</command> 命令会在目标表上获取这种锁模式（此外，对任何其他被引用的表还会获取 <literal>ACCESS SHARE</literal> 锁）。通常，任何<emphasis>修改表中数据</emphasis>的命令都会获取这种锁模式。
+         <command>UPDATE</command>、<command>DELETE</command> 和 <command>INSERT</command> 命令会在目标表上获取这种锁模式（此外，对任何其他被引用的表还会获取 <literal>ACCESS SHARE</literal> 锁）。通常，任何修改表中数据的命令都会获取这种锁模式。
         </para>
        </listitem>
       </varlistentry>
@@ -730,7 +708,7 @@ SELECT pg_advisory_lock(q.id) FROM
    <title>应用级别的数据一致性检查</title>
 
    <para>
-    由于<productname>PostgreSQL</productname>中的读操作不加锁（无论事务隔离级别如何），一个事务读取的数据仍可能被另一个并发事务覆盖。换句话说，某行被<command>SELECT</command>返回，并不意味着该行在返回的那一刻（即当前查询开始之后的某个时刻）仍然是当前的。该行可能已经被一个在<command>SELECT</command>开始之后提交的事务修改或删除。即使该行<quote>现在</quote>仍然有效，它也可能在当前事务提交或回滚之前被更改或删除。
+    由于<productname>PostgreSQL</productname>中的读操作不加锁（无论事务隔离级别如何），一个事务读取的数据仍可能被另一个并发事务覆盖。换句话说，某行被<command>SELECT</command>返回，并不意味着该行在返回的那一刻（即当前查询开始之后的某个时刻）仍然是当前的。该行可能已经被一个在本事务开始之后提交的事务修改或删除。即使该行<quote>现在</quote>仍然有效，它也可能在当前事务提交或回滚之前被更改或删除。
    </para>
 
    <para>

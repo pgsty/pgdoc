@@ -269,8 +269,15 @@ use strict;
   <title>从 PL/Perl 访问数据库</title>
 
   <para>
-   可以通过下列函数在 Perl 函数中访问数据库本身：
+   在 Perl 函数中访问数据库本身，可以通过下面描述的<function>spi_exec_query</function>函数，也可以通过一个实验性模块
+   <ulink url="http://www.cpan.org/modules/by-module/DBD/APILOS/">
+   <literal>DBD::PgSPI</literal></ulink>
+   （也可以从<ulink url="http://www.cpan.org/SITES.html">
+   <acronym>CPAN 镜像站点</acronym></ulink>获取）。该模块提供一个符合<acronym>DBI</acronym>规范的数据库句柄，名为<varname>$pg_dbh</varname>，可以用普通的<acronym>DBI</acronym>语法执行查询。<indexterm><primary>DBI</></indexterm>
   </para>
+
+  <para>
+   PL/Perl 提供下列额外的 Perl 命令：
 
    <variablelist>
     <varlistentry>
@@ -278,36 +285,16 @@ use strict;
       <primary>spi_exec_query</primary>
       <secondary>in PL/Perl</secondary>
      </indexterm>
-     <indexterm>
-      <primary>spi_query</primary>
-      <secondary>in PL/Perl</secondary>
-     </indexterm>
-     <indexterm>
-      <primary>spi_fetchrow</primary>
-      <secondary>in PL/Perl</secondary>
-     </indexterm>
-     <indexterm>
-      <primary>spi_prepare</primary>
-      <secondary>in PL/Perl</secondary>
-     </indexterm>
-     <indexterm>
-      <primary>spi_exec_prepared</primary>
-      <secondary>in PL/Perl</secondary>
-     </indexterm>
-     <indexterm>
-      <primary>spi_query_prepared</primary>
-      <secondary>in PL/Perl</secondary>
-     </indexterm>
-     <indexterm>
-      <primary>spi_cursor_close</primary>
-      <secondary>in PL/Perl</secondary>
-     </indexterm>
-     <indexterm>
-      <primary>spi_freeplan</primary>
-      <secondary>in PL/Perl</secondary>
-     </indexterm>
 
      <term><literal><function>spi_exec_query</>(<replaceable>query</replaceable> [, <replaceable>max-rows</replaceable>])</literal></term>
+     <term><literal><function>spi_query</>(<replaceable>command</replaceable>)</literal></term>
+     <term><literal><function>spi_fetchrow</>(<replaceable>cursor</replaceable>)</literal></term>
+     <term><literal><function>spi_prepare</>(<replaceable>command</replaceable>, <replaceable>argument types</replaceable>)</literal></term>
+     <term><literal><function>spi_exec_prepared</>(<replaceable>plan</replaceable>)</literal></term>
+     <term><literal><function>spi_query_prepared</>(<replaceable>plan</replaceable> [, <replaceable>attributes</replaceable>], <replaceable>arguments</replaceable>)</literal></term>
+     <term><literal><function>spi_cursor_close</>(<replaceable>cursor</replaceable>)</literal></term>
+     <term><literal><function>spi_freeplan</>(<replaceable>plan</replaceable>)</literal></term>
+
      <listitem>
       <para>
        <literal>spi_exec_query</literal> 执行 SQL 命令，并返回整个行集；返回值是对一个数组的引用，数组元素为哈希引用。<emphasis>只有在确定结果集会比较小时，才应使用此命令。</emphasis>下面是一个查询（<command>SELECT</command> 命令）的示例，指定了可选的最大行数：<programlisting>
@@ -364,15 +351,6 @@ $$ LANGUAGE plperl;
 SELECT * FROM test_munge();
 </programlisting>
     </para>
-    </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><literal><function>spi_query(<replaceable>command</replaceable>)</function></literal></term>
-     <term><literal><function>spi_fetchrow(<replaceable>cursor</replaceable>)</function></literal></term>
-     <term><literal><function>spi_cursor_close(<replaceable>cursor</replaceable>)</function></literal></term>
-
-    <listitem>
     <para>
     <literal>spi_query</literal> 和 <literal>spi_fetchrow</literal>
     需要配合使用，适用于结果集可能很大，或者希望在行到达时立即返回的情况。
@@ -410,29 +388,7 @@ SELECT * from lotsa_md5(500);
     </para>
 
     <para>
-     通常，应重复调用 <function>spi_fetchrow</function>，直到它返回
-     <literal>undef</literal>，这表示已经没有更多行可读。当
-     <function>spi_fetchrow</function> 返回 <literal>undef</literal> 时，
-     <literal>spi_query</literal> 返回的游标会被自动释放。如果不打算读取
-     所有行，则应调用 <function>spi_cursor_close</function> 释放游标。
-     否则会导致内存泄漏。
-    </para>
-
-    </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><literal><function>spi_prepare(<replaceable>command</replaceable>, <replaceable>argument types</replaceable>)</function></literal></term>
-     <term><literal><function>spi_query_prepared(<replaceable>plan</replaceable>, <replaceable>arguments</replaceable>)</function></literal></term>
-     <term><literal><function>spi_exec_prepared(<replaceable>plan</replaceable> [, <replaceable>attributes</replaceable>], <replaceable>arguments</replaceable>)</function></literal></term>
-     <term><literal><function>spi_freeplan(<replaceable>plan</replaceable>)</function></literal></term>
-
-    <listitem>
-    <para>
-    <literal>spi_prepare</literal>， <literal>spi_query_prepared</literal>， <literal>spi_exec_prepared</literal>，以及 <literal>spi_freeplan</literal> 实现相同的功能，但用于预备查询。<literal>spi_prepare</literal> 接受包含编号参数占位符（$1、$2 等）的查询字符串，以及由参数类型字符串组成的列表：<programlisting>
-$plan = spi_prepare('SELECT * FROM test WHERE id &gt; $1 AND name = $2',
-                                                     'INTEGER', 'TEXT');
-</programlisting>调用 <literal>spi_prepare</literal> 预备查询计划后，就可以使用该计划代替查询字符串。可以将其用于 <literal>spi_exec_prepared</literal>，其结果与以下函数返回的结果相同：<literal>spi_exec_query</literal>；也可以用于 <literal>spi_query_prepared</literal>，它返回游标，行为与 <literal>spi_query</literal> 完全相同。随后可以将该游标传给 <literal>spi_fetchrow</literal>。<literal>spi_exec_prepared</literal> 可选的第二个参数是属性哈希引用；目前唯一支持的属性是 <literal>limit</literal>，用于设置查询返回的最大行数。</para>
+    <literal>spi_prepare</literal>， <literal>spi_query_prepared</literal>， <literal>spi_exec_prepared</literal>，以及 <literal>spi_freeplan</literal> 实现相同的功能，但用于预备查询。一旦通过调用<literal>spi_prepare</literal>预备好查询计划，就可以用该计划代替查询字符串：既可以在<literal>spi_exec_prepared</literal>中使用，其结果与<literal>spi_exec_query</literal>返回的相同；也可以在<literal>spi_query_prepared</literal>中使用，它像<literal>spi_query</literal>一样返回游标，之后可以把该游标传给<literal>spi_fetchrow</literal>。</para>
 
     <para>
     预备查询的优点在于，一个准备好的计划可以用于多次查询执行。当计划
@@ -441,7 +397,7 @@ $plan = spi_prepare('SELECT * FROM test WHERE id &gt; $1 AND name = $2',
 
     <para>
     <programlisting>
-CREATE OR REPLACE FUNCTION init() RETURNS VOID AS $$
+CREATE OR REPLACE FUNCTION init() RETURNS INTEGER AS $$
         $_SHARED{my_plan} = spi_prepare('SELECT (now() + $1)::date AS now',
                                         'INTERVAL');
 $$ LANGUAGE plperl;
@@ -453,7 +409,7 @@ CREATE OR REPLACE FUNCTION add_time( INTERVAL ) RETURNS TEXT AS $$
         )->{rows}->[0]->{now};
 $$ LANGUAGE plperl;
 
-CREATE OR REPLACE FUNCTION done() RETURNS VOID AS $$
+CREATE OR REPLACE FUNCTION done() RETURNS INTEGER AS $$
         spi_freeplan( $_SHARED{my_plan});
         undef $_SHARED{my_plan};
 $$ LANGUAGE plperl;
@@ -472,46 +428,15 @@ SELECT done();
     请注意，<literal>spi_prepare</literal> 中的参数下标由 $1、$2、$3
     等表示，因此应避免用双引号声明查询字符串，以免轻易引入难以察觉的错误。
     </para>
-
     <para>
-    下面的另一个示例展示了如何在
-    <literal>spi_exec_prepared</literal> 中使用可选参数：
+     通常，应重复调用 <function>spi_fetchrow</function>，直到它返回
+     <literal>undef</literal>，这表示已经没有更多行可读。当
+     <function>spi_fetchrow</function> 返回 <literal>undef</literal> 时，
+     游标会被自动释放。如果不打算读取
+     所有行，则应调用 <function>spi_cursor_close</function> 释放游标。
+     否则会导致内存泄漏。
     </para>
 
-    <para>
-    <programlisting>
-CREATE TABLE hosts AS SELECT id, ('192.168.1.'||id)::inet AS address
-                      FROM generate_series(1,3) AS id;
-
-CREATE OR REPLACE FUNCTION init_hosts_query() RETURNS VOID AS $$
-        $_SHARED{plan} = spi_prepare('SELECT * FROM hosts
-                                      WHERE address &lt;&lt; $1', 'inet');
-$$ LANGUAGE plperl;
-
-CREATE OR REPLACE FUNCTION query_hosts(inet) RETURNS SETOF hosts AS $$
-        return spi_exec_prepared(
-                $_SHARED{plan},
-                {limit =&gt; 2},
-                $_[0]
-        )->{rows};
-$$ LANGUAGE plperl;
-
-CREATE OR REPLACE FUNCTION release_hosts_query() RETURNS VOID AS $$
-        spi_freeplan($_SHARED{plan});
-        undef $_SHARED{plan};
-$$ LANGUAGE plperl;
-
-SELECT init_hosts_query();
-SELECT query_hosts('192.168.1.0/30');
-SELECT release_hosts_query();
-
-    query_hosts
------------------
- (1,192.168.1.1)
- (2,192.168.1.2)
-(2 rows)
-</programlisting>
-    </para>
     </listitem>
     </varlistentry>
     <varlistentry>
@@ -537,6 +462,7 @@ SELECT release_hosts_query();
      </listitem>
     </varlistentry>
    </variablelist>
+  </para>
  </sect1>
  <sect1 id="plperl-data">
   <title>PL/Perl 中的数据值</title>
@@ -746,7 +672,7 @@ $$ LANGUAGE plperl;
      <listitem>
       <para>
        触发器事件：<literal>INSERT</>、<literal>UPDATE</>、
-       <literal>DELETE</>、<literal>TRUNCATE</> 或 <literal>UNKNOWN</>
+       <literal>DELETE</> 或 <literal>UNKNOWN</>
       </para>
      </listitem>
     </varlistentry>
@@ -831,14 +757,14 @@ $$ LANGUAGE plperl;
   </para>
 
   <para>
-   行级触发器可以返回下列之一：
+   触发器可以返回下列之一：
 
    <variablelist>
     <varlistentry>
      <term><literal>return;</literal></term>
      <listitem>
       <para>
-       执行操作
+       执行语句
       </para>
      </listitem>
     </varlistentry>
@@ -847,7 +773,7 @@ $$ LANGUAGE plperl;
      <term><literal>"SKIP"</literal></term>
      <listitem>
       <para>
-       不执行操作
+       不执行语句
       </para>
      </listitem>
     </varlistentry>

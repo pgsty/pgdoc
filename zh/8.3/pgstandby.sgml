@@ -22,6 +22,11 @@
  <itemizedlist>
   <listitem>
    <para>
+    支持用复制或链接方式恢复 WAL 文件
+   </para>
+  </listitem>
+  <listitem>
+   <para>
     用 C 语言编写，因此移植性很好，易于安装
    </para>
   </listitem>
@@ -95,10 +100,17 @@ pg_standby <optional> <replaceable>option</> ... </optional> <replaceable>archiv
      </entry>
     </row>
     <row>
+     <entry><literal>-l</></entry>
+     <entry>no</entry>
+     <entry>
+      使用 <literal>ln</literal> 命令从归档恢复 WAL 文件。链接比复制效率更高，但默认方式是复制，因为链接并非在所有场景下都可用。在 Windows 上，此选项使用 <literal>mklink</literal> 命令提供文件到文件的符号链接。<literal>-l</literal> 无法用于 Vista 之前的 Windows 版本。
+     </entry>
+    </row>
+    <row>
      <entry><literal>-r</> <replaceable>maxretries</></entry>
      <entry>3</entry>
      <entry>
-      设置复制命令失败时的最大重试次数。每次失败后，会等待 <replaceable>sleeptime</> * <replaceable>num_retries</>，以使等待时间逐步递增。因此默认情况下，会先等待 5 秒、10 秒，再等 15 秒，然后才向备库报告失败。这会被解释为恢复结束，备库将据此完全启动。
+      设置复制或链接命令失败时的最大重试次数。每次失败后，会等待 <replaceable>sleeptime</> * <replaceable>num_retries</>，以使等待时间逐步递增。因此默认情况下，会先等待 5 秒、10 秒，再等 15 秒，然后才向备库报告失败。这会被解释为恢复结束，备库将据此完全启动。
      </entry>
     </row>
     <row>
@@ -112,36 +124,30 @@ pg_standby <optional> <replaceable>option</> ... </optional> <replaceable>archiv
      <entry><literal>-t</> <replaceable>triggerfile</></entry>
      <entry>none</entry>
      <entry>
-      指定一个触发文件，其出现应导致故障切换。建议使用结构化的文件名，以避免在同一系统上存在多个服务器时混淆究竟要触发的是哪一个；例如 <filename>/tmp/pgsql.trigger.5432</>。
+      指定一个触发文件，无论下一个 WAL 文件是否可用，该文件的出现都应导致恢复结束。建议使用结构化的文件名，以避免在同一系统上存在多个服务器时混淆究竟要触发的是哪一个；例如 <filename>/tmp/pgsql.trigger.5432</>。
      </entry>
     </row>
     <row>
      <entry><literal>-w</> <replaceable>maxwaittime</></entry>
      <entry>0</entry>
      <entry>
-      设置等待下一个 WAL 文件的最大秒数，超过该时间后将执行快速故障切换。设置为零（默认值）表示无限等待。默认设置未必是推荐值；相关讨论请参见 <xref linkend="warm-standby">。
+      设置等待下一个 WAL 文件的最大秒数，超过该时间后恢复将结束，备库将启动。设置为零（默认值）表示无限等待。默认设置未必是推荐值；相关讨论请参见 <xref linkend="warm-standby">。
      </entry>
     </row>
    </tbody>
   </tgroup>
  </table>
 
-  <para>主库发生故障时，切换到<quote>温备</>数据库服务器有以下两种方式：<variablelist>
-    <varlistentry>
-     <term>智能故障切换</term>
-     <listitem>
-      <para>在智能故障切换中，服务器会先应用归档中所有可用的 WAL 文件，再正式启动。即使备库已经落后，这也能做到零数据丢失；但如果尚未应用的 WAL 很多，备库可能需要很长时间才能就绪。要触发智能故障切换，请创建包含单词 <literal>smart</literal> 的触发文件，或者直接创建一个空的触发文件。</para>
-     </listitem>
-    </varlistentry>
-    <varlistentry>
-     <term>快速故障切换</term>
-     <listitem>
-      <para>在快速故障切换中，服务器会立即正式启动。归档中所有尚未应用的 WAL 文件都会被忽略，这些文件中的全部事务都会丢失。要触发快速故障切换，请创建触发文件，并在其中写入单词 <literal>fast</literal>。也可以配置 <application>pg_standby</application>，使其在指定时间间隔内没有出现新 WAL 文件时，自动执行快速故障切换。</para>
-     </listitem>
-    </varlistentry>
-   </variablelist>
-  </para>
-
+  <caution>
+    <para>
+      触发文件的创建权限必须允许 postgres 进程删除该文件，这一点至关重要。通常，最好由 postgres 用户账号来创建该文件。否则，WAL 文件恢复将无法完成，服务器也无法成功重新上线。
+    </para>
+  </caution>
+  <note>
+   <para>
+    不支持 <literal>--help</literal>，因为 <application>pg_standby</application> 并非为交互式使用而设计（开发和测试期间除外）。
+   </para>
+  </note>
  </sect2>
 
  
@@ -151,13 +157,11 @@ pg_standby <optional> <replaceable>option</> ... </optional> <replaceable>archiv
 
   <para>在 Linux 或 Unix 系统上，可以这样使用：
 
-<programlisting>
+  <programlisting>
 archive_command = 'cp %p .../archive/%f'
 
-restore_command = 'pg_standby -d -s 2 -t /tmp/pgsql.trigger.5442 .../archive %f %p %r 2>>standby.log'
-
-recovery_end_command = 'rm -f /tmp/pgsql.trigger.5442'
-</programlisting>
+restore_command = 'pg_standby -l -d -s 2 -t /tmp/pgsql.trigger.5442 .../archive %f %p %r 2>>standby.log'
+  </programlisting>
   </para>
 
   <para>
@@ -165,6 +169,11 @@ recovery_end_command = 'rm -f /tmp/pgsql.trigger.5442'
    通过 NFS 访问该目录，但这些文件对备库而言是本地文件（因此可以
    使用 <literal>ln</>）。此配置会：
   <itemizedlist>
+   <listitem>
+    <para>
+     使用 <literal>ln</literal> 命令从归档恢复 WAL 文件
+    </para>
+   </listitem>
    <listitem>
     <para>
      将调试输出写入 <filename>standby.log</>
@@ -178,12 +187,7 @@ recovery_end_command = 'rm -f /tmp/pgsql.trigger.5442'
    <listitem>
     <para>
      仅在名为 <filename>/tmp/pgsql.trigger.5442</> 的触发文件出现时
-     停止等待，并根据其内容执行故障切换
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     恢复结束时删除触发文件
+     停止等待
     </para>
    </listitem>
    <listitem>
@@ -200,15 +204,12 @@ recovery_end_command = 'rm -f /tmp/pgsql.trigger.5442'
 archive_command = 'copy %p ...\\archive\\%f'
 
 restore_command = 'pg_standby -d -s 5 -t C:\pgsql.trigger.5442 ...\archive %f %p %r 2>>standby.log'
-
-recovery_end_command = 'del C:\pgsql.trigger.5442'
 </programlisting>
   </para>
 
   <para>
    注意，需要双写反斜杠的是 <literal>archive_command</>，而
-   <emphasis>无需</emphasis>双写的是 <literal>restore_command</> 或
-   <literal>recovery_end_command</>。此配置会：
+   <emphasis>无需</emphasis>双写的是 <literal>restore_command</>。此配置会：
   <itemizedlist>
    <listitem>
     <para>
@@ -228,12 +229,7 @@ recovery_end_command = 'del C:\pgsql.trigger.5442'
    <listitem>
     <para>
      仅在名为 <filename>C:\pgsql.trigger.5442</> 的触发文件出现时
-     停止等待，并根据其内容执行故障切换
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     恢复结束时删除触发文件
+     停止等待
     </para>
    </listitem>
    <listitem>
@@ -244,8 +240,6 @@ recovery_end_command = 'del C:\pgsql.trigger.5442'
   </itemizedlist>
   </para>
 
-  <para>Windows 上的 <literal>copy</literal> 命令会在文件复制完成之前设置最终文件大小，这通常会让 <application>pg_standby</application> 产生误判。因此，<application>pg_standby</application> 一旦看到正确的文件大小，还会等待 <literal>sleeptime</literal> 秒。GNUWin32 的 <literal>cp</literal> 只有在文件复制完成后才设置文件大小。</para>
-
   <para>由于 Windows 示例在两端都使用 <literal>copy</literal>，任一服务器或两个服务器都可能通过网络访问归档目录。</para>
 
  </sect2>
@@ -255,11 +249,6 @@ recovery_end_command = 'del C:\pgsql.trigger.5442'
 
   <para><application>pg_standby</application> 设计为与 <productname>PostgreSQL</productname> 8.2 及更高版本配合使用。</para>
   <para><productname>PostgreSQL</productname> 8.3 提供了 <literal>%r</literal> 宏，用于让 <application>pg_standby</application> 知道需要保留的最后一个文件。使用 <productname>PostgreSQL</productname> 8.2 时，如果需要清理归档，就必须使用 <literal>-k</literal> 选项。该选项在 8.3 中仍然可用，但已弃用。</para>
-  <para>
-   <productname>PostgreSQL</> 8.4 提供了
-   <literal>recovery_end_command</literal> 选项。如果没有此选项，遗留的
-   触发文件可能带来危险。
-  </para>
  </sect2>
 
  <sect2>

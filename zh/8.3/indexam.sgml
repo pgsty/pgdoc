@@ -14,7 +14,7 @@
 
   <para>
    索引本质上是从一些数据键值到行版本（元组）在索引父表中的<firstterm>元组标识符</firstterm>（<acronym>TIDs</acronym>）的映射。一个 TID 由块号以及该块中的项号组成（见 <xref
-   linkend="storage-page-layout">）。这些信息足以从表中取出某个特定的行版本。索引并不直接知道在 MVCC 之下同一逻辑行可能会存在多个现存版本；对索引来说，每个元组都是一个独立对象，需要它自己的索引条目。因此，对一行的更新总会为该行创建全新的索引条目，即使键值并未改变也是如此。（HOT 元组是这一说法的例外；但索引同样不直接处理它们。）当死元组自身被回收时（通过清理），它们对应的索引条目也会被回收。
+   linkend="storage-page-layout">）。这些信息足以从表中取出某个特定的行版本。索引并不直接知道在 MVCC 之下同一逻辑行可能会存在多个现存版本；对索引来说，每个元组都是一个独立对象，需要它自己的索引条目。因此，对一行的更新总会为该行创建全新的索引条目，即使键值并未改变也是如此。当死元组自身被回收时（通过清理），它们对应的索引条目也会被回收。
   </para>
 
  <sect1 id="index-catalog">
@@ -122,10 +122,6 @@ amvacuumcleanup (IndexVacuumInfo *info,
   </para>
 
   <para>
-   从<productname>PostgreSQL</productname> 8.4 开始，<function>amvacuumcleanup</function> 也会在 <command>ANALYZE</command> 操作完成时被调用。在这种情况下，<literal>stats</literal> 总是 NULL，而且任何返回值都会被忽略。这种情况可以通过检查 <literal>info-&gt;analyze_only</literal> 来区分。我们建议访问方法在这种调用中除了做插入后的清理外什么都不做，而且只在自动清理工作进程中这样做。
-  </para>
-
-  <para>
 <programlisting>
 void
 amcostestimate (PlannerInfo *root,
@@ -151,7 +147,7 @@ amoptions (ArrayType *reloptions,
   </para>
 
   <para>
-   索引的目的当然是支持扫描那些匹配可索引 <literal>WHERE</literal> 条件的元组，这种条件常被称为<firstterm>限定词</firstterm>或<firstterm>扫描键</firstterm>。关于索引扫描的语义，将在下面的 <xref linkend="index-scanning"> 中更详细地说明。一种索引访问方法可以支持<quote>普通</quote>索引扫描、<quote>位图</quote>索引扫描，或者两者都支持。索引访问方法必须或可以提供的扫描相关函数如下：
+   索引的目的当然是支持扫描那些匹配可索引 <literal>WHERE</literal> 条件的元组，这种条件常被称为<firstterm>限定词</firstterm>或<firstterm>扫描键</firstterm>。关于索引扫描的语义，将在下面的 <xref linkend="index-scanning"> 中更详细地说明。索引访问方法必须提供的扫描相关函数如下：
   </para>
 
   <para>
@@ -176,23 +172,17 @@ ambeginscan (Relation indexRelation,
 boolean
 amgettuple (IndexScanDesc scan,
             ScanDirection direction);
-</programlisting>沿给定方向（在索引中向前或向后）取出给定扫描中的下一个元组。若取得元组则返回 TRUE，若没有剩余匹配元组则返回 FALSE。返回 TRUE 时，元组 TID 存入<literal>scan</literal>结构体中。注意，<quote>成功</quote>仅表示索引中包含与扫描键匹配的条目，并不表示该元组一定仍存在于堆中，或者能够通过调用方的快照测试。成功时，<function>amgettuple</function>还必须将<literal>scan-&gt;xs_recheck</literal>设为 TRUE 或 FALSE。FALSE 表示可以确定该索引条目匹配扫描键。TRUE 表示无法确定，因此在取出堆元组后必须重新检查扫描键所代表的条件。这一规定支持<quote>有损</quote>索引操作符。注意，重新检查仅针对扫描条件；部分索引谓词（如果有）永远不会由<function>amgettuple</function>的调用方重新检查。</para>
-
-  <para>
-   只有当访问方法支持<quote>普通</quote>索引扫描时，才需要提供 <function>amgettuple</function> 函数。如果不支持，其 <structname>pg_am</structname> 行中的 <structfield>amgettuple</structfield> 字段必须设为零。
-  </para>
+</programlisting>沿给定方向（在索引中向前或向后）取出给定扫描中的下一个元组。若取得元组则返回 TRUE，若没有剩余匹配元组则返回 FALSE。返回 TRUE 时，元组 TID 存入<literal>scan</literal>结构体中。注意，<quote>成功</quote>仅表示索引中包含与扫描键匹配的条目，并不表示该元组一定仍存在于堆中，或者能够通过调用方的快照测试。</para>
 
   <para>
 <programlisting>
-int64
-amgetbitmap (IndexScanDesc scan,
-             TIDBitmap *tbm);
+boolean
+amgetmulti (IndexScanDesc scan,
+            ItemPointer tids,
+            int32 max_tids,
+            int32 *returned_tids);
 </programlisting>
-   取出给定扫描中的所有元组，并将其加入调用者提供的 TIDBitmap 中（也就是把这组元组 ID 与位图中已有的集合做 OR）。返回值是取得的元组数量（这可能只是近似计数，例如某些 AM 不会检测重复项）。在把元组 ID 插入位图时，<function>amgetbitmap</function> 可以指出某些具体的元组 ID 需要重新检查扫描条件。这类似于 <function>amgettuple</function> 的 <literal>xs_recheck</literal> 输出参数。注意：在当前实现中，对这一特性的支持与位图自身的有损存储支持混在一起，因此调用者会对需要重检的元组同时重新检查扫描条件和部分索引谓词（如果有）。不过，这并不一定永远如此。<function>amgetbitmap</function> 和 <function>amgettuple</function> 不能在同一次索引扫描中同时使用；使用 <function>amgetbitmap</function> 时还有其他限制，详见 <xref linkend="index-scanning">。
-  </para>
-
-  <para>
-   只有当访问方法支持<quote>位图</quote>索引扫描时，才需要提供 <function>amgetbitmap</function> 函数。如果不支持，其 <structname>pg_am</structname> 行中的 <structfield>amgetbitmap</structfield> 字段必须设为零。
+   在给定扫描中取出多个元组。如果扫描还应继续则返回 TRUE，如果没有剩余匹配元组则返回 FALSE。<literal>tids</literal>指向一个由调用方提供的、包含<literal>max_tids</literal>个<structname>ItemPointerData</structname>记录的数组，本调用会把匹配元组的 TID 填入其中。<literal>*returned_tids</literal>被设为实际返回的 TID 数。即使返回值为 TRUE，这个数也可以小于<literal>max_tids</literal>，甚至为零。（这一规定允许访问方法在扫描中选择最高效的停止点，例如索引页边界。）<function>amgetmulti</function>和<function>amgettuple</function>不能在同一次索引扫描中同时使用；使用<function>amgetmulti</function>时还有其他限制，详见<xref linkend="index-scanning">。
   </para>
 
   <para>
@@ -252,7 +242,7 @@ amrestrpos (IndexScanDesc scan);
   </para>
 
   <para>
-   对于某个特定查询，访问方法可以报告该索引是<firstterm>有损的</firstterm>，或者要求重新检查。这意味着索引扫描会返回所有通过扫描键的条目，并可能额外返回一些未通过扫描键的条目。随后，核心系统的索引扫描机制会再次把索引条件应用到堆元组上，以验证它是否真的应被选中。如果没有指定重检选项，索引扫描就必须精确返回匹配条目的集合。
+   操作符族可以表明索引对于某个特定操作符是<firstterm>有损的</firstterm>；这意味着索引扫描会返回所有通过扫描键的条目，并可能额外返回一些未通过扫描键的条目。随后，核心系统的索引扫描机制会再次把该操作符应用到堆元组上，以验证它是否真的应被选中。对于非有损操作符，索引扫描必须精确返回匹配条目的集合，因为没有重检。
   </para>
 
   <para>
@@ -278,13 +268,11 @@ amrestrpos (IndexScanDesc scan);
    <function>amgettuple</> 必须返回索引中最后一个匹配元组，而不是
    通常情况下的第一个。（这只会发生在声明支持有序扫描的访问方法
    上。）第一次调用之后，<function>amgettuple</> 必须准备好从最近
-   一次返回条目的位置继续按任一方向推进扫描。（但如果
-   <structname>pg_am</>.<structfield>amcanbackward</> 为假，则后续
-   所有调用的方向都与第一次相同。）
+   一次返回条目的位置继续按任一方向推进扫描。
   </para>
 
   <para>
-   支持有序扫描的访问方法必须支持在扫描中<quote>标记</quote>一个位置，并在之后返回到该标记位置。同一个位置可能会被恢复多次。不过，每次扫描只需要记住一个位置；新的 <function>ammarkpos</function> 调用会覆盖先前标记的位置。不支持有序扫描的访问方法仍应在 <structname>pg_am</structname> 中提供标记和恢复函数，但让这些函数在被调用时报错也是可以的。
+   访问方法必须支持在扫描中<quote>标记</quote>一个位置，并在之后返回到该标记位置。同一个位置可能会被恢复多次。不过，每次扫描只需要记住一个位置；新的 <function>ammarkpos</function> 调用会覆盖先前标记的位置。
   </para>
 
   <para>
@@ -293,20 +281,18 @@ amrestrpos (IndexScanDesc scan);
 
   <para>
    除了使用 <function>amgettuple</> 之外，索引扫描也可以用
-   <function>amgetbitmap</> 一次调用取回所有元组。这可以比
+   <function>amgetmulti</> 每次调用取出多个元组。这可以比
    <function>amgettuple</> 明显更高效，因为它可以避免在访问方法
-   内部反复加锁/解锁。原则上，<function>amgetbitmap</> 的效果应与
+   内部反复加锁/解锁。原则上，<function>amgetmulti</> 的效果应与
    反复调用 <function>amgettuple</> 相同，但我们施加了一些限制以
-   简化问题。首先，<function>amgetbitmap</> 一次性返回所有元组，
-   不支持标记或恢复扫描位置。其次，元组是以位图形式返回的，没有
-   任何特定顺序，这也正是 <function>amgetbitmap</> 不接受
-   <literal>direction</literal> 参数的原因。最后，
-   <function>amgetbitmap</> 不保证对返回的元组加任何锁，其影响在
+   简化问题。首先，<function>amgetmulti</function>不接受
+   <literal>direction</literal> 参数，因此它不支持反向扫描，也不支持
+   扫描中途改变方向。其次，访问方法也不需要在 <function>amgetmulti</function>
+   扫描期间支持标记或恢复扫描位置。（这些限制代价不大，因为在
+   <function>amgetmulti</function> 扫描中使用这些特性本来就很困难：
+   调整调用方缓冲的 TID 列表会非常复杂。）最后，
+   <function>amgetmulti</function> 不保证对返回的元组加任何锁，其影响在
    <xref linkend="index-locking"> 中有详细说明。
-  </para>
-
-  <para>
-   请注意，如果访问方法的内部实现并不适合某一个 API，那么它可以只实现 <function>amgetbitmap</function> 而不实现 <function>amgettuple</function>，反之亦然。
   </para>
 
  </sect1>
@@ -378,7 +364,7 @@ amrestrpos (IndexScanDesc scan);
   </para>
 
   <para>
-   在 <function>amgetbitmap</function> 索引扫描中，访问方法不会为任何返回的元组保持索引页面的钉住状态。因此，只有把这种扫描与 MVCC 兼容的快照一起使用才是安全的。
+   在 <function>amgetmulti</function> 索引扫描中，访问方法不会为任何返回的元组保持索引页面的钉住状态。因此，只有把这种扫描与 MVCC 兼容的快照一起使用才是安全的。
   </para>
 
  </sect1>

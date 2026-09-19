@@ -99,7 +99,7 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 </indexterm>
 
 <para>
-解析器还提供了一种额外的启发式规则，可在存在隐式类型转换的一组类型之间更准确地判定适当的转换行为。数据类型被划分为若干基本的<firstterm>类型分类</firstterm>，包括<type>boolean</type>、<type>numeric</type>、<type>string</type>、<type>bitstring</type>、<type>datetime</type>、<type>timespan</type>、<type>geometric</type>、<type>network</type>以及用户定义类型。（列表见<xref linkend="catalog-typcategory-table">；不过也可以创建自定义类型分类。）每个分类中可以有一个或多个<firstterm>首选类型</firstterm>，当存在多种可能类型可选时，会优先选择它们。通过仔细选择首选类型和可用的隐式类型转换，可以确保有歧义的表达式（即存在多个候选解析方案的表达式）能够以有用的方式被解析。
+解析器还提供了一个附加的启发式规则，以便对<acronym>SQL</acronym>标准类型做出更好的猜测。系统定义了若干基本的<firstterm>类型分类</firstterm>：<type>boolean</type>、<type>numeric</type>、<type>string</type>、<type>bitstring</type>、<type>datetime</type>、<type>timespan</type>、<type>geometric</type>、<type>network</type>以及用户定义类型。除用户定义分类外，每个分类都有一个或多个<firstterm>首选类型</firstterm>，存在歧义时会优先选择它们。在用户定义分类中，每个类型自己的首选类型就是它自己。因此，当存在多个可能的内置类型时，有歧义的表达式（即存在多个候选解析方案的表达式）常常仍能被解析；但当存在多个用户定义类型选择时，则会报错。
 </para>
 
 <para>
@@ -109,6 +109,18 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 <listitem>
 <para>
 隐式转换绝不应产生令人意外或无法预测的结果。
+</para>
+</listitem>
+
+<listitem>
+<para>
+解析器没有关于用户定义类型的<foreignphrase>先验</foreignphrase>知识，这类类型在类型层次结构中应当处于<quote>更高</quote>的位置。在混合类型的表达式中，原生类型应当总是被转换为用户定义类型（当然，仅在确有必要转换时）。
+</para>
+</listitem>
+
+<listitem>
+<para>
+用户定义类型彼此之间没有关联。目前，<productname>PostgreSQL</productname>除了对内置类型的硬编码启发式规则，以及基于可用函数和类型转换的隐式关系外，并没有关于类型之间关系的信息可用。
 </para>
 </listitem>
 
@@ -165,7 +177,7 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 <substeps>
 <step performance="optional">
 <para>
-如果二元操作符调用的一个参数是<type>unknown</type>类型，则在本次检查中假定它与另一个参数类型相同。涉及两个<type>unknown</type>输入的调用，或带有<type>unknown</type>输入的一元操作符，在这一步都不可能找到匹配。
+如果二元操作符调用的一个参数是<type>unknown</type>类型，则在本次检查中假定它与另一个参数类型相同。涉及<type>unknown</type>的其他情况在这一步都不会找到匹配。
 </para>
 </step>
 </substeps>
@@ -191,7 +203,7 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 <step performance="required">
 
 <para>
-遍历所有候选操作符，在需要类型转换的位置上，保留接受首选类型（属于输入数据类型的类型分类）的位置数最多的候选项。如果没有候选项接受首选类型，则保留全部候选项。如果只剩一个候选操作符，就使用它；否则继续下一步。
+遍历所有候选操作符，在需要类型转换的位置上，保留接受首选类型的位置数最多的候选项。如果没有候选项接受首选类型，则保留全部候选项。如果只剩一个候选操作符，就使用它；否则继续下一步。
 </para>
 </step>
 <step performance="required">
@@ -346,19 +358,8 @@ SELECT ~ CAST('20' AS int8) AS "negation";
 如果搜索路径中找到多个参数类型完全相同的函数，只考虑路径中最早出现的那一个。参数类型不同的函数则不受搜索路径位置影响，处于同等地位。
 </para>
 </step>
-<step performance="optional">
-<para>
-如果函数声明了一个<literal>VARIADIC</literal>数组参数，而调用时没有使用<literal>VARIADIC</literal>关键字，则把数组参数视为一个或多个其元素类型的参数，个数按匹配该调用的需要确定。扩展之后，该函数的有效参数类型可能与某个非variadic函数完全相同。在这种情况下，使用搜索路径中较早出现的函数；如果两个函数位于同一模式，则优先选择非variadic的那个。
-</para>
-</step>
-<step performance="optional">
-
-<para>
-带有参数默认值的函数，被认为可以匹配任何省略了零个或多个可使用默认值的参数位置的调用。如果不止一个这样的函数能匹配某个调用，则使用搜索路径中最早出现的那一个。如果同一模式中存在两个或更多这样的函数，并且它们在未使用默认值的参数位置上的参数类型相同（如果它们具有不同的带有默认值的参数集合，这种情况是可能的），系统就无法判断该偏好哪一个；如果找不到更好的匹配，就会报<quote>有歧义的函数调用</quote>错误。
-</para>
-
-</step>
 </substeps>
+
 </step>
 
 <step performance="required">
@@ -370,7 +371,7 @@ SELECT ~ CAST('20' AS int8) AS "negation";
 
 <step performance="required">
 <para>
-如果没有找到精确匹配，就检查该函数调用是否看起来像一种特殊的类型转换请求。这种情况发生在：函数调用只有一个参数，且函数名与某个数据类型的（内部）名称相同。此外，函数参数必须是unknown类型字面量，或者是一种可以二进制强制转换为该命名数据类型的类型，或者是一种可以通过应用其 I/O 函数转换为该命名数据类型的类型（也就是说，该转换要么转到某种标准字符串类型，要么从某种标准字符串类型转来）。满足这些条件时，该函数调用会被当作一种<literal>CAST</literal>形式。
+如果没有找到精确匹配，就检查该函数调用是否看起来像一种特殊的类型转换请求。这种情况发生在：函数调用只有一个参数，且函数名与某个数据类型的（内部）名称相同。此外，函数参数必须是unknown类型字面量，或者是一种与该命名数据类型二进制兼容的类型，或者是一种可以通过应用其 I/O 函数转换为该命名数据类型的类型（也就是说，该转换要么转到某种标准字符串类型，要么从某种标准字符串类型转来）。满足这些条件时，该函数调用会被当作一种<literal>CAST</literal>形式。
   <footnote>
    <para>
     之所以有这一步，是为了在不存在实际类型转换函数的情况下仍支持函数风格的类型转换写法。如果存在类型转换函数，按惯例它会以其输出类型命名，因此无需为此设置特殊情况。更多说明见<xref linkend="sql-createcast" endterm="sql-createcast-title">。
@@ -398,7 +399,7 @@ SELECT ~ CAST('20' AS int8) AS "negation";
 <step performance="required">
 
 <para>
-遍历所有候选函数，在需要类型转换的位置上，保留接受首选类型（属于输入数据类型的类型分类）的位置数最多的候选项。如果没有候选项接受首选类型，则保留全部候选项。如果只剩一个候选函数，就使用它；否则继续下一步。
+遍历所有候选函数，在需要类型转换的位置上，保留接受首选类型的位置数最多的候选项。如果没有候选项接受首选类型，则保留全部候选项。如果只剩一个候选函数，就使用它；否则继续下一步。
 </para>
 </step>
 <step performance="required">

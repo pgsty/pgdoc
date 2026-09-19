@@ -47,13 +47,13 @@
 
  <para>
    要让一个 <acronym>GIN</acronym> 访问方法工作起来，只需实现四个
-   （或五个）用户定义的方法，它们定义了树中键的行为，以及键、被
-   索引值和可索引查询之间的关系。简言之，<acronym>GIN</acronym>
+   用户定义的方法，它们定义了树中键的行为，以及键、被索引值和
+   可索引查询之间的关系。简言之，<acronym>GIN</acronym>
    将可扩展性与通用性、代码复用以及清晰的接口结合了起来。
  </para>
 
  <para>
-   <acronym>GIN</acronym> 操作符类必须提供四个方法：
+   索引操作符类必须为<acronym>GIN</acronym>提供的四个方法是：
  </para>
 
  <variablelist>
@@ -78,8 +78,8 @@
     </varlistentry>
 
     <varlistentry>
-     <term>Datum *extractQuery(Datum query, int32 *nkeys,
-        StrategyNumber n, bool **pmatch, Pointer **extra_data)</term>
+     <term>Datum* extractQuery(Datum query, int32 *nkeys,
+        StrategyNumber n)</term>
      <listitem>
       <para>
        给定一个待查询的值，返回一个键数组；也就是说，
@@ -88,86 +88,32 @@
        策略号（见 <xref linkend="xindex-strategies">）。通常，
        <function>extractQuery</> 需要查看 <literal>n</>，以确定
        <literal>query</> 的数据类型，以及需要提取的键值。返回键的
-       数量必须存入 <literal>*nkeys</>。如果查询不包含任何键，
-       则 <function>extractQuery</> 应根据操作符的语义向
-       <literal>*nkeys</> 存入 0 或 -1。0 表示每个值都匹配
-       <literal>query</>，应执行全索引扫描（但参见
-       <xref linkend="gin-limit">）。-1 表示没有任何值能匹配
-       <literal>query</>，因此可以完全跳过索引扫描。
-       <literal>pmatch</> 是一个在支持部分匹配时使用的输出参数。
-       要使用它，<function>extractQuery</> 必须分配一个包含
-       <literal>*nkeys</> 个布尔值的数组，并将其地址存入
-       <literal>*pmatch</>。若相应键需要部分匹配，则数组对应
-       元素应设置为 TRUE，否则设置为 FALSE。如果
-       <literal>*pmatch</> 被设置为 NULL，那么 GIN 认为不需要
-       部分匹配。该变量在调用前会初始化为 NULL，因此不支持部分匹配
-       的操作符类可以直接忽略此参数。
-       <literal>extra_data</> 是一个输出参数，用于让
-       <function>extractQuery</> 向 <function>consistent</> 和
-       <function>comparePartial</> 方法传递额外数据。要使用它，
-       <function>extractQuery</> 必须分配一个包含
-       <literal>*nkeys</> 个指针的数组，并将其地址存入
-       <literal>*extra_data</>，然后把所需内容存入各个指针。
-       该变量在调用前会初始化为 NULL，因此不需要额外数据的操作符类
-       可以直接忽略此参数。如果设置了 <literal>*extra_data</>，
-       则整个数组会传给 <function>consistent</> 方法，而对应元素会
-       传给 <function>comparePartial</> 方法。
+       数量必须存入 <literal>*nkeys</>。如果键的数量为零，
+       <function>extractQuery</> 应向 <literal>*nkeys</> 存入 0 或 -1。0 表示任意行都匹配
+       <literal>query</>，应采用顺序扫描。-1 表示没有任何东西能满足<literal>query</>。
+       取值选择应基于给定策略号下操作的语义含义。
       </para>
 
      </listitem>
     </varlistentry>
 
     <varlistentry>
-     <term>bool consistent(bool check[], StrategyNumber n, Datum query,
-                           int32 nkeys, Pointer extra_data[], bool *recheck)</term>
+     <term>bool consistent(bool check[], StrategyNumber n, Datum query)</term>
      <listitem>
       <para>
-       如果被索引值满足带有策略号 <literal>n</> 的查询操作符（或者在
-       返回了 recheck 指示的情况下可能满足），则返回 TRUE。
-       <literal>check</> 数组的长度为 <literal>nkeys</>，它与
-       <function>extractQuery</> 此前为此 <literal>query</> 值返回的键
+       如果被索引值满足带有策略号 <literal>n</> 的查询操作符（如果该操作符
+       在操作符类中被标记为 RECHECK，则是可能满足），则返回 TRUE。
+       <literal>check</> 数组的长度与
+       <function>extractQuery</> 此前为此查询返回的键
        数量相同。如果被索引值包含相应的查询键，则 <literal>check</>
        数组的对应元素为 TRUE，也就是说，如果 (check[i] == TRUE)，则
        <function>extractQuery</> 结果数组的第 i 个键出现在被索引值中。
        原始的 <literal>query</> 值（不是提取出的键数组！）也会被传入，
        以防 <function>consistent</> 方法需要查看它。
-       <literal>extra_data</> 是 <function>extractQuery</> 返回的额外
-       数据数组，如果没有则为 NULL。成功时，如果堆元组需要针对查询
-       操作符重新检查，应把 <literal>*recheck</> 设为 TRUE；
-       如果索引测试是精确的，则设为 FALSE。
       </para>
      </listitem>
     </varlistentry>
   </variablelist>
-
- <para>
-  另外，<acronym>GIN</acronym> 的操作符类还可以提供第五个方法：
- </para>
-
-  <variablelist>
-    <varlistentry>
-     <term>int comparePartial(Datum partial_key, Datum key, StrategyNumber n,
-                              Pointer extra_data)</term>
-     <listitem>
-      <para>
-       将部分匹配查询与一个索引键进行比较。返回一个整型值，其符号
-       表示结果：小于零表示索引键不匹配该查询，但索引扫描应继续；
-       零表示索引键确实匹配该查询；大于零表示索引扫描应停止，因为
-       不可能再有更多匹配。生成该部分匹配查询的操作符的策略号
-       <literal>n</> 会被提供，以防需要依据其语义确定何时结束扫描。
-       另外，<literal>extra_data</> 是
-       <function>extractQuery</> 所建额外数据数组中的对应元素，
-       如果没有则为 NULL。
-      </para>
-     </listitem>
-    </varlistentry>
-  </variablelist>
-
- <para>
-  要支持<quote>部分匹配</quote>查询，操作符类必须提供 <function>comparePartial</function> 方法，
-  并且其 <function>extractQuery</function> 方法在遇到部分匹配查询时必须设置
-  <literal>pmatch</> 参数。详见 <xref linkend="gin-partial-match">。
- </para>
 
 </sect1>
 
@@ -182,54 +128,7 @@
   （PL，posting list）。
  </para>
 
- <sect2 id="gin-fast-update">
-  <title>GIN 快速更新技术</title>
 
-  <para>
-   由于倒排索引的内在性质，更新 <acronym>GIN</acronym> 索引往往
-   比较慢：插入或更新一个堆行，可能会导致向索引中执行多次插入
-   （从被索引值中提取出的每个键都要插入一次）。从
-   <productname>PostgreSQL</productname> 8.4 开始，
-   <acronym>GIN</> 可以通过把新元组插入一个临时的、未排序的待处理
-   列表，来推迟其中的大部分工作。当表被清理时，或者待处理列表
-   变得过大（大于 <xref linkend="guc-work-mem">）时，这些项就会被
-   移入主要的 <acronym>GIN</acronym> 数据结构中，所用的是与初始
-   索引创建时相同的批量插入技术。即便把额外的清理开销计算在内，
-   这也会大幅提高 <acronym>GIN</acronym> 索引的更新速度。此外，
-   这部分开销工作还可以由后台进程完成，而不是在前台查询处理过程
-   中完成。
-  </para>
-
-  <para>
-   这种方法的主要缺点是，搜索除了要查找常规索引之外，还必须扫描待处理列表，
-   因此大型待处理列表会显著拖慢搜索。另一个缺点是，虽然大多数更新都很快，
-   但一旦某次更新使待处理列表变得<quote>过大</quote>，就会立刻触发一次清理周期，
-   因此该次更新会比其他更新慢得多。恰当地使用自动清理可以将这两个问题都尽量减轻。
-  </para>
-
-  <para>
-   如果稳定的响应时间比更新速度更重要，可以通过关闭 <acronym>GIN</acronym> 索引的
-   <literal>FASTUPDATE</literal> 存储参数来禁用待处理列表机制。详见
-   <xref linkend="sql-createindex" endterm="sql-createindex-title">。
-  </para>
- </sect2>
-
- <sect2 id="gin-partial-match">
-  <title>部分匹配算法</title>
-
-  <para>
-   GIN 可以支持<quote>部分匹配</quote>查询。在这种查询中，查询
-   无法确定一个或多个键的精确匹配，但可能的匹配会落在一个相对
-   狭窄的键值范围内（该范围位于由 <function>compare</> 支持方法
-   确定的键排序顺序中）。<function>extractQuery</> 方法不是返回
-   一个要精确匹配的键值，而是返回待搜索范围的下界键值，并将
-   <literal>pmatch</> 标志设为 true。随后使用
-   <function>comparePartial</> 方法扫描该键范围。对于匹配的索引键，
-   <function>comparePartial</> 必须返回零；对于虽然不匹配但仍处在
-   待搜索范围内的索引键，返回小于零；如果索引键已经超出了可能
-   匹配的范围，则返回大于零。
-  </para>
- </sect2>
 
 </sect1>
 
@@ -246,7 +145,6 @@
      先删除 GIN 索引，待批量插入完成后再重建它。
     </para>
 
-    <para>从<productname>PostgreSQL</productname> 8.4 开始，由于采用了延迟索引，这项建议已不那么必要（详见<xref linkend="gin-fast-update">）。但对于非常大的更新，删除并重建索引仍然可能是最佳选择。</para>
    </listitem>
   </varlistentry>
 
@@ -256,21 +154,6 @@
     <para>
      <acronym>GIN</acronym> 索引的构建时间对 <varname>maintenance_work_mem</varname>
      设置非常敏感；在创建索引时节省工作内存并不划算。
-    </para>
-   </listitem>
-  </varlistentry>
-
-  <varlistentry>
-   <term><xref linkend="guc-work-mem"></term>
-   <listitem>
-    <para>
-     在对现有 <acronym>GIN</acronym> 索引执行一系列插入且其
-     <literal>FASTUPDATE</> 已启用时，系统会在待处理项列表增长到
-     超过 <varname>work_mem</> 时清理该列表。为避免观测到的响应
-     时间波动，最好让待处理列表的清理在后台发生（即通过自动清理）。
-     可以通过增大 <varname>work_mem</> 或让自动清理更积极，来避免
-     前台清理操作。不过，增大 <varname>work_mem</> 意味着一旦真的
-     发生前台清理，它耗时会更久。
     </para>
    </listitem>
   </varlistentry>
@@ -308,39 +191,20 @@
  <title>限制</title>
 
  <para>
-  <acronym>GIN</acronym> 不支持全索引扫描。原因在于，允许
-  <function>extractValue</> 返回零个键，例如空字符串或空数组时就可能
-  出现这种情况。在这种情况下，被索引值不会在索引中有任何表示。因此，
-  <acronym>GIN</acronym> 无法保证扫描索引就能找到表中的每一行。
+  <acronym>GIN</acronym> 不支持全索引扫描：因为每个值往往对应许多键，
+  每个堆指针会被返回多次，而没有简便的方法可以避免这一点。
  </para>
 
  <para>
-  由于这一限制，当 <function>extractQuery</function> 返回
-  <literal>nkeys = 0</> 表示所有值都匹配查询时，
-  <acronym>GIN</acronym> 会抛出一个错误。（如果查询中有多个以 AND
-  连接的可索引操作符，则只有当它们为 <literal>nkeys</> 返回的都是零时
-  才会发生。）
+  当<function>extractQuery</function>返回零个键时，<acronym>GIN</>会报错。根据操作符的不同，空查询可能匹配全部、部分或不匹配任何被索引值（例如，每个数组都包含空数组，但都不与空数组重叠），<acronym>GIN</>无法确定正确答案，即使能确定全索引扫描是正确的，也无法产生全索引扫描的结果。
  </para>
 
  <para>
-  操作符类可以绕过对全索引扫描的这一限制。为此，
-  <function>extractValue</> 必须为每个被索引值返回至少一个（可能是
-  占位用的）键，而 <function>extractQuery</function> 必须把无限制的
-  搜索转换为会扫描整个索引的部分匹配查询。这样做效率不高，但对于
-  避免 <literal>LIKE</> 或子集包含之类操作符在边角情况下的
-  失败，可能是必要的。
+  <function>extractValue</>返回零个键并不是错误，但在这种情况下，被索引值不会在索引中有任何表示。这也是全索引扫描没有用的另一个原因&mdash;它会漏掉这样的行。
  </para>
 
  <para>
-  <acronym>GIN</acronym> 假定可索引操作符是严格的。这意味着，当值
-  为 NULL 时，根本不会调用 <function>extractValue</>（因此该值不会
-  进入索引）；当比较值为 NULL 时，也不会调用
-  <function>extractQuery</function>（而是认为该查询不可满足）。
- </para>
-
- <para>
-  一个可能更严重的限制是，<acronym>GIN</acronym> 无法处理 NULL
-  键 &mdash; 例如，包含 NULL 的数组只能通过忽略该 NULL 来处理。
+  <acronym>GIN</acronym> 只按等值匹配来搜索键。这一点将来可能会有所改进。
  </para>
 </sect1>
 
@@ -348,18 +212,11 @@
  <title>示例</title>
 
  <para>
-  <productname>PostgreSQL</productname> 源码发行版包含 <type>tsvector</type> 以及所有内部类型的一维数组的
-  <acronym>GIN</acronym> 操作符类。<type>tsvector</type> 中的前缀搜索是使用 <acronym>GIN</acronym> 部分匹配特性实现的。
-  下列 <filename>contrib</filename> 模块也包含 <acronym>GIN</acronym> 操作符类：
+  <productname>PostgreSQL</productname> 源码发行版为<type>tsvector</type>以及所有内部类型的一维数组提供了
+  <acronym>GIN</acronym> 操作符类。下列 <filename>contrib</filename> 模块也包含 <acronym>GIN</acronym>
+  操作符类：
 
  <variablelist>
-  <varlistentry>
-   <term>btree_gin</term>
-   <listitem>
-    <para>为若干数据类型提供等效于 B-Tree 的功能</para>
-   </listitem>
-  </varlistentry>
-
   <varlistentry>
    <term>hstore</term>
    <listitem>
