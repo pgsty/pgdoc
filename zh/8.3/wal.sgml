@@ -70,10 +70,9 @@
    <productname>PostgreSQL</productname> 会在修改磁盘上的实际页面
    <emphasis>之前</emphasis>，定期将整页镜像写入持久 WAL 存储。这样一来，在
    崩溃恢复时 <productname>PostgreSQL</productname> 就能从 WAL 恢复部分写入的
-   页面。如果你使用了能阻止部分页面写入的文件系统软件（如 ZFS），可以通过关闭
-   参数 <xref linkend="guc-full-page-writes"> 来禁用这种页面镜像。带后备电池
-   单元（BBU）的磁盘控制器并不能阻止部分页面写入，除非它们保证写入 BBU 的数据
-   总是完整的整页（8kB）。
+   页面。如果你使用了带后备电池的磁盘控制器，或者能阻止部分页面写入的文件系统
+   软件（如 ReiserFS 4），可以通过关闭参数
+   <xref linkend="guc-full-page-writes"> 来禁用这种页面镜像。
   </para>
  </sect1>
 
@@ -99,17 +98,6 @@
     库：任何尚未应用到数据页上的更改，都可以根据 WAL 记录重做。（这就是前滚恢
     复，也称 REDO。）
    </para>
-
-   <tip>
-    <para>
-     由于 <acronym>WAL</acronym> 会在崩溃后恢复数据库文件内容，因此要可靠地存储
-     数据文件或 WAL 文件，并不需要日志化文件系统。实际上，日志开销反而可能降低
-     性能，特别是在日志会导致文件系统<emphasis>数据</emphasis>刷盘时。幸运的是，
-     通常可以通过文件系统挂载选项关闭日志期间的数据刷写，例如
-     Linux ext3 文件系统上的 <literal>data=writeback</literal>。不过，日志化
-     文件系统确实能够提高崩溃后的启动速度。
-    </para>
-   </tip>
 
 
    <para>
@@ -230,11 +218,7 @@
   </para>
 
   <para>
-   <firstterm>检查点</firstterm><indexterm><primary>checkpoint</primary></indexterm>是事务序列中的一些时间点，在这些点可以保证堆和索引数据文件已经更新了检查点之前写入的所有信息。在检查点时刻，所有脏数据页都被刷写到磁盘，并向日志文件写入一条特殊的检查点记录。（这些更改此前已被刷写到<acronym>WAL</acronym>文件中。）一旦发生崩溃，崩溃恢复过程会查看最新的检查点记录，以确定日志中开始 REDO 操作的位置（称为重做记录）。在此之前对数据文件所做的更改都保证已在磁盘上。因此，检查点之后，包含重做记录的日志段之前的日志段不再需要，可以循环使用或删除。（在进行<acronym>WAL</acronym>归档时，日志段在循环使用或删除之前必须先归档。）
-  </para>
-
-  <para>
-   检查点要求把所有脏数据页刷写到磁盘，这可能造成显著的 I/O 负载。因此，检查点活动是被限流的：I/O 从检查点开始时启动，并在下一个检查点开始之前完成；这样可以把检查点期间的性能退化降到最低。
+   <firstterm>检查点</firstterm><indexterm><primary>checkpoint</primary></indexterm>是事务序列中的一些时间点，在这些点可以保证堆和索引数据文件已经更新了检查点之前写入的所有信息。在检查点时刻，所有脏数据页都被刷写到磁盘，并向日志文件写入一条特殊的检查点记录。一旦发生崩溃，崩溃恢复过程会查看最新的检查点记录，以确定日志中开始 REDO 操作的位置（称为重做记录）。在此之前对数据文件所做的更改都保证已在磁盘上。因此，检查点之后，包含重做记录的日志段之前的日志段不再需要，可以循环使用或删除。（在进行<acronym>WAL</acronym>归档时，日志段在循环使用或删除之前必须先归档。）
   </para>
 
   <para>
@@ -300,10 +284,7 @@
 
   <para>
    <acronym>WAL</acronym> 文件保存在数据目录下的 <filename>pg_xlog</filename> 目录中，由一组段文件
-   组成，每个段通常为 16 MB（不过可在构建服务器时通过修改
-   <option>--with-wal-segsize</option> configure 选项来
-   改变大小）。每个段又分为若干页面，通常每页 8 kB（该大小可通过 configure 选
-   项 <option>--with-wal-blocksize</option> 更改）。WAL 记录头定义在
+   组成，每个段通常为 16 MB。每个段又分为若干页面，通常每页 8 kB。WAL 记录头定义在
    <filename>access/xlogrecord.h</filename> 中；记录内容则取决于被记录的事件类
    型。段文件以不断递增的数字命名，从
    <filename>000000010000000000000001</filename> 开始。这些编号不会回绕，但要
@@ -331,7 +312,7 @@
    <filename>pg_control</filename> 中。因此，在恢复开始时，服务器会先读取
    <filename>pg_control</filename>，再读取检查点记录；然后从检查点记录给出的
    WAL 位置向前扫描并执行 REDO。由于检查点之后对数据页的第一次修改，会把整页内
-   容保存在 WAL 中（假设没有禁用 <xref linkend="guc-full-page-writes">），
+   容保存在 WAL 中，
    因而自该检查点以来被修改的所有页面都会恢复到一致状态。
   </para>
 
