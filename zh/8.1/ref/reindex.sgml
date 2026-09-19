@@ -1,12 +1,11 @@
 <!--
-$PostgreSQL: pgsql/doc/src/sgml/ref/reindex.sgml,v 1.40 2010/04/03 07:23:02 petere Exp $
+$PostgreSQL: pgsql/doc/src/sgml/ref/reindex.sgml,v 1.38 2008/11/14 10:22:47 petere Exp $
 PostgreSQL documentation
 -->
 
 <refentry id="SQL-REINDEX">
  <refmeta>
-  <refentrytitle>REINDEX</refentrytitle>
-  <manvolnum>7</manvolnum>
+  <refentrytitle id="SQL-REINDEX-TITLE">REINDEX</refentrytitle>
   <refmiscinfo>SQL - Language Statements</refmiscinfo>
  </refmeta>
 
@@ -30,7 +29,7 @@ REINDEX { INDEX | TABLE | DATABASE | SYSTEM } <replaceable class="PARAMETER">nam
 
   <para>
    <command>REINDEX</command>使用索引所属表中存储的数据重建索引，
-   并替换索引的旧副本。以下几种场景适合使用<command>REINDEX</command>：
+   并替换索引的旧副本。使用<command>REINDEX</command>主要有两个原因：
 
    <itemizedlist>
     <listitem>
@@ -43,26 +42,15 @@ REINDEX { INDEX | TABLE | DATABASE | SYSTEM } <replaceable class="PARAMETER">nam
 
     <listitem>
      <para>
-      一个索引已经<quote>膨胀</quote>，也就是说其中包含许多空页或几乎为空
-      的页。在 <productname>PostgreSQL</productname> 中，B-树索引在某些不常见
-      的访问模式下可能出现这种情况。<command>REINDEX</command>可通过写入一个
-      不含死页的新版本索引来减少索引的空间消耗。详见<xref
+      该索引包含大量未被回收的死索引页。在 <productname>PostgreSQL</productname> 中，
+      B-树索引在某些访问模式下可能出现这种情况。<command>REINDEX</command>提供了一种
+      通过写入一个不含死页的新版本索引来减少索引空间消耗的方法。
+      详见<xref
       linkend="routine-reindex">。
      </para>
     </listitem>
-
-    <listitem>
-     <para>
-      你修改了某个索引的存储参数（例如 fillfactor），并希望确保该更改已经
-      完全生效。
-     </para>
-    </listitem>
-
-    <listitem>
-     <para>使用 <literal>CONCURRENTLY</literal> 选项构建索引失败后，会留下一个<quote>无效</quote>索引。这类索引没有用处，但用 <command>REINDEX</command> 重建它们可能很方便。注意，<command>REINDEX</command> 不会进行并发构建。要在不干扰生产运行的情况下构建索引，应删除该索引并重新执行 <command>CREATE INDEX CONCURRENTLY</command> 命令。</para>
-    </listitem>
-
-   </itemizedlist></para>
+   </itemizedlist>
+  </para>
  </refsect1>
 
  <refsect1>
@@ -88,8 +76,7 @@ REINDEX { INDEX | TABLE | DATABASE | SYSTEM } <replaceable class="PARAMETER">nam
     <listitem>
      <para>
       重新创建当前数据库中的所有索引。
-      共享系统目录上的索引也会被处理。这种形式的<command>REINDEX</command>不能
-      在事务块内执行。
+      共享系统目录上的索引会被跳过（独立模式除外，见下文）。
      </para>
     </listitem>
    </varlistentry>
@@ -98,9 +85,8 @@ REINDEX { INDEX | TABLE | DATABASE | SYSTEM } <replaceable class="PARAMETER">nam
     <term><literal>SYSTEM</literal></term>
     <listitem>
      <para>
-      重新创建当前数据库内系统目录上的所有索引。共享系统目录上的索引也包
-      含在内。用户表上的索引不会被处理。这种形式的
-      <command>REINDEX</command>不能在事务块内执行。
+      重新创建当前数据库内系统目录上的所有索引。用户表上的索引不会被处理。
+      另外，共享系统目录上的索引会被跳过（独立模式除外，见下文）。
      </para>
     </listitem>
    </varlistentry>
@@ -163,6 +149,17 @@ REINDEX { INDEX | TABLE | DATABASE | SYSTEM } <replaceable class="PARAMETER">nam
   </para>
 
   <para>
+   如果怀疑任何共享系统目录（即<structname>pg_authid</structname>、
+   <structname>pg_auth_members</structname>、<structname>pg_database</structname>、
+   <structname>pg_pltemplate</structname>、<structname>pg_shdepend</structname>和<structname>pg_tablespace</structname>）
+   上的索引已经损坏，则必须使用独立服务器来修复。<command>REINDEX</command>在多用户模式下不会处理共享目录。
+  </para>
+
+  <para>
+   对于除共享系统目录之外的所有索引，<command>REINDEX</command>都是崩溃安全且事务安全的。<command>REINDEX</command>对共享索引并不崩溃安全，这正是正常操作期间不允许这种情况的原因。如果在独立模式下重建这类目录之一时发生故障，在问题得到纠正之前，将无法重新启动常规服务器。（部分重建的共享索引的典型症状是<quote>index is not a btree</quote>错误。）
+  </para>
+
+  <para>
    <command>REINDEX</command>类似于删除并重新创建索引，因为索引内容都是
    从头重建的。不过，两者在锁方面的考量相当不同。
    <command>REINDEX</command>会阻止该索引所属表上的写入，但不阻止读取。它
@@ -171,7 +168,8 @@ REINDEX { INDEX | TABLE | DATABASE | SYSTEM } <replaceable class="PARAMETER">nam
    <command>DROP INDEX</command>会短暂地对父表获取独占锁，同时阻塞写入和读取。随后的
    <command>CREATE INDEX</command>会阻止写入但不阻止读取；由于索引不存
    在，读取不会尝试使用它，因此不会发生阻塞，但读取可能被迫使用代价高昂
-   的顺序扫描。
+   的顺序扫描。另一个要点是，删除/重建方式会使所有使用该索引的缓存查询计划失效，
+   而<command>REINDEX</command>不会。
   </para>
 
   <para>对单个索引或表重新索引，要求用户是该索引或表的拥有者。对数据库重新索引，则要求用户是该数据库的拥有者（因此，拥有者可以重建其他用户所拥有表的索引）。当然，超级用户始终可以重新索引任何对象。</para>
