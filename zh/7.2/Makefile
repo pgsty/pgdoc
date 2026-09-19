@@ -9,18 +9,21 @@ PGDOC_SOURCE_SHA256 ?= b84e3a18f821327ffe5d15690144eadccb6c37551b5e315c195788176
 export PGDOC_SOURCE_ARCHIVE PGDOC_SOURCE_SHA256
 # Legacy PG configure predates strict-C99 compilers; keep its implicit-decl probes as warnings.
 export CFLAGS := -Wno-error=implicit-int -Wno-error=implicit-function-declaration -Wno-error=int-conversion
-# PG9.x uses DocBook SGML 4.2 and OpenSP; its doc makefile defaults html to
-# DSSSL/jade, so build_standalone_docsrc.sh reroutes html to the XSL pipeline.
+# PG 7.x uses DocBook SGML V3.1 and OpenSP; its doc makefile defaults html to
+# DSSSL/jade, so the 7x build script reroutes html to the XSL pipeline.
+# Catalogs: shared DocBook 4.2/unicode deps + local DocBook 3.1 overlay
+# (tmp/pg7x/deps; first SGMLDECL wins, so the shared unicode declaration
+# applies and the overlay only adds the 3.1 DTD public-id mappings).
 PGDOC_SGML_DEPS := $(REPO_ROOT)/tmp/pg10-13-from-14/20260909-150220/agents/archive_build/deps
 OSX ?= $(PGDOC_SGML_DEPS)/bin/osx
 NSGMLS ?= $(PGDOC_SGML_DEPS)/bin/onsgmls
-SGML_CATALOG_FILES ?= $(PGDOC_SGML_DEPS)/sgml-unicode.catalog
+SGML_CATALOG_FILES ?= $(PGDOC_SGML_DEPS)/sgml-unicode.catalog:$(REPO_ROOT)/tmp/pg7x/deps/catalog
 SP_ENCODING ?= UTF-8
 SP_CHARSET_FIXED ?= YES
 export OSX NSGMLS SGML_CATALOG_FILES SP_ENCODING SP_CHARSET_FIXED
 DOC_LANG := $(notdir $(abspath $(CURDIR)/..))
 
-BUILD_SCRIPT := $(REPO_ROOT)/bin/build_standalone_docsrc.sh
+BUILD_SCRIPT := $(REPO_ROOT)/tmp/pg7x/build_standalone_docsrc_7x.sh
 PDF_SCRIPT := $(REPO_ROOT)/bin/build_standalone_pdfsrc.sh
 DEFAULT_BUILD_OUT := $(CURDIR)/html
 BUILD_OUT ?= $(DEFAULT_BUILD_OUT)
