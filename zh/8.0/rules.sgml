@@ -530,6 +530,19 @@ SELECT shoe_ready.shoename, shoe_ready.sh_avail,
     的行为，而这不是我们想要的。不过，折叠查询树属于一种优化，
     重写系统本身无须关心。
    </para>
+
+   <note>
+    <para>
+    目前规则系统对视图规则没有任何递归停止机制（其他类型的规则才有）。
+    这并不会造成太大问题，因为要把查询推入无限循环（使服务器进程不断
+    膨胀，直到达到内存上限）的唯一途径，是先创建一些表，然后手工用
+    <command>CREATE RULE</command> 设置视图规则，让其中一个视图选择
+    自另一个视图，而后者又选择自前者。如果使用<command>CREATE
+    VIEW</command>，这种情况永远不会发生，因为在执行第一个
+    <command>CREATE VIEW</command> 时，第二个关系尚不存在，因此第一个
+    视图无法从第二个视图中选择数据。
+    </para>
+   </note>
 </sect2>
 
 <sect2>
@@ -546,7 +559,7 @@ SELECT shoe_ready.shoename, shoe_ready.sh_avail,
 <programlisting>
 SELECT t2.b FROM t1, t2 WHERE t1.a = t2.a;
 
-UPDATE t1 SET b = t2.b FROM t2 WHERE t1.a = t2.a;
+UPDATE t1 SET b = t2.b WHERE t1.a = t2.a;
 </programlisting>
 
     几乎是一样的。特别是：
@@ -584,7 +597,7 @@ UPDATE t1 SET b = t2.b FROM t2 WHERE t1.a = t2.a;
     <literal>t1</> 中缺失的列补入目标列表，最终查询树会变成：
 
 <programlisting>
-UPDATE t1 SET a = t1.a, b = t2.b FROM t2 WHERE t1.a = t2.a;
+UPDATE t1 SET a = t1.a, b = t2.b WHERE t1.a = t2.a;
 </programlisting>
 
     因而，执行器在这个连接上运行时会产生与下面语句完全相同的
@@ -726,9 +739,9 @@ SELECT t1.a, t2.b, t1.ctid FROM t1, t2 WHERE t1.a = t2.a;
     记住以下语法：
 
 <programlisting>
-CREATE [ OR REPLACE ] RULE <replaceable class="parameter">name</replaceable> AS ON <replaceable class="parameter">event</replaceable>
-    TO <replaceable class="parameter">table</replaceable> [ WHERE <replaceable class="parameter">condition</replaceable> ]
-    DO [ ALSO | INSTEAD ] { NOTHING | <replaceable class="parameter">command</replaceable> | ( <replaceable class="parameter">command</replaceable> ; <replaceable class="parameter">command</replaceable> ... ) }
+CREATE RULE <replaceable>rule_name</> AS ON <replaceable>event</>
+    TO <replaceable>object</> [WHERE <replaceable>rule_qualification</>]
+    DO [ALSO|INSTEAD] [<replaceable>action</> | (<replaceable>actions</>) | NOTHING];
 </programlisting>
 
     在后文中，<firstterm>更新规则</firstterm>是指定义在<command>INSERT</command>、<command>UPDATE</command>或<command>DELETE</command>上的规则。
@@ -743,11 +756,20 @@ CREATE [ OR REPLACE ] RULE <replaceable class="parameter">name</replaceable> AS 
 </para>
 
    <para>
-    因此，对于只有一个动作的规则，有以下三种情况会产生相应的查询树。
+    因此，对于只有一个动作的规则，有以下四种情况会产生相应的查询树。
 
     <variablelist>
      <varlistentry>
-      <term>没有条件，有<literal>ALSO</literal>或<literal>INSTEAD</literal></term>
+      <term>没有条件，有<literal>ALSO</literal></term>
+      <listitem>
+       <para>
+        规则动作的查询树，再附加原始查询树的条件
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>没有条件，但有<literal>INSTEAD</literal></term>
       <listitem>
        <para>
         规则动作的查询树，再附加原始查询树的条件
@@ -1050,28 +1072,6 @@ CREATE RULE shoelace_del AS ON DELETE TO shoelace
     DELETE FROM shoelace_data
      WHERE sl_name = OLD.sl_name;
 </programlisting>
-   </para>
-
-   <para>
-    如果你想在视图上支持<literal>RETURNING</literal>查询，就需要让规则包含计算视图行的<literal>RETURNING</literal>子句。对于单表视图，这通常很简单；但对于像<literal>shoelace</literal>这样的连接视图，就会有点烦琐。插入场景的一个示例如下：
-
-<programlisting>
-CREATE RULE shoelace_ins AS ON INSERT TO shoelace
-    DO INSTEAD
-    INSERT INTO shoelace_data VALUES (
-           NEW.sl_name,
-           NEW.sl_avail,
-           NEW.sl_color,
-           NEW.sl_len,
-           NEW.sl_unit
-    )
-    RETURNING
-           shoelace_data.*,
-           (SELECT shoelace_data.sl_len * u.un_fact
-            FROM unit u WHERE shoelace_data.sl_unit = u.un_name);
-</programlisting>
-
-   请注意，这一条规则同时支持该视图上的<command>INSERT</command>和<command>INSERT RETURNING</command>查询；对于普通<command>INSERT</command>，<literal>RETURNING</literal>子句会被简单忽略。
    </para>
 
    <para>
@@ -1400,12 +1400,11 @@ SELECT * FROM shoelace;
 <programlisting>
 CREATE TABLE phone_data (person text, phone text, private boolean);
 CREATE VIEW phone_number AS
-    SELECT person, CASE WHEN NOT private THEN phone END AS phone
-    FROM phone_data;
+    SELECT person, phone FROM phone_data WHERE NOT private;
 GRANT SELECT ON phone_number TO assistant;
 </programlisting>
 
-    除了该用户本人（以及数据库超级用户）之外，没有人可以访问<literal>phone_data</literal>表。但由于<command>GRANT</command>的存在，秘书可以对<literal>phone_number</literal>视图执行<command>SELECT</command>。规则系统会把对<literal>phone_number</literal>的<command>SELECT</command>重写成对<literal>phone_data</literal>的<command>SELECT</command>。由于该用户是<literal>phone_number</literal>的所有者，因此也是规则的所有者，对<literal>phone_data</literal>的读访问会按照该用户的权限进行检查，于是查询被允许。同时，对<literal>phone_number</literal>本身的访问检查仍会执行，但这是针对调用用户进行的，因此除了用户本人和秘书之外，没有其他人能使用它。
+    除了该用户本人（以及数据库超级用户）之外，没有人可以访问<literal>phone_data</literal>表。但由于<command>GRANT</command>的存在，秘书可以对<literal>phone_number</literal>视图执行<command>SELECT</command>。规则系统会把对<literal>phone_number</literal>的<command>SELECT</command>重写成对<literal>phone_data</literal>的<command>SELECT</command>，并附加<literal>private</literal>为假的项才需要的条件。由于该用户是<literal>phone_number</literal>的所有者，因此也是规则的所有者，对<literal>phone_data</literal>的读访问会按照该用户的权限进行检查，于是查询被允许。同时，对<literal>phone_number</literal>本身的访问检查仍会执行，但这是针对调用用户进行的，因此除了用户本人和秘书之外，没有其他人能使用它。
 </para>
 
 <para>
@@ -1416,39 +1415,9 @@ GRANT SELECT ON phone_number TO assistant;
     这种逐条规则的检查看起来似乎像是一个安全漏洞，但实际上并不是。因为即使不这样工作，秘书也可以建立一个与<literal>phone_number</literal>具有相同列的表，每天把数据复制进去。那样一来，这些就是秘书自己的数据，秘书同样可以把访问权限授予任何人。<command>GRANT</command>的含义本来就是<quote>我信任你</quote>。如果某个你信任的人做了上面的事，那么该重新考虑这份信任，并使用<command>REVOKE</command>了。
 </para>
 
-<para>
-    需要注意的是，虽然视图可以用前文展示的技术来隐藏某些列的
-    内容，但它们不能被用来可靠地隐藏不可见行中的数据。例如，
-    下面这个视图就是不安全的：
-<programlisting>
-CREATE VIEW phone_number AS
-    SELECT person, phone FROM phone_data WHERE phone NOT LIKE '412%';
-</programlisting>
-    这个视图看起来似乎很安全，因为规则系统会把对
-    <literal>phone_number</> 的任何 <command>SELECT</command> 重写
-    为对 <literal>phone_data</> 的 <command>SELECT</command>，并
-    附加条件，要求只处理 <literal>phone</> 不以 412 开头的项。
-    但是，如果用户可以创建自己的函数，就不难让规划器在
-    <function>NOT LIKE</function> 表达式之前先执行用户定义函数。
-<programlisting>
-CREATE FUNCTION tricky(text, text) RETURNS bool AS $$
-BEGIN
-    RAISE NOTICE '% => %', $1, $2;
-    RETURN true;
-END
-$$ LANGUAGE plpgsql COST 0.0000000000000000000001;
-SELECT * FROM phone_number WHERE tricky(person, phone);
-</programlisting>
-    <literal>phone_data</> 表中的每个人和电话号码都会被打印为一条
-    <literal>NOTICE</literal>，因为规划器会选择先执行廉价的
-    <function>tricky</function> 函数，再执行更昂贵的
-    <function>NOT LIKE</function>。即使禁止用户定义新函数，内置
-    函数也可以用于类似攻击。（例如，类型转换函数会将其输入包含
-    在它们产生的错误消息中。）
-</para>
 
 <para>
-    类似的考虑也适用于更新规则。在上一节的示例中，示例数据库中那些表的所有者可以把<literal>shoelace</literal>视图上的<literal>SELECT</literal>、<literal>INSERT</literal>、<literal>UPDATE</literal>和<literal>DELETE</literal>权限授予其他用户，但对<literal>shoelace_log</literal>只授予<literal>SELECT</literal>权限。写日志记录的规则动作仍会成功执行，因此其他用户可以看到日志记录。但他们不能伪造记录，也不能操纵或删除已有记录。在这个例子里，不存在通过说服规划器改变操作顺序来破坏规则的可能性，因为唯一引用<literal>shoelace_log</literal>的规则是一条无条件的<literal>INSERT</literal>。在更复杂的场景中，情况未必如此。
+    这种机制同样适用于更新规则。在上一节的示例中，示例数据库中那些表的所有者可以把<literal>shoelace</literal>视图上的<literal>SELECT</literal>、<literal>INSERT</literal>、<literal>UPDATE</literal>和<literal>DELETE</literal>权限授予其他用户，但对<literal>shoelace_log</literal>只授予<literal>SELECT</literal>权限。写日志记录的规则动作仍会成功执行，因此其他用户可以看到日志记录。但他们不能伪造记录，也不能操纵或删除已有记录。
 </para>
 </sect1>
 
@@ -1514,8 +1483,11 @@ SELECT * FROM phone_number WHERE tricky(person, phone);
 </para>
 
 <para>
-    另一方面，视图上不能创建触发器，因为视图关系中没有真实的
-    数据；但可以在视图上创建 INSERT、UPDATE 和 DELETE 规则。
+    另一方面，在视图上由<command>INSERT</command>触发的触发器可以做到
+    与规则相同的事情：把数据放到别处，并抑制对视图的插入。但在
+    <command>UPDATE</command>或<command>DELETE</command>上它做不到这一点，
+    因为视图关系中没有可以被扫描的真实数据，触发器因而永远不会被调用。
+    只有规则才能解决问题。
 </para>
 
 <para>
@@ -1626,13 +1598,13 @@ Nestloop
     我们要看的最后一个命令是：
 
 <programlisting>
-DELETE FROM computer WHERE manufacturer = 'bim';
+DELETE FROM computer WHERE manufacurer = 'bim';
 </programlisting>
 
     同样，这也可能导致从<literal>computer</literal>中删除很多行。因此，触发器同样会通过执行器运行很多条命令。规则生成的命令则是：
 
 <programlisting>
-DELETE FROM software WHERE computer.manufacturer = 'bim'
+DELETE FROM software WHERE computer.manufacurer = 'bim'
                        AND software.hostname = computer.hostname;
 </programlisting>
 
@@ -1651,7 +1623,9 @@ Nestloop
 <!-- What's happening with this?  If it doesn't come back, remove this section. -->
 <para>
     另一种情形是 <command>UPDATE</command> 中的这样一些情况：某个动作是否
-    应当执行，取决于某个属性的更改。要创建像 shoelace_log 示例中那样的
+    应当执行，取决于某个属性的更改。在 <productname>PostgreSQL</productname>
+    6.4 版中，规则事件上的属性说明被禁用了（最迟会在 6.5 版恢复，也可能
+    更早——敬请期待）。因此，目前要创建像 shoelace_log 示例中那样的
     规则，唯一的办法就是使用规则限定条件。这会导致一条额外的查询总是
     被执行，即使感兴趣的属性根本不可能更改（因为它没有出现在初始查询
     的目标列表中）也是如此。将来如果重新启用这一点，那将是规则相对于

@@ -30,24 +30,31 @@ gmake check
 </screen>（也可以切换到<filename>src/test/regress</filename>并在那里运行此命令。）这会首先构建若干辅助文件（例如示例用户定义触发器函数），然后运行测试驱动脚本。结束时应该会看到类似下面的结果：
 <screen>
 <computeroutput>
-=======================
- All 115 tests passed.
-=======================
+======================
+ All 96 tests passed.
+======================
 </computeroutput>
 </screen>
    否则会显示哪些测试失败的说明。在假定<quote>失败</quote>代表严重问题之前，请先阅读下面的<xref linkend="regress-evaluation">。
   </para>
 
-  <warning>
-   <para>
-    在缺少 Unix 域套接字的系统（特别是 Windows）上，这种测试方法会启动一个临时服务器，并将其配置为接受来自本地机器的任何连接。任何本地用户在连接该服务器时都能获得数据库超级用户权限，并且原则上可以利用运行测试的操作系统用户的全部权限。因此，在与不可信用户共享的系统上，不建议使用<literal>gmake check</literal>。取而代之，可以在安装完成后再运行测试，具体做法见下一节。
+  <para>
+    由于这种测试方法会运行一个临时服务器，当你以 root 用户身份运行时它
+    将无法工作（因为服务器不会以 root 身份启动）。如果你已经以 root 身份
+    完成了构建，也不必从头再来。只需让回归测试目录可被其他用户写入，以
+    该用户身份登录，然后重新启动测试即可。例如
+<screen>
+<prompt>root# </prompt><userinput>chmod -R a+w src/test/regress</userinput>
+<prompt>root# </prompt><userinput>chmod -R a+w contrib/spi</userinput>
+<prompt>root# </prompt><userinput>su - joeuser</userinput>
+<prompt>joeuser$ </prompt><userinput>cd <replaceable>top-level build directory</></userinput>
+<prompt>joeuser$ </prompt><userinput>gmake check</userinput>
+</screen>
+    （这里唯一可能的<quote>安全风险</quote>是其他用户可能在你不知情的情况
+    下篡改回归测试的结果。在管理用户权限时请运用常识。）
    </para>
-  </warning>
-
    <para>
-    由于这种测试方法会运行一个临时服务器，如果你以 root 用户身份进行构建，
-    它将无法工作，因为服务器不会以 root 身份启动。推荐做法是不要以 root
-    身份构建；否则应在安装完成后再执行测试。
+    或者，在安装完成后再运行测试。
    </para>
 
    <para>
@@ -56,11 +63,21 @@ gmake check
    </para>
 
    <para>
-    并行回归测试会在你的用户 ID 下启动相当多的进程。目前最大并发度为二十个并行测试脚本，也就是四十个进程：每个测试脚本都有一个服务器进程和一个<application>psql</application>进程。因此，如果你的系统对每个用户可创建的进程数施加限制，请确保该限制至少有五十个左右，否则并行测试中可能会出现看似随机的失败或挂起。如果无法提高该限制，可以通过设置<literal>MAX_CONNECTIONS</literal>参数来降低并行度。例如：
+    并行回归测试会在你的用户 ID 下启动相当多的进程。目前最大并发度为二十个并行测试脚本，也就是六十个进程：每个测试脚本都有一个服务器进程、一个<application>psql</application>进程，而且<application>psql</application>通常还有一个 shell 父进程。因此，如果你的系统对每个用户可创建的进程数施加限制，请确保该限制至少有七十五个左右，否则并行测试中可能会出现看似随机的失败。如果无法提高该限制，可以通过设置<literal>MAX_CONNECTIONS</literal>参数来降低并行度。例如：
 <screen>
 gmake MAX_CONNECTIONS=10 check
 </screen>
     这样最多同时运行十个测试。
+   </para>
+
+  <para>
+    在某些系统上，默认的与 Bourne 兼容的 shell（<filename>/bin/sh</filename>）在
+    需要并行管理太多子进程时会出问题，这可能导致并行测试挂起或失败。在这种
+    情况下，可以在命令行上指定另一个与 Bourne 兼容的 shell，例如：
+<screen>
+gmake SHELL=/bin/ksh check
+</screen>
+    如果找不到没有问题的 shell，也可以像上面那样通过限制连接数来绕过该问题。
    </para>
 
   <para>
@@ -75,18 +92,7 @@ gmake installcheck-parallel
    除非由<envar>PGHOST</envar>和<envar>PGPORT</envar>环境变量另行指定，测试将期望在本地主机和默认端口上连接服务器。
   </para>
 
-  <para>
-   源码发布包中还包含针对可选过程语言以及部分<filename>contrib</filename>模块的回归测试。目前这些测试只能针对已安装的服务器使用。  要为所有已构建并安装的过程语言运行测试，请切换到构建树的<filename>src/pl</filename>目录并输入：
-<screen>
-gmake installcheck
-</screen>
-   也可以在<filename>src/pl</filename>的任一子目录中这样做，只为一种过程语言运行测试。要为所有带有测试的<filename>contrib</filename>模块运行测试，请切换到构建树的<filename>contrib</filename>目录并输入：
-<screen>
-gmake installcheck
-</screen>
-   <filename>contrib</filename>模块必须先构建并安装。也可以在<filename>contrib</filename>的某个子目录中这样做，只为一个模块运行测试。
-  </para>
-
+  
   </sect1>
 
   <sect1 id="regress-evaluation">
@@ -95,7 +101,7 @@ gmake installcheck
    <para>
     某些安装正确且功能完备的<productname>PostgreSQL</productname>实例，
     可能会因为平台特有因素而在部分回归测试中<quote>失败</quote>，例如浮点
-    表示或消息措辞不同。目前这些测试是通过把输出与参考系统生成的输出做
+    表示或时区支持不同。目前这些测试是通过把输出与参考系统生成的输出做
     简单的<command>diff</command>比较来评估的，因此结果会对细微的系统差异
     很敏感。报告某项测试<quote>失败</quote>时，请务必检查预期结果与实际结果
     之间的差异；你可能会发现这些差异并不重要。尽管如此，我们仍努力在所有
@@ -106,13 +112,7 @@ gmake installcheck
     回归测试的实际输出位于<filename>src/test/regress/results</filename>目录中的文件里。测试脚本使用<command>diff</command>把每个输出文件与存储在<filename>src/test/regress/expected</filename>目录中的参考输出进行比较。任何差异都会保存到<filename>src/test/regress/regression.diffs</filename>中供你检查。（如果愿意，也可以自己运行<command>diff</command>。）
    </para>
 
-   <para>
-    如果由于某种原因，某个特定平台在某个测试上产生了<quote>失败</quote>，
-    但对输出的检查令你相信结果是有效的，那么可以新增一个比较文件，让后续
-    测试运行不再报告该失败。详情见<xref linkend="regress-variant">。
-   </para>
-
-   <sect2>
+      <sect2>
     <title>错误消息差异</title>
       
     <para>
@@ -127,30 +127,45 @@ gmake installcheck
     <title>Locale differences</title>
 
     <para>
-     如果你针对一个使用 C 以外排序规则顺序的区域设置初始化的服务器运行测试，
-     就可能因为排序顺序不同而出现差异，并导致后续失败。回归测试套件通过
-     提供备用结果文件来处理这个问题；这些文件已知可以覆盖大量区域设置。
+     如果你针对一个使用 C 以外排序规则顺序的区域设置初始化的已安装服务器
+     运行测试，就可能因为排序顺序不同而出现差异，并导致后续失败。回归
+     测试套件通过提供备用结果文件来处理这个问题；这些文件合起来已知可以
+     覆盖大量区域设置。例如，对于<literal>char</literal>测试，预期文件
+     <filename>char.out</filename>覆盖<literal>C</literal>和
+     <literal>POSIX</literal>区域设置，而文件<filename>char_1.out</filename>
+     覆盖许多其他区域设置。回归测试驱动器在检查成功和计算失败差异时，
+     会自动挑选最匹配的文件。（这意味着回归测试无法检测结果对于所配置的
+     区域设置是否合适。测试只会简单地挑选效果最好的那个结果文件。）
     </para>
 
     <para>
-     使用临时安装方法时，若要在其他区域下运行测试，请在<command>make</command>命令行上传入适当的区域相关环境变量，例如：
-<programlisting>
-gmake check LANG=de_DE.utf8
-</programlisting>
-     （回归测试驱动程序会取消<envar>LC_ALL</envar>的设置，因此用该变量选择区域是无效的。）要不使用区域，可以取消所有区域相关环境变量的设置（或把它们设为<literal>C</literal>），或者使用下面的特殊调用方式：
-<programlisting>
-gmake check NO_LOCALE=1
-</programlisting>
-     针对已有安装运行测试时，区域设置由该已有安装决定。要更改它，请通过向<command>initdb</command>传入适当的选项，用不同的区域初始化数据库集簇。
-    </para>
-
-    <para>
-     一般而言，仍然建议尽量在生产环境将要使用的区域设置下运行回归测试，因为这会实际锻炼生产环境中将会用到的区域和编码相关代码部分。根据操作系统环境的不同，可能会出现失败，但这样你至少能了解运行真实应用时应预期哪些区域特定的行为。
+     如果由于某种原因，现有的预期文件没有覆盖某个区域设置，你可以新增
+     一个文件。命名方案是<literal><replaceable>testname</>_<replaceable>digit</>.out</>。
+     具体的数字并不重要。请记住，回归测试驱动器会把所有这类文件视为
+     同样有效的测试结果。如果测试结果是平台相关的，则应当改用
+     <xref linkend="regress-platform">中描述的技术。
     </para>
    </sect2>
     
    <sect2>
     <title>日期和时间差异</title>
+
+    <para>
+     <filename>horology</filename>测试中的少数查询，如果你在夏令时切换
+     当天或其后一天运行测试，就会失败。这些查询预期昨天午夜、今天午夜
+     和明天午夜之间的间隔恰好是二十四小时&mdash;&mdash;如果其间夏令时
+     生效或失效，这一预期就是错误的。
+    </para>
+
+    <note>
+     <para>
+      由于使用的是美国的夏令时规则，无论你所在地区何时实行夏令时，这个
+      问题总是出现在四月第一个星期日、十月最后一个星期日及其后的星期一。
+      另外请注意，该问题在太平洋时间（UTC-7 或 UTC-8）午夜出现或消失，
+      而不是你当地时间的午夜。因此，取决于你所在的地点，失败可能出现在
+      星期六深夜，也可能一直持续到星期二的大部分时间。
+     </para>
+    </note>
 
     <para>
      大多数日期和时间结果依赖于时区环境。参考文件是在时区
@@ -190,9 +205,7 @@ gmake check NO_LOCALE=1
 因此按 SQL 规范，它们的结果行顺序并没有良好定义。实际上，由于我们看到的
 是同一软件在同一数据上执行相同查询，通常在所有平台上都会得到相同的结果
 顺序，所以缺少<literal>ORDER BY</literal>并不是问题。不过，有些查询
-确实会表现出跨平台的顺序差异。针对已安装服务器测试时，非 C 区域设置或
-非默认参数设置，例如自定义的<varname>work_mem</varname>值或规划器代价
-参数，也可能导致顺序差异。
+确实会表现出跨平台的顺序差异。（非 C 区域设置也可能触发顺序差异。）
     </para>
 
     <para>
@@ -209,15 +222,7 @@ gmake check NO_LOCALE=1
     </para>
    </sect2>
 
-   <sect2>
-    <title>栈深度不足</title>
-      
-    <para>
-     如果<literal>errors</literal>测试在<literal>select infinite_recurse()</literal>命令处导致服务器崩溃，说明该平台的进程栈大小限制小于<![%standalone-ignore;[<xref linkend="guc-max-stack-depth">]]><![%standalone-include;[<literal>max_stack_depth</literal>]]>参数所指示的值。这可以通过在更高的栈大小限制下运行服务器来解决（在使用默认的<varname>max_stack_depth</varname>值时建议 4MB）。如果无法做到，另一种办法是减小<varname>max_stack_depth</varname>的值。
-    </para>
-   </sect2>
-
-   <sect2>
+      <sect2>
     <title><quote>random</quote> 测试</title>
       
     <para>
@@ -231,99 +236,47 @@ diff results/random.out expected/random.out
   </sect1>
 
 <!-- We might want to move the following section into the developer's guide. -->
-  <sect1 id="regress-variant">
-   <title>变体比较文件</title>
+  <sect1 id="regress-platform">
+   <title>平台相关的比较文件</title>
 
    <para>
-    由于某些测试天生会产生依赖环境的结果，我们提供了指定备用
-    <quote>预期</quote>结果文件的方法。每个回归测试都可以有多个比较文件，
-    用来展示不同平台上的可能结果。对于每个测试应使用哪个比较文件，有两种
-    相互独立的判定机制。
-   </para>
-
-   <para>
-    第一种机制允许针对特定平台选择比较文件。有一个映射文件
-    <filename>src/test/regress/resultmap</filename>，用于定义每个平台应使用
-    哪个比较文件。要为某个特定平台消除虚假的测试<quote>失败</quote>，
-    你需要先选择或创建一个变体结果文件，然后在<filename>resultmap</filename>
-    文件中增加一行。
+    由于某些测试天生会产生平台相关的结果，我们提供了一种提供平台相关
+    结果比较文件的方法。往往同一种变化适用于多个平台；与其为每个平台
+    分别提供一个比较文件，不如用一个映射文件来定义使用哪个比较文件。
+    因此，要为某个特定平台消除虚假的测试<quote>失败</quote>，你必须
+    选择或制作一个变体结果文件，然后在该映射文件（即
+    <filename>src/test/regress/resultmap</filename>）中增加一行。
    </para>
 
    <para>
     映射文件中的每一行都采用如下形式：
 <synopsis>
-testname:output:platformpattern=comparisonfilename
+testname/platformpattern=comparisonfilename
 </synopsis>
-    测试名就是相应回归测试模块的名称。输出值指明要检查哪个输出文件。
-    对标准回归测试而言，这里始终是<literal>out</literal>。该值对应于
-    输出文件的扩展名。平台模式是 Unix 工具<command>expr</command>风格
-    的模式（也就是在开头隐含<literal>^</literal>锚点的正则表达式）。
-    它会与<command>config.guess</command>打印出的平台名进行匹配。
-    比较文件名则是替代结果比较文件的基名。
-   </para>
-
-   <para>例如：某些系统会把极小的浮点数值解释为零，而不是报告下溢错误。这会导致<filename>float8</>回归测试出现一些差异。因此，我们提供了一个变体比较文件<filename>float8-small-is-zero.out</filename>，其中包含这些系统上的预期结果。为了消除虚假的<quote>失败</quote>消息，在<systemitem>OpenBSD</systemitem>平台上，<filename>resultmap</filename>包含以下内容：<programlisting>
-float8:out:i.86-.*-openbsd=float8-small-is-zero.out
-</programlisting>如果一台机器上的<command>config.guess</command>输出匹配<literal>i.86-.*-openbsd</literal>，就会触发该规则。<filename>resultmap</filename>中的其他行会为其他适用的平台选择变体比较文件。</para>
-
-   <para>
-    第二种用于选择变体比较文件的机制更加自动化：它只是在多个提供的比较文件
-    中选取<quote>最佳匹配</quote>。回归测试驱动脚本既考虑某个测试的标准
-    比较文件<literal><replaceable>testname</replaceable>.out</literal>，
-    也考虑名为
-    <literal><replaceable>testname</replaceable>_<replaceable>digit</replaceable>.out</literal>
-    的变体文件（其中<replaceable>digit</replaceable>可以是任一单个数字
-    <literal>0</literal>-<literal>9</literal>）。如果其中任何一个文件
-    完全匹配，就认为测试通过；否则，会使用生成最短 diff 的那个文件来创建
-    失败报告。（如果<filename>resultmap</filename>为该特定测试包含一项，
-    那么基础<replaceable>testname</replaceable>就是
-    <filename>resultmap</filename>中给出的替代名称。）
+    测试名就是相应回归测试模块的名称。平台模式是 Unix 工具<command>expr</command>风格
+    的模式（也就是在开头隐含<literal>^</literal>锚点的正则表达式）。它会
+    与<command>config.guess</command>打印出的平台名进行比较，后跟
+    <literal>:gcc</literal>或<literal>:cc</literal>，这取决于你使用的是
+    GNU 编译器还是系统的原生编译器（在两者有差别的系统上）。比较文件名
+    则是替代结果比较文件的基名。
    </para>
 
    <para>
-    例如，对于<literal>char</literal>测试，比较文件
-    <filename>char.out</filename>包含在<literal>C</literal>和
-    <literal>POSIX</literal>区域设置中应当出现的结果，而文件
-    <filename>char_1.out</filename>则包含在许多其他区域设置中出现的排序结果。
+    例如：某些系统会把极小的浮点数值解释为零，而不是报告下溢错误。这会
+    导致<filename>float8</>回归测试出现一些差异。因此，我们提供了一个
+    变体比较文件<filename>float8-small-is-zero.out</filename>，其中包含
+    这些系统上的预期结果。为了消除<systemitem>OpenBSD</systemitem>平台上
+    虚假的<quote>失败</quote>消息，<filename>resultmap</filename>包含：
+<programlisting>
+float8/i.86-.*-openbsd=float8-small-is-zero
+</programlisting>
+    只要一台机器的<command>config.guess</command>输出匹配
+    <literal>i.86-.*-openbsd</literal>，该行就会触发。
+    <filename>resultmap</filename>中的其他行会为其他适用的平台选择变体
+    比较文件。
    </para>
 
-   <para>
-    最佳匹配机制原本是为了解决依赖区域设置的结果问题，但它也可以用于任何
-    仅凭平台名无法轻易预测测试结果的场景。该机制的一个局限是，测试驱动器
-    无法判断哪一个变体对当前环境才真正<quote>正确</quote>；它只会选择
-    看起来最合适的那个。因此，最安全的做法是只对那些你愿意在所有上下文中
-    都视为同样有效的变体结果使用这种机制。
-   </para>
-    
   </sect1>
 
-  <sect1 id="regress-coverage">
-   <title>测试覆盖率检查</title>
-
-   <para>
-    可以用覆盖率测试插装编译 PostgreSQL 源代码，从而检查回归测试或任何
-    其他与该代码一起运行的测试套件覆盖了代码的哪些部分。目前，这只在使用
-    GCC 编译时受支持，并且需要<command>gcov</command>和
-    <command>lcov</command>程序。
-   </para>
-
-   <para>
-    典型的工作流程如下：
-<screen>
-./configure --enable-coverage ... OTHER OPTIONS ...
-gmake
-gmake check # or other test suite
-gmake coverage-html
-</screen>
-    然后把你的 HTML 浏览器指向<filename>coverage/index.html</filename>。
-   </para>
-
-   <para>
-    要在测试运行之间重置执行计数，请运行：
-<screen>
-gmake coverage-clean
-</screen>
-   </para>
-  </sect1>
 
 </chapter>

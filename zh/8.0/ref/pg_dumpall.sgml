@@ -32,7 +32,15 @@ PostgreSQL documentation
   <para>
    <application>pg_dumpall</application>是一个实用程序，用于写出（<quote>转储</quote>）一个集簇中的所有<productname>PostgreSQL</productname>数据库到一个脚本文件中。该脚本文件包含<acronym>SQL</acronym>命令，可作为<xref linkend="app-psql">的输入来恢复这些数据库。它通过对集簇中的每个数据库调用<xref linkend="app-pgdump">来实现这一点。<application>pg_dumpall</application>还会转储所有数据库共有的全局对象。
    （<application>pg_dump</application>不会保存这些对象。）
-  目前包括数据库用户和组、表空间，以及适用于整个数据库的访问权限等属性的信息。</para>
+  目前包括数据库用户和组，以及适用于整个数据库的访问权限的信息。</para>
+
+  <para>
+   因此，<application>pg_dumpall</application>是一个用于备份数据库的一体化
+   解决方案。但要注意一个局限：它无法转储<quote>大对象</quote>，因为
+   <application>pg_dump</application>无法把这类对象转储到文本文件中。
+   如果你的数据库包含大对象，应当使用<application>pg_dump</application>的
+   某种非文本输出模式来转储它们。
+  </para>
 
   <para>
    由于<application>pg_dumpall</application>会读取所有数据库中的表，因此通常必须以数据库超级用户身份连接，才能生成完整的转储。另外，要执行保存的脚本，也需要具备超级用户权限，这样才能添加用户和组并创建数据库。
@@ -61,7 +69,7 @@ PostgreSQL documentation
       <term><option>--data-only</></term>
       <listitem>
        <para>
-        只转储数据，不转储模式（数据定义）或统计信息。
+        只转储数据，不转储模式（数据定义）。
        </para>
       </listitem>
      </varlistentry>
@@ -70,16 +78,29 @@ PostgreSQL documentation
       <term><option>-c</option></term>
       <term><option>--clean</option></term>
       <listitem>
-       <para>包含用于在重新创建数据库之前清理（删除）数据库的 SQL 命令。也会添加用于角色和表空间的<command>DROP</command>命令。</para>
+       <para>
+        包含用于在重新创建数据库之前清理（删除）数据库的 SQL 命令。
+       </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><option>-f <replaceable class="parameter">filename</replaceable></option></term>
-      <term><option>--file=<replaceable class="parameter">filename</replaceable></option></term>
+      <term><option>-d</option></term>
+      <term><option>--inserts</option></term>
       <listitem>
        <para>
-        将输出发送到指定文件。如果省略此选项，则使用标准输出。
+        将数据转储为<command>INSERT</command>命令（而不是<command>COPY</command>）。这会使恢复非常缓慢；它主要用于生成可以装入非<productname>PostgreSQL</productname>数据库的转储。注意，如果重新安排了列顺序，恢复可能会彻底失败。<option>-D</option>选项更安全，但速度更慢。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-D</option></term>
+      <term><option>--column-inserts</option></term>
+      <term><option>--attribute-inserts</option></term>
+      <listitem>
+       <para>
+        将数据转储为带显式列名的<command>INSERT</command>命令（<literal>INSERT INTO <replaceable>table</replaceable> (<replaceable>column</replaceable>, ...) VALUES ...</literal>）。这会使恢复非常缓慢；它主要用于生成可以装入非<productname>PostgreSQL</productname>数据库的转储。
        </para>
       </listitem>
      </varlistentry>
@@ -89,7 +110,7 @@ PostgreSQL documentation
       <term><option>--globals-only</option></term>
       <listitem>
        <para>
-        只转储全局对象（角色和表空间），不转储数据库。
+        只转储全局对象（用户和组），不转储数据库。
        </para>
       </listitem>
      </varlistentry>
@@ -99,7 +120,11 @@ PostgreSQL documentation
       <term><option>--ignore-version</></term>
       <listitem>
        <para>
-        一个已废弃的选项，现在会被忽略。
+        忽略<application>pg_dumpall</application>与数据库服务器之间的版本不匹配。
+       </para>
+
+       <para>
+        <application>pg_dumpall</application>可以处理<productname>PostgreSQL</productname>以前版本的数据库，但非常老的版本不再受支持（目前是 7.0 之前）。如果需要跳过版本检查，可使用此选项（如果<application>pg_dumpall</application>随后失败，别怪我们没有提醒你）。
        </para>
       </listitem>
      </varlistentry>
@@ -125,34 +150,6 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>--lock-wait-timeout=<replaceable class="parameter">timeout</replaceable></option></term>
-      <listitem>
-       <para>
-        在转储开始时，不要无限等待获取共享表锁。如果无法在指定的 <replaceable class="parameter">timeout</replaceable> 内锁定某个表，就让转储失败。超时可以用 <command>SET statement_timeout</command> 接受的任意格式指定。（允许的值因被转储的服务器版本而异，但从 7.3 起，所有版本都接受以毫秒为单位的整数。对 7.3 之前的服务器进行转储时，此选项会被忽略。）
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>--no-tablespaces</option></term>
-      <listitem>
-       <para>
-        不要转储不记录 WAL 的表的内容。此选项不影响是否转储表定义（模式）；它只会抑制转储表数据。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>-r</option></term>
-      <term><option>--roles-only</option></term>
-      <listitem>
-       <para>
-        只转储对象定义（模式），不转储数据。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
       <term><option>-s</option></term>
       <term><option>--schema-only</option></term>
       <listitem>
@@ -168,16 +165,6 @@ PostgreSQL documentation
       <listitem>
        <para>
         指定在禁用触发器时要使用的超级用户名。只有在使用 <option>--disable-triggers</option> 时才相关。（通常更好的做法是省略此选项，而以超级用户身份运行生成的脚本。）
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>-t</option></term>
-      <term><option>--tablespaces-only</option></term>
-      <listitem>
-       <para>
-        只转储表空间，不转储数据库或角色。
        </para>
       </listitem>
      </varlistentry>
@@ -204,34 +191,7 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>--binary-upgrade</option></term>
-      <listitem>
-       <para>
-        此选项供原地升级工具使用。不建议将其用于其他目的，也不支持这样用。该选项的行为可能在未来的版本中不经通知而改变。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>--inserts</option></term>
-      <listitem>
-       <para>
-        将数据转储为 <command>INSERT</command> 命令（而不是 <command>COPY</command>）。这会使恢复非常缓慢；它主要用于生成可以装入非 <productname>PostgreSQL</productname> 数据库的转储。注意，如果重新安排了列顺序，恢复可能会彻底失败。<option>--column-inserts</option> 选项更安全，但速度更慢。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>--column-inserts</option></term>
-      <term><option>--attribute-inserts</option></term>
-      <listitem>
-       <para>
-        将数据转储为带有显式列名的 <command>INSERT</command> 命令（<literal>INSERT INTO <replaceable>table</replaceable> (<replaceable>column</replaceable>, ...) VALUES ...</literal>）。这会使恢复变得非常缓慢；它主要用于生成可以装入非 <productname>PostgreSQL</productname> 数据库的转储。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
+      <term><option>-X disable-dollar-quoting</></term>
       <term><option>--disable-dollar-quoting</></term>
       <listitem>
        <para>
@@ -241,6 +201,7 @@ PostgreSQL documentation
     </varlistentry>
 
      <varlistentry>
+      <term><option>-X disable-triggers</></term>
       <term><option>--disable-triggers</></term>
       <listitem>
        <para>
@@ -254,10 +215,13 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
+      <term><option>-X use-set-session-authorization</></term>
       <term><option>--use-set-session-authorization</></term>
       <listitem>
        <para>
-        输出符合 SQL 标准的 <command>SET SESSION AUTHORIZATION</command> 命令，而不是用 <command>ALTER OWNER</command> 命令来确定对象所有权。这会让转储更符合标准，但根据转储中对象的历史，可能无法正确恢复。
+        输出 SQL 标准的 SET SESSION AUTHORIZATION 命令而不是
+        OWNER TO 命令。这使转储与标准更加兼容，但取决于转储中对象的
+        历史情况，可能无法正确恢复。
        </para>
       </listitem>
      </varlistentry>
@@ -270,8 +234,7 @@ PostgreSQL documentation
 
    <variablelist>
      <varlistentry>
-      <term><option>-h <replaceable>host</replaceable></option></term>
-      <term><option>--host=<replaceable>host</replaceable></option></term>
+      <term>-h <replaceable>host</replaceable></term>
       <listitem>
        <para>
         指定运行数据库服务器的机器的主机名。如果该值以斜杠开头，则将其用作 Unix 域套接字的目录。默认值取自 <envar>PGHOST</envar> 环境变量（如果已设置）；否则会尝试使用 Unix 域套接字连接。
@@ -280,18 +243,7 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-l <replaceable>dbname</replaceable></option></term>
-      <term><option>--database=<replaceable>dbname</replaceable></option></term>
-      <listitem>
-       <para>
-         指定连接来转储全局对象并发现还应转储哪些数据库的数据库名。如果未指定，则使用<quote>postgres</quote>数据库；如果该数据库不存在，则使用<quote>template1</quote>。
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>-p <replaceable>port</replaceable></option></term>
-      <term><option>--port=<replaceable>port</replaceable></option></term>
+      <term>-p <replaceable>port</replaceable></term>
       <listitem>
        <para>
         指定服务器监听连接的 TCP 端口，或本地 Unix 域套接字文件扩展名。默认值取自<envar>PGPORT</envar>环境变量（如果已设置），否则使用编译时默认值。
@@ -300,42 +252,23 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-U <replaceable>username</replaceable></option></term>
-      <term><option>--username=<replaceable>username</replaceable></option></term>
+      <term>-U <replaceable>username</replaceable></term>
       <listitem>
        <para>
-        用于连接的用户名。
-       </para>
-      </listitem>
-     </varlistentry>
-
-
-     <varlistentry>
-      <term><option>-W</option></term>
-      <term><option>--password</option></term>
-      <listitem>
-       <para>
-        强制<application>pg_dumpall</application>在连接数据库之前提示输入密码。
-       </para>
-
-       <para>
-        此选项从来都不是必需的，因为如果服务器要求密码认证，<application>pg_dumpall</application>会自动提示输入密码。不过，<application>pg_dumpall</application>会浪费一次连接尝试来发现服务器需要密码。在某些情况下，键入<option>-W</option>以避免这次额外的连接尝试是值得的。
-       </para>
-
-       <para>
-        注意，对每个要转储的数据库都会再次提示输入密码。通常，最好设置一个<filename>~/.pgpass</filename>文件，而不是依赖手工输入密码。
+        以给定用户身份连接。
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><option>--role=<replaceable class="parameter">rolename</replaceable></option></term>
+      <term>-W</term>
       <listitem>
        <para>
-        指定一个角色名，用于创建转储。此选项会使<application>pg_dumpall</application>在连接数据库后发出<command>SET ROLE</command> <replaceable class="parameter">rolename</replaceable>命令。当已认证用户（由<option>-U</option>指定）缺少<application>pg_dumpall</application>所需权限，但可以切换到具备所需权限的角色时，这很有用。有些安装环境不允许直接以超级用户身份登录，而使用此选项可以在不违反该策略的情况下完成转储。
+        强制提示输入密码。如果服务器要求密码认证，这应当会自动发生。
        </para>
       </listitem>
      </varlistentry>
+
    </variablelist>
   </para>
  </refsect1>
@@ -347,7 +280,6 @@ PostgreSQL documentation
   <variablelist>
    <varlistentry>
     <term><envar>PGHOST</envar></term>
-    <term><envar>PGOPTIONS</envar></term>
     <term><envar>PGPORT</envar></term>
     <term><envar>PGUSER</envar></term>
 
@@ -358,10 +290,6 @@ PostgreSQL documentation
     </listitem>
    </varlistentry>
   </variablelist>
-
-  <para>
-   与大多数其他<productname>PostgreSQL</productname>工具一样，此实用程序也使用<application>libpq</application>支持的环境变量（见<xref linkend="libpq-envars">）。
-  </para>
 
  </refsect1>
 
@@ -374,10 +302,6 @@ PostgreSQL documentation
   </para>
 
   <para>恢复完成后，最好对每个数据库运行<command>ANALYZE</command>，以便优化器获得有用的统计信息。也可以运行<command>vacuumdb -a -z</command>来分析所有数据库。</para>
-
-  <para>
-   <application>pg_dumpall</application>要求在恢复之前，所有必需的表空间目录都已经存在；否则，位于非默认位置的数据库在创建时将会失败。
-  </para>
  </refsect1>
 
 
@@ -392,7 +316,7 @@ PostgreSQL documentation
   </para>
 
   <para>要从此文件重新装载数据库，可以使用：<screen>
-<prompt>$</prompt> <userinput>psql -f db.out postgres</userinput>
+<prompt>$</prompt> <userinput>psql -f db.out template1</userinput>
 </screen>（这里连接哪个数据库并不重要，因为 <application>pg_dumpall</application> 创建的脚本文件会包含适当的命令，用于创建并连接到已保存的数据库。）</para>
  </refsect1>
 
