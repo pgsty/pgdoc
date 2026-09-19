@@ -26,9 +26,6 @@ CREATE [ OR REPLACE ] FUNCTION
     | IMMUTABLE | STABLE | VOLATILE
     | CALLED ON NULL INPUT | RETURNS NULL ON NULL INPUT | STRICT
     | [ EXTERNAL ] SECURITY INVOKER | [ EXTERNAL ] SECURITY DEFINER
-    | COST <replaceable class="parameter">execution_cost</replaceable>
-    | ROWS <replaceable class="parameter">result_rows</replaceable>
-    | SET <replaceable class="parameter">configuration_parameter</replaceable> { TO <replaceable class="parameter">value</replaceable> | = <replaceable class="parameter">value</replaceable> | FROM CURRENT }
     | AS '<replaceable class="parameter">definition</replaceable>'
     | AS '<replaceable class="parameter">obj_file</replaceable>', '<replaceable class="parameter">link_symbol</replaceable>'
   } ...
@@ -51,7 +48,7 @@ CREATE [ OR REPLACE ] FUNCTION
 
 
   <para>
-   如果删除函数后再重新创建，新函数就不再是旧函数的同一实体；你将必须删除引用旧函数的现有规则、视图、触发器等。使用<command>CREATE OR REPLACE FUNCTION</command>可以在不破坏引用该函数的对象的情况下更改函数定义。此外，<command>ALTER FUNCTION</command>还可用于更改现有函数的大多数辅助属性。
+   如果删除函数后再重新创建，新函数就不再是旧函数的同一实体；你将必须删除引用旧函数的现有规则、视图、触发器等。使用<command>CREATE OR REPLACE FUNCTION</command>可以在不破坏引用该函数的对象的情况下更改函数定义。
   </para>
 
   <para>
@@ -190,40 +187,6 @@ CREATE [ OR REPLACE ] FUNCTION
    </varlistentry>
 
     <varlistentry>
-     <term><replaceable class="parameter">execution_cost</replaceable></term>
-
-     <listitem>
-      <para>
-       一个正数，给出该函数的估计执行代价，单位为<xref linkend="guc-cpu-operator-cost">。如果该函数返回一个集合，则这是每个返回行的代价。如果未指定代价，则对 C 语言和内部函数假定为 1 个单位，对其他所有语言的函数假定为 100 个单位。较大的值会让规划器尽量避免对该函数进行不必要的频繁求值。
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><replaceable class="parameter">result_rows</replaceable></term>
-
-     <listitem>
-      <para>
-       一个正数，给出规划器应预计该函数返回的行数。只有函数被声明为返回集合时才允许使用此项。默认假定为 1000 行。
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><replaceable>configuration_parameter</replaceable></term>
-     <term><replaceable>value</replaceable></term>
-     <listitem>
-      <para>
-       <literal>SET</literal>子句会在进入函数时将指定的配置参数设为指定值，并在函数退出时恢复为其先前的值。<literal>SET FROM CURRENT</literal>会把该参数在会话中的当前值保存为进入函数时要应用的值。
-      </para>
-   
-      <para>
-       关于允许的参数名和值的更多信息，见<xref linkend="sql-set" endterm="sql-set-title">和<xref linkend="runtime-config">。
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
      <term><replaceable class="parameter">definition</replaceable></term>
 
      <listitem>
@@ -308,11 +271,7 @@ CREATE FUNCTION foo(int, out text) ...
     使用美元引用（见<xref linkend="sql-syntax-dollar-quoting">）来书写函数定义字符串通常会更有帮助，而不是使用普通的单引号语法。如果没有美元引用，函数定义中的任何单引号或者反斜线都必须用双写来转义。
    </para>
 
-   <para>
-    如果函数上附有<literal>SET</literal>子句，那么在函数内部为同一变量执行的<command>SET LOCAL</command>命令的效果会被限制在该函数内部：函数退出时，配置参数先前的值仍会被恢复。不过，普通的<command>SET</command>命令（不带<literal>LOCAL</literal>）会覆盖<literal>SET</literal>子句，就像它会覆盖先前一条<command>SET LOCAL</command>命令一样：这种命令的效果在函数退出后仍将保持，除非当前事务被回滚。
-   </para>
-
-   <para>
+    <para>
     要定义函数，用户必须具有该语言上的<literal>USAGE</literal>权限。
    </para>
 
@@ -368,6 +327,7 @@ SELECT * FROM dup(42);
   </para>
  </refsect1>
 
+
  <refsect1 id="sql-createfunction-security">
   <title>安全地编写<literal>SECURITY DEFINER</literal>函数</title>
 
@@ -379,29 +339,28 @@ SELECT * FROM dup(42);
 CREATE FUNCTION check_password(uname TEXT, pass TEXT)
 RETURNS BOOLEAN AS $$
 DECLARE passed BOOLEAN;
+        old_path TEXT;
 BEGIN
+        -- Save old search_path; notice we must qualify current_setting
+        -- to ensure we invoke the right function
+        old_path := pg_catalog.current_setting('search_path');
+
+        -- Set a secure search_path: trusted schemas, then 'pg_temp'.
+        -- We set is_local = true so that the old value will be restored
+        -- in event of an error before we reach the function end.
+        PERFORM pg_catalog.set_config('search_path', 'admin, pg_temp', true);
+
+        -- Do whatever secure work we came for.
         SELECT  (pwd = $2) INTO passed
         FROM    pwds
         WHERE   username = $1;
 
+        -- Restore caller's search_path
+        PERFORM pg_catalog.set_config('search_path', old_path, true);
+
         RETURN passed;
 END;
-$$  LANGUAGE plpgsql
-    SECURITY DEFINER
-    -- Set a secure search_path: trusted schema(s), then 'pg_temp'.
-    SET search_path = admin, pg_temp;
-</programlisting>
-
-   <para>在<productname>PostgreSQL</productname> 8.3 版本之前，<literal>SET</literal>选项尚不可用，因此较旧的函数可能包含相当复杂的逻辑来保存、设置和恢复<varname>search_path</varname>。使用<literal>SET</literal>选项更容易实现此目的。</para>
-
-   <para>还需注意，默认情况下，新创建的函数会将执行权限授予<literal>PUBLIC</literal>（有关更多信息，请参见<xref linkend="sql-grant" endterm="sql-grant-title">）。通常，你会希望将安全定义器函数的使用限制为某些用户。为此，必须撤销默认的<literal>PUBLIC</literal>权限，然后有选择地授予执行权限。为避免新函数在一段时间内对所有人可访问，应在同一个事务中创建函数并设置权限。例如：</para>
-
-<programlisting>
-BEGIN;
-CREATE FUNCTION check_password(uname TEXT, pass TEXT) ... SECURITY DEFINER;
-REVOKE ALL ON FUNCTION check_password(uname TEXT, pass TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION check_password(uname TEXT, pass TEXT) TO admins;
-COMMIT;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 </programlisting>
 
  </refsect1>

@@ -39,22 +39,8 @@
 
   <para>
    最后，大多数磁盘驱动器自身也带有缓存。有些是直写式，有些是回写式；对于
-   回写式驱动器缓存，同样存在与磁盘控制器缓存相同的数据丢失隐患。消费级 IDE 和
-   SATA 驱动器尤其可能带有在断电后无法保留内容的回写式缓存。要在
-   <productname>Linux</productname> 上检查写缓存，可使用 <command>hdparm -I</command>；
-   如果 <literal>Write cache</literal> 旁边有 <literal>*</literal>，则说明已启用。
-   用 <command>hdparm -W</command> 可关闭写缓存。在 <productname>FreeBSD</productname>
-   上使用 <application>atacontrol</application>。（SCSI 磁盘可用
-   <ulink url="http://sg.torque.net/sg/sdparm.html"><application>sdparm</application></ulink>
-   关闭 <literal>WCE</literal>。）在 <productname>Solaris</productname> 上，磁盘写缓存由
-   <ulink url="http://www.sun.com/bigadmin/content/submitted/format_utility.jsp"><literal>format
-   -e</literal></ulink> 控制。（Solaris 的 <acronym>ZFS</acronym> 文件系统在启用磁盘写缓存时是安全的，
-   因为它自己会发出磁盘缓存刷新命令。）在 <productname>Windows</productname> 上，如果
-   <varname>wal_sync_method</varname> 为 <literal>open_datasync</literal>（默认值），
-   可通过取消勾选 <literal>我的电脑\打开\{选择磁盘驱动器}\属性\硬件\属性\策略\启用磁盘上的写缓存</literal>
-   来禁用写缓存。同样在 Windows 上，<literal>fsync</literal> 和
-   <literal>fsync_writethrough</literal> 从不使用写缓存。<literal>fsync_writethrough</literal>
-   选项也可用于在 <productname>MacOS X</productname> 上禁用写缓存。
+   回写式驱动器缓存，同样存在与磁盘控制器缓存相同的数据丢失隐患。消费级
+   IDE 驱动器尤其可能带有在断电后无法保留内容的回写式缓存。
   </para>
 
   
@@ -68,8 +54,8 @@
    1024 字节或 8192 字节，而写入过程可能在任何时刻因断电失败，这就意味着
    某些 512 字节扇区写成功了，另一些却没有。为防范这类故障，
    <productname>PostgreSQL</productname> 会在修改磁盘上的实际页面
-   <emphasis>之前</emphasis>，定期将整页镜像写入持久 WAL 存储。这样一来，在
-   崩溃恢复时 <productname>PostgreSQL</productname> 就能从 WAL 恢复部分写入的
+   <emphasis>之前</emphasis>，定期将整页镜像写入永久存储。这样一来，在
+   崩溃恢复时 <productname>PostgreSQL</productname> 就能恢复部分写入的
    页面。如果你使用了带后备电池的磁盘控制器，或者能阻止部分页面写入的文件系统
    软件（如 ReiserFS 4），可以通过关闭参数
    <xref linkend="guc-full-page-writes"> 来禁用这种页面镜像。
@@ -119,96 +105,6 @@
    </para>
   </sect1>
 
- <sect1 id="wal-async-commit">
-  <title>异步提交</title>
-
-   <indexterm>
-    <primary>synchronous commit</primary>
-   </indexterm>
-
-   <indexterm>
-    <primary>asynchronous commit</primary>
-   </indexterm>
-
-  <para>
-   <firstterm>异步提交</firstterm>是一项可选功能，它允许事务更快完成，但代价是
-   如果数据库发生崩溃，最近的事务可能会丢失。在许多应用中，这是可以接受的权衡。
-  </para>
-
-  <para>
-   如前一节所述，事务提交通常是 <firstterm>同步的</firstterm>：服务器要等到该
-   事务的 <acronym>WAL</acronym> 记录被刷入持久存储后，才向客户端返回成功
-   指示。因此，客户端可以确信那些已被报告为提交成功的事务一定会被保留，即使
-   服务器紧接着立刻崩溃也是如此。然而，对于短事务而言，这种等待是总事务时间的
-   主要组成部分。选择异步提交模式意味着服务器会在事务从逻辑上完成后就立刻返回
-   成功，而不必等到它生成的 <acronym>WAL</acronym> 记录真正到达磁盘。这会显著
-   提升小事务的吞吐量。
-  </para>
-
-  <para>
-   异步提交引入了数据丢失风险。在向客户端报告事务完成与事务真正被提交（也就是
-   说，即使服务器崩溃也保证不会丢失）之间，存在一个很短的时间窗口。因此，如果
-   客户端会基于“系统一定会记住这个事务”这一假设采取外部动作，就不应使用异步提
-   交。例如，银行显然不会对记录 ATM 吐钞的事务使用异步提交。但在很多场景中，
-   例如事件日志记录，并不需要这种强保证。
-  </para>
-
-  <para>
-   使用异步提交所承担的风险是数据丢失，而不是数据损坏。如果数据库发生崩溃，它会
-   通过重放 <acronym>WAL</acronym> 直到最后一条已刷写记录来恢复。因此，数据库
-   会被恢复到自洽状态，但任何尚未刷到磁盘的事务都不会反映在该状态中。其最终
-   效果就是丢失最后几个事务。由于事务按提交顺序重放，所以不会引入任何不一致性
-   &mdash; 例如，如果事务 B 做出的更改依赖于更早的事务 A 的效果，就不可能出现
-   A 的效果丢失而 B 的效果却被保留的情况。
-  </para>
-
-  <para>
-   用户可以为每个事务选择提交模式，因此同步提交事务和异步提交事务可以并发运行。
-   这使得在性能与事务持久性的确定性之间能够灵活权衡。提交模式由用户可设置的
-   参数 <xref linkend="guc-synchronous-commit"> 控制，而该参数可以用任何
-   设置配置参数的方式来更改。任一事务实际使用的模式取决于事务提交开始时
-   <varname>synchronous_commit</varname> 的值。
-  </para>
-
-  <para>
-   某些实用命令，例如 <command>DROP TABLE</command>，无论
-   <varname>synchronous_commit</varname> 如何设置，都会强制同步提交。这是为了
-   保证服务器文件系统与数据库逻辑状态之间的一致性。支持两阶段提交的命令，例如
-   <command>PREPARE TRANSACTION</command>，也始终是同步的。
-  </para>
-
-  <para>
-   如果数据库在异步提交与写出该事务 <acronym>WAL</acronym> 记录之间的风险窗口内
-   崩溃，那么该事务所做的更改<emphasis>将</emphasis>丢失。该风险窗口的时长是
-   受限的，因为一个后台进程（<quote>WAL 写入器</quote>）会将尚未写出的
-   <acronym>WAL</acronym> 记录每隔
-   <xref linkend="guc-wal-writer-delay"> 毫秒刷到磁盘。风险窗口的实际最大时长是
-   <varname>wal_writer_delay</varname> 的三倍，因为 WAL 写入器在系统繁忙时被
-   设计为倾向于一次写出整页。
-  </para>
-
-  <caution>
-   <para>
-    立即模式关闭等同于服务器崩溃，因此也会造成任何未刷写的异步提交丢失。
-   </para>
-  </caution>
-
-  <para>
-   异步提交的行为不同于将 <xref linkend="guc-fsync"> 设为 off。
-   <varname>fsync</varname> 是影响所有事务的全服务器设置。它会禁用
-   <productname>PostgreSQL</productname> 内部所有试图同步数据库不同部分写入的
-   逻辑，因此系统崩溃（即硬件或操作系统崩溃，而不是
-   <productname>PostgreSQL</productname> 本身故障）可能导致数据库状态遭受任意
-   严重的损坏。在许多场景中，异步提交能带来关闭 <varname>fsync</varname> 所能
-   获得的大部分性能提升，却不承担数据损坏的风险。
-  </para>
-
-  <para>
-   <xref linkend="guc-commit-delay">听起来也很像异步提交，但它实际上是一种同步提交方法（事实上，在异步提交期间<varname>commit_delay</varname>会被忽略）。<varname>commit_delay</varname>会在同步提交尝试把<acronym>WAL</acronym>刷到磁盘之前引入一段延迟，希望某个事务执行的一次刷盘也能服务于其他差不多同时提交的事务。只有在存在大量并发提交的事务时，设置<varname>commit_delay</varname>才可能有帮助，而且很难把它调节到一个确实有益而非有害于吞吐量的值。
-  </para>
-
- </sect1>
-
  <sect1 id="wal-configuration">
   <title><acronym>WAL</acronym> 配置</title>
 
@@ -218,7 +114,7 @@
   </para>
 
   <para>
-   <firstterm>检查点</firstterm><indexterm><primary>checkpoint</primary></indexterm>是事务序列中的一些时间点，在这些点可以保证堆和索引数据文件已经更新了检查点之前写入的所有信息。在检查点时刻，所有脏数据页都被刷写到磁盘，并向日志文件写入一条特殊的检查点记录。一旦发生崩溃，崩溃恢复过程会查看最新的检查点记录，以确定日志中开始 REDO 操作的位置（称为重做记录）。在此之前对数据文件所做的更改都保证已在磁盘上。因此，检查点之后，包含重做记录的日志段之前的日志段不再需要，可以循环使用或删除。（在进行<acronym>WAL</acronym>归档时，日志段在循环使用或删除之前必须先归档。）
+   <firstterm>检查点</firstterm><indexterm><primary>checkpoint</primary></indexterm>是事务序列中的一些时间点，在这些点可以保证数据文件已经更新了检查点之前写入的所有信息。在检查点时刻，所有脏数据页都被刷写到磁盘，并向日志文件写入一条特殊的检查点记录。一旦发生崩溃，崩溃恢复过程会查看最新的检查点记录，以确定日志中开始 REDO 操作的位置（称为重做记录）。在此之前对数据文件所做的更改都保证已在磁盘上。因此，检查点之后，包含重做记录的日志段之前的日志段不再需要，可以循环使用或删除。（在进行<acronym>WAL</acronym>归档时，日志段在循环使用或删除之前必须先归档。）
   </para>
 
   <para>
@@ -234,25 +130,9 @@
   </para>
 
   <para>
-   为了避免大量页面写出在短时间内淹没 I/O 系统，检查点期间对脏缓冲区的写出会被
-   分散到一段时间内。这段时间由
-   <xref linkend="guc-checkpoint-completion-target"> 控制，它表示为检查点间隔的一个分数。系统会调节
-   I/O 速率，使检查点在自检查点开始以来已消耗给定比例的 <varname>checkpoint_segments</varname> 个
-   WAL 段、或者已过去给定比例的 <varname>checkpoint_timeout</varname> 秒时完成，以较早者为准。使用默认值 0.5 时，可以预期 <productname>PostgreSQL</productname>
-   会在下一次检查点开始前的这段时间约过一半时完成每个检查点。
-   在正常运行时已非常接近最大 I/O 吞吐量的系统上，你可能希望增大
-   <varname>checkpoint_completion_target</varname>，以降低检查点带来的 I/O 负载。
-   这样做的缺点是，延长检查点会影响恢复时间，因为需要保留更多 WAL 段以备恢复时
-   使用。虽然 <varname>checkpoint_completion_target</varname> 可以设到 1.0，但最好
-   保持在该值以下（或许最多为 0.9），因为检查点除了写出脏缓冲区之外还包含其他活动。
-   设置为 1.0 很可能导致检查点不能按时完成，从而因为所需 WAL 段数量的意外波动而
-   损失性能。
-  </para>
-
-  <para>
    WAL 段文件总是至少有一个，通常不会多于
-   (2 + <varname>checkpoint_completion_target</varname>) * <varname>checkpoint_segments</varname> + 1 个文件。
-   每个段文件通常是 16 MB（不过构建服务器时可以改变这个大小）。可以用它来估算<acronym>WAL</acronym>的空间需求。通常，当日志段文件不再需要时，它们会被循环使用（改名为编号序列中的后续段）。如果由于日志输出速率的短期峰值，段文件数超过了 3 * <varname>checkpoint_segments</varname> + 1，则不需要的段文件将被删除而不是循环使用，直到系统回到该限制之内。
+   2 * <varname>checkpoint_segments</varname> + 1 个文件。
+   每个段文件通常是 16 MB（不过构建服务器时可以改变这个大小）。可以用它来估算<acronym>WAL</acronym>的空间需求。通常，当日志段文件不再需要时，它们会被循环使用（改名为编号序列中的后续段）。如果由于日志输出速率的短期峰值，段文件数超过了 2 * <varname>checkpoint_segments</varname> + 1，则不需要的段文件将被删除而不是循环使用，直到系统回到该限制之内。
   </para>
 
 
@@ -265,7 +145,7 @@
   </para>
 
   <para>
-   <xref linkend="guc-wal-sync-method">参数决定<productname>PostgreSQL</productname>以何种方式请求内核把<acronym>WAL</acronym>更新强制写到磁盘。就可靠性而言，所有选项都相同，唯一例外是<literal>fsync_writethrough</literal>，会在其他选项不强制刷写磁盘缓存时强制进行刷写。不过，哪个选项最快与平台密切相关；可以用 PostgreSQL 源码树中的<filename>src/tools/fsync</filename>工具测试各选项的速度。注意，如果关闭了<varname>fsync</varname>，此参数就无关紧要了。
+   <xref linkend="guc-wal-sync-method">参数决定<productname>PostgreSQL</productname>以何种方式请求内核把<acronym>WAL</acronym>更新强制写到磁盘。就可靠性而言，所有选项都相同，但哪个选项最快与平台密切相关。注意，如果关闭了<varname>fsync</varname>，此参数就无关紧要了。
   </para>
 
   <para>
@@ -285,9 +165,9 @@
   <para>
    <acronym>WAL</acronym> 文件保存在数据目录下的 <filename>pg_xlog</filename> 目录中，由一组段文件
    组成，每个段通常为 16 MB。每个段又分为若干页面，通常每页 8 kB。WAL 记录头定义在
-   <filename>access/xlogrecord.h</filename> 中；记录内容则取决于被记录的事件类
+   <filename>access/xlog.h</filename> 中；记录内容则取决于被记录的事件类
    型。段文件以不断递增的数字命名，从
-   <filename>000000010000000000000001</filename> 开始。这些编号不会回绕，但要
+   <filename>000000010000000000000000</filename> 开始。这些编号不会回绕，但要
    把可用的编号耗尽还需要非常、非常长的时间。
   </para>
 
@@ -303,8 +183,7 @@
    实际上只是缓存了数据、尚未将其存储到磁盘上，却向内核谎报
    写入成功，这一目标就会被破坏。在这种情况下，断电可能导致不可恢复的数据损坏。
    管理员应尽量确保保存 <productname>PostgreSQL</productname>
-   <acronym>WAL</acronym> 文件的磁盘不会做出这种虚假报告。（见
-   <xref linkend="wal-reliability">。）
+   <acronym>WAL</acronym> 文件的磁盘不会做出这种虚假报告。
   </para>
 
   <para>

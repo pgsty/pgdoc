@@ -12,11 +12,13 @@
    到目前为止所描述的过程使我们能够定义新类型、新函数以及新操作符。然而，我们还不能在一种新数据类型的列上定义索引。为此，必须为该新数据类型定义一个<firstterm>操作符类</firstterm>。本节稍后将用一个示例说明这一概念：为 B-树索引方法定义一个新的操作符类，以便按绝对值升序存储和排序复数。
   </para>
 
-  <para>
-   操作符类可以分组成<firstterm>操作符族</firstterm>，以展示语义兼容的类之间的关系。只涉及单一数据类型时，一个操作符类就已足够，因此我们先关注这种情况，然后再回到操作符族。
-  </para>
+  <note>
+   <para>
+    在<productname>PostgreSQL</productname> 7.3 之前的版本中，要创建用户定义的操作符类，必须手工向系统目录<classname>pg_amop</classname>、<classname>pg_amproc</classname>和<classname>pg_opclass</classname>中添加条目。这种做法现在已被弃用，取而代之的是使用<xref linkend="sql-createopclass" endterm="sql-createopclass-title">，后者是一种更简单、更不易出错的创建所需目录条目的方式。
+   </para>
+  </note>
 
- <sect2 id="xindex-opclass">
+ <sect2 id="xindex-im">
   <title>索引方法和操作符类</title>
 
   <para><classname>pg_am</classname> 表为每个索引方法（内部称为访问方法）保存一行。对表进行常规访问的支持内置于 <productname>PostgreSQL</productname> 中，但所有索引方法都在 <classname>pg_am</classname> 中描述。可以定义所需的接口例程，然后在 <classname>pg_am</classname> 中创建一行，从而添加新的索引方法 &mdash; 但这超出了本章的范围（参见<xref linkend="indexam">）。</para>
@@ -208,6 +210,13 @@
    注意，所有策略操作符都返回布尔值。实际上，所有被定义为索引方法
    策略的操作符都必须返回 <type>boolean</type> 类型，因为要与索引
    配合使用，它们必须出现在 <literal>WHERE</> 子句的顶层。
+  </para>
+
+  <para>
+   顺便说一下，<classname>pg_am</classname> 中的
+   <structfield>amorderstrategy</structfield>列表明该索引方法是否支持有序扫描。零表示不支持；如果支持，
+   <structfield>amorderstrategy</structfield>就是与排序操作符对应的策略号。例如，B-树的
+   <structfield>amorderstrategy</structfield> = 1，也就是它的<quote>小于</quote>策略号。
   </para>
  </sect2>
 
@@ -495,65 +504,30 @@ CREATE FUNCTION complex_abs_cmp(complex, complex)
   </para>
  </sect2>
 
- <sect2 id="xindex-opfamily">
-  <title>操作符类和操作符族</title>
+ <sect2 id="xindex-opclass-crosstype">
+  <title>跨数据类型的操作符类</title>
 
   <para>
-   到目前为止，我们一直隐含地假定一个操作符类只处理一种数据类型。虽然某个特定的索引列当然只能有一种数据类型，但对把被索引列与另一种数据类型的值进行比较的操作建立索引往往也很有用。此外，如果某个与操作符类相关的跨数据类型操作符有用，通常另一种数据类型本身也会有一个相关的操作符类。把相关类之间的联系显式表示出来会很有帮助，因为这有助于规划器优化 SQL 查询（尤其是对 B-树操作符类而言，因为规划器中包含大量有关如何使用它们的知识）。
+   到目前为止，我们一直隐含地假定一个操作符类只处理一种数据类型。虽然某个特定的索引列当然只能有一种数据类型，但对把被索引列与另一种数据类型的值进行比较的操作建立索引往往也很有用。目前 B-树和 GiST 索引方法支持这一点。
   </para>
 
   <para>
-   为了满足这些需求，<productname>PostgreSQL</productname>使用<firstterm>操作符族</firstterm><indexterm><primary>操作符族</primary></indexterm>这一概念。一个操作符族包含一个或多个操作符类，还可以包含属于整个族、但不属于族中任何单一类的可索引操作符及其相应的支持函数。我们称这样的操作符和函数在该族中是<quote>松散</quote>的，而不是绑定在某个特定类中。通常，每个操作符类只包含单一数据类型的操作符，而跨数据类型操作符则作为操作符族中的松散成员存在。
-  </para>
+   B-树要求每个操作符的左操作数是被索引的数据类型，但右操作数可以是另一种类型。此时必须存在一个具有匹配签名
+   的支持函数。例如，<type>bigint</type>（<type>int8</type>）类型的内建操作符类允许与<type>int4</type>和
+   <type>int2</type>进行跨类型比较。可以用下面的定义复制出它：
 
-  <para>
-   一个操作符族中的所有操作符和函数都必须具有兼容的语义，而兼容性的要求由索引方法设定。因此，你也许会疑惑，为什么还要把该族的某些子集单独划成操作符类；事实上，对很多用途而言，类的划分并不重要，真正有意义的分组只有操作符族。之所以定义操作符类，是因为它们规定了支持特定索引所需的操作符族内容。如果某个索引使用了某个操作符类，那么在不删除该索引的情况下就不能删除该操作符类 &mdash; 但操作符族中的其他部分，也就是其他操作符类和松散操作符，则可以被删除。因此，一个操作符类应当只包含在特定数据类型上支持索引所合理需要的最小操作符和函数集合，而那些相关但非必需的操作符，则可以作为操作符族的松散成员加入。
-  </para>
-
-  <para>
-   As an example, <productname>PostgreSQL</productname> has a built-in
-   B-tree operator family <literal>integer_ops</>, which includes operator
-   classes <literal>int8_ops</>, <literal>int4_ops</>, and
-   <literal>int2_ops</> for indexes on <type>bigint</> (<type>int8</>),
-   <type>integer</> (<type>int4</>), and <type>smallint</> (<type>int2</>)
-   列上的索引。该族还包含跨数据类型比较操作符，允许这些类型中的
-   任意两个相互比较，这样其中一种类型上的索引就可以用另一种类型的
-   比较值来搜索。该族可以用这些定义复制出来：
-
-<programlisting>CREATE OPERATOR FAMILY integer_ops USING btree;
-
+<programlisting>
 CREATE OPERATOR CLASS int8_ops
-DEFAULT FOR TYPE int8 USING btree FAMILY integer_ops AS
+DEFAULT FOR TYPE int8 USING btree AS
   -- standard int8 comparisons
   OPERATOR 1 &lt; ,
   OPERATOR 2 &lt;= ,
   OPERATOR 3 = ,
   OPERATOR 4 &gt;= ,
   OPERATOR 5 &gt; ,
-  FUNCTION 1 btint8cmp(int8, int8) ;
+  FUNCTION 1 btint8cmp(int8, int8) ,
 
-CREATE OPERATOR CLASS int4_ops
-DEFAULT FOR TYPE int4 USING btree FAMILY integer_ops AS
-  -- standard int4 comparisons
-  OPERATOR 1 &lt; ,
-  OPERATOR 2 &lt;= ,
-  OPERATOR 3 = ,
-  OPERATOR 4 &gt;= ,
-  OPERATOR 5 &gt; ,
-  FUNCTION 1 btint4cmp(int4, int4) ;
-
-CREATE OPERATOR CLASS int2_ops
-DEFAULT FOR TYPE int2 USING btree FAMILY integer_ops AS
-  -- standard int2 comparisons
-  OPERATOR 1 &lt; ,
-  OPERATOR 2 &lt;= ,
-  OPERATOR 3 = ,
-  OPERATOR 4 &gt;= ,
-  OPERATOR 5 &gt; ,
-  FUNCTION 1 btint2cmp(int2, int2) ;
-
-ALTER OPERATOR FAMILY integer_ops USING btree ADD
-  -- cross-type comparisons int8 vs int2
+  -- cross-type comparisons to int2 (smallint)
   OPERATOR 1 &lt; (int8, int2) ,
   OPERATOR 2 &lt;= (int8, int2) ,
   OPERATOR 3 = (int8, int2) ,
@@ -561,88 +535,21 @@ ALTER OPERATOR FAMILY integer_ops USING btree ADD
   OPERATOR 5 &gt; (int8, int2) ,
   FUNCTION 1 btint82cmp(int8, int2) ,
 
-  -- cross-type comparisons int8 vs int4
+  -- cross-type comparisons to int4 (integer)
   OPERATOR 1 &lt; (int8, int4) ,
   OPERATOR 2 &lt;= (int8, int4) ,
   OPERATOR 3 = (int8, int4) ,
   OPERATOR 4 &gt;= (int8, int4) ,
   OPERATOR 5 &gt; (int8, int4) ,
-  FUNCTION 1 btint84cmp(int8, int4) ,
-
-  -- cross-type comparisons int4 vs int2
-  OPERATOR 1 &lt; (int4, int2) ,
-  OPERATOR 2 &lt;= (int4, int2) ,
-  OPERATOR 3 = (int4, int2) ,
-  OPERATOR 4 &gt;= (int4, int2) ,
-  OPERATOR 5 &gt; (int4, int2) ,
-  FUNCTION 1 btint42cmp(int4, int2) ,
-
-  -- cross-type comparisons int4 vs int8
-  OPERATOR 1 &lt; (int4, int8) ,
-  OPERATOR 2 &lt;= (int4, int8) ,
-  OPERATOR 3 = (int4, int8) ,
-  OPERATOR 4 &gt;= (int4, int8) ,
-  OPERATOR 5 &gt; (int4, int8) ,
-  FUNCTION 1 btint48cmp(int4, int8) ,
-
-  -- cross-type comparisons int2 vs int8
-  OPERATOR 1 &lt; (int2, int8) ,
-  OPERATOR 2 &lt;= (int2, int8) ,
-  OPERATOR 3 = (int2, int8) ,
-  OPERATOR 4 &gt;= (int2, int8) ,
-  OPERATOR 5 &gt; (int2, int8) ,
-  FUNCTION 1 btint28cmp(int2, int8) ,
-
-  -- cross-type comparisons int2 vs int4
-  OPERATOR 1 &lt; (int2, int4) ,
-  OPERATOR 2 &lt;= (int2, int4) ,
-  OPERATOR 3 = (int2, int4) ,
-  OPERATOR 4 &gt;= (int2, int4) ,
-  OPERATOR 5 &gt; (int2, int4) ,
-  FUNCTION 1 btint24cmp(int2, int4) ;
+  FUNCTION 1 btint84cmp(int8, int4) ;
 </programlisting>
 
-   注意，此定义<quote>重载</quote>了操作符策略号和支持函数号：每个
-   编号在操作符族中出现多次。只要同一编号的每个实例具有不同的输入
-   数据类型，这就是允许的。两个输入类型都等于某个操作符类输入类型
-   的实例，是该操作符类的主要操作符和支持函数，通常应声明为操作符
-   类的一部分，而不是操作符族的松散成员。
+   注意，此定义<quote>重载</quote>了操作符策略号和支持函数号。只要同一编号的每个实例具有不同的右操作数数据类型，就允许这样做（仅限 B-树操作符类）。非跨类型的实例是该操作符类的默认或主要操作符。
   </para>
 
   <para>
-   在一个 B-tree 操作符族中，该族中的所有操作符都必须以兼容的方式
-   排序，也就是说，传递律必须适用于该族支持的所有数据类型：
-   <quote>如果 A = B 且 B = C，则 A = C</>，以及
-   <quote>如果 A &lt; B 且 B &lt; C，则 A &lt; C</>。对族中的每一个
-   操作符，都必须有一个具有相同两个输入数据类型的支持函数。建议
-   让操作符族保持完整，也就是说，对每一种数据类型组合都应包含全部
-   操作符。每个操作符类只应包含其数据类型对应的非跨数据类型操作符
-   和支持函数。
+   GiST 索引不允许重载策略号或支持函数号，但仍然可以通过为每个需要支持的操作符分配不同的策略号，来实现支持多种右操作数数据类型的效果。<literal>consistent</literal>支持函数必须根据策略号判断自己该做什么，并且必须准备好接受相应数据类型的比较值。
   </para>
-
-  <para>
-   要构建一个多数据类型的哈希操作符族，必须为该族支持的每一种数据
-   类型创建相互兼容的哈希支持函数。这里的兼容性是指：对任意两个被
-   该族中的等值操作符视为相等的值，这些函数都保证返回相同的哈希码，
-   即使这两个值属于不同类型也是如此。当这些类型具有不同的物理表示
-   时，这通常难以实现，但在某些情况下可以做到。注意，每种数据类型
-   只有一个支持函数，而不是每个等值操作符一个。建议让操作符族保持
-   完整，也就是说，对每一种数据类型组合都提供一个等值操作符。每个
-   操作符类只应包含其数据类型对应的非跨数据类型等值操作符和支持
-   函数。
-  </para>
-
-  <para>
-   GIN 和 GiST 索引没有任何显式的跨数据类型操作概念。它们所支持
-   的操作符集合，就是给定操作符类的主要支持函数所能处理的那些
-   操作符。
-  </para>
-
-  <note>
-   <para>
-    在 <productname>PostgreSQL</productname> 8.3 之前，并没有操作符族这一概念，因此任何打算与索引一起使用的跨数据类型操作符都必须直接绑定到该索引的操作符类中。虽然这种做法仍然有效，但已被弃用，因为它会使索引的依赖关系过于宽泛，而且当两种数据类型都在同一操作符族中拥有操作符时，规划器能更有效地处理跨数据类型比较。
-   </para>
-  </note>
  </sect2>
 
  <sect2 id="xindex-opclass-dependencies">
@@ -674,7 +581,6 @@ ALTER OPERATOR FAMILY integer_ops USING btree ADD
     </para>
    </note>
 
-  <para>另一个重要点在于，出现在哈希操作符族中的操作符，都是哈希连接、哈希聚合以及相关优化的候选对象。这里哈希操作符族至关重要，因为它标识了应当使用的哈希函数。</para>
  </sect2>
 
  <sect2 id="xindex-opclass-features">

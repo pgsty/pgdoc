@@ -75,7 +75,7 @@ CREATE INDEX test1_id_index ON test1 (id);
 
 <simplelist> <member><literal>&lt;</literal></member> <member><literal>&lt;=</literal></member> <member><literal>=</literal></member> <member><literal>&gt;=</literal></member> <member><literal>&gt;</literal></member> </simplelist>
 
-   与这些操作符组合等价的构造，例如<literal>BETWEEN</literal>和<literal>IN</literal>，也可以通过 B-树索引搜索来实现。此外，索引列上的<literal>IS NULL</literal>条件也可以配合 B-树索引使用。
+   与这些操作符组合等价的构造，例如<literal>BETWEEN</literal>和<literal>IN</literal>，也可以通过 B-树索引搜索来实现。（但要注意，<literal>IS NULL</literal>并不等价于<literal>=</literal>，因此不能使用索引。）
   </para>
 
   <para>
@@ -91,7 +91,7 @@ CREATE INDEX test1_id_index ON test1 (id);
    <indexterm>
     <primary>hash</primary>
     <see>索引</see>
-   </indexterm>Hash 索引只能处理简单的等值比较。只要已索引列参与的是使用<literal>=</literal>操作符的比较，查询规划器就会考虑使用 Hash 索引。（Hash 索引不支持<literal>IS NULL</literal>搜索。）使用以下命令创建 Hash 索引：<synopsis>
+   </indexterm>Hash 索引只能处理简单的等值比较。只要已索引列参与的是使用<literal>=</literal>操作符的比较，查询规划器就会考虑使用 Hash 索引。使用以下命令创建 Hash 索引：<synopsis>
 CREATE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable> USING hash (<replaceable>column</replaceable>);
 </synopsis>
   </para>
@@ -115,7 +115,7 @@ CREATE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable>
 
 <simplelist> <member><literal>&lt;@</literal></member> <member><literal>@&gt;</literal></member> <member><literal>=</literal></member> <member><literal>&amp;&amp;</literal></member> </simplelist>
 
-   （这些操作符的含义见<xref linkend="functions-array">。）还有许多其他 GIN 操作符类可在<literal>contrib</literal>集合或独立项目中获得。更多信息见<xref linkend="GIN">。
+   （这些操作符的含义见<xref linkend="functions-array">。）还有其他一些 GIN 操作符类在<literal>contrib</literal>集合中提供，例如<literal>tsearch2</literal>和<literal>intarray</literal>模块。更多信息见<xref linkend="GIN">。
   </para>
 
    </sect1>
@@ -165,44 +165,6 @@ CREATE INDEX test2_mm_idx ON test2 (major, minor);
   </para>
  </sect1>
 
-
- <sect1 id="indexes-ordering">
-  <title>索引和<literal>ORDER BY</literal></title>
-
-  <indexterm zone="indexes-ordering">
-   <primary>索引</primary>
-   <secondary>与 <literal>ORDER BY</literal></secondary>
-  </indexterm>
-
-  <para>
-   除了简单地找到查询要返回的行之外，索引还可能能够以某种特定排序顺序交付这些行。这使得查询中的<literal>ORDER BY</literal>要求无需额外排序步骤即可满足。在<productname>PostgreSQL</productname>当前支持的索引类型中，只有 B-树 能产生有序输出，其他索引类型返回匹配行的顺序则未指定，并且依赖具体实现。
-  </para>
-
-  <para>
-   规划器在满足<literal>ORDER BY</literal>要求时，会考虑两种方案：扫描一个与该要求匹配的可用索引，或者按物理顺序扫描表再显式排序。对于需要扫描表中很大一部分内容的查询，显式排序通常会比使用索引更快，因为它遵循顺序访问模式，需要的磁盘 I/O 更少。只需取出少量行时，索引更有价值。一个重要的特例是<literal>ORDER BY</literal>与<literal>LIMIT</literal> <replaceable>n</replaceable>组合使用：显式排序必须处理所有数据才能找出最前面的<replaceable>n</replaceable>行，而如果有一个与<literal>ORDER BY</literal>匹配的索引，就可以直接取回前<replaceable>n</replaceable>行，而完全不必扫描剩余数据。
-  </para>
-
-  <para>
-   默认情况下，B-树索引按升序存储其项，并将空值放在最后。这意味着，对列<literal>x</literal>上的索引进行前向扫描，会产生满足<literal>ORDER BY x</literal>的输出（更完整地说，是<literal>ORDER BY x ASC NULLS LAST</literal>）。索引也可以反向扫描，从而产生满足<literal>ORDER BY x DESC</literal>的输出（更完整地说，是<literal>ORDER BY x DESC NULLS FIRST</literal>，因为<literal>NULLS FIRST</literal>是<literal>ORDER BY DESC</literal>的默认行为）。
-  </para>
-
-  <para>
-   你可以在创建 B-树索引时通过指定<literal>ASC</literal>、<literal>DESC</literal>、<literal>NULLS FIRST</literal>和/或<literal>NULLS LAST</literal>选项来调整索引的排序方式，例如：
-<programlisting>
-CREATE INDEX test2_info_nulls_low ON test2 (info NULLS FIRST);
-CREATE INDEX test3_desc_index ON test3 (id DESC NULLS LAST);
-</programlisting>
-   一个按升序且空值在前存储的索引，根据扫描方向不同，可以满足<literal>ORDER BY x ASC NULLS FIRST</literal>或<literal>ORDER BY x DESC NULLS LAST</literal>。
-  </para>
-
-  <para>
-   你可能会疑惑，既然借助两个选项再加上反向扫描的可能性就能覆盖所有<literal>ORDER BY</literal>变体，为什么还要提供四个选项。对于单列索引，这些选项确实是冗余的，但对于多列索引它们就可能很有用。考虑一个<literal>(x, y)</literal>上的两列索引：前向扫描时它能满足<literal>ORDER BY x, y</literal>，反向扫描时能满足<literal>ORDER BY x DESC, y DESC</literal>。但应用也可能经常需要<literal>ORDER BY x ASC, y DESC</literal>。普通索引无法产生这种顺序，而如果把索引定义成<literal>(x ASC, y DESC)</literal>或<literal>(x DESC, y ASC)</literal>，就可以做到。
-  </para>
-
-  <para>
-   显然，具有非默认排序方式的索引是一项相当专门的特性，但在某些查询上它们有时能带来巨大的加速。是否值得维护这样的索引，取决于你需要这种特殊排序的查询出现得有多频繁。
-  </para>
- </sect1>
 
 
  <sect1 id="indexes-bitmap-scans">
@@ -461,19 +423,15 @@ CREATE UNIQUE INDEX tests_success_constraint ON tests (subject, target)
 
 
  <sect1 id="indexes-opclass">
-  <title>操作符类和操作符族</title>
+  <title>操作符类</title>
 
   <indexterm zone="indexes-opclass">
    <primary>操作符类</primary>
   </indexterm>
 
-  <indexterm zone="indexes-opclass">
-   <primary>操作符族</primary>
-  </indexterm>
-
   <para>索引定义可以为索引的每一列指定一个<firstterm>操作符类</firstterm>。<synopsis>
-CREATE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable> (<replaceable>column</replaceable> <replaceable>opclass</replaceable> <optional><replaceable>sort options</replaceable></optional> <optional>, ...</optional>);
-</synopsis>操作符类确定索引针对该列使用哪些操作符。例如，建立在类型<type>int4</type>上的 B-树索引会使用<literal>int4_ops</literal>类；该操作符类包含针对以下类型的值的比较函数：<type>int4</type>。实际中，列数据类型的默认操作符类通常就足够了。之所以需要操作符类，主要是因为对于某些数据类型，可能存在不止一种有意义的索引行为。例如，可能希望按绝对值或实部对复数数据类型排序。可以为该数据类型定义两个操作符类，并在创建索引时选择合适的类。操作符类决定基本排序顺序（随后可以通过添加排序选项进行调整：<literal>ASC</literal>/<literal>DESC</literal>和/或<literal>NULLS FIRST</literal>/<literal>NULLS LAST</literal>）。
+CREATE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable> (<replaceable>column</replaceable> <replaceable>opclass</replaceable> <optional>, ...</optional>);
+</synopsis>操作符类确定索引针对该列使用哪些操作符。例如，建立在类型<type>int4</type>上的 B-树索引会使用<literal>int4_ops</literal>类；该操作符类包含针对以下类型的值的比较函数：<type>int4</type>。实际中，列数据类型的默认操作符类通常就足够了。之所以需要操作符类，主要是因为对于某些数据类型，可能存在不止一种有意义的索引行为。例如，可能希望按绝对值或实部对复数数据类型排序。可以为该数据类型定义两个操作符类，并在创建索引时选择合适的类。
   </para>
 
   <para>
@@ -499,25 +457,20 @@ CREATE INDEX test_index ON test_table (col varchar_pattern_ops);
 SELECT am.amname AS index_method,
        opc.opcname AS opclass_name
     FROM pg_am am, pg_opclass opc
-    WHERE opc.opcmethod = am.oid
+    WHERE opc.opcamid = am.oid
     ORDER BY index_method, opclass_name;
 </programlisting>
-  </para>
 
-  <para>
-   操作符类其实只是一个更大结构的子集，这个结构称为<firstterm>操作符族</firstterm>。当若干数据类型具有相似行为时，定义跨数据类型操作符并让索引支持它们，往往会很有用。为此，每种类型对应的操作符类都必须归入同一个操作符族。跨类型操作符属于该族，但不与该族中任何单独一个类关联。
-  </para>
-
-  <para>
-    下面这个查询会显示所有已定义的操作符族，以及每个族中包含的全部操作符：
+    还可以扩展该查询，显示每个类中包含的所有操作符：
 <programlisting>
 SELECT am.amname AS index_method,
-       opf.opfname AS opfamily_name,
-       amop.amopopr::regoperator AS opfamily_operator
-    FROM pg_am am, pg_opfamily opf, pg_amop amop
-    WHERE opf.opfmethod = am.oid AND
-          amop.amopfamily = opf.oid
-    ORDER BY index_method, opfamily_name, opfamily_operator;
+       opc.opcname AS opclass_name,
+       opr.oid::regoperator AS opclass_operator
+    FROM pg_am am, pg_opclass opc, pg_amop amop, pg_operator opr
+    WHERE opc.opcamid = am.oid AND
+          amop.amopclaid = opc.oid AND
+          amop.amopopr = opr.oid
+    ORDER BY index_method, opclass_name, opclass_operator;
 </programlisting>
   </para>
  </sect1>

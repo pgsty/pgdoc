@@ -90,7 +90,7 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 </para>
 
 <para>
-系统目录保存了哪些数据类型之间存在哪些<firstterm>类型转换</firstterm>，以及如何执行这些转换的信息。用户还可以使用<xref linkend="sql-createcast" endterm="sql-createcast-title">命令添加额外的类型转换。（这通常与定义新数据类型一并完成。内置类型之间的类型转换集合经过精心设计，最好不要改动。）
+系统目录保存了哪些数据类型之间存在哪些<firstterm>类型转换</firstterm>，以及如何执行这些转换的信息。用户还可以使用<command>CREATE CAST</command>命令添加额外的类型转换。（这通常与定义新数据类型一并完成。内置类型之间的类型转换集合经过精心设计，最好不要改动。）
 </para>
 
 <indexterm>
@@ -225,24 +225,25 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 </para>
 
 <example>
-<title>阶乘操作符类型解析</title>
+<title>求幂操作符类型解析</title>
 
 <para>
-标准目录中只定义了一个阶乘操作符（后缀 <literal>!</literal>），它接受一个类型为
-<type>bigint</type> 的参数。扫描器为以下查询表达式中的参数赋予初始类型 <type>integer</type>：
+目录中只定义了一个求幂操作符，它接受类型为
+<type>double precision</type> 的参数。扫描器为以下查询表达式中的两个参数都赋予初始类型
+<type>integer</type>：
 <screen>
-SELECT 40 ! AS "40 factorial";
+SELECT 2 ^ 3 AS "exp";
 
-                   40 factorial
---------------------------------------------------
- 815915283247897734345611269596115894272000000000
+ exp
+-----
+   8
 (1 row)
 </screen>
 
-因此，解析器会对操作数进行类型转换，该查询等价于：
+因此，解析器会对两个操作数都进行类型转换，该查询等价于：
 
 <screen>
-SELECT CAST(40 AS bigint) ! AS "40 factorial";
+SELECT CAST(2 AS double precision) ^ CAST(3 AS double precision) AS "exp";
 </screen>
 </para>
 </example>
@@ -371,12 +372,8 @@ SELECT ~ CAST('20' AS int8) AS "negation";
 
 <step performance="required">
 <para>
-如果没有找到精确匹配，就检查该函数调用是否看起来像一种特殊的类型转换请求。这种情况发生在：函数调用只有一个参数，且函数名与某个数据类型的（内部）名称相同。此外，函数参数必须是unknown类型字面量，或者是一种与该命名数据类型二进制兼容的类型，或者是一种可以通过应用其 I/O 函数转换为该命名数据类型的类型（也就是说，该转换要么转到某种标准字符串类型，要么从某种标准字符串类型转来）。满足这些条件时，该函数调用会被当作一种<literal>CAST</literal>形式。
-  <footnote>
-   <para>
-    之所以有这一步，是为了在不存在实际类型转换函数的情况下仍支持函数风格的类型转换写法。如果存在类型转换函数，按惯例它会以其输出类型命名，因此无需为此设置特殊情况。更多说明见<xref linkend="sql-createcast" endterm="sql-createcast-title">。
-   </para>
-  </footnote>
+如果没有找到精确匹配，就检查该函数调用是否看起来是一个平凡的
+（trivial）类型转换请求。这种情况发生在：函数调用只有一个参数，且函数名与某个数据类型的（内部）名称相同。此外，函数参数必须是unknown类型字面量，或者是一种与该命名数据类型二进制兼容的类型。满足这些条件时，函数参数会被转换为该命名数据类型，而不进行任何实际的函数调用。
 </para>
 </step>
 <step performance="required">
@@ -496,12 +493,14 @@ SELECT substr(CAST (varchar '1234' AS text), 3);
 如果用<type>integer</type>类型参数调用该函数，解析器会尝试把它转换为<type>text</type>：
 <screen>
 SELECT substr(1234, 3);
-ERROR:  function substr(integer, integer) does not exist
-HINT:  No function matches the given name and argument types. You might need
-to add explicit type casts.
+
+ substr
+--------
+     34
+(1 row)
 </screen>
 
-这行不通，因为<type>integer</type>并没有到<type>text</type>的隐式类型转换。不过，显式类型转换可以：
+它实际上会这样执行：
 <screen>
 SELECT substr(CAST (1234 AS text), 3);
 
@@ -510,6 +509,8 @@ SELECT substr(CAST (1234 AS text), 3);
      34
 (1 row)
 </screen>
+这种自动转换之所以能够成功，是因为存在一个可隐式调用的从<type>integer</type>到
+<type>text</type>的类型转换。
 </para>
 </example>
 
@@ -614,14 +615,7 @@ SQL 的<literal>UNION</literal>结构必须让可能不同的类型彼此匹配�
 <step performance="required">
 
 <para>
-如果所有输入都是同一类型，且该类型不是<type>unknown</type>，就解析为该类型；否则，将列表中的所有域类型替换为它们各自的基础类型。
-</para>
-</step>
-
-<step performance="required">
-
-<para>
-如果所有输入都是<type>unknown</type>类型，则解析为<type>text</type>类型（字符串分类的首选类型）。否则，忽略<type>unknown</type>输入。
+如果所有输入都是<type>unknown</type>类型，则解析为<type>text</type>类型（字符串分类的首选类型）。否则，在选择结果类型时忽略<type>unknown</type>输入。
 </para>
 </step>
 
@@ -633,20 +627,14 @@ SQL 的<literal>UNION</literal>结构必须让可能不同的类型彼此匹配�
 
 <step performance="required">
 <para>
-选择该分类中的首选类型（如果第一个非unknown输入类型恰好是首选类型，则选它）。
-</para>
-</step>
-
-<step performance="required">
-<para>
-否则，选择最后一个能让所有在它之前的非unknown输入都隐式转换为它的非unknown输入类型。（这样的类型总是存在的，因为列表中至少第一个类型就满足这一条件。）
+选择该分类中的第一个属于首选类型的非unknown输入类型，或者选择一个允许所有非unknown输入都隐式转换为它的非unknown输入类型。
 </para>
 </step>
 
 <step performance="required">
 
 <para>
-把所有输入都转换为所选类型。如果某个输入到所选类型不存在转换，则失败。
+把所有输入都转换为所选类型。
 </para>
 </step>
 </procedure>

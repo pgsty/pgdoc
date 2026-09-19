@@ -62,408 +62,69 @@
  <title>实现</title>
 
  <para>
-   一个 <acronym>GiST</acronym> 索引操作符类必须提供七个方法。通过
-   正确实现 <function>same</>、<function>consistent</> 和
-   <function>union</> 方法可以保证索引的正确性，而索引的效率
-   （大小与速度）则取决于 <function>penalty</> 和
-   <function>picksplit</> 方法。其余两个方法是
-   <function>compress</> 和 <function>decompress</>，它们允许索引
-   的内部树数据使用与其所索引数据不同的类型。叶子必须是被索引
-   数据类型，而其他树节点可以是任意 C 结构体（但这里仍必须遵守
-   <productname>PostgreSQL</> 的数据类型规则，关于变长数据可参见
-   <literal>varlena</literal>）。如果树的内部数据类型在 SQL 层
-   存在，可以使用 <command>CREATE OPERATOR CLASS</> 命令的
-   <literal>STORAGE</> 选项。
+   一个<acronym>GiST</acronym>索引操作符类必须提供七个方法：
  </para>
 
  <variablelist>
     <varlistentry>
-     <term><function>consistent</></term>
+     <term>consistent</term>
      <listitem>
       <para>
-       给定一个索引项<literal>p</literal>和一个查询值<literal>q</literal>，该函数判断该索引项是否与该查询<quote>一致</quote>；也就是说，该索引项所代表的某一行是否可能使谓词<quote><replaceable>indexed_column</replaceable>
-       <replaceable>indexable_operator</replaceable> <literal>q</literal></quote>为真。对于叶子索引项，这等同于测试该可索引条件；而对于内部树节点，这决定是否有必要扫描该树节点所表示的索引子树。当结果为<literal>true</literal>时，还必须返回一个<literal>recheck</literal>标志。它表示该谓词是确定为真，还是仅可能为真。如果<literal>recheck</literal> = <literal>false</literal>，则该索引已经精确测试了谓词条件；如果<literal>recheck</literal> = <literal>true</literal>，则该行只是候选匹配。在这种情况下，系统会自动针对实际行值计算<replaceable>indexable_operator</replaceable>，以判断它是否真的匹配。这种约定使<acronym>GiST</acronym>能够同时支持无损和有损的索引结构。
-      </para>
-
-      <para>
-        该函数的<acronym>SQL</acronym>声明必须如下所示：
-
-<programlisting>
-CREATE OR REPLACE FUNCTION my_consistent(internal, data_type, smallint, oid, internal)
-RETURNS bool
-AS 'MODULE_PATHNAME'
-LANGUAGE C STRICT;
-</programlisting>
-
-        而 C 模块中的对应代码则可以遵循如下框架：
-
-<programlisting>
-Datum       my_consistent(PG_FUNCTION_ARGS);
-PG_FUNCTION_INFO_V1(my_consistent);
-
-Datum
-my_consistent(PG_FUNCTION_ARGS)
-{
-    GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
-    data_type  *query = PG_GETARG_DATA_TYPE_P(1);
-    StrategyNumber strategy = (StrategyNumber) PG_GETARG_UINT16(2);
-    /* Oid subtype = PG_GETARG_OID(3); */
-    bool       *recheck = (bool *) PG_GETARG_POINTER(4);
-    data_type  *key = DatumGetDataType(entry-&gt;key);
-    bool        retval;
-
-    /*
-     * 根据 strategy、key 和 query 确定返回值。
-     *
-     * 使用 GIST_LEAF(entry) 判断当前调用位于索引树的哪个位置。
-     * 例如，支持 = 操作符时这很有用（可以在非叶节点检查
-     * union() 是否非空，在叶节点检查是否相等）。
-     */
-
-    *recheck = true;        /* 如果检查是精确的，则为 false */
-
-    PG_RETURN_BOOL(retval);
-}
-</programlisting>
-
-       这里，<varname>key</varname>是索引中的一个元素，而<varname>query</varname>是在该索引中查找的值。<literal>StrategyNumber</literal>参数指示应用的是操作符类中的哪个操作符，它对应于<command>CREATE OPERATOR CLASS</command>命令中的某个操作符编号。取决于你在该类中包含了哪些操作符，<varname>query</varname>的数据类型可能会随操作符而变化，但上面的框架假设它不会变化。
-      </para>
-
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><function>union</></term>
-     <listitem>
-      <para>
-       该方法用于汇总树中的信息。给定一组项，该函数生成一个新的索引项，用来表示所有给定项。
-      </para>
-
-      <para>
-        该函数的<acronym>SQL</acronym>声明必须如下所示：
-
-<programlisting>
-CREATE OR REPLACE FUNCTION my_union(internal, internal)
-RETURNS internal
-AS 'MODULE_PATHNAME'
-LANGUAGE C STRICT;
-</programlisting>
-
-        而 C 模块中的对应代码则可以遵循如下框架：
-
-<programlisting>
-Datum       my_union(PG_FUNCTION_ARGS);
-PG_FUNCTION_INFO_V1(my_union);
-
-Datum
-my_union(PG_FUNCTION_ARGS)
-{
-    GistEntryVector *entryvec = (GistEntryVector *) PG_GETARG_POINTER(0);
-    GISTENTRY  *ent = entryvec-&gt;vector;
-    data_type  *out,
-               *tmp,
-               *old;
-    int         numranges,
-                i = 0;
-
-    numranges = entryvec-&gt;n;
-    tmp = DatumGetDataType(ent[0].key);
-    out = tmp;
-
-    if (numranges == 1)
-    {
-        out = data_type_deep_copy(tmp);
-
-        PG_RETURN_DATA_TYPE_P(out);
-    }
-
-    for (i = 1; i &lt; numranges; i++)
-    {
-        old = out;
-        tmp = DatumGetDataType(ent[i].key);
-        out = my_union_implementation(out, tmp);
-    }
-
-    PG_RETURN_DATA_TYPE_P(out);
-}
-</programlisting>
-      </para>
-
-      <para>
-        如你所见，在这个框架里，我们处理的是一种满足<literal>union(X, Y, Z) = union(union(X, Y), Z)</literal>的数据类型。对于不满足这一性质的数据类型，只需在这个<acronym>GiST</acronym>支持方法中实现正确的 union 算法即可。
-      </para>
-
-      <para>
-        <function>union</function>实现函数应返回一个指向新近通过<function>palloc()</function>分配的内存的指针。不能原样返回输入值。
+       给定树页面上的一个谓词<literal>p</literal>和一个用户查询<literal>q</literal>，如果可以确定对于给定的数据项<literal>p</literal>和<literal>q</literal>不可能同时为真，该方法将返回假。
       </para>
      </listitem>
     </varlistentry>
 
     <varlistentry>
-     <term><function>compress</></term>
+     <term>union</term>
      <listitem>
-      <para>将一个数据项转换成适合在索引页中物理存储的格式。</para>
-
       <para>
-        该函数的<acronym>SQL</acronym>声明必须如下所示：
-
-<programlisting>
-CREATE OR REPLACE FUNCTION my_compress(internal)
-RETURNS internal
-AS 'MODULE_PATHNAME'
-LANGUAGE C STRICT;
-</programlisting>
-
-        而 C 模块中的对应代码则可以遵循如下框架：
-
-<programlisting>
-Datum       my_compress(PG_FUNCTION_ARGS);
-PG_FUNCTION_INFO_V1(my_compress);
-
-Datum
-my_compress(PG_FUNCTION_ARGS)
-{
-    GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
-    GISTENTRY  *retval;
-
-    if (entry-&gt;leafkey)
-    {
-        /* 将 entry-&gt;key 替换为压缩后的形式 */
-        compressed_data_type *compressed_data = palloc(sizeof(compressed_data_type));
-
-        /* 根据 entry-&gt;key 填充 *compressed_data ... */
-
-        retval = palloc(sizeof(GISTENTRY));
-        gistentryinit(*retval, PointerGetDatum(compressed_data),
-                      entry-&gt;rel, entry-&gt;page, entry-&gt;offset, FALSE);
-    }
-    else
-    {
-        /* 通常无需对非叶项做任何处理 */
-        retval = entry;
-    }
-
-    PG_RETURN_POINTER(retval);
-}
-</programlisting>
-      </para>
-
-      <para>
-       当然，为了压缩叶子节点，你必须把<replaceable>compressed_data_type</replaceable>改成要转换成的具体类型。
-      </para>
-
-      <para>
-        根据你的需要，你可能还需要注意在其中压缩<literal>NULL</literal>值，例如像<literal>gist_circle_compress</literal>那样存储<literal>(Datum) 0</literal>。
+       此方法合并树中的信息。给定一组项，该函数生成一个对所有这些项都为真的新谓词。
       </para>
      </listitem>
     </varlistentry>
 
     <varlistentry>
-     <term><function>decompress</></term>
-     <listitem>
-      <para><function>compress</function>方法的逆操作。将数据项的索引表示转换成数据库能够操作的格式。</para>
-
-      <para>该<acronym>SQL</acronym>声明必须如下所示：<programlisting>
-CREATE OR REPLACE FUNCTION my_decompress(internal)
-RETURNS internal
-AS 'MODULE_PATHNAME'
-LANGUAGE C STRICT;
-</programlisting>C 模块中相应的代码可以采用以下框架：<programlisting>
-Datum       my_decompress(PG_FUNCTION_ARGS);
-PG_FUNCTION_INFO_V1(my_decompress);
-
-Datum
-my_decompress(PG_FUNCTION_ARGS)
-{
-    PG_RETURN_POINTER(PG_GETARG_POINTER(0));
-}
-</programlisting>上述框架适用于不需要解压的情况。</para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><function>penalty</></term>
+     <term>compress</term>
      <listitem>
       <para>
-       返回一个值，指示把新项插入树中特定分支的<quote>代价</quote>。项会沿着树中<function>penalty</function>最小的路径插入。<function>penalty</function>返回的值应为非负；如果返回负值，它将被按零处理。
-      </para>
-
-      <para>
-        该函数的<acronym>SQL</acronym>声明必须如下所示：
-
-<programlisting>
-CREATE OR REPLACE FUNCTION my_penalty(internal, internal, internal)
-RETURNS internal
-AS 'MODULE_PATHNAME'
-LANGUAGE C STRICT;  -- 某些情况下 penalty 函数不必是严格函数
-</programlisting>
-
-        而 C 模块中的对应代码则可以遵循如下框架：
-
-<programlisting>
-Datum       my_penalty(PG_FUNCTION_ARGS);
-PG_FUNCTION_INFO_V1(my_penalty);
-
-Datum
-my_penalty(PG_FUNCTION_ARGS)
-{
-    GISTENTRY  *origentry = (GISTENTRY *) PG_GETARG_POINTER(0);
-    GISTENTRY  *newentry = (GISTENTRY *) PG_GETARG_POINTER(1);
-    float      *penalty = (float *) PG_GETARG_POINTER(2);
-    data_type  *orig = DatumGetDataType(origentry-&gt;key);
-    data_type  *new = DatumGetDataType(newentry-&gt;key);
-
-    *penalty = my_penalty_implementation(orig, new);
-    PG_RETURN_POINTER(penalty);
-}
-</programlisting>
-
-      </para>
-
-      <para>
-        <function>penalty</function>函数对于索引的良好性能至关重要。它会在插入时用于决定在树中应沿着哪个分支向下，以便选择把新项加到哪里。在查询时，索引越平衡，查找就越快。
+       把数据项转换为适合在索引页面中物理存储的格式。
       </para>
      </listitem>
     </varlistentry>
 
     <varlistentry>
-     <term><function>picksplit</></term>
+     <term>decompress</term>
      <listitem>
       <para>
-       当索引页必须分裂时，该函数决定页面上的哪些项留在旧页中，哪些移到新页中。
-      </para>
-
-      <para>
-        该 <acronym>SQL</> 声明必须如下所示：
-
-<programlisting>
-CREATE OR REPLACE FUNCTION my_picksplit(internal, internal)
-RETURNS internal
-AS 'MODULE_PATHNAME'
-LANGUAGE C STRICT;
-</programlisting>
-
-        C 模块中相应的代码可以采用以下框架：
-
-<programlisting>
-Datum       my_picksplit(PG_FUNCTION_ARGS);
-PG_FUNCTION_INFO_V1(my_picksplit);
-
-Datum
-my_picksplit(PG_FUNCTION_ARGS)
-{
-    GistEntryVector *entryvec = (GistEntryVector *) PG_GETARG_POINTER(0);
-    OffsetNumber maxoff = entryvec-&gt;n - 1;
-    GISTENTRY  *ent = entryvec-&gt;vector;
-    GIST_SPLITVEC *v = (GIST_SPLITVEC *) PG_GETARG_POINTER(1);
-    int         i,
-                nbytes;
-    OffsetNumber *left,
-               *right;
-    data_type  *tmp_union;
-    data_type  *unionL;
-    data_type  *unionR;
-    GISTENTRY **raw_entryvec;
-
-    maxoff = entryvec-&gt;n - 1;
-    nbytes = (maxoff + 1) * sizeof(OffsetNumber);
-
-    v-&gt;spl_left = (OffsetNumber *) palloc(nbytes);
-    left = v-&gt;spl_left;
-    v-&gt;spl_nleft = 0;
-
-    v-&gt;spl_right = (OffsetNumber *) palloc(nbytes);
-    right = v-&gt;spl_right;
-    v-&gt;spl_nright = 0;
-
-    unionL = NULL;
-    unionR = NULL;
-
-    /* Initialize the raw entry vector. */
-    raw_entryvec = (GISTENTRY **) malloc(entryvec-&gt;n * sizeof(void *));
-    for (i = FirstOffsetNumber; i &lt;= maxoff; i = OffsetNumberNext(i))
-        raw_entryvec[i] = &amp;(entryvec-&gt;vector[i]);
-
-    for (i = FirstOffsetNumber; i &lt;= maxoff; i = OffsetNumberNext(i))
-    {
-        int         real_index = raw_entryvec[i] - entryvec-&gt;vector;
-
-        tmp_union = DatumGetDataType(entryvec-&gt;vector[real_index].key);
-        Assert(tmp_union != NULL);
-
-        /*
-         * Choose where to put the index entries and update unionL and unionR
-         * accordingly. Append the entries to either v_spl_left or
-         * v_spl_right, and care about the counters.
-         */
-
-        if (my_choice_is_left(unionL, curl, unionR, curr))
-        {
-            if (unionL == NULL)
-                unionL = tmp_union;
-            else
-                unionL = my_union_implementation(unionL, tmp_union);
-
-            *left = real_index;
-            ++left;
-            ++(v-&gt;spl_nleft);
-        }
-        else
-        {
-            /*
-             * Same on the right
-             */
-        }
-    }
-
-    v-&gt;spl_ldatum = DataTypeGetDatum(unionL);
-    v-&gt;spl_rdatum = DataTypeGetDatum(unionR);
-    PG_RETURN_POINTER(v);
-}
-</programlisting>
-      </para>
-
-      <para>
-        和<function>penalty</function>一样，<function>picksplit</function>函数对于索引的良好性能至关重要。设计合适的<function>penalty</function>和<function>picksplit</function>实现，正是实现高性能<acronym>GiST</acronym>索引的难点所在。
+       <function>compress</function>方法的逆操作。把数据项的索引表示形式转换为数据库可以操纵的格式。
       </para>
      </listitem>
     </varlistentry>
 
     <varlistentry>
-     <term><function>same</></term>
+     <term>penalty</term>
      <listitem>
       <para>
-       如果两个索引项相同则返回真，否则返回假。
+       返回一个值，指示把新项插入树的特定分支的<quote>代价</quote>。项将被沿着树中<function>penalty</function>最小的路径插入。<function>penalty</function>返回的值应当是非负的。如果返回了负值，它将被当作零处理。
       </para>
+     </listitem>
+    </varlistentry>
 
+    <varlistentry>
+     <term>picksplit</term>
+     <listitem>
       <para>
-        该函数的<acronym>SQL</acronym>声明必须如下所示：
+       当必须进行页面分裂时，该函数决定页面上哪些项留在旧页面，哪些项移动到新页面。
+      </para>
+     </listitem>
+    </varlistentry>
 
-<programlisting>
-CREATE OR REPLACE FUNCTION my_same(internal, internal, internal)
-RETURNS internal
-AS 'MODULE_PATHNAME'
-LANGUAGE C STRICT;
-</programlisting>
-
-        而 C 模块中的对应代码则可以遵循如下框架：
-
-<programlisting>
-Datum       my_same(PG_FUNCTION_ARGS);
-PG_FUNCTION_INFO_V1(my_same);
-
-Datum
-my_same(PG_FUNCTION_ARGS)
-{
-    prefix_range *v1 = PG_GETARG_PREFIX_RANGE_P(0);
-    prefix_range *v2 = PG_GETARG_PREFIX_RANGE_P(1);
-    bool       *result = (bool *) PG_GETARG_POINTER(2);
-
-    *result = my_eq(v1, v2);
-    PG_RETURN_POINTER(result);
-}
-</programlisting>
-        出于历史原因，<function>same</function>函数并不是直接返回一个布尔结果；相反，它必须把该标志存储到第三个参数指示的位置。
+    <varlistentry>
+     <term>same</term>
+     <listitem>
+      <para>
+       如果两个项完全相同则返回真，否则返回假。
       </para>
      </listitem>
     </varlistentry>
@@ -476,7 +137,7 @@ my_same(PG_FUNCTION_ARGS)
  <title>示例</title>
 
  <para>
-  <productname>PostgreSQL</productname>源代码发行包包含了若干使用<acronym>GiST</acronym>实现的索引方法示例。核心系统目前提供了文本检索支持（为<type>tsvector</type>和<type>tsquery</type>建立索引），并为某些内置几何数据类型提供了与 R 树等价的功能（见<filename>src/backend/access/gist/gistproc.c</filename>）。下列<filename>contrib</filename>模块中也包含<acronym>GiST</acronym>操作符类：
+  <productname>PostgreSQL</productname>源代码发行包包含了若干使用<acronym>GiST</acronym>实现的索引方法示例。核心系统目前为某些内置几何数据类型提供了与 R 树等价的功能（见<filename>src/backend/access/gist/gistproc.c</filename>）。下列<filename>contrib</filename>模块中也包含<acronym>GiST</acronym>操作符类：
 
  <variablelist>
   <varlistentry>
@@ -490,13 +151,6 @@ my_same(PG_FUNCTION_ARGS)
    <term>cube</term>
    <listitem>
     <para>多维立方体的索引</para>
-   </listitem>
-  </varlistentry>
-
-  <varlistentry>
-   <term>hstore</term>
-   <listitem>
-    <para>用于存储（键，值）对的模块</para>
    </listitem>
   </varlistentry>
 
@@ -525,6 +179,13 @@ my_same(PG_FUNCTION_ARGS)
    <term>seg</term>
    <listitem>
     <para><quote>float 范围</quote>的索引</para>
+   </listitem>
+  </varlistentry>
+
+  <varlistentry>
+   <term>tsearch2</term>
+   <listitem>
+    <para>全文索引</para>
    </listitem>
   </varlistentry>
  </variablelist>

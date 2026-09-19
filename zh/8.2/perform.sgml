@@ -108,7 +108,7 @@ EXPLAIN SELECT * FROM tenk1;
 SELECT relpages, reltuples FROM pg_class WHERE relname = 'tenk1';
 </programlisting>
 
-    可以看到<classname>tenk1</classname>有 358 个磁盘页和 10000 行。估计代价按如下公式计算：（读取的磁盘页数 * <xref linkend="guc-seq-page-cost">）+（扫描的行数 * <xref linkend="guc-cpu-tuple-cost">）。默认情况下，<varname>seq_page_cost</varname>为 1.0，<varname>cpu_tuple_cost</varname>为 0.01，因此估计代价就是 (358 * 1.0) + (10000 * 0.01) = 458。
+    可以看到<classname>tenk1</classname>有 358 个磁盘页和 10000 行。因此估计代价为 358 次页读取，每次代价为 <xref linkend="guc-seq-page-cost">（默认为 1.0），再加上 10000 * <xref linkend="guc-cpu-tuple-cost">（默认为 0.01）。
    </para>
 
    <para>
@@ -123,7 +123,7 @@ EXPLAIN SELECT * FROM tenk1 WHERE unique1 &lt; 7000;
    Filter: (unique1 &lt; 7000)
 </programlisting>
 
-    注意，<command>EXPLAIN</command>的输出表明，<literal>WHERE</literal>子句被作为一个<quote>过滤器</quote>条件应用。这表示计划节点会对扫描到的每一行检查该条件，并且只输出满足条件的行。由于有了<literal>WHERE</literal>子句，估计输出行数减少了。但扫描仍需访问全部 10000 行，因此代价没有下降；实际上还略有上升（精确地说，增加了 10000 *<xref linkend="guc-cpu-operator-cost">），以反映检查<literal>WHERE</literal>条件所消耗的额外 CPU 时间。
+    注意，<command>EXPLAIN</command>的输出表明，<literal>WHERE</literal>子句被作为一个<quote>过滤器</quote>条件应用。这表示计划节点会对扫描到的每一行检查该条件，并且只输出满足条件的行。由于有了<literal>WHERE</literal>子句，估计输出行数减少了。但扫描仍需访问全部 10000 行，因此代价没有下降；实际上还略有上升，以反映检查<literal>WHERE</literal>条件所消耗的额外 CPU 时间。
    </para>
 
    <para>
@@ -327,7 +327,7 @@ SELECT relname, relkind, reltuples, relpages FROM pg_class WHERE relname LIKE 't
    <primary>pg_stats</primary>
   </indexterm>
 
-  <para>手动检查统计信息时，与其直接查看<structname>pg_statistic</structname>，不如查看它的视图<link linkend="view-pg-stats"><structname>pg_stats</structname></link>。<structname>pg_stats</structname>旨在让统计信息更易读。此外，<structname>pg_stats</structname>所有用户都可以读取，而<structname>pg_statistic</structname>只有超级用户可以读取。（这可以防止没有相应权限的用户通过统计信息获知其他用户表中的内容。<structname>pg_stats</structname>视图被限制为只显示当前用户有权读取的表的相关行。）例如，可以执行：<screen>
+  <para>手动检查统计信息时，与其直接查看<structname>pg_statistic</structname>，不如查看它的视图<structname>pg_stats</structname>。<structname>pg_stats</structname>旨在让统计信息更易读。此外，<structname>pg_stats</structname>所有用户都可以读取，而<structname>pg_statistic</structname>只有超级用户可以读取。（这可以防止没有相应权限的用户通过统计信息获知其他用户表中的内容。<structname>pg_stats</structname>视图被限制为只显示当前用户有权读取的表的相关行。）例如，可以执行：<screen>
 SELECT attname, n_distinct, most_common_vals FROM pg_stats WHERE tablename = 'road';
 
  attname | n_distinct |                                                                                                                                                                                  most_common_vals                                                                                                                                                                                   
@@ -339,11 +339,12 @@ SELECT attname, n_distinct, most_common_vals FROM pg_stats WHERE tablename = 'ro
   </para>
 
   <para>
-   <command>ANALYZE</command>在<structname>pg_statistic</structname>中存储的信息量，特别是每列<structfield>most_common_vals</structfield>中的最大项数和<structfield>histogram_bounds</structfield>数组的大小，可以使用<command>ALTER TABLE SET STATISTICS</command>命令按列设置，也可以通过设置配置变量<xref linkend="guc-default-statistics-target">进行全局设置。目前默认上限是 10 项。提高这一上限可能让规划器做出更准确的估计，尤其是对于数据分布不规则的列；代价则是<structname>pg_statistic</structname>占用更多空间，并且计算估计值所需时间也会略有增加。相反，对于数据分布较简单的列，较低的上限可能已经足够。
+   <structname>pg_stats</structname>的详细描述见
+   <xref linkend="view-pg-stats">。
   </para>
 
   <para>
-   更多规划器对统计信息的使用可参阅<xref linkend="planner-stats-details">。
+   <structname>pg_statistic</structname>中存储的信息量，特别是每列<structfield>most_common_vals</structfield>中的最大项数和<structfield>histogram_bounds</structfield>数组的大小，可以使用<command>ALTER TABLE SET STATISTICS</command>命令按列设置，也可以通过设置配置变量<xref linkend="guc-default-statistics-target">进行全局设置。目前默认上限是 10 项。提高这一上限可能让规划器做出更准确的估计，尤其是对于数据分布不规则的列；代价则是<structname>pg_statistic</structname>占用更多空间，并且计算估计值所需时间也会略有增加。相反，对于数据分布较简单的列，较低的上限可能已经足够。
   </para>
 
  </sect1>
@@ -462,18 +463,14 @@ SELECT * FROM x, y, a, b, c WHERE something AND somethingelse;
    </para>
 
    <para>
-    如果不能使用<command>COPY</command>，那么用<xref linkend="sql-prepare" endterm="sql-prepare-title">创建一个预备<command>INSERT</command>语句，再按需多次执行<command>EXECUTE</command>也会有所帮助。这样可以避免重复解析和规划<command>INSERT</command>的开销。不同接口以不同方式提供这一功能，可参阅接口文档中关于<quote>预备语句</quote>的说明。
+    如果不能使用<command>COPY</command>，那么用<xref linkend="sql-prepare" endterm="sql-prepare-title">创建一个预备<command>INSERT</command>语句，再按需多次执行<command>EXECUTE</command>也会有所帮助。这样可以避免重复解析和规划<command>INSERT</command>的开销。
    </para>
 
    <para>
     请注意，在装载大量行时，使用<command>COPY</command>几乎总是比使用<command>INSERT</command>更快，即使已经使用了<command>PREPARE</command>，并把多次插入批量放入同一个事务中也是如此。
    </para>
 
-   <para>
-    当<command>COPY</command>与更早的<command>CREATE TABLE</command>或<command>TRUNCATE</command>命令处于同一事务中时，速度最快。在这种情况下，不需要写 WAL，因为一旦出错，包含新装载数据的文件反正也会被移除。不过，当<xref linkend="guc-archive-mode">开启时这一点并不适用，因为在这种情况下所有命令都必须写 WAL。
-   </para>
-
-  </sect2>
+   </sect2>
 
   <sect2 id="populate-rm-indexes">
    <title>移除索引</title>
@@ -512,35 +509,6 @@ SELECT * FROM x, y, a, b, c WHERE something AND somethingelse;
    </para>
   </sect2>
 
-  <sect2 id="populate-pitr">
-   <title>关闭<varname>archive_mode</varname></title>
-
-   <para>
-    当向使用 WAL 归档的安装中载入大量数据时，你可能希望在装载期间禁用归档（关闭<xref linkend="guc-archive-mode">配置变量）。完成装载后重新做一次基础备份，可能比处理大量增量 WAL 数据更快。但请注意，打开或关闭<varname>archive_mode</varname>需要重启服务器。</para>
-
-   <para>这样做除了省去归档进程处理 WAL 数据的时间外，还能使某些命令执行得更快，因为这些命令被设计为在<varname>archive_mode</varname>关闭时完全不写 WAL。（它们可以在结束时执行一次<function>fsync</function>，以比写 WAL 更低的代价保证崩溃安全性。）这适用于以下命令：<itemizedlist>
-     <listitem>
-      <para>
-       <command>CREATE TABLE AS SELECT</command>
-      </para>
-     </listitem>
-     <listitem>
-      <para><command>CREATE INDEX</command>（以及 <command>ALTER TABLE ADD PRIMARY KEY</command> 等变体）</para>
-     </listitem>
-     <listitem>
-      <para>
-       <command>ALTER TABLE SET TABLESPACE</command>
-      </para>
-     </listitem>
-     <listitem>
-      <para><command>CLUSTER</command></para>
-     </listitem>
-     <listitem>
-      <para><command>COPY FROM</command>，前提是目标表在同一事务中已被创建或截断</para>
-     </listitem>
-    </itemizedlist>
-   </para>
-  </sect2>
 
   <sect2 id="populate-analyze">
    <title>Run <command>ANALYZE</command> Afterwards</title>
@@ -561,29 +529,7 @@ SELECT * FROM x, y, a, b, c WHERE something AND somethingelse;
    </para>
 
    <para>
-    默认情况下，<application>pg_dump</application>使用<command>COPY</command>；而当它生成完整的模式加数据转储时，也会小心地先装载数据，再创建索引和外键。因此在这种情况下，上述若干指导原则已经被自动处理。剩下需要做的是：
-    <itemizedlist>
-     <listitem>
-      <para>
-       为<varname>maintenance_work_mem</varname>和<varname>checkpoint_segments</varname>设置适当的（即比正常值大的）值。
-      </para>
-     </listitem>
-     <listitem>
-      <para>
-       如果使用 WAL 归档，可以考虑在恢复期间禁用它。为此，请在载入转储脚本之前关闭<varname>archive_mode</varname>，恢复完成后再把它打开，并重新做一次基础备份。
-      </para>
-     </listitem>
-     <listitem>
-      <para>
-       考虑是否应当把整个转储作为单个事务来恢复。要这样做，请把<option>-1</option>或<option>--single-transaction</option>命令行选项传给<application>psql</application>或<application>pg_restore</application>。使用这种模式时，即使是很小的错误也会回滚整个恢复过程，可能丢掉数小时的处理成果。视数据之间的关联程度而定，这种做法未必一定比手工清理更可取。如果使用单个事务并关闭 WAL 归档，<command>COPY</command>命令会运行得最快。
-      </para>
-     </listitem>
-     <listitem>
-      <para>
-       之后运行<command>ANALYZE</command>。
-      </para>
-     </listitem>
-    </itemizedlist>
+    默认情况下，<application>pg_dump</application>使用<command>COPY</command>；而当它生成完整的模式加数据转储时，也会小心地先装载数据，再创建索引和外键。因此在这种情况下，上述若干指导原则已经被自动处理。剩下需要做的，只是在载入转储脚本之前为<varname>maintenance_work_mem</varname>和<varname>checkpoint_segments</varname>设置适当的（即比正常值大的）值，然后在完成后运行<command>ANALYZE</command>。
    </para>
 
    <para>

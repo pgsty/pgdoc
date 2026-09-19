@@ -161,16 +161,6 @@ filenode.1、filenode.2，依此类推。这样的安排避免了在文件大小
 <varname>PGDATA</varname><filename>/global</filename>。
 </para>
 
-<para>
-临时文件（用于诸如排序的数据多于内存可容纳量之类的操作）会创建在
-<varname>PGDATA</varname><filename>/base/pgsql_tmp</filename> 中；或者创建在表空间目录下的
-<filename>pgsql_tmp</filename> 子目录中，如果为其指定的是不同于
-<literal>pg_default</literal> 的表空间。临时文件的名称形式为
-<filename>pgsql_tmp<replaceable>PPP</replaceable>.<replaceable>NNN</replaceable></filename>，
-其中 <replaceable>PPP</replaceable> 是所属后端的 PID，
-<replaceable>NNN</replaceable> 用来区分该后端的不同临时文件。
-</para>
-
 </sect1>
 
 <sect1 id="storage-toast">
@@ -237,9 +227,8 @@ TOAST 表中的线外数据的指针。（TOAST
 </para>
 
 <para>
-线外值会被划分成最多 <symbol>TOAST_MAX_CHUNK_SIZE</symbol> 字节的块
-（如果启用了压缩，则在压缩之后再分块；默认情况下该值的选取方式是让四个块行
-可以装入一页，因此大约是 2000 字节）。每个块都作为独立的一行，存储在所属表的
+线外值会被划分成最多 <literal>TOAST_MAX_CHUNK_SIZE</literal> 字节的块
+（该值比 <literal>BLCKSZ/4</literal> 略小，默认大约是 2000 字节）。每个块都作为独立的一行，存储在所属表的
 <acronym>TOAST</acronym> 表中。每个 <acronym>TOAST</acronym> 表都有
 <structfield>chunk_id</structfield> 列（标识某个特定
 <acronym>TOAST</acronym> 化值的 OID）、<structfield>chunk_seq</structfield> 列
@@ -255,10 +244,9 @@ TOAST 表中的线外数据的指针。（TOAST
 
 <para>
 <acronym>TOAST</acronym> 代码只有在要存入表中的行值宽于
-<symbol>TOAST_TUPLE_THRESHOLD</symbol> 字节（通常为 2 kB）时才会被触发。
+<literal>BLCKSZ/4</literal> 字节（通常为 2 kB）时才会被触发。
 <acronym>TOAST</acronym> 代码会压缩并且/或者把字段值移到线外，直到该行值短于
-<symbol>TOAST_TUPLE_TARGET</symbol> 字节（通常也为 2 kB），
-或者已经无法再获得更多收益。在 UPDATE 操作中，未更改字段的值通常会原样保留；
+<literal>BLCKSZ/4</literal> 字节或者无法再获得更小的值。在 UPDATE 操作中，未更改字段的值通常会原样保留；
 因此，如果更新一行时其线外值都没有变化，便不会产生 <acronym>TOAST</acronym> 成本。
 </para>
 
@@ -366,7 +354,7 @@ Item
 
 <row>
  <entry>PageHeaderData</entry>
- <entry>长度为 24 字节。包含页面的一般信息，包括空闲空间指针。</entry>
+ <entry>长度为 20 字节。包含页面的一般信息，包括空闲空间指针。</entry>
 </row>
 
 <row>
@@ -395,17 +383,17 @@ Item
 
  <para>
 
-  每个页面的前 24 个字节由页头（PageHeaderData）
+  每个页面的前 20 个字节由页头（PageHeaderData）
   组成。它的格式详见 <xref linkend="pageheaderdata-table">。前两个字段
-  跟踪与该页面有关的最新 WAL 记录。接下来是一个 2 字节字段，包含
-  标志位。随后是三个 2 字节整数字段（<structfield>pd_lower</structfield>、
+  跟踪与该页面有关的最新 WAL 记录。接下来是三个 2 字节整数字段
+  （<structfield>pd_lower</structfield>、
   <structfield>pd_upper</structfield> 和
   <structfield>pd_special</structfield>）。它们分别保存从页面起始位置
   到未分配空间起始位置、未分配空间结束位置以及特殊空间起始位置的
   字节偏移量。页头接下来的 2 个字节
   <structfield>pd_pagesize_version</structfield> 同时存储页面大小和
-  版本指示器。从 <productname>PostgreSQL</productname> 8.3 起，版本号
-  为 4；<productname>PostgreSQL</productname> 8.1 和 8.2 使用版本号 3；
+  版本指示器。从 <productname>PostgreSQL</productname> 8.1 起，版本号
+  为 3；
   <productname>PostgreSQL</productname> 8.0 使用版本号 2；
   <productname>PostgreSQL</productname> 7.3 和 7.4 使用版本号 1；更早的
   版本使用版本号 0。（这些版本中的大多数，其基本页面布局和页头格式
@@ -437,15 +425,9 @@ Item
   </row>
   <row>
    <entry>pd_tli</entry>
-   <entry>uint16</entry>
-   <entry>2 字节</entry>
-   <entry>TimeLineID of last change (only its lowest 16 bits)</entry>
-  </row>
-  <row>
-   <entry>pd_flags</entry>
-   <entry>uint16</entry>
-   <entry>2 字节</entry>
-   <entry>Flag bits</entry>
+   <entry>TimeLineID</entry>
+   <entry>4 字节</entry>
+   <entry>上次更改的 TLI</entry>
   </row>
   <row>
    <entry>pd_lower</entry>
@@ -470,12 +452,6 @@ Item
    <entry>uint16</entry>
    <entry>2 字节</entry>
    <entry>页面大小和布局版本号信息</entry>
-  </row>
-  <row>
-   <entry>pd_prune_xid</entry>
-   <entry>TransactionId</entry>
-   <entry>4 字节</entry>
-   <entry>Oldest unpruned XMAX on page, or zero if none</entry>
   </row>
  </tbody>
  </tgroup>
@@ -548,19 +524,25 @@ Item
    <entry>t_xmin</entry>
    <entry>TransactionId</entry>
    <entry>4 字节</entry>
-   <entry>insert XID stamp</entry>
+   <entry>插入 XID 戳</entry>
+  </row>
+  <row>
+   <entry>t_cmin</entry>
+   <entry>CommandId</entry>
+   <entry>4 字节</entry>
+   <entry>插入 CID 戳</entry>
   </row>
   <row>
    <entry>t_xmax</entry>
    <entry>TransactionId</entry>
    <entry>4 字节</entry>
-   <entry>delete XID stamp</entry>
+   <entry>删除 XID 戳</entry>
   </row>
   <row>
-   <entry>t_cid</entry>
+   <entry>t_cmax</entry>
    <entry>CommandId</entry>
    <entry>4 字节</entry>
-   <entry>insert and/or delete CID stamp (overlays with t_xvac)</entry>
+   <entry>删除 CID 戳（与 t_xvac 重叠）</entry>
   </row>
   <row>
    <entry>t_xvac</entry>
@@ -575,10 +557,10 @@ Item
    <entry>本行版本或更新行版本的当前 TID</entry>
   </row>
   <row>
-   <entry>t_infomask2</entry>
+   <entry>t_natts</entry>
    <entry>int16</entry>
    <entry>2 字节</entry>
-   <entry>number of attributes, plus various flag bits</entry>
+   <entry>属性数量</entry>
   </row>
   <row>
    <entry>t_infomask</entry>
@@ -617,7 +599,7 @@ Item
   读取数据时，需要依次检查每个属性。首先根据空值位图判断该字段是否为 NULL。
   如果是，就继续下一个。然后确认对齐是否正确。如果字段是定宽字段，那么它的所有字节
   都是直接摆放的；如果它是变长字段（attlen = -1），情况就会稍复杂一些。所有变长
-  数据类型都共享一个通用头部结构体 <type>struct varlena</type>，其中包含已存储值的
+  数据类型都共享一个通用头部结构体 <type>varattrib</type>，其中包含已存储值的
   总长度以及一些标志位。根据这些标志，数据可能是线内存储的，也可能位于
   <acronym>TOAST</acronym> 表中；它也可能是经过压缩的（见
   <xref linkend="storage-toast">）。
