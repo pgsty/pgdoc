@@ -111,6 +111,29 @@ xslthtml-stamp: stylesheet.xsl postgres.xml
 # -- end pgdoc backport --
 """
 
+# PG <= 8.1 ships stylesheet-fo.xsl but no make rules for it (the XSL-FO
+# targets only appear in later upstream Makefiles, and the backported 8.2/8.3
+# trees lose them as well).  Append the 9.4-form FO chain so
+# build_standalone_pdfsrc.sh's `make postgres-{A4,US}.fo` resolves.  Only
+# added when stylesheet-fo.xsl is present and no fo rule exists yet.
+XSLFO_BLOCK = """
+# -- begin pgdoc backport: XSL-FO targets for PG <= 9.1 (patch_legacy_xsl_pipeline.py) --
+%-A4.fo.tmp: stylesheet-fo.xsl %.xml
+	$(XSLTPROC) $(XSLTPROCFLAGS) --stringparam paper.type A4 -o $@ $^
+
+%-US.fo.tmp: stylesheet-fo.xsl %.xml
+	$(XSLTPROC) $(XSLTPROCFLAGS) --stringparam paper.type USletter -o $@ $^
+
+XMLLINT ?= xmllint
+
+# reformat FO output so that locations of errors are easier to find
+%.fo: %.fo.tmp
+	$(XMLLINT) --format --output $@ $^
+
+.SECONDARY: postgres-A4.fo postgres-US.fo
+# -- end pgdoc backport --
+"""
+
 FILELIST_FALLBACK = (
     "\n<!--\n"
     " Local hack (pgdoc): marked-section keywords for the XSL pipeline's\n"
@@ -317,6 +340,8 @@ def main():
     else:
         assert False, "html target line not found"
     mf += XSLTHTML_BLOCK
+    if "%-A4.fo.tmp:" not in mf and os.path.exists(f"{sgml_dir}/stylesheet-fo.xsl"):
+        mf += XSLFO_BLOCK
     with open(makefile, "w", encoding="utf-8") as f:
         f.write(mf)
     print("patch_legacy_xsl_pipeline: backported XSL pipeline onto PG <= 9.1 doc makefile")
