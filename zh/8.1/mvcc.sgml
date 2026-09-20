@@ -19,7 +19,7 @@
    </indexterm>
 
    <para>
-    <productname>PostgreSQL</productname>为开发者提供了一组丰富的工具来管理对数据的并发访问。在内部，数据一致性是通过使用多版本模型（多版本并发控制，<acronym>MVCC</acronym>）来维护的。这意味着，在查询数据库时，每个事务看到的都是某个较早时刻的数据快照（即一个<firstterm>数据库版本</firstterm>），而不受底层数据当前状态的影响。这样可以保护事务，使其看不到由（其他）并发事务在同一数据行上执行更新所产生的不一致数据，从而为每个数据库会话提供<firstterm>事务隔离</firstterm>。<acronym>MVCC</acronym>摒弃了传统数据库系统显式加锁的方法，尽量减少锁争用，以便在多用户环境中获得合理的性能。
+    与传统数据库系统使用锁进行并发控制不同，<productname>PostgreSQL</productname>通过使用多版本模型（多版本并发控制，<acronym>MVCC</acronym>）来维护数据一致性。这意味着，在查询数据库时，每个事务看到的都是某个较早时刻的数据快照（即一个<firstterm>数据库版本</firstterm>），而不受底层数据当前状态的影响。这样可以保护事务，使其看不到由（其他）并发事务在同一数据行上执行更新所产生的不一致数据，从而为每个数据库会话提供<firstterm>事务隔离</firstterm>。
    </para>
 
    <para>
@@ -27,7 +27,7 @@
    </para>
 
    <para>
-    对于无法轻易适应<acronym>MVCC</acronym>行为的应用，<productname>PostgreSQL</productname>也提供表级和行级锁设施。不过，正确使用<acronym>MVCC</acronym>通常会比加锁提供更好的性能。此外，由应用定义的咨询锁还提供了一种获取不依附于单个事务的锁的机制。
+    对于无法轻易适应<acronym>MVCC</acronym>行为的应用，<productname>PostgreSQL</productname>也提供表级和行级锁设施。不过，正确使用<acronym>MVCC</acronym>通常会比加锁提供更好的性能。
    </para>
   </sect1>
 
@@ -187,7 +187,7 @@
    </indexterm>
 
    <para>
-    <firstterm>读已提交</firstterm>是<productname>PostgreSQL</productname>中默认的隔离级别。当事务使用这一隔离级别时，<command>SELECT</command>查询（不带<literal>FOR UPDATE/SHARE</literal>子句）只能看到查询开始之前已经提交的数据；它既看不到未提交的数据，也看不到查询执行期间并发事务提交的更改。实际上，<command>SELECT</command>查询看到的是该查询开始运行瞬间的数据库快照。不过，<command>SELECT</command>能看到其自身事务中先前执行的更新效果，即使这些更新尚未提交。还要注意，即使两个连续的<command>SELECT</command>命令位于同一个事务中，如果其他事务在第一个<command>SELECT</command>执行期间提交了更改，这两个命令也可能看到不同的数据。
+    <firstterm>读已提交</firstterm>是<productname>PostgreSQL</productname>中默认的隔离级别。当事务使用这一隔离级别时，<command>SELECT</command>查询只能看到查询开始之前已经提交的数据；它既看不到未提交的数据，也看不到查询执行期间并发事务提交的更改。实际上，<command>SELECT</command>查询看到的是该查询开始运行瞬间的数据库快照。不过，<command>SELECT</command>能看到其自身事务中先前执行的更新效果，即使这些更新尚未提交。还要注意，即使两个连续的<command>SELECT</command>命令位于同一个事务中，如果其他事务在第一个<command>SELECT</command>执行期间提交了更改，这两个命令也可能看到不同的数据。
    </para>
 
    <para>
@@ -221,31 +221,9 @@ COMMIT;
    </para>
 
    <para>
-    在读已提交模式下，更复杂的用法可能产生不理想的结果。例如，考虑一个
-    <command>DELETE</command> 命令，另一个命令正在修改数据，使某些行开始满足其筛选条件、另一些行不再满足。
-    假设 <literal>website</literal> 是一个有两行的表，其中
-    <literal>website.hits</literal> 分别等于 <literal>9</literal> 和
-    <literal>10</literal>：
-
-<screen>
-BEGIN;
-UPDATE website SET hits = hits + 1;
--- 从另一个会话运行：  DELETE FROM website WHERE hits = 10;
-COMMIT;
-</screen>
-
-    该 <command>DELETE</command> 将不会产生任何效果，即使在
-    <command>UPDATE</command> 之前和之后都存在一行
-    <literal>website.hits = 10</literal>。这是因为更新前值为
-    <literal>9</literal> 的那一行被跳过了，而当 <command>UPDATE</command>
-    完成并且 <command>DELETE</command> 获得锁时，新行值已经不再是
-    <literal>10</literal> 而是 <literal>11</literal>，因此不再匹配条件。
-   </para>
-
-   <para>
-    因为在读已提交模式中，每个命令都从一个新快照开始，而该快照包含截至当时已提交的所有事务，
-    所以同一事务中的后续命令无论如何都会看到并发事务已提交的效果。上面真正的问题在于，
-    <emphasis>单个</emphasis>命令是否能看到数据库的绝对一致视图。
+    因为在读已提交模式中，每个新命令都从一个新快照开始，而该快照包含截至当时已提交的所有事务，
+    所以同一事务中的后续命令无论如何都会看到并发事务已提交的效果。这里讨论的问题在于，
+    在<emphasis>单个</emphasis>命令内部，我们是否能看到数据库的一个绝对一致视图。
    </para>
 
    <para>
@@ -267,7 +245,7 @@ COMMIT;
    </para>
 
    <para>
-    当事务使用可串行化级别时，<command>SELECT</command>查询只能看到事务开始之前已经提交的数据；它既看不到未提交的数据，也看不到事务执行期间并发事务提交的更改。（不过，查询能看到其自身事务中先前执行的更新效果，即使这些更新尚未提交。）这一点与读已提交不同：可串行化事务中的查询看到的是<emphasis>事务</emphasis>开始时刻的快照，而不是事务中当前查询开始时刻的快照。因此，<emphasis>单个</emphasis>事务中连续的<command>SELECT</command>命令看到相同的数据，也就是说，它们看不到在本事务启动之后由其他事务提交的更改。（这种行为对于报表类应用来说可能非常理想。）
+    当事务使用可串行化级别时，<command>SELECT</command>查询只能看到事务开始之前已经提交的数据；它既看不到未提交的数据，也看不到事务执行期间并发事务提交的更改。（不过，<command>SELECT</command>能看到其自身事务中先前执行的更新效果，即使这些更新尚未提交。）这一点与读已提交不同：<command>SELECT</command>看到的是事务开始时刻的快照，而不是事务中当前查询开始时刻的快照。因此，单个事务中连续的<command>SELECT</command>命令看到相同的数据，也就是说，它们看不到在本事务启动之后由其他事务提交的更改。（这种行为对于报表类应用来说可能非常理想。）
    </para>
 
    <para>
@@ -319,11 +297,11 @@ ERROR:  could not serialize access due to concurrent update
 <screen>
 SELECT SUM(value) FROM mytab WHERE class = 1;
 </screen>
-    然后将结果（30）作为新行的<structfield>value</structfield>插入，且该行满足<structfield>class</structfield><literal> = 2</literal>。与此同时，可串行化事务 B 执行以下计算：
+    然后将结果（30）作为新行的<structfield>value</structfield>插入，且该行的<structfield>class</structfield>为 2。与此同时，可串行化事务 B 执行以下计算：
 <screen>
 SELECT SUM(value) FROM mytab WHERE class = 2;
 </screen>
-    得到结果 300，并将它插入一个新行，该行满足<structfield>class</structfield><literal> = 1</literal>。然后两个事务都提交。上面列出的任何不受欢迎的行为都没有发生，然而我们得到的结果，却不可能由任何一种串行顺序产生。如果 A 先于 B 执行，B 计算出的总和将是 330 而不是 300；类似地，另一种执行顺序也会使 A 计算出不同的总和。
+    得到结果 300，并将它插入一个新行，该行的<structfield>class</structfield>为 1。然后两个事务都提交。上面列出的任何不受欢迎的行为都没有发生，然而我们得到的结果，却不可能由任何一种串行顺序产生。如果 A 先于 B 执行，B 计算出的总和将是 330 而不是 300；类似地，另一种执行顺序也会使 A 计算出不同的总和。
    </para>
 
    <para>
@@ -331,7 +309,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
       <para>
        本质上，谓词锁系统是通过限制写入的内容来防止幻读的，而 MVCC 则是通过限制读取的内容来防止幻读。
       </para>
-     </footnote>这样的锁系统实现起来很复杂，执行起来的代价也极其高昂，因为每个会话都必须了解每个并发事务执行的每条查询的细节。而且这笔巨大的开销大部分都被浪费掉了，因为在实践中，大多数应用并不会做那些可能造成问题的事情。（当然，上面的例子相当人为，也不太可能代表真实的软件。）出于这些原因，<productname>PostgreSQL</productname>没有实现谓词锁。
+     </footnote>这样的锁系统实现起来很复杂，执行起来的代价也极其高昂，因为每个会话都必须了解每个并发事务执行的每条查询的细节。而且这笔巨大的开销大部分都被浪费掉了，因为在实践中，大多数应用并不会做那些可能造成问题的事情。（当然，上面的例子相当人为，也不太可能代表真实的软件。）据此，<productname>PostgreSQL</productname>没有实现谓词锁，而且据我们所知，其他生产型 DBMS 也都没有实现。
    </para>
 
    <para>
@@ -349,11 +327,11 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
    </indexterm>
 
    <para>
-    <productname>PostgreSQL</productname>提供多种锁模式来控制对表中数据的并发访问。当<acronym>MVCC</acronym>无法给出期望的行为时，这些模式可用于由应用控制的锁定。此外，大多数<productname>PostgreSQL</productname>命令会自动获取适当模式的锁，以确保被引用的表在命令执行期间不会以不兼容的方式被删除或修改。（例如，<command>ALTER TABLE</command>不能安全地与同一张表上的其他操作并发执行，因此它会获取该表上的排他锁来强制这一点。）
+    <productname>PostgreSQL</productname>提供多种锁模式来控制对表中数据的并发访问。当<acronym>MVCC</acronym>无法给出期望的行为时，这些模式可用于由应用控制的锁定。此外，大多数<productname>PostgreSQL</productname>命令会自动获取适当模式的锁，以确保被引用的表在命令执行期间不会以不兼容的方式被删除或修改。（例如，<command>ALTER TABLE</command>不能与同一张表上的其他操作并发执行。）
    </para>
 
    <para>
-    要查看数据库服务器中当前尚未释放的锁列表，可以使用 <link linkend="view-pg-locks"><structname>pg_locks</structname></link> 系统视图。有关监控锁管理器子系统状态的更多信息，请参见 <xref linkend="monitoring">。
+    要查看数据库服务器中当前尚未释放的锁列表，可以使用<structname>pg_locks</structname>系统视图（<xref linkend="view-pg-locks">）。有关监控锁管理器子系统状态的更多信息，请参见 <xref linkend="monitoring">。
    </para>
 
   <sect2 id="locking-tables">
@@ -368,11 +346,11 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
     你也可以通过命令 <xref linkend="sql-lock" endterm="sql-lock-title"> 显式获取其中任意一种锁。
     请记住，这些锁模式全部都是表级锁，即使名称中包含 <quote>row</quote> 一词；这些名称只是历史遗留。
     在某种程度上，这些名称反映了各锁模式的典型用途 &mdash; 但它们的语义是完全相同的。
-    一个锁模式与另一个锁模式真正的区别，只在于它与哪些锁模式冲突（见 <xref linkend="table-lock-compatibility">）。
+    一个锁模式与另一个锁模式真正的区别，只在于它与哪些锁模式冲突。
     两个事务不能在同一时刻在同一张表上持有相互冲突模式的锁。
     （不过，事务永远不会与自己冲突。例如，它可能先获取 <literal>ACCESS EXCLUSIVE</literal> 锁，
     随后又在同一张表上获取 <literal>ACCESS SHARE</literal> 锁。）
-    不冲突的锁模式可以被多个事务同时持有。特别要注意，有些锁模式与自身冲突
+    不冲突的锁模式可以被多个事务同时持有。锁一旦被获取，就会一直持有到事务结束。特别要注意，有些锁模式与自身冲突
     （例如，一次只能有一个事务持有 <literal>ACCESS EXCLUSIVE</literal> 锁），
     而另一些锁模式并不与自身冲突（例如，可以有多个事务持有 <literal>ACCESS SHARE</literal> 锁）。
    </para>
@@ -389,7 +367,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
         </para>
 
         <para>
-         <command>SELECT</command> 命令会在被引用的表上获取这种模式的锁。通常，任何只<emphasis>读取</emphasis>表而不修改它的查询都会获取这种锁模式。
+         <command>SELECT</command>和<command>ANALYZE</command>命令会在被引用的表上获取这种模式的锁。通常，任何只读取表而不修改它的查询都会获取这种锁模式。
         </para>
        </listitem>
       </varlistentry>
@@ -417,7 +395,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
         </para>
 
         <para>
-         <command>UPDATE</command>、<command>DELETE</command> 和 <command>INSERT</command> 命令会在目标表上获取这种锁模式（此外，对任何其他被引用的表还会获取 <literal>ACCESS SHARE</literal> 锁）。通常，任何<emphasis>修改表中数据</emphasis>的命令都会获取这种锁模式。
+         <command>UPDATE</command>、<command>DELETE</command> 和 <command>INSERT</command> 命令会在目标表上获取这种锁模式（此外，对任何其他被引用的表还会获取 <literal>ACCESS SHARE</literal> 锁）。通常，任何修改表中数据的命令都会获取这种锁模式。
         </para>
        </listitem>
       </varlistentry>
@@ -432,7 +410,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
         </para>
 
         <para>
-         由<command>VACUUM</command>（不带<option>FULL</option>）、<command>ANALYZE</command>和<command>CREATE INDEX CONCURRENTLY</command>获取。
+         由<command>VACUUM</command>（不带<option>FULL</option>）获取。
         </para>
        </listitem>
       </varlistentry>
@@ -447,7 +425,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
         </para>
 
         <para>
-         由 <command>CREATE INDEX</command>（不带 <option>CONCURRENTLY</option>）获取。
+         由<command>CREATE INDEX</command>获取。
         </para>
        </listitem>
       </varlistentry>
@@ -490,7 +468,7 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
         </para>
 
         <para>
-         由<command>ALTER TABLE</command>、<command>DROP TABLE</command>、<command>TRUNCATE</command>、<command>REINDEX</command>、<command>CLUSTER</command>和<command>VACUUM FULL</command>命令获取。这也是未显式指定模式的<command>LOCK TABLE</command>语句的默认锁模式。
+         由<command>ALTER TABLE</command>、<command>DROP TABLE</command>、<command>REINDEX</command>、<command>CLUSTER</command>和<command>VACUUM FULL</command>命令获取。这也是未显式指定模式的<command>LOCK TABLE</command>语句的默认锁模式。
         </para>
        </listitem>
       </varlistentry>
@@ -502,133 +480,14 @@ SELECT SUM(value) FROM mytab WHERE class = 2;
       </para>
      </tip>
 
-   <para>
-    锁一旦被获取，通常会一直持有到事务结束。但是，如果锁是在建立保存点之后才获取的，那么在回滚到该保存点时，这个锁会立即释放。这与 <command>ROLLBACK</command> 会取消保存点之后所有命令效果的原则是一致的。相同的原则也适用于在 <application>PL/pgSQL</application> 异常块中获取的锁：从该块中因错误跳出时，会释放在块中获取的锁。
-   </para>
 
-
-
-    <table tocentry="1" id="table-lock-compatibility">
-     <title> Conflicting lock modes</title>
-     <tgroup cols="9">
-      <colspec colnum="2" colname="lockst">
-      <colspec colnum="9" colname="lockend">
-      <spanspec namest="lockst" nameend="lockend" spanname="lockreq">
-      <thead>
-       <row>
-        <entry morerows="1">Requested Lock Mode</entry>
-        <entry spanname="lockreq">Current Lock Mode</entry>
-       </row>
-       <row>
-        <entry>ACCESS SHARE</entry>
-        <entry>ROW SHARE</entry>
-        <entry>ROW EXCLUSIVE</entry>
-        <entry>SHARE UPDATE EXCLUSIVE</entry>
-        <entry>SHARE</entry>
-        <entry>SHARE ROW EXCLUSIVE</entry>
-        <entry>EXCLUSIVE</entry>
-        <entry>ACCESS EXCLUSIVE</entry>
-       </row>
-      </thead>
-      <tbody>
-       <row>
-        <entry>ACCESS SHARE</entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center">X</entry>
-       </row>
-       <row>
-        <entry>ROW SHARE</entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-       </row>
-       <row>
-        <entry>ROW EXCLUSIVE</entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-       </row>
-       <row>
-        <entry>SHARE UPDATE EXCLUSIVE</entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-       </row>
-       <row>
-        <entry>SHARE</entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center"></entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-       </row>
-       <row>
-        <entry>SHARE ROW EXCLUSIVE</entry>
-        <entry align="center"></entry>
-        <entry align="center"></entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-       </row>
-       <row>
-        <entry>EXCLUSIVE</entry>
-        <entry align="center"></entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-       </row>
-       <row>
-        <entry>ACCESS EXCLUSIVE</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-        <entry align="center">X</entry>
-       </row>
-      </tbody>
-     </tgroup>
-    </table>
    </sect2>
 
    <sect2 id="locking-rows">
     <title>行级锁</title>
 
     <para>
-     除了表级锁之外，还有行级锁，行级锁可以是排他锁或共享锁。当一行被更新或删除时，会自动获得该行上的排他行级锁。这种锁一直保持到事务提交或回滚为止，就像表级锁一样。行级锁不影响数据查询；它们只会阻塞对同一行的<emphasis>写入者</emphasis>。
+     除了表级锁之外，还有行级锁，行级锁可以是排他锁或共享锁。当一行被更新或删除时，会自动获得该行上的排他行级锁。这种锁一直保持到事务提交或回滚为止。行级锁不影响数据查询；它们只会阻塞对同一行的<emphasis>写入者</emphasis>。
     </para>
 
     <para>
@@ -692,37 +551,7 @@ UPDATE accounts SET balance = balance - 100.00 WHERE acctnum = 22222;
     </para>
    </sect2>
 
-   <sect2 id="advisory-locks">
-    <title>咨询锁</title>
 
-    <indexterm zone="advisory-locks">
-     <primary>lock</primary>
-     <secondary>advisory</secondary>
-    </indexterm>
-
-    <para>
-     <productname>PostgreSQL</productname>提供了一种创建由应用自行定义含义的锁的方法。这类锁被称为<firstterm>咨询锁</firstterm>，因为系统并不强制要求使用它们&mdash;&mdash;是否正确使用完全取决于应用。咨询锁对于那些与 MVCC 模型不太契合的加锁策略非常有用。咨询锁一旦获得，就会一直持有，直到被显式释放或会话结束。与标准锁不同，咨询锁不遵循事务语义：在事务中获取、而该事务随后回滚的咨询锁，在回滚之后仍然被持有；同样，即使调用者所在的事务随后失败，解锁操作也会生效。同一个锁可以被其所属进程多次获取：对于每次加锁请求，必须有对应的解锁请求，锁才会被真正释放。（如果某个会话已经持有给定的锁，额外的请求总会成功，即使其他会话正在等待该锁。）与<productname>PostgreSQL</productname>中的所有锁一样，任何会话当前持有的咨询锁完整列表，都可以在<link linkend="view-pg-locks"><structname>pg_locks</structname></link>系统视图中找到。
-    </para>
-
-    <para>
-     咨询锁从一个共享内存池中分配，该池的大小由配置变量<xref linkend="guc-max-locks-per-transaction">和<xref linkend="guc-max-connections">定义。必须注意不要耗尽这块内存，否则服务器将完全无法授予任何锁。这就对服务器可授予的咨询锁数量施加了上限，通常在数万到数十万个，具体取决于服务器的配置。
-    </para>
-
-    <para>
-     咨询锁的一个常见用途是模拟所谓<quote>平面文件</quote>数据管理系统中典型的悲观锁策略。虽然也可以通过在表中存储一个标志位来达到相同目的，但咨询锁速度更快，可以避免 MVCC 膨胀，并且会在会话结束时由服务器自动清理。在某些使用这种咨询锁方法的场合，特别是涉及显式排序和<literal>LIMIT</literal>子句的查询，必须注意控制由于 SQL 表达式求值顺序而获取的锁。例如：<screen>
-SELECT pg_advisory_lock(id) FROM foo WHERE id = 12345; -- ok
-SELECT pg_advisory_lock(id) FROM foo WHERE id &gt; 12345 LIMIT 100; -- danger!
-SELECT pg_advisory_lock(q.id) FROM
-(
-  SELECT id FROM foo WHERE id &gt; 12345 LIMIT 100
-) q; -- ok
-</screen>在上面的查询中，第二种形式是危险的，因为不能保证在执行加锁函数之前先应用<literal>LIMIT</literal>。这可能导致获取了一些应用并未预期的锁，因此应用也不会去释放它们（直到会话结束）。从应用的角度看，这类锁会变成悬而未清的锁，尽管仍然可以在<structname>pg_locks</structname>中看到。
-    </para>
-
-    <para>
-     用于操作咨询锁的函数见 <xref linkend="functions-advisory-locks">。
-    </para>
-   </sect2>
 
   </sect1>
 
@@ -730,7 +559,7 @@ SELECT pg_advisory_lock(q.id) FROM
    <title>应用级别的数据一致性检查</title>
 
    <para>
-    由于<productname>PostgreSQL</productname>中的读操作不加锁（无论事务隔离级别如何），一个事务读取的数据仍可能被另一个并发事务覆盖。换句话说，某行被<command>SELECT</command>返回，并不意味着该行在返回的那一刻（即当前查询开始之后的某个时刻）仍然是当前的。该行可能已经被一个在<command>SELECT</command>开始之后提交的事务修改或删除。即使该行<quote>现在</quote>仍然有效，它也可能在当前事务提交或回滚之前被更改或删除。
+    由于<productname>PostgreSQL</productname>中的读操作不加锁（无论事务隔离级别如何），一个事务读取的数据仍可能被另一个并发事务覆盖。换句话说，某行被<command>SELECT</command>返回，并不意味着该行在返回的那一刻（即当前查询开始之后的某个时刻）仍然是当前的。该行可能已经被一个在本事务开始之后提交的事务修改或删除。即使该行<quote>现在</quote>仍然有效，它也可能在当前事务提交或回滚之前被更改或删除。
    </para>
 
    <para>
@@ -738,7 +567,7 @@ SELECT pg_advisory_lock(q.id) FROM
    </para>
 
    <para>
-    要确保某一行当前仍然有效，并保护它不受并发更新影响，就必须使用<command>SELECT FOR UPDATE</command>、<command>SELECT FOR SHARE</command>或适当的<command>LOCK TABLE</command>语句。（<command>SELECT FOR UPDATE</command>和<command>SELECT FOR SHARE</command>只锁定返回的行以防止并发更新，而<command>LOCK TABLE</command>会锁住整张表。）从其他环境向<productname>PostgreSQL</productname>迁移应用时，应当考虑这一点。
+    要确保某一行当前仍然有效，并保护它不受并发更新影响，就必须使用<command>SELECT FOR UPDATE</command>、<command>SELECT FOR SHARE</command>或适当的<command>LOCK TABLE</command>语句。（<command>SELECT FOR UPDATE</command>和<command>SELECT FOR SHARE</command>只锁定返回的行以防止并发更新，而<command>LOCK TABLE</command>会锁住整张表。）从其他环境向<productname>PostgreSQL</productname>迁移应用时，应当考虑这一点。（在 6.5 版之前，<productname>PostgreSQL</productname>使用的是读锁，因此在从 6.5 之前的<productname>PostgreSQL</productname>版本升级时，上面这个考虑也同样适用。）
    </para>
 
    <para>
@@ -787,11 +616,11 @@ SELECT pg_advisory_lock(q.id) FROM
 
      <varlistentry>
       <term>
-       <acronym>GIN</acronym>索引
+       R 树索引
       </term>
       <listitem>
        <para>
-        读/写访问使用短期的共享/排他页级锁。锁在每次索引行被取出或插入之后立即释放。但要注意，插入一个 GIN 索引值通常会对每行产生多个索引键插入，因此 GIN 可能会为单个值的插入做大量工作。
+        读/写访问使用共享/排他的索引级锁。锁在整个命令完成之后释放。
        </para>
       </listitem>
      </varlistentry>
@@ -799,7 +628,7 @@ SELECT pg_advisory_lock(q.id) FROM
    </para>
 
    <para>
-    目前，B-树索引为并发应用提供了最佳性能；由于它们还比 Hash 索引拥有更多特性，因此对于需要为标量数据建立索引的并发应用，推荐使用 B-树索引类型。处理非标量数据时，B-树就不再适用，此时应改用 GiST 或 GIN 索引。
+    目前，B-树索引为并发应用提供了最佳性能；由于它们还比 Hash 索引拥有更多特性，因此对于需要为标量数据建立索引的并发应用，推荐使用 B-树索引类型。处理非标量数据时，B-树就不再适用，此时应改用 GiST 索引。R 树索引已被弃用，很可能在未来的发行版中完全消失。
    </para>
   </sect1>
  </chapter>
