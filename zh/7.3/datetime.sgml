@@ -1,7 +1,10 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/datetime.sgml,v 2.60 2009/03/22 01:12:31 tgl Exp $ -->
+<!--
+$Header: /cvsroot/pgsql/doc/src/sgml/datetime.sgml,v 2.28.2.1 2002/11/10 12:45:41 petere Exp $
+Date/time details
+-->
 
  <appendix id="datetime-appendix">
-  <title>日期/时间支持</title>
+  <title id="datetime-appendix-title">日期/时间支持</title>
 
   <para>
    <productname>PostgreSQL</productname> 对所有日期/时间输入都使用一个内部的启发式解析器。日期和时间以字符串形式输入，并被拆分为不同的字段，同时初步判断每个字段中可能包含哪类信息。每个字段都会被解释，并被赋予数值、忽略或拒绝。解析器内部为所有文本字段都维护了查找表，包括月份、星期几以及时区。
@@ -11,14 +14,15 @@
    本附录包含关于这些查找表内容的信息，并描述了解析器解码日期和时间时所使用的步骤。
   </para>
 
-  <sect1 id="datetime-input-rules">
+  <sect1>
    <title>日期/时间输入解释</title>
 
    <para>
-    日期/时间输入字符串按照下面的过程进行解码。
+    日期/时间类型都使用一组公共的例程进行解码。
    </para>
 
    <procedure>
+    <title>日期/时间输入解释</title>
     <step>
      <para>
       将输入字符串拆分为词元，并把每个词元归类为字符串、时间、时区或数字。
@@ -33,7 +37,7 @@
 
       <step>
        <para>
-        如果数字词元包含连字符（<literal>-</literal>）、斜杠（<literal>/</literal>）或两个以上的点（<literal>.</literal>），则它是一个日期字符串，并且可能带有文本形式的月份。如果已经见过日期词元，则它会被解释为时区名称（例如 <literal>America/New_York</literal>）。
+        如果数字词元包含连字符（<literal>-</literal>）、斜杠（<literal>/</literal>）或两个以上的点（<literal>.</literal>），则它是一个日期字符串，并且可能带有文本形式的月份。
        </para>
       </step>
 
@@ -59,22 +63,27 @@
      <substeps>
       <step>
        <para>
-        先看该词元是否匹配任何已知的时区缩写。
-       </para>
-      </step>
-      
-      <step>
-       <para>
-        如果没有找到，则搜索内部表，将该词元识别为特殊字符串（例如
+        对该词元做二分查找表匹配，看它是否为特殊字符串（例如
         <literal>today</literal>）、星期名（例如 <literal>Thursday</literal>）、
         月份名（例如 <literal>January</literal>）或噪声词（例如
         <literal>at</literal>、<literal>on</literal>）。
+       </para>
+
+       <para>
+        设置字段值和字段位掩码。例如，为 <literal>today</literal>
+        设置年、月、日，并为 <literal>now</literal> 额外设置时、分、秒。
        </para>
       </step>
 
       <step>
        <para>
-        如果仍然没有找到，则抛出错误。
+        如果没有找到，则做一次类似的二分查找表匹配，尝试将该词元与时区匹配。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        如果没有找到，则抛出错误。
        </para>
       </step>
      </substeps>
@@ -82,37 +91,63 @@
     
     <step>
      <para>
-      当词元是一个数字或数字字段时：
+      该词元是一个数字或数字字段。
      </para>
 
      <substeps>
       <step>
        <para>
-        如果有八位或六位数字，并且之前还没有读取到其他日期字段，则将其解释为<quote>拼接式日期</quote>（例如 <literal>19990118</literal> 或 <literal>990118</literal>）。其解释方式分别为 <literal>YYYYMMDD</literal> 或 <literal>YYMMDD</literal>。
+        如果多于 4 位数字，并且之前还没有读取到其他日期字段，则将其解释为<quote>拼接式日期</quote>（例如 <literal>19990118</literal>）。8
+        位和 6 位数字被解释为年、月、日，而 7
+        位和 5 位数字则分别被解释为年、年积日。
        </para>
       </step>
 
       <step>
        <para>
-        如果词元是三位数字，并且已经读取到了年份，则将其解释为一年中的第几天。
-       </para>
-      </step>
-      
-      <step>
-       <para>
-        如果是四位或六位数字，并且已经读取到了年份，则将其解释为时间（<literal>HHMM</literal> 或 <literal>HHMMSS</literal>）。
+        如果词元是三位数字并且已经解码了年份，则解释为年积日。
        </para>
       </step>
 
       <step>
        <para>
-        如果有三位或更多位数字，并且尚未找到任何日期字段，则将其解释为年份（这会强制其余日期字段按 yy-mm-dd 的顺序解释）。
+        如果是四位或六位数字并且已经读取了年份，则解释为时间。
        </para>
       </step>
 
       <step>
        <para>
-        否则，假定日期字段顺序遵循 <varname>DateStyle</varname> 设置：mm-dd-yy、dd-mm-yy 或 yy-mm-dd。如果发现月份字段或日字段超出范围，则抛出错误。
+        如果是四位或更多位数字，则解释为年份。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        如果处于欧洲日期模式，并且还没有读取日字段，并且该值小于或等于 31，则解释为日。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        如果还没有读取月份字段，并且该值小于或等于 12，则解释为月。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        如果还没有读取日字段，并且该值小于或等于 31，则解释为日。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        如果是两位数字或四位及更多位数字，则解释为年份。
+       </para>
+      </step>
+
+      <step>
+       <para>
+        否则，抛出错误。
        </para>
       </step>
      </substeps>
@@ -120,18 +155,18 @@
 
     <step>
      <para>
-      如果指定了 BC，则将年份取反并加一后再用于内部存储。（格里高利历中没有 0 年，因此从数值上说，公元前 1 年会变成年 0。）
+      如果指定了 BC，则将年份取反并加一后再用于内部存储。（格里高利历中没有 0 年，因此从数值上说，<literal>1BC</literal> 会变成年 0。）
      </para>
     </step>
 
     <step>
-     <para>如果没有指定 BC，并且年份字段的长度为两位，则将年份调整为四位。如果该字段小于 70，则加上 2000，否则加上 1900。<tip> <para> 格里高利历公元 1-99 年可以使用带前导零的四位数字输入（例如，<literal>0099</literal> 表示公元 99 年）。 </para> </tip></para>
+     <para>如果没有指定 BC，并且年份字段的长度为两位，则将年份调整为四位。如果该字段小于 70，则加上 2000；否则加上 1900。<tip> <para> 格里高利历公元 1-99 年可以使用带前导零的四位数字输入（例如，<literal>0099</literal> 表示公元 99 年）。以前的 <productname>PostgreSQL</productname> 版本还接受三位数字和单个数字的年份，但从版本 7.0 开始，这些规则被收紧，以减少出现歧义的可能性。 </para> </tip></para>
     </step>
    </procedure>
   </sect1>
 
 
-  <sect1 id="datetime-keywords">
+  <sect1>
    <title>日期/时间关键字</title>
 
    <para>
@@ -139,12 +174,12 @@
    </para>
 
     <table id="datetime-month-table">
-     <title>月份名称</title>
+     <title>月份缩写</title>
      <tgroup cols="2">
       <thead>
        <row>
-        <entry>Month</entry>
-        <entry>Abbreviations</entry>
+        <entry>月份</entry>
+        <entry>缩写</entry>
        </row>
       </thead>
       <tbody>
@@ -163,10 +198,6 @@
        <row>
         <entry>April</entry>
         <entry>Apr</entry>
-       </row>
-       <row>
-        <entry>May</entry>
-        <entry></entry>
        </row>
        <row>
         <entry>June</entry>
@@ -200,17 +231,23 @@
      </tgroup>
     </table>
 
+  <note>
+   <para>
+    出于显而易见的原因，五月（May）没有缩写。
+   </para>
+  </note>
+
     <para>
      <xref linkend="datetime-dow-table"> 展示了哪些词元会被识别为星期名称。
     </para>
 
      <table id="datetime-dow-table">
-      <title>星期名称</title>
+      <title>星期缩写</title>
       <tgroup cols="2">
        <thead>
         <row>
-         <entry>Day</entry>
-         <entry>Abbreviations</entry>
+         <entry>星期</entry>
+         <entry>缩写</entry>
         </row>
        </thead>
        <tbody>
@@ -255,18 +292,22 @@
      <tgroup cols="2">
       <thead>
        <row>
-        <entry>Identifier</entry>
-        <entry>Description</entry>
+        <entry>标识符</entry>
+        <entry>描述</entry>
        </row>
       </thead>
       <tbody>
        <row>
+        <entry><literal>ABSTIME</literal></entry>
+        <entry>忽略的关键字</entry>
+       </row>
+       <row>
         <entry><literal>AM</literal></entry>
-        <entry>Time is before 12:00</entry>
+        <entry>时间在 12:00 之前</entry>
        </row>
        <row>
         <entry><literal>AT</literal></entry>
-        <entry>忽略</entry>
+        <entry>忽略的关键字</entry>
        </row>
        <row>
         <entry><literal>JULIAN</>, <literal>JD</>, <literal>J</></entry>
@@ -274,7 +315,7 @@
        </row>
        <row>
         <entry><literal>ON</literal></entry>
-        <entry>忽略</entry>
+        <entry>忽略的关键字</entry>
        </row>
        <row>
         <entry><literal>PM</literal></entry>
@@ -287,89 +328,631 @@
       </tbody>
      </tgroup>
     </table>
-  </sect1>
-
-  <sect1 id="datetime-config-files">
-  <title>日期/时间配置文件</title>
-
-   <indexterm>
-    <primary>time zone</primary>
-    <secondary>input abbreviations</secondary>
-   </indexterm>
-
-   <para>由于时区缩写没有得到良好的标准化，<productname>PostgreSQL</productname> 提供了一种定制服务器所接受缩写集合的方法。运行时参数 <xref linkend="guc-timezone-abbreviations"> 决定当前使用的缩写集合。任何数据库用户都可以修改此参数，但它的可选值由数据库管理员控制；这些值实际上是安装目录中 <filename>.../share/timezonesets/</filename> 下的配置文件名。管理员可以通过在该目录中添加或修改文件，制定本地时区缩写策略。</para>
-
-   <para>
-    如果文件名完全由字母组成，那么 <literal>timezone_abbreviations</>
-    可以被设置为 <filename>.../share/timezonesets/</> 中找到的任意
-    文件名。（禁止在 <literal>timezone_abbreviations</literal> 中使用
-    非字母字符，不仅可以防止读取目标目录之外的文件，也能防止读取
-    编辑器备份文件和其他无关文件。）
-   </para>
-
-   <para>时区缩写文件可以包含空行，以及以下字符开头的注释：<literal>#</>。非注释行必须采用以下格式之一：<synopsis>
-<replaceable>zone_abbreviation</replaceable> <replaceable>offset</replaceable>
-<replaceable>zone_abbreviation</replaceable> <replaceable>offset</replaceable> D
-<replaceable>zone_abbreviation</replaceable> <replaceable>time_zone_name</replaceable>
-@INCLUDE <replaceable>file_name</replaceable>
-@OVERRIDE
-</synopsis>
-   </para>
-
-   <para>
-    <replaceable>zone_abbreviation</replaceable> 就是要定义的缩写。
-    <replaceable>offset</replaceable> 是相对于 UTC 的等效偏移秒数，
-    正数表示格林尼治以东，负数表示以西。例如，-18000 表示格林尼治
-    以西五小时，即北美东海岸标准时间。<literal>D</literal> 表示该
-    时区名称代表当地夏令时间，而非标准时间。也可以给出
-    <replaceable>time_zone_name</replaceable>，此时系统会查阅该时区的
-    定义，并使用该缩写在那个时区中的含义。这种替代方式只推荐用于
-    含义在历史上发生过变化的缩写，因为查找含义的开销明显高于直接
-    使用固定的整数值。
-   </para>
-
-   <para><literal>@INCLUDE</literal> 语法允许包含 <filename>.../share/timezonesets/</filename> 目录中的另一个文件。包含可以嵌套，但深度有限。</para>
-
-   <para><literal>@OVERRIDE</literal> 语法表示文件中后续的条目可以覆盖之前的条目（通常是从被包含文件中取得的条目）。如果没有此指令，同一时区缩写的冲突定义会被视为错误。</para>
-
-   <para>
-    在未经修改的安装中，<filename>Default</filename> 文件包含世界上大多数地区中所有互不冲突的时区缩写。另外还为澳大利亚和印度这两个地区提供了 <filename>Australia</filename> 和 <filename>India</filename> 文件：这些文件会先包含 <literal>Default</literal> 文件，然后按需添加或修改缩写。
-   </para>
-
-   <para>
-    作为参考，标准安装还包含 <filename>Africa.txt</>、
-    <filename>America.txt</> 等文件，其中包含 IANA 时区数据库中已知
-    正在使用的每个时区缩写的信息。可以按需把这些文件中找到的时区
-    名称定义复制并粘贴到自定义配置文件中。注意，这些文件不能直接
-    作为 <literal>timezone_abbreviations</literal> 设置来引用，因为
-    它们的名称中带有点号。
-   </para>
-
-   <note>
-    <para>
-     如果在读取时区缩写集时发生错误，则不会应用新值，而会保留旧集合。如果该错误发生在数据库启动期间，则数据库启动会失败。
-    </para>
-   </note>
-
-   <caution>
-    <para>
-     配置文件中定义的时区缩写会覆盖 <productname>PostgreSQL</productname> 内置的非时区含义。例如，<filename>Australia</filename> 配置文件定义了 <literal>SAT</literal>（南澳大利亚标准时间）。当该文件处于活动状态时，<literal>SAT</literal> 将不会被识别为 Saturday 的缩写。
-    </para>
-   </caution>
-
-   <caution>
-    <para>
-     如果你修改了 <filename>.../share/timezonesets/</filename> 中的文件，就需要自行做好备份 &mdash; 普通的数据库转储不会包含这个目录。
-    </para>
-   </caution>
-
-  </sect1>
-
-  <sect1 id="datetime-units-history">
-  <title>历法的历史</title>
 
   <para>
-   儒略历由 Julius Caesar 于公元前 45 年引入。在 1582 年各国开始改用格里高利历之前，它在西方世界一直被广泛使用。在儒略历中，回归年近似为 365 1/4 天 = 365.25 天。这会在大约 128 年里累计 1 天的误差。
+   关键字 <literal>ABSTIME</literal> 因历史原因而被忽略；在 <productname>PostgreSQL</productname>
+   非常早期的版本中，<type>abstime</type> 类型的无效字段会被输出为
+   <literal>Invalid Abstime</literal>。不过现在情况已经不同，该关键字很可能在未来的版本中被移除。
+  </para>
+
+  <indexterm>
+   <primary>time zones</primary>
+  </indexterm>
+
+  <para>
+   <xref linkend="datetime-timezone-table"> 展示了 <productname>PostgreSQL</productname>
+   识别的时区缩写。<productname>PostgreSQL</productname>
+   内部包含用于时区解码的表格式信息，因为没有标准的操作系统接口可用于访问通用的跨时区信息。不过，底层操作系统<emphasis>确实</emphasis>被用来为<emphasis>输出</emphasis>提供时区信息。
+  </para>
+  <para>
+   本表按与 <acronym>UTC</acronym> 的时区偏移组织，而不是按字母顺序。这样做的目的是便于在本地用法与已识别缩写可能不一致的情况下将两者匹配起来。
+  </para>
+
+<table id="datetime-timezone-table">
+     <title>时区缩写</title>
+     <tgroup cols="3">
+      <thead>
+       <row>
+	<entry>时区</entry>
+	<entry>与 UTC 的偏移</entry>
+	<entry>描述</entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+	<entry>NZDT</entry>
+	<entry>+13:00</entry>
+	<entry>新西兰夏令时间</entry>
+       </row>
+       <row>
+	<entry>IDLE</entry>
+	<entry>+12:00</entry>
+	<entry>国际日期变更线以东</entry>
+       </row>
+       <row>
+	<entry>NZST</entry>
+	<entry>+12:00</entry>
+	<entry>新西兰标准时间</entry>
+       </row>
+       <row>
+	<entry>NZT</entry>
+	<entry>+12:00</entry>
+	<entry>新西兰时间</entry>
+       </row>
+       <row>
+	<entry>AESST</entry>
+	<entry>+11:00</entry>
+	<entry>澳大利亚东部夏季标准时间</entry>
+       </row>
+       <row>
+	<entry>ACSST</entry>
+	<entry>+10:30</entry>
+	<entry>中澳夏季标准时间</entry>
+       </row>
+       <row>
+	<entry>CADT</entry>
+	<entry>+10:30</entry>
+	<entry>中澳夏令时间</entry>
+       </row>
+       <row>
+	<entry>SADT</entry>
+	<entry>+10:30</entry>
+	<entry>南澳夏令时间</entry>
+       </row>
+       <row>
+	<entry>AEST</entry>
+	<entry>+10:00</entry>
+	<entry>澳大利亚东部标准时间</entry>
+       </row>
+       <row>
+	<entry>EAST</entry>
+	<entry>+10:00</entry>
+	<entry>澳东标准时间</entry>
+       </row>
+       <row>
+	<entry>GST</entry>
+	<entry>+10:00</entry>
+	<entry>关岛标准时间，苏联 9 区</entry>
+       </row>
+       <row>
+	<entry>LIGT</entry>
+	<entry>+10:00</entry>
+	<entry>澳大利亚墨尔本</entry>
+       </row>
+       <row>
+	<entry>SAST</entry>
+	<entry>+09:30</entry>
+	<entry>南澳标准时间</entry>
+       </row>
+       <row>
+	<entry>CAST</entry>
+	<entry>+09:30</entry>
+	<entry>中澳标准时间</entry>
+       </row>
+       <row>
+	<entry>AWSST</entry>
+	<entry>+09:00</entry>
+	<entry>澳大利亚西部夏季标准时间</entry>
+       </row>
+       <row>
+	<entry>JST</entry>
+	<entry>+09:00</entry>
+	<entry>日本标准时间，苏联 8 区</entry>
+       </row>
+       <row>
+	<entry>KST</entry>
+	<entry>+09:00</entry>
+	<entry>韩国标准时间</entry>
+       </row>
+       <row>
+	<entry>MHT</entry>
+	<entry>+09:00</entry>
+	<entry>夸贾林时间</entry>
+       </row>
+       <row>
+	<entry>WDT</entry>
+	<entry>+09:00</entry>
+	<entry>西澳夏令时间</entry>
+       </row>
+       <row>
+	<entry>MT</entry>
+	<entry>+08:30</entry>
+	<entry>摩鹿加时间</entry>
+       </row>
+       <row>
+	<entry>AWST</entry>
+	<entry>+08:00</entry>
+	<entry>澳大利亚西部标准时间</entry>
+       </row>
+       <row>
+	<entry>CCT</entry>
+	<entry>+08:00</entry>
+	<entry>中国沿海时间</entry>
+       </row>
+       <row>
+	<entry>WADT</entry>
+	<entry>+08:00</entry>
+	<entry>西澳夏令时间</entry>
+       </row>
+       <row>
+	<entry>WST</entry>
+	<entry>+08:00</entry>
+	<entry>西澳标准时间</entry>
+       </row>
+       <row>
+	<entry>JT</entry>
+	<entry>+07:30</entry>
+	<entry>爪哇时间</entry>
+       </row>
+       <row>
+	<entry>ALMST</entry>
+	<entry>+07:00</entry>
+	<entry>阿拉木图夏令时间</entry>
+       </row>
+       <row>
+	<entry>WAST</entry>
+	<entry>+07:00</entry>
+	<entry>西澳标准时间</entry>
+       </row>
+       <row>
+	<entry>CXT</entry>
+	<entry>+07:00</entry>
+	<entry>圣诞岛时间</entry>
+       </row>
+<!--
+       Conflicts with China Coastal Time
+       <row>
+	<entry>CCT</entry>
+	<entry>+06:30</entry>
+	<entry>科科斯群岛时间</entry>
+       </row>
+-->
+       <row>
+	<entry>MMT</entry>
+	<entry>+06:30</entry>
+	<entry>缅甸时间</entry>
+       </row>
+       <row>
+	<entry>ALMT</entry>
+	<entry>+06:00</entry>
+	<entry>阿拉木图时间</entry>
+       </row>
+       <row>
+	<entry>MAWT</entry>
+	<entry>+06:00</entry>
+	<entry>莫森（南极洲）时间</entry>
+       </row>
+       <row>
+	<entry>IOT</entry>
+	<entry>+05:00</entry>
+	<entry>印度查戈斯时间</entry>
+       </row>
+       <row>
+	<entry>MVT</entry>
+	<entry>+05:00</entry>
+	<entry>马尔代夫群岛时间</entry>
+       </row>
+       <row>
+	<entry>TFT</entry>
+	<entry>+05:00</entry>
+	<entry>凯尔盖朗时间</entry>
+       </row>
+       <row>
+	<entry>AFT</entry>
+	<entry>+04:30</entry>
+	<entry>阿富汗时间</entry>
+       </row>
+       <row>
+	<entry>EAST</entry>
+	<entry>+04:00</entry>
+	<entry>安塔那那利佛夏令时间</entry>
+       </row>
+       <row>
+	<entry>MUT</entry>
+	<entry>+04:00</entry>
+	<entry>毛里求斯岛时间</entry>
+       </row>
+       <row>
+	<entry>RET</entry>
+	<entry>+04:00</entry>
+	<entry>留尼汪岛时间</entry>
+       </row>
+       <row>
+	<entry>SCT</entry>
+	<entry>+04:00</entry>
+	<entry>马埃岛时间</entry>
+       </row>
+       <row>
+	<entry>IRT, IT</entry>
+	<entry>+03:30</entry>
+	<entry>伊朗时间</entry>
+       </row>
+       <row>
+	<entry>EAT</entry>
+	<entry>+03:00</entry>
+	<entry>安塔那那利佛、科摩罗时间</entry>
+       </row>
+       <row>
+	<entry>BT</entry>
+	<entry>+03:00</entry>
+	<entry>巴格达时间</entry>
+       </row>
+       <row>
+	<entry>EETDST</entry>
+	<entry>+03:00</entry>
+	<entry>东欧夏令时间</entry>
+       </row>
+       <row>
+	<entry>HMT</entry>
+	<entry>+03:00</entry>
+	<entry>希腊地中海时间（?）</entry>
+       </row>
+       <row>
+	<entry>BDST</entry>
+	<entry>+02:00</entry>
+	<entry>英国双标准时间</entry>
+       </row>
+       <row>
+	<entry>CEST</entry>
+	<entry>+02:00</entry>
+	<entry>中欧夏令时间</entry>
+       </row>
+       <row>
+	<entry>CETDST</entry>
+	<entry>+02:00</entry>
+	<entry>中欧夏令时间</entry>
+       </row>
+       <row>
+	<entry>EET</entry>
+	<entry>+02:00</entry>
+	<entry>东欧，苏联 1 区</entry>
+       </row>
+       <row>
+	<entry>FWT</entry>
+	<entry>+02:00</entry>
+	<entry>法国冬令时间</entry>
+       </row>
+       <row>
+	<entry>IST</entry>
+	<entry>+02:00</entry>
+	<entry>以色列标准时间</entry>
+       </row>
+       <row>
+	<entry>MEST</entry>
+	<entry>+02:00</entry>
+	<entry>中欧夏令时间</entry>
+       </row>
+       <row>
+	<entry>METDST</entry>
+	<entry>+02:00</entry>
+	<entry>中欧夏令时间</entry>
+       </row>
+       <row>
+	<entry>SST</entry>
+	<entry>+02:00</entry>
+	<entry>瑞典夏令时间</entry>
+       </row>
+       <row>
+	<entry>BST</entry>
+	<entry>+01:00</entry>
+	<entry>英国夏令时间</entry>
+       </row>
+       <row>
+	<entry>CET</entry>
+	<entry>+01:00</entry>
+	<entry>中欧时间</entry>
+       </row>
+       <row>
+	<entry>DNT</entry>
+	<entry>+01:00</entry>
+	<entry><foreignphrase>Dansk Normal Tid</foreignphrase></entry>
+       </row>
+       <row>
+	<entry>FST</entry>
+	<entry>+01:00</entry>
+	<entry>法国夏令时间</entry>
+       </row>
+       <row>
+	<entry>MET</entry>
+	<entry>+01:00</entry>
+	<entry>中欧时间</entry>
+       </row>
+       <row>
+	<entry>MEWT</entry>
+	<entry>+01:00</entry>
+	<entry>中欧冬令时间</entry>
+       </row>
+       <row>
+	<entry>MEZ</entry>
+	<entry>+01:00</entry>
+	<entry>中欧时区</entry>
+       </row>
+       <row>
+	<entry>NOR</entry>
+	<entry>+01:00</entry>
+	<entry>挪威标准时间</entry>
+       </row>
+       <row>
+	<entry>SET</entry>
+	<entry>+01:00</entry>
+	<entry>塞舌尔时间</entry>
+       </row>
+       <row>
+	<entry>SWT</entry>
+	<entry>+01:00</entry>
+	<entry>瑞典冬令时间</entry>
+       </row>
+       <row>
+	<entry>WETDST</entry>
+	<entry>+01:00</entry>
+	<entry>西欧夏令时间</entry>
+       </row>
+       <row>
+	<entry>GMT</entry>
+	<entry>+00:00</entry>
+	<entry>格林尼治标准时间</entry>
+       </row>
+       <row>
+	<entry>UT</entry>
+	<entry>+00:00</entry>
+	<entry>世界时</entry>
+       </row>
+       <row>
+	<entry>UTC</entry>
+	<entry>+00:00</entry>
+	<entry>协调世界时</entry>
+       </row>
+       <row>
+	<entry>Z</entry>
+	<entry>+00:00</entry>
+	<entry>与 UTC 相同</entry>
+       </row>
+       <row>
+	<entry>ZULU</entry>
+	<entry>+00:00</entry>
+	<entry>与 UTC 相同</entry>
+       </row>
+       <row>
+	<entry>WET</entry>
+	<entry>+00:00</entry>
+	<entry>西欧</entry>
+       </row>
+       <row>
+	<entry>WAT</entry>
+	<entry>-01:00</entry>
+	<entry>西非时间</entry>
+       </row>
+       <row>
+	<entry>NDT</entry>
+	<entry>-02:30</entry>
+	<entry>纽芬兰夏令时间</entry>
+       </row>
+       <row>
+	<entry>ADT</entry>
+	<entry>-03:00</entry>
+	<entry>大西洋夏令时间</entry>
+       </row>
+       <row>
+	<entry>AWT</entry>
+	<entry>-03:00</entry>
+	<entry>（未知）</entry>
+       </row>
+       <row>
+	<entry>NFT</entry>
+	<entry>-03:30</entry>
+	<entry>纽芬兰标准时间</entry>
+       </row>
+       <row>
+	<entry>NST</entry>
+	<entry>-03:30</entry>
+	<entry>纽芬兰标准时间</entry>
+       </row>
+       <row>
+	<entry>AST</entry>
+	<entry>-04:00</entry>
+	<entry>大西洋标准时间（加拿大）</entry>
+       </row>
+       <row>
+	<entry>ACST</entry>
+	<entry>-04:00</entry>
+	<entry>Atlantic/Porto Acre 夏令时间</entry>
+       </row>
+       <row>
+	<entry>ACT</entry>
+	<entry>-05:00</entry>
+	<entry>Atlantic/Porto Acre 标准时间</entry>
+       </row>
+       <row>
+	<entry>EDT</entry>
+	<entry>-04:00</entry>
+	<entry>美国东部夏令时间</entry>
+       </row>
+       <!--
+      <row>
+      <entry>ZP4</entry>
+      <entry>-04:00</entry>
+      <entry>GMT +4 小时</entry>
+      </row>
+       -->
+       <row>
+	<entry>CDT</entry>
+	<entry>-05:00</entry>
+	<entry>美国中部夏令时间</entry>
+       </row>
+       <row>
+	<entry>EST</entry>
+	<entry>-05:00</entry>
+	<entry>美国东部标准时间</entry>
+       </row>
+       <!--
+      <row>
+      <entry>ZP5</entry>
+      <entry>-05:00</entry>
+      <entry>GMT +5 小时</entry>
+      </row>
+       -->
+       <row>
+	<entry>CST</entry>
+	<entry>-06:00</entry>
+	<entry>美国中部标准时间</entry>
+       </row>
+       <row>
+	<entry>MDT</entry>
+	<entry>-06:00</entry>
+	<entry>美国山地夏令时间</entry>
+       </row>
+       <!--
+      <row>
+      <entry>ZP6</entry>
+      <entry>-06:00</entry>
+      <entry>GMT +6 小时</entry>
+      </row>
+       -->
+       <row>
+	<entry>MST</entry>
+	<entry>-07:00</entry>
+	<entry>美国山地标准时间</entry>
+       </row>
+       <row>
+	<entry>PDT</entry>
+	<entry>-07:00</entry>
+	<entry>美国太平洋夏令时间</entry>
+       </row>
+       <row>
+	<entry>AKDT</entry>
+	<entry>-08:00</entry>
+	<entry>阿拉斯加夏令时间</entry>
+       </row>
+       <row>
+	<entry>PST</entry>
+	<entry>-08:00</entry>
+	<entry>美国太平洋标准时间</entry>
+       </row>
+       <row>
+	<entry>YDT</entry>
+	<entry>-08:00</entry>
+	<entry>育空夏令时间</entry>
+       </row>
+       <row>
+	<entry>AKST</entry>
+	<entry>-09:00</entry>
+	<entry>阿拉斯加标准时间</entry>
+       </row>
+       <row>
+	<entry>HDT</entry>
+	<entry>-09:00</entry>
+	<entry>夏威夷/阿拉斯加夏令时间</entry>
+       </row>
+       <row>
+	<entry>YST</entry>
+	<entry>-09:00</entry>
+	<entry>育空标准时间</entry>
+       </row>
+       <row>
+	<entry>MART</entry>
+	<entry>-09:30</entry>
+	<entry>马克萨斯群岛时间</entry>
+       </row>
+       <row>
+	<entry>AHST</entry>
+	<entry>-10:00</entry>
+	<entry>阿拉斯加-夏威夷标准时间</entry>
+       </row>
+       <row>
+	<entry>HST</entry>
+	<entry>-10:00</entry>
+	<entry>夏威夷标准时间</entry>
+       </row>
+       <row>
+	<entry>CAT</entry>
+	<entry>-10:00</entry>
+	<entry>阿拉斯加中部时间</entry>
+       </row>
+       <row>
+	<entry>NT</entry>
+	<entry>-11:00</entry>
+	<entry>诺姆时间</entry>
+       </row>
+       <row>
+	<entry>IDLW</entry>
+	<entry>-12:00</entry>
+	<entry>国际日期变更线以西</entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+
+  
+
+  <formalpara>
+   <title>澳大利亚时区</title>
+
+   <para>
+    澳大利亚时区名与北美及南美常用时区名之间存在三处命名冲突：
+    <literal>ACST</literal>、<literal>CST</literal> 和
+    <literal>EST</literal>。如果运行时选项
+    <varname>AUSTRALIAN_TIMEZONES</varname> 被设置为 true，那么
+    <literal>ACST</literal>、<literal>CST</literal>、
+    <literal>EST</literal> 和 <literal>SAT</literal> 将被解释为澳大利亚时区名，如<xref
+    linkend="datetime-oztz-table">所示。如果它为 false（这是默认值），那么
+    <literal>ACST</literal>、<literal>CST</literal> 和
+    <literal>EST</literal> 会被当作美国时区名，而
+    <literal>SAT</literal> 会被解释为一个表示星期六的噪声词。
+   </para>
+  </formalpara>
+
+<table id="datetime-oztz-table">
+     <title>澳大利亚时区缩写</title>
+     <tgroup cols="3">
+      <thead>
+       <row>
+	<entry>时区</entry>
+	<entry>与 UTC 的偏移</entry>
+	<entry>描述</entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+	<entry>ACST</entry>
+	<entry>+09:30</entry>
+	<entry>中澳标准时间</entry>
+       </row>
+       <row>
+	<entry>CST</entry>
+	<entry>+10:30</entry>
+	<entry>澳大利亚中部标准时间</entry>
+       </row>
+       <row>
+	<entry>EST</entry>
+	<entry>+10:00</entry>
+	<entry>澳大利亚东部标准时间</entry>
+       </row>
+       <row>
+	<entry>SAT</entry>
+	<entry>+09:30</entry>
+	<entry>南澳标准时间</entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+
+  </sect1>
+
+  <sect1 id="units-history">
+  <title>历法的历史</title>
+
+  <note>
+   <para>
+    由 José Soares（<email>jose@sferacarta.com</email>）贡献
+   </para>
+  </note>
+
+  <para>
+   儒略日由法国学者 Joseph Justus Scaliger（1540-1609）发明，其名称大概取自 Scaliger 的父亲、意大利学者 Julius Caesar Scaliger（1484-1558）。天文学家用儒略纪为自公元前 4713 年 1 月 1 日以来的每一天分配一个唯一的编号。这就是所谓的儒略日（JD）。JD 0 表示从 UTC 公元前 4713 年 1 月 1 日正午到 UTC 公元前 4713 年 1 月 2 日正午的 24 小时。
+  </para>
+
+  <para>
+   <quote>儒略日</quote>与<quote>儒略日期</quote>并不相同。儒略日期指的是儒略历，后者由 Julius Caesar 于公元前 45 年引入。直到 1582 年各国开始改用格里高利历之前，它在西方世界一直被广泛使用。在儒略历中，回归年近似为 365 1/4 天 = 365.25 天。这会在大约 128 年里累计 1 天的误差。
   </para>
 
   <para>
@@ -418,15 +1001,15 @@ $ <userinput>cal 9 1752</userinput>
 </screen>
   </para>
 
-  <para>
+  <note>
+<para>
    SQL 标准指出，<quote>在<quote>日期时间字面量</quote>的定义中，
    <quote>日期时间值</quote>受格里高利历中日期和时间自然规则的
-   约束</quote>。1582-10-05 到 1582-10-14 之间的日期，虽然在某些
+   约束</quote>。1752-09-03 到 1752-09-13 之间的日期，虽然在某些
    国家因教皇敕令而被删除，但它们符合<quote>自然规则</quote>，因此
-   是有效日期。<productname>PostgreSQL</> 遵循 SQL 标准的做法，
-   完全按照格里高利历计算日期，即便对于该历法尚未使用之前的
-   年份也是如此。
+   是有效日期。
   </para>
+  </note>
 
   <para>
    世界上不同地区发展出了不同的历法，其中许多都早于格里高利体系。
@@ -436,24 +1019,9 @@ $ <userinput>cal 9 1752</userinput>
    中华人民共和国在民用方面使用格里高利历。中国历法则用于确定节日。
   </para>
 
-  <para>
-   <quote>儒略日</quote>与<quote>儒略历</quote>并无关系。儒略日系统
-   由法国学者 Joseph Justus Scaliger（1540-1609）发明，其名称大概
-   取自他的父亲、意大利学者 Julius Caesar Scaliger（1484-1558）。
-   在儒略日系统中，每一天都有一个连续编号，从 JD 0 开始（有时称为
-   <emphasis>起始</>儒略日）。JD 0 对应儒略历公元前 4713 年 1 月 1 日，
-   或格里高利历公元前 4714 年 11 月 24 日。儒略日计数最常用于天文学家
-   标记夜间观测，因此一天从 UTC 正午开始，到下一个 UTC 正午结束，
-   而不是从午夜到午夜：JD 0 表示从 UTC 公元前 4713 年 1 月 1 日正午
-   到 UTC 公元前 4713 年 1 月 2 日正午的 24 小时。
-  </para>
+  
 
-  <para>
-   虽然 <productname>PostgreSQL</> 支持在日期输入和输出中使用儒略日
-   记法（并且也会在某些内部日期/时间计算中使用儒略日），但它并不
-   遵循日期从正午算到正午这一约定。<productname>PostgreSQL</> 将
-   儒略日视为从午夜到午夜。
-  </para>
+  
 
  </sect1>
 </appendix>
