@@ -1,53 +1,61 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/diskusage.sgml,v 1.20.6.1 2010/08/17 04:37:16 petere Exp $ -->
+<!--
+$Header: /cvsroot/pgsql/doc/src/sgml/diskusage.sgml,v 1.9 2003/03/24 14:32:50 petere Exp $
+-->
 
 <chapter id="diskusage">
  <title>监控磁盘使用情况</title>
 
  <para>
-  本章讨论如何监控<productname>PostgreSQL</productname>数据库系统的磁盘使用情况。
+  本章讨论如何监控 <productname>PostgreSQL</productname> 数据库系统
+  的磁盘使用。在当前版本中，数据库管理员对磁盘上的存储布局
+  没有太多控制权，因此本章大多是介绍性的，可以给你一些
+  用操作系统工具管理磁盘使用的思路。
  </para>
 
  <sect1 id="disk-usage">
   <title>确定磁盘使用情况</Title>
 
   <indexterm zone="disk-usage">
-   <primary>磁盘使用情况</primary>
+   <primary>disk usage</primary>
   </indexterm>
 
   <para>
-   每个表都有一个存放大部分数据的主堆磁盘文件。如果表有任何可能很宽的列，还可能有一个与该表关联的<acronym>TOAST</acronym>文件，用于存储宽到无法舒适地放在主表中的值（见<xref linkend="storage-toast">）。如果存在<acronym>TOAST</acronym>表，其上将有一个索引。基表也可能有关联的索引。每个表和索引都存储在单独的磁盘文件中&mdash;&mdash;如果文件超过 1 GB，则可能不止一个文件。这些文件的命名约定见<xref linkend="storage-file-layout">。
+   每个表有一个主堆磁盘文件，大部分数据
+   存储在其中。为了存储较长的列值，还有一个
+   与表相关联的 <acronym>TOAST</acronym> 文件，基于表的
+   OID 命名（实际上是 <literal>pg_class.relfilenode</literal>），以及
+   <acronym>TOAST</acronym> 表上的一个索引。也可能有与
+   基础表相关联的索引。
   </para>
 
   <para>
-   可以用三种方式监控磁盘空间：使用<xref linkend="functions-admin-dbsize">中列出的 SQL 函数、使用<filename>contrib/oid2name</filename>中的工具，或者手工检查系统目录。SQL 函数最容易使用，通常也推荐使用。<filename>contrib/oid2name</filename>在<xref linkend="oid2name">中介绍。本节其余部分展示如何通过检查系统目录来完成。
-  </para>
-
-  <para>
-   在最近进行过清理或分析 的数据库上使用<application>psql</application>时，可以发出查询以查看任意表的磁盘使用情况：
+   你可以从三个地方监控磁盘空间：在
+   <application>psql</application> 中使用 <command>VACUUM</command> 信息、在
+   <application>psql</application> 中使用 <filename>contrib/dbsize</filename> 中的工具，以及
+   在命令行上使用 <filename>contrib/oid2name</filename> 中的工具。在
+   一个刚做过 VACUUM 或 ANALYZE 的数据库上使用
+   <application>psql</application>，你可以发出查询来查看任何表的磁盘使用：
 <programlisting>
-SELECT pg_relation_filepath(oid), relpages FROM pg_class WHERE relname = 'customer';
+SELECT relfilenode, relpages FROM pg_class WHERE relname = 'customer';
 
- pg_relation_filepath | relpages
-----------------------+----------
- base/16384/16806     |       60
+ relfilenode | relpages 
+-------------+----------
+       16806 |       60
 (1 row)
 </programlisting>
-   每个页通常为 8 KB。（请记住，<structfield>relpages</structfield>只会由<command>VACUUM</command>、<command>ANALYZE</command>以及少数 DDL 命令（如<command>CREATE INDEX</command>）更新。）如果你想直接检查该表的磁盘文件，文件路径名就很有用。
+   每页通常是 8 KB。（记住，<literal>relpages</literal>
+   只由 <command>VACUUM</command> 和 <command>ANALYZE</command> 更新。）
   </para>
 
   <para>
-   要显示<acronym>TOAST</acronym>表使用的空间，可以使用如下查询：
+   要显示 <acronym>TOAST</acronym> 表使用的空间，使用
+   下面这样的查询，把堆的 <literal>relfilenode</literal>
+   编号（由上面的查询确定）代入：
 <programlisting>
 SELECT relname, relpages
-FROM pg_class,
-     (SELECT reltoastrelid
-      FROM pg_class
-      WHERE relname = 'customer') AS ss
-WHERE oid = ss.reltoastrelid OR
-      oid = (SELECT reltoastidxid
-             FROM pg_class
-             WHERE oid = ss.reltoastrelid)
-ORDER BY relname;
+    FROM pg_class
+    WHERE relname = 'pg_toast_16806' OR relname = 'pg_toast_16806_index'
+    ORDER BY relname;
 
        relname        | relpages 
 ----------------------+----------
@@ -83,27 +91,66 @@ ORDER BY relpages DESC;
  customer             |     3144
 </programlisting>
    </para>
+
+  <para>
+   <filename>contrib/dbsize</filename> 向你的数据库装载一些函数，使你
+   能够在 <application>psql</application> 内部查出表或数据库的
+   大小，而无须 <command>VACUUM</command> 或 <command>ANALYZE</command>。
+  </para>
+
+  <para>
+   你还可以使用 <filename>contrib/oid2name</filename> 来显示磁盘使用情况。示例见该目录中的<filename>README.oid2name</filename>。其中包含一个显示每个数据库磁盘使用情况的脚本。
+  </para>
  </sect1>
 
  <sect1 id="disk-full">
   <title>磁盘已满故障</title>
 
   <para>
-    数据库管理员最重要的磁盘监控任务，是确保磁盘不会被写满。数据磁盘写满不会导致数据损坏，但可能会阻止有用的活动继续进行。如果保存 WAL 文件的磁盘被写满，则数据库服务器可能会 panic 并随后关闭。
-   </para>
+   数据库管理员最重要的磁盘监控任务是
+   确保磁盘不会被填满。被填满的数据磁盘可能
+   导致数据库索引随后损坏，但不会损坏
+   表本身。如果 WAL 文件在同一个磁盘上（默认
+   配置就是如此），那么数据库初始化期间磁盘被填满
+   可能导致 WAL 文件损坏或不完整。
+   这种故障条件会被检测到，数据库服务器
+   将拒绝启动。
+  </para>
 
   <para>
-   如果无法通过删除其他内容来释放磁盘上的额外空间，可以利用表空间将部分数据库文件移到其他文件系统上。有关更多信息，请参见<xref linkend="manage-ag-tablespaces">。
+   如果无法通过删除其他东西在磁盘上腾出更多
+   空间，你可以把一些数据库文件移动到其他文件
+   系统并在原位置创建一个符号链接。但
+   注意 <application>pg_dump</application> 无法保存这种安排的位置布局
+   信息；恢复时会把所有东西放回同一个
+   地方。为了避免磁盘空间耗尽，你可以在创建
+   WAL 文件或单个数据库时把它们放在其他
+   位置。更多信息见 <command>initdb</command> 文档和
+   <xref linkend="manage-ag-alternate-locs">。
   </para>
 
   <tip>
    <para>
-     有些文件系统在接近写满时性能会明显变差，因此不要等到磁盘完全写满才采取措施。
-    </para>
-  </tip>
-
-  <para>
-    如果你的系统支持按用户设置磁盘配额，那么数据库自然也会受到运行服务器的那个用户所拥有配额的限制。超出配额会带来与磁盘空间完全耗尽相同的不良影响。
+    有些文件系统在几乎满时性能很差，所以不要
+    等到磁盘满了才采取行动。
    </para>
+  </tip>
  </sect1>
 </chapter>
+
+<!-- Keep this comment at the end of the file
+Local variables:
+mode:sgml
+sgml-omittag:nil
+sgml-shorttag:t
+sgml-minimize-attributes:nil
+sgml-always-quote-attributes:t
+sgml-indent-step:1
+sgml-indent-data:t
+sgml-parent-document:nil
+sgml-default-dtd-file:"./reference.ced"
+sgml-exposed-tags:nil
+sgml-local-catalogs:("/usr/lib/sgml/catalog")
+sgml-local-ecat-files:nil
+End:
+-->

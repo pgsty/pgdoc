@@ -1,11 +1,13 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/typeconv.sgml,v 1.61 2010/04/03 07:22:56 petere Exp $ -->
+<!--
+$Header: /cvsroot/pgsql/doc/src/sgml/typeconv.sgml,v 1.36.2.2 2003/11/12 20:05:14 petere Exp $
+-->
 
 <chapter Id="typeconv">
 <title>类型转换</title>
 
 <indexterm zone="typeconv">
- <primary>数据类型</primary>
- <secondary>转换</secondary>
+ <primary>data type</primary>
+ <secondary>conversion</secondary>
 </indexterm>
 
 <para>
@@ -13,7 +15,11 @@
 </para>
 
 <para>
-在很多情况下，用户并不需要理解类型转换机制的细节。不过，<productname>PostgreSQL</productname>执行的隐式类型转换会影响查询结果。必要时，可以使用<emphasis>显式</emphasis>类型转换来控制这些结果。
+在很多情况下，用户不需要了解类型转换机制的
+细节。但 <productname>PostgreSQL</productname>
+所做的隐式转换会影响查询的结果。必要时，用户或程序员可以
+用<emphasis>显式</emphasis>类型转换来定制
+这些结果。
 </para>
 
 <para>
@@ -24,11 +30,24 @@
 <title>概述</title>
 
 <para>
-<acronym>SQL</acronym>是一种强类型语言。也就是说，每个数据项都关联着一个决定其行为和允许用法的数据类型。<productname>PostgreSQL</productname>拥有可扩展的类型系统，比其他<acronym>SQL</acronym>实现更通用也更灵活。因此，<productname>PostgreSQL</productname>中的大多数类型转换行为都由通用规则控制，而不是依赖<foreignphrase>临时性的</foreignphrase>启发式规则。这使得即使表达式中包含用户定义类型，也能够使用混合类型表达式。
+<acronym>SQL</acronym> 是一种强类型语言。也就是说，每个数据项
+都有一个相关联的数据类型，它决定了该数据项的行为和允许的用法。
+<productname>PostgreSQL</productname> 拥有一个可扩展的类型系统，
+比其他 <acronym>SQL</acronym> 实现更加通用和灵活。
+因此，<productname>PostgreSQL</productname> 中大部分类型转换行为
+应当由一般规则而不是<foreignphrase>ad hoc</foreignphrase>（特定）启发式规则支配，
+以使混合类型表达式即使在有用户定义类型时也有
+意义。
 </para>
 
 <para>
-<productname>PostgreSQL</productname>扫描器/解析器将词法元素分成五个基本类别：整数、非整数数字、字符串、标识符和关键字。大多数非数值类型的常量会先被归类为字符串。<acronym>SQL</acronym>语言定义允许给字符串指定类型名，而<productname>PostgreSQL</productname>可以利用这一机制让解析器从一开始就沿着正确的路径处理。例如，查询：
+<productname>PostgreSQL</productname> 的扫描器/解析器只把词法
+元素解码成五种基本类别：整数、浮点数、字符串、
+名字和关键字。大多数非数值类型
+的常量最初被归类为
+字符串。<acronym>SQL</acronym> 语言定义允许用字符串指定类型
+名，这一机制可以用来让解析器走上正确的
+路径。例如，查询
 
 <screen>
 SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
@@ -39,30 +58,42 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 (1 row)
 </screen>
 
-包含两个字面量，它们的类型分别是<type>text</type>和<type>point</type>。如果没有为某个字符串字面量指定类型，那么它最初会被赋予占位类型<type>unknown</type>，并在后文所述的后续阶段解析。
+中的两个文字常量分别是 <type>text</type> 类型和 <type>point</type> 类型。
+如果没有为字符串文字指定类型，最初会先赋予占位类型
+<type>unknown</type>，并在后续阶段按下面描述的方式解析。
 </para>
 
 <para>
-在<productname>PostgreSQL</productname>解析器中，有四种基本的<acronym>SQL</acronym>结构需要采用不同的类型转换规则：
+在 <productname>PostgreSQL</productname>
+解析器中有四种基本的 <acronym>SQL</acronym> 结构需要
+专门的类型转换规则：
 
 <variablelist>
-<varlistentry>
-<term>
-函数调用
-</term>
-<listitem>
-<para>
-<productname>PostgreSQL</productname>类型系统的很大一部分建立在一套丰富的函数之上。函数可以有一个或多个参数。由于<productname>PostgreSQL</productname>支持函数重载，单凭函数名无法唯一确定要调用哪个函数；解析器必须根据所提供参数的数据类型选择正确的函数。
-</para>
-</listitem>
-</varlistentry>
 <varlistentry>
 <term>
 操作符
 </term>
 <listitem>
 <para>
-<productname>PostgreSQL</productname>允许表达式使用前缀和后缀一元（单参数）操作符，以及二元（双参数）操作符。与函数一样，操作符也可以重载，因此同样存在选择正确操作符的问题。
+<productname>PostgreSQL</productname> 允许带前缀和后缀一元（单参数）操作符的
+表达式，
+也允许二元（双参数）操作符的
+表达式。
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+函数调用
+</term>
+<listitem>
+<para>
+<productname>PostgreSQL</productname> 类型系统的很大一部分是围绕一套
+丰富的函数构建的。函数调用可以有一个或多个参数。
+由于 <productname>PostgreSQL</productname> 允许函数
+重载，仅凭函数名并不能唯一标识要调用的
+函数；解析器必须根据所提供参数的数据
+类型选择正确的函数。
 </para>
 </listitem>
 </varlistentry>
@@ -78,11 +109,17 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 </varlistentry>
 <varlistentry>
 <term>
-<literal>UNION</literal>、<literal>CASE</literal>和相关结构
+<literal>UNION</literal>、<literal>CASE</literal>和<literal>ARRAY</literal>结构
 </term>
 <listitem>
 <para>
-由于经UNION合并的<command>SELECT</command>语句的所有查询结果都必须出现在同一组列中，因此每个<command>SELECT</command>子句的结果类型必须彼此匹配，并转换为统一的一组类型。类似地，<literal>CASE</literal>结构中的结果表达式必须转换为某种公共类型，这样整个<literal>CASE</literal>表达式才有确定的输出类型。对于<literal>ARRAY</literal>构造以及<function>GREATEST</function>和<function>LEAST</function>函数，情况也是如此。
+由于联合起来的 <literal>SELECT</literal> 语句的所有查询结果
+必须出现在一组列中，每个
+<literal>SELECT</literal> 子句结果的类型必须匹配并转换成统一的集合。
+类似地，<literal>CASE</literal> 结构的各分支表达式必须
+转换成公共类型，使 <literal>CASE</literal> 表达式整体
+有已知的输出类型。<literal>ARRAY</literal> 结构
+也是如此。
 </para>
 </listitem>
 </varlistentry>
@@ -90,16 +127,16 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 </para>
 
 <para>
-系统目录保存了哪些数据类型之间存在哪些<firstterm>类型转换</firstterm>，以及如何执行这些转换的信息。用户还可以使用<xref linkend="sql-createcast">命令添加额外的类型转换。（这通常与定义新数据类型一并完成。内置类型之间的类型转换集合经过精心设计，最好不要改动。）
+系统目录保存了哪些数据类型之间存在哪些<firstterm>类型转换</firstterm>，以及如何执行这些转换的信息。用户还可以使用<command>CREATE CAST</command>命令添加额外的类型转换。（这通常与定义新数据类型一并完成。内置类型之间的类型转换集合经过精心设计，最好不要改动。）
 </para>
 
 <indexterm>
- <primary>数据类型</primary>
- <secondary>分类</secondary>
+ <primary>data type</primary>
+ <secondary>category</secondary>
 </indexterm>
 
 <para>
-解析器还提供了一种额外的启发式规则，可在存在隐式类型转换的一组类型之间更准确地判定适当的转换行为。数据类型被划分为若干基本的<firstterm>类型分类</firstterm>，包括<type>boolean</type>、<type>numeric</type>、<type>string</type>、<type>bitstring</type>、<type>datetime</type>、<type>timespan</type>、<type>geometric</type>、<type>network</type>以及用户定义类型。（列表见<xref linkend="catalog-typcategory-table">；不过也可以创建自定义类型分类。）每个分类中可以有一个或多个<firstterm>首选类型</firstterm>，当存在多种可能类型可选时，会优先选择它们。通过仔细选择首选类型和可用的隐式类型转换，可以确保有歧义的表达式（即存在多个候选解析方案的表达式）能够以有用的方式被解析。
+解析器还提供了一个附加的启发式规则，以便对<acronym>SQL</acronym>标准类型做出更好的猜测。系统定义了若干基本的<firstterm>类型分类</firstterm>：<type>boolean</type>、<type>numeric</type>、<type>string</type>、<type>bitstring</type>、<type>datetime</type>、<type>timespan</type>、<type>geometric</type>、<type>network</type>以及用户定义类型。除用户定义分类外，每个分类都有一个或多个<firstterm>首选类型</firstterm>，存在歧义时会优先选择它们。在用户定义分类中，每个类型自己的首选类型就是它自己。因此，当存在多个可能的内置类型时，有歧义的表达式（即存在多个候选解析方案的表达式）常常仍能被解析；但当存在多个用户定义类型选择时，则会报错。
 </para>
 
 <para>
@@ -114,11 +151,21 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 
 <listitem>
 <para>
-如果查询不需要隐式类型转换，解析器和执行器就不应承担额外开销。也就是说，如果查询本身书写正确且类型已经匹配，那么执行时不应让解析器额外耗时，也不应在查询中引入不必要的隐式类型转换调用。
+解析器没有关于用户定义类型的<foreignphrase>先验</foreignphrase>知识，这类类型在类型层次结构中应当处于<quote>更高</quote>的位置。在混合类型的表达式中，原生类型应当总是被转换为用户定义类型（当然，仅在确有必要转换时）。
 </para>
 </listitem>
 
 <listitem>
+<para>
+用户定义类型彼此之间没有关联。目前，<productname>PostgreSQL</productname>除了对内置类型的硬编码启发式规则，以及基于可用函数和类型转换的隐式关系外，并没有关于类型之间关系的信息可用。
+</para>
+</listitem>
+
+<listitem>
+<para>
+如果查询不需要隐式类型转换，解析器和执行器就不应承担额外开销。也就是说，如果查询本身书写正确且类型已经匹配，那么执行时不应让解析器额外耗时，也不应在查询中引入不必要的隐式类型转换调用。
+</para>
+
 <para>
 此外，如果某个查询通常需要先对参数做隐式类型转换才能调用某个函数，而此后用户又定义了一个参数类型正确的新函数，那么解析器应改为使用这个新函数，而不再通过隐式转换去调用旧函数。
 </para>
@@ -132,26 +179,25 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 <title>操作符</title>
 
 <indexterm zone="typeconv-oper">
- <primary>操作符</primary>
- <secondary>调用中的类型解析</secondary>
+ <primary>operator</primary>
+ <secondary>type resolution in an invocation</secondary>
 </indexterm>
 
   <para>
-   操作符表达式所引用的具体操作符按照下述过程确定。注意，该过程还会间接受到相关操作符优先级的影响，因为优先级决定了哪些子表达式会被视为哪些操作符的输入。详见<xref linkend="sql-precedence">。
+   操作符表达式所引用的具体操作符按照下述过程确定。注意，该过程还会间接受到相关操作符优先级的影响。详见<xref
+   linkend="sql-precedence">。
   </para>
 
 <procedure>
 <title>操作符类型解析</title>
 
-<step id="op-resol-select" performance="required">
-
+<step performance="required">
 <para>
 从系统目录<classname>pg_operator</classname>中选取要考虑的操作符。如果使用的是未带模式限定的操作符名（通常如此），则考虑当前搜索路径中可见且名称和参数个数匹配的操作符（见<xref linkend="ddl-schemas-path">）。如果给出了限定名，则只考虑指定模式中的操作符。
 </para>
 
 <substeps>
 <step performance="optional">
-
 <para>
 如果搜索路径中找到多个参数类型完全相同的操作符，只考虑路径中最早出现的那一个。参数类型不同的操作符则不受搜索路径位置影响，处于同等地位。
 </para>
@@ -159,53 +205,38 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 </substeps>
 </step>
 
-<step id="op-resol-exact-match" performance="required">
+<step performance="required">
 <para>
 检查是否存在一个恰好接受输入参数类型的操作符。如果存在（在被考虑的操作符集合中至多只有一个精确匹配），就使用它。
 </para>
 
 <substeps>
-<step id="op-resol-exact-unknown" performance="optional">
+<step performance="optional">
 <para>
-如果二元操作符调用的一个参数是<type>unknown</type>类型，则在本次检查中假定它与另一个参数类型相同。涉及两个<type>unknown</type>输入的调用，或带有<type>unknown</type>输入的一元操作符，在这一步都不可能找到匹配。
-</para>
-</step>
-<step id="op-resol-exact-domain" performance="optional">
-
-<para>
-如果二元操作符调用的一个参数是<type>unknown</type>类型，而另一个是域类型，则接着检查是否存在两边都恰好接受该域基础类型的操作符；如果有，就使用它。
+如果二元操作符调用的一个参数是<type>unknown</type>类型，则在本次检查中假定它与另一个参数类型相同。涉及<type>unknown</type>的其他情况在这一步都不会找到匹配。
 </para>
 </step>
 </substeps>
 </step>
 
-<step id="op-resol-best-match" performance="required">
+<step performance="required">
 <para>
 寻找最佳匹配。
 </para>
 <substeps>
 <step performance="required">
-
 <para>
 丢弃那些输入类型不匹配，且也无法通过隐式类型转换实现匹配的候选操作符。为此，假定<type>unknown</type>字面量可以转换为任何类型。如果只剩一个候选操作符，就使用它；否则继续下一步。
 </para>
 </step>
 <step performance="required">
-
 <para>
-如果任何输入参数是域类型，则在后续所有步骤中都把它当作该域的基础类型。这样可以确保在解决操作符歧义时，域的行为与其基础类型一致。
+遍历所有候选操作符，保留那些在输入类型上精确匹配数最多的候选项。（在这一步中，域被视为与其基础类型相同。）如果没有任何候选项存在精确匹配，则保留全部候选项。如果只剩一个候选操作符，就使用它；否则继续下一步。
 </para>
 </step>
 <step performance="required">
-
 <para>
-遍历所有候选操作符，保留那些在输入类型上精确匹配数最多的候选项。如果没有任何候选项存在精确匹配，则保留全部候选项。如果只剩一个候选操作符，就使用它；否则继续下一步。
-</para>
-</step>
-<step performance="required">
-
-<para>
-遍历所有候选操作符，在需要类型转换的位置上，保留接受首选类型（属于输入数据类型的类型分类）的位置数最多的候选项。如果没有候选项接受首选类型，则保留全部候选项。如果只剩一个候选操作符，就使用它；否则继续下一步。
+遍历所有候选操作符，在需要类型转换的位置上，保留接受首选类型的位置数最多的候选项。如果没有候选项接受首选类型，则保留全部候选项。如果只剩一个候选操作符，就使用它；否则继续下一步。
 </para>
 </step>
 <step performance="required">
@@ -227,24 +258,24 @@ SELECT text 'Origin' AS "label", point '(0,0)' AS "value";
 </para>
 
 <example>
-<title>阶乘操作符类型解析</title>
+<title>指数操作符类型解析</title>
 
 <para>
-标准目录中只定义了一个阶乘操作符（后缀 <literal>!</literal>），它接受一个类型为
-<type>bigint</type> 的参数。扫描器为以下查询表达式中的参数赋予初始类型 <type>integer</type>：
+目录中只定义了一个指数操作符，它接受类型为
+<type>double precision</type> 的参数。扫描器为以下查询表达式的两个参数赋予初始类型 <type>integer</type>：
 <screen>
-SELECT 40 ! AS "40 factorial";
+SELECT 2 ^ 3 AS "exp";
 
-                   40 factorial
---------------------------------------------------
- 815915283247897734345611269596115894272000000000
+ exp
+-----
+   8
 (1 row)
 </screen>
 
-因此，解析器会对操作数进行类型转换，该查询等价于：
+因此，解析器会对两个操作数进行类型转换，该查询等价于：
 
 <screen>
-SELECT CAST(40 AS bigint) ! AS "40 factorial";
+SELECT CAST(2 AS double precision) ^ CAST(3 AS double precision) AS "exp";
 </screen>
 </para>
 </example>
@@ -273,7 +304,7 @@ SELECT text 'abc' || 'def' AS "text and unknown";
 </para>
 
 <para>
-下面是两个未指定类型值的连接：
+下面是对未指定类型进行连接的例子：
 <screen>
 SELECT 'abc' || 'def' AS "unspecified";
 
@@ -290,10 +321,15 @@ SELECT 'abc' || 'def' AS "unspecified";
 </example>
 
 <example>
-<title>绝对值与取反操作符类型解析</title>
+<title>绝对值与阶乘操作符的类型解析</title>
 
 <para>
-<productname>PostgreSQL</productname>操作符目录中为前缀操作符<literal>@</literal>提供了多个条目，它们分别实现各种数值数据类型的绝对值操作。其中一个条目对应<type>float8</type>，它是数值分类中的首选类型。因此，当遇到一个<type>unknown</type>输入时，<productname>PostgreSQL</productname>会使用该条目：
+The <productname>PostgreSQL</productname> 运算符目录中前缀运算符
+<literal>@</literal> 有若干条目，它们为各种数值数据类型实现
+绝对值操作。其中一个
+条目面向 <type>float8</type> 类型，它是数值类别中的首选
+类型。因此，<productname>PostgreSQL</productname>
+遇到非数值输入时会使用那个条目：
 <screen>
 SELECT @ '-4.5' AS "abs";
  abs
@@ -301,7 +337,9 @@ SELECT @ '-4.5' AS "abs";
  4.5
 (1 row)
 </screen>
-这里，系统在应用所选操作符之前，已经把unknown类型字面量隐式解析为<type>float8</type>。我们可以验证使用的确实是<type>float8</type>，而不是其他类型：
+这里，系统在应用所选操作符之前，先执行了一次从 <type>text</type> 到 <type>float8</type>
+的隐式转换。我们可以验证用的是 <type>float8</type>
+而不是其他类型：
 <screen>
 SELECT @ '-4.5e500' AS "abs";
 
@@ -310,45 +348,27 @@ ERROR:  "-4.5e500" is out of range for type double precision
 </para>
 
 <para>
-另一方面，前缀操作符<literal>~</literal>（按位取反）只对整数数据类型定义，并没有为<type>float8</type>定义。因此，如果对<literal>~</literal>试一个类似的例子，会得到：
+另一方面，后缀运算符 <literal>!</literal>（阶乘）
+只为整数数据类型定义，不为 <type>float8</type> 定义。因此，如果我们
+用 <literal>!</literal> 尝试类似的情形，会得到：
 <screen>
-SELECT ~ '20' AS "negation";
+SELECT '20' ! AS "factorial";
 
-ERROR:  operator is not unique: ~ "unknown"
-HINT:  Could not choose a best candidate operator. You might need to add
-explicit type casts.
+ERROR:  operator is not unique: "unknown" !
+HINT:  Could not choose a best candidate operator. You may need to add explicit
+type casts.
 </screen>
-这是因为系统无法决定几个可能的<literal>~</literal>操作符中应优先选择哪一个。我们可以通过显式类型转换来帮助它：
+这是因为系统无法决定几个可能的
+<literal>!</literal> 运算符中应该首选哪个。我们可以用
+显式转换来帮它解决：
 <screen>
-SELECT ~ CAST('20' AS int8) AS "negation";
+SELECT CAST('20' AS int8) ! AS "factorial";
 
- negation
-----------
-      -21
+      factorial
+---------------------
+ 2432902008176640000
 (1 row)
 </screen>
-</para>
-</example>
-
-<example>
-
-<title>域类型上的自定义操作符</title>
-
-<para>
-用户有时会尝试声明只适用于某个域类型的操作符。这是可行的，但远没有看上去那样有用，因为操作符解析规则被设计成优先选择作用于域基础类型的操作符。考虑下面的例子：
-<screen>
-CREATE DOMAIN mytext AS text CHECK(...);
-CREATE FUNCTION mytext_eq_text (mytext, text) RETURNS boolean AS ...;
-CREATE OPERATOR = (procedure=mytext_eq_text, leftarg=mytext, rightarg=text);
-CREATE TABLE mytable (val mytext);
-
-SELECT * FROM mytable WHERE val = 'foo';
-</screen>
-这个查询不会使用自定义操作符。解析器首先会检查是否存在<type>mytext</type> <literal>=</literal> <type>mytext</type>操作符（<xref linkend="op-resol-exact-unknown">），但并不存在；然后它会考虑该域的基础类型<type>text</type>，并检查是否存在<type>text</type> <literal>=</literal> <type>text</type>操作符（<xref linkend="op-resol-exact-domain">），而这是存在的；于是它会把<type>unknown</type>类型的字面量解析为<type>text</type>，并使用<type>text</type> <literal>=</literal> <type>text</type>操作符。要让自定义操作符被使用，唯一的方法是显式地对该字面量做类型转换：
-<screen>
-SELECT * FROM mytable WHERE val = text 'foo';
-</screen>
-这样就会根据精确匹配规则立即找到<type>mytext</type> <literal>=</literal> <type>text</type>操作符。如果解析过程进入最佳匹配规则，它们会主动排斥作用于域类型的操作符。如果不是这样，这类操作符会导致过多的操作符歧义失败，因为类型转换规则总是把域视为可以转换到其基础类型或从其基础类型转换而来，因此域操作符会在所有与基础类型上同名操作符相同的场景中都被视为可用。
 </para>
 </example>
 
@@ -358,8 +378,8 @@ SELECT * FROM mytable WHERE val = text 'foo';
 <title>函数</title>
 
 <indexterm zone="typeconv-func">
- <primary>函数</primary>
- <secondary>调用中的类型解析</secondary>
+ <primary>function</primary>
+ <secondary>type resolution in an invocation</secondary>
 </indexterm>
 
   <para>
@@ -376,28 +396,14 @@ SELECT * FROM mytable WHERE val = text 'foo';
 
 <substeps>
 <step performance="optional">
-
 <para>
 如果搜索路径中找到多个参数类型完全相同的函数，只考虑路径中最早出现的那一个。参数类型不同的函数则不受搜索路径位置影响，处于同等地位。
 </para>
-</step>
-<step performance="optional">
-<para>
-如果函数声明了一个<literal>VARIADIC</literal>数组参数，而调用时没有使用<literal>VARIADIC</literal>关键字，则把数组参数视为一个或多个其元素类型的参数，个数按匹配该调用的需要确定。扩展之后，该函数的有效参数类型可能与某个非variadic函数完全相同。在这种情况下，使用搜索路径中较早出现的函数；如果两个函数位于同一模式，则优先选择非variadic的那个。
-</para>
-</step>
-<step performance="optional">
-
-<para>
-带有参数默认值的函数，被认为可以匹配任何省略了零个或多个可使用默认值的参数位置的调用。如果不止一个这样的函数能匹配某个调用，则使用搜索路径中最早出现的那一个。如果同一模式中存在两个或更多这样的函数，并且它们在未使用默认值的参数位置上的参数类型相同（如果它们具有不同的带有默认值的参数集合，这种情况是可能的），系统就无法判断该偏好哪一个；如果找不到更好的匹配，就会报<quote>有歧义的函数调用</quote>错误。
-</para>
-
 </step>
 </substeps>
 </step>
 
 <step performance="required">
-
 <para>
 检查是否存在一个恰好接受输入参数类型的函数。如果存在（在被考虑的函数集合中至多只有一个精确匹配），就使用它。（涉及<type>unknown</type>的情况在这一步永远找不到匹配。）
 </para>
@@ -405,12 +411,7 @@ SELECT * FROM mytable WHERE val = text 'foo';
 
 <step performance="required">
 <para>
-如果没有找到精确匹配，就检查该函数调用是否看起来像一种特殊的类型转换请求。这种情况发生在：函数调用只有一个参数，且函数名与某个数据类型的（内部）名称相同。此外，函数参数必须是unknown类型字面量，或者是一种可以二进制强制转换为该命名数据类型的类型，或者是一种可以通过应用其 I/O 函数转换为该命名数据类型的类型（也就是说，该转换要么转到某种标准字符串类型，要么从某种标准字符串类型转来）。满足这些条件时，该函数调用会被当作一种<literal>CAST</literal>形式。
-  <footnote>
-   <para>
-    之所以有这一步，是为了在不存在实际类型转换函数的情况下仍支持函数风格的类型转换写法。如果存在类型转换函数，按惯例它会以其输出类型命名，因此无需为此设置特殊情况。更多说明见<xref linkend="sql-createcast">。
-   </para>
-  </footnote>
+如果没有找到精确匹配，就检查该函数调用是否看起来像一种简单的类型转换请求。这种情况发生在：函数调用只有一个参数，且函数名与某个数据类型的（内部）名称相同。此外，函数参数必须是unknown类型字面量，或者是一种与该命名数据类型二进制兼容的类型。满足这些条件时，函数参数会被直接转换为该命名数据类型，而不会发生实际的函数调用。
 </para>
 </step>
 <step performance="required">
@@ -419,37 +420,28 @@ SELECT * FROM mytable WHERE val = text 'foo';
 </para>
 <substeps>
 <step performance="required">
-
 <para>
 丢弃那些输入类型不匹配，且也无法通过隐式类型转换实现匹配的候选函数。为此，假定<type>unknown</type>字面量可以转换为任何类型。如果只剩一个候选函数，就使用它；否则继续下一步。
 </para>
 </step>
 <step performance="required">
-
 <para>
-如果任何输入参数是域类型，则在后续所有步骤中都把它当作该域的基础类型。这样可以确保在解决函数歧义时，域的行为与其基础类型一致。
-</para>
-</step>
-<step performance="required">
-
-<para>
-遍历所有候选函数，保留那些在输入类型上精确匹配数最多的候选项。如果没有任何候选项存在精确匹配，则保留全部候选项。如果只剩一个候选函数，就使用它；否则继续下一步。
-</para>
-</step>
-<step performance="required">
-
-<para>
-遍历所有候选函数，在需要类型转换的位置上，保留接受首选类型（属于输入数据类型的类型分类）的位置数最多的候选项。如果没有候选项接受首选类型，则保留全部候选项。如果只剩一个候选函数，就使用它；否则继续下一步。
+遍历所有候选操作符，保留那些在输入类型上精确匹配数最多的候选项。（在这一步中，域被视为与其基础类型相同。）如果没有任何候选项存在精确匹配，则保留全部候选项。如果只剩一个候选操作符，就使用它；否则继续下一步。
 </para>
 </step>
 <step performance="required">
 <para>
-如果有任何输入参数是<type>unknown</type>，就检查剩余候选函数在这些参数位置上接受哪些类型分类。在每个位置上，如果有任何候选项接受<type>string</type>分类，就选择该分类。（这种偏向字符串的做法是合适的，因为unknown类型的字面量看起来像字符串。）否则，如果所有剩余候选项都接受同一种类型分类，就选择该分类；否则失败，因为在缺少更多线索的情况下无法推断出正确选择。然后丢弃不接受所选类型分类的候选项。此外，如果有任何候选项接受该分类中的首选类型，就丢弃在该参数上接受非首选类型的候选项。
+遍历所有候选操作符，在需要类型转换的位置上，保留接受首选类型的位置数最多的候选项。如果没有候选项接受首选类型，则保留全部候选项。如果只剩一个候选操作符，就使用它；否则继续下一步。
 </para>
 </step>
 <step performance="required">
 <para>
-如果只剩一个候选函数，就使用它。如果没有候选函数或者不止一个候选函数剩余，则失败。
+如果有任何输入参数是<type>unknown</type>，就检查剩余候选操作符在这些参数位置上接受哪些类型分类。在每个位置上，如果有任何候选项接受<type>string</type>分类，就选择该分类。（这种偏向字符串的做法是合适的，因为unknown类型的字面量看起来像字符串。）否则，如果所有剩余候选项都接受同一种类型分类，就选择该分类；否则失败，因为在缺少更多线索的情况下无法推断出正确选择。然后丢弃不接受所选类型分类的候选项。此外，如果有任何候选项接受该分类中的首选类型，就丢弃在该参数上接受非首选类型的候选项。
+</para>
+</step>
+<step performance="required">
+<para>
+如果只剩一个候选操作符，就使用它。如果没有候选操作符或者不止一个候选操作符剩余，则失败。
 </para>
 </step>
 </substeps>
@@ -461,7 +453,6 @@ SELECT * FROM mytable WHERE val = text 'foo';
 </para>
 
 <example>
-
 <title>round 函数参数类型解析</title>
 
 <para>
@@ -491,7 +482,6 @@ SELECT round(4.0, 4);
 </example>
 
 <example>
-
 <title>substr 函数类型解析</title>
 
 <para>
@@ -523,7 +513,6 @@ SELECT substr(varchar '1234', 3);
 SELECT substr(CAST (varchar '1234' AS text), 3);
 </screen>
 </para>
-
 <para>
 <note>
 <para>
@@ -533,23 +522,23 @@ SELECT substr(CAST (varchar '1234' AS text), 3);
 </para>
 
 <para>
-如果用<type>integer</type>类型参数调用该函数，解析器会尝试把它转换为<type>text</type>：
+如果用<type>integer</type>类型的参数调用该函数，解析器会尝试把它转换为
+<type>text</type>：
 <screen>
 SELECT substr(1234, 3);
-ERROR:  function substr(integer, integer) does not exist
-HINT:  No function matches the given name and argument types. You might need
-to add explicit type casts.
-</screen>
-
-这行不通，因为<type>integer</type>并没有到<type>text</type>的隐式类型转换。不过，显式类型转换可以：
-<screen>
-SELECT substr(CAST (1234 AS text), 3);
 
  substr
 --------
      34
 (1 row)
 </screen>
+
+这实际上会执行为
+<screen>
+SELECT substr(CAST (1234 AS text), 3);
+</screen>
+这种自动转换之所以能成功，是因为存在一个可隐式调用的从<type>integer</type>
+到<type>text</type>的类型转换。
 </para>
 </example>
 
@@ -566,7 +555,6 @@ SELECT substr(CAST (1234 AS text), 3);
 <title>值存储的类型转换</title>
 
 <step performance="required">
-
 <para>
 检查是否与目标类型精确匹配。
 </para>
@@ -579,9 +567,13 @@ SELECT substr(CAST (1234 AS text), 3);
 </step>
 
 <step performance="required">
-
 <para>
-检查目标类型是否有尺寸调整类型转换。尺寸调整类型转换是该类型到其自身的类型转换。如果在<structname>pg_cast</structname>目录中找到了这种转换，就在把表达式存入目标列之前先应用它。此类类型转换的实现函数总是额外接受一个<type>integer</type>参数，用来接收目标列的<structfield>atttypmod</structfield>值（通常是其声明长度，尽管不同数据类型对<structfield>atttypmod</structfield>的解释各不相同）；它还可能接受第三个<type>boolean</type>参数，用来说明该类型转换是显式还是隐式的。类型转换函数负责应用所有与长度相关的语义，例如长度检查或截断。
+如果目标是定长类型（例如声明了长度的
+<type>char</type> 或 <type>varchar</type>），则尝试为目标
+类型寻找一个尺寸调整函数。尺寸调整函数是一个与类型同名的函数，
+接受两个参数，第一个是该类型，第二个是
+<type>integer</type> 类型，并返回同一类型。如果找到了这样的函数，就应用它，
+把列的声明长度作为第二个参数传递。
 </para>
 </step>
 
@@ -606,72 +598,37 @@ SELECT v, octet_length(v) FROM vv;
 </para>
 
 <para>
-这里实际发生的是，两个unknown类型字面量默认都被解析为<type>text</type>，从而使<literal>||</literal>操作符被解析为<type>text</type>的连接操作。然后，操作符得到的<type>text</type>结果被转换为<type>bpchar</type>（<quote>用空格填充的字符</quote>，blank-padded char，即<type>character</type>数据类型的内部名称），以匹配目标列类型。（由于从<type>text</type>到<type>bpchar</type>的转换是二进制可强制转换的，这一步不会插入任何真实的函数调用。）最后，系统从系统目录中找到尺寸调整函数<literal>bpchar(bpchar, integer, boolean)</literal>，并把它应用到操作符结果以及存储列长度上。这个特定于类型的函数会执行所需的长度检查并补齐填充空格。
+这里实际发生的是，两个unknown类型字面量默认都被解析为<type>text</type>，从而使<literal>||</literal>操作符被解析为<type>text</type>的连接操作。然后，操作符得到的<type>text</type>结果被转换为<type>bpchar</type>（<quote>用空格填充的字符</quote>，blank-padded char，即<type>character</type>数据类型的内部名称），以匹配目标列类型。（由于<type>text</type>和<type>bpchar</type>二进制兼容，这一转换不会插入任何真实的函数调用。）最后，系统从系统目录中找到尺寸调整函数<literal>bpchar(bpchar, integer)</literal>，并把它应用到操作符结果以及存储列长度上。这个特定于类型的函数会执行所需的长度检查并补齐填充空格。
 </para>
 </example>
 </sect1>
 
 <sect1 id="typeconv-union-case">
-<title><literal>UNION</literal>、<literal>CASE</literal>及相关结构</title>
+<title><literal>UNION</literal>、<literal>CASE</literal>和<literal>ARRAY</literal>结构</title>
 
 <indexterm zone="typeconv-union-case">
  <primary>UNION</primary>
- <secondary>结果类型的确定</secondary>
+ <secondary>determination of result type</secondary>
 </indexterm>
 
 <indexterm zone="typeconv-union-case">
  <primary>CASE</primary>
- <secondary>结果类型的确定</secondary>
+ <secondary>determination of result type</secondary>
 </indexterm>
 
 <indexterm zone="typeconv-union-case">
  <primary>ARRAY</primary>
- <secondary>结果类型的确定</secondary>
-</indexterm>
-
-<indexterm zone="typeconv-union-case">
- <primary>VALUES</primary>
- <secondary>结果类型的确定</secondary>
-</indexterm>
-
-<indexterm zone="typeconv-union-case">
- <primary>GREATEST</primary>
- <secondary>结果类型的确定</secondary>
-</indexterm>
-
-<indexterm zone="typeconv-union-case">
- <primary>LEAST</primary>
- <secondary>结果类型的确定</secondary>
+ <secondary>determination of result type</secondary>
 </indexterm>
 
 <para>
-SQL 的<literal>UNION</literal>结构必须让可能不同的类型彼此匹配，以形成单一结果集。该解析算法会分别应用到联合查询的每个输出列。<literal>INTERSECT</literal>和<literal>EXCEPT</literal>结构以与<literal>UNION</literal>相同的方式解析不同类型。<literal>CASE</literal>、<literal>ARRAY</literal>、<literal>VALUES</literal>以及<function>GREATEST</function>和<function>LEAST</function>构造使用完全相同的算法来匹配其组成表达式并选择结果数据类型。
+SQL 的<literal>UNION</literal>结构必须让可能不同的类型彼此匹配，以形成单一结果集。该解析算法会分别应用到联合查询的每个输出列。<literal>INTERSECT</literal>和<literal>EXCEPT</literal>结构以与<literal>UNION</literal>相同的方式解析不同类型。<literal>CASE</literal>和<literal>ARRAY</literal>构造使用完全相同的算法来匹配其组成表达式并选择结果数据类型。
 </para>
 
 <procedure>
-<title><literal>UNION</literal>、<literal>CASE</literal>及相关结构的类型解析</title>
+<title><literal>UNION</literal>、<literal>CASE</literal>和<literal>ARRAY</literal>结构的类型解析</title>
 
 <step performance="required">
-
-<para>
-如果所有输入都是同一类型，且该类型不是<type>unknown</type>，就解析为该类型。
-</para>
-</step>
-
-<step performance="required">
-
-<para>
-如果任何输入是域类型，则在后续所有步骤中都把它当作该域的基础类型。
-  <footnote>
-   <para>
-    这在某种程度上类似于操作符和函数对域输入的处理方式；只要用户确保所有输入都隐式或显式地正好属于该域类型，这种行为就能让域类型在<literal>UNION</literal>或类似结构中得以保留。否则，将优先使用该域的基础类型。
-   </para>
-  </footnote>
-</para>
-</step>
-
-<step performance="required">
-
 <para>
 如果所有输入都是<type>unknown</type>类型，则解析为<type>text</type>类型（字符串分类的首选类型）。否则，忽略<type>unknown</type>输入。
 </para>
@@ -685,20 +642,13 @@ SQL 的<literal>UNION</literal>结构必须让可能不同的类型彼此匹配�
 
 <step performance="required">
 <para>
-选择该分类中的首选类型（如果第一个非unknown输入类型恰好是首选类型，则选它）。
+选择第一个满足如下条件的非unknown输入类型：它是该分类中的首选类型，或者所有非unknown输入都可以隐式转换为它。
 </para>
 </step>
 
 <step performance="required">
 <para>
-否则，选择最后一个能让所有在它之前的非unknown输入都隐式转换为它的非unknown输入类型。（这样的类型总是存在的，因为列表中至少第一个类型就满足这一条件。）
-</para>
-</step>
-
-<step performance="required">
-
-<para>
-把所有输入都转换为所选类型。如果某个输入到所选类型不存在转换，则失败。
+把所有输入都转换为所选类型。
 </para>
 </step>
 </procedure>
@@ -760,3 +710,20 @@ SELECT 1 AS "real" UNION SELECT CAST('2.2' AS REAL);
 
 </sect1>
 </chapter>
+
+<!-- Keep this comment at the end of the file
+Local variables:
+mode:sgml
+sgml-omittag:t
+sgml-shorttag:t
+sgml-minimize-attributes:nil
+sgml-always-quote-attributes:t
+sgml-indent-step:1
+sgml-indent-data:t
+sgml-parent-document:nil
+sgml-default-dtd-file:"./reference.ced"
+sgml-exposed-tags:nil
+sgml-local-catalogs:("/usr/lib/sgml/catalog")
+sgml-local-ecat-files:nil
+End:
+-->

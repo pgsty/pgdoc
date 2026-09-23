@@ -1,4 +1,4 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/rules.sgml,v 1.56 2010/05/13 19:16:14 tgl Exp $ -->
+<!-- $PostgreSQL: pgsql/doc/src/sgml/rules.sgml,v 1.31.2.2 2010/05/13 19:16:52 tgl Exp $ -->
 
 <chapter id="rules">
 <title>规则系统</title>
@@ -245,7 +245,7 @@ CREATE RULE "_RETURN" AS ON SELECT TO myview DO INSTEAD
 </para>
 
 <sect2 id="rules-select">
-<title>How <command>SELECT</command> Rules Work</title>
+<title><command>SELECT</command> 规则如何工作</title>
 
 <indexterm zone="rules-select">
  <primary>rule</primary>
@@ -257,7 +257,7 @@ CREATE RULE "_RETURN" AS ON SELECT TO myview DO INSTEAD
 </para>
 
 <para>
-    目前，一个<literal>ON SELECT</literal>规则中只能有一个动作，而且它必须是一个无条件、带有<literal>INSTEAD</literal>的<command>SELECT</command>动作。之所以有这个限制，是为了让规则足够安全，从而能够向普通用户开放；它也把<literal>ON SELECT</literal>规则限制为像视图那样工作。
+    目前，一个<literal>ON SELECT</literal>规则中只能有一个动作，而且它必须是一个无条件、带有<literal>INSTEAD</literal>的<command>SELECT</command>动作。之所以有这个限制，是为了让规则足够安全，从而能够向普通用户开放；它也把<literal>ON SELECT</literal>规则限制为真正的视图规则。
 </para>
 
 <para>
@@ -265,13 +265,12 @@ CREATE RULE "_RETURN" AS ON SELECT TO myview DO INSTEAD
 </para>
 
 <para>
-For the example, we need a little <literal>min</literal> function that
-returns the lower of 2 integer values. We create that as:
+    对于这个例子，我们需要一个返回两个整数值中较小者的 <literal>min</literal> 函数。我们这样创建它：
 
 <programlisting>
-CREATE FUNCTION min(integer, integer) RETURNS integer AS $$
+CREATE FUNCTION min(integer, integer) RETURNS integer AS '
     SELECT CASE WHEN $1 &lt; $2 THEN $1 ELSE $2 END
-$$ LANGUAGE SQL STRICT;
+' LANGUAGE SQL STRICT;
 </programlisting>
 </para>
 
@@ -358,7 +357,7 @@ CREATE VIEW shoe_ready AS
     
     <note>
     <para>
-    你在<structname>pg_rewrite</structname>项中看到的、用于<literal>NEW</literal>和<literal>OLD</literal>的两个额外范围表项，与<command>SELECT</command>规则无关。
+    你在<structname>pg_rewrite</structname>项中看到的、用于<literal>NEW</literal>和<literal>OLD</literal>的两个额外范围表项（在打印出来的查询树中，它们出于历史原因被命名为<literal>*NEW*</literal>和<literal>*OLD*</literal>），与<command>SELECT</command>规则无关。
     </para>
     </note>
 
@@ -414,7 +413,7 @@ SELECT shoelace.sl_name, shoelace.sl_avail,
 SELECT s.sl_name, s.sl_avail,
        s.sl_color, s.sl_len, s.sl_unit,
        s.sl_len * u.un_fact AS sl_len_cm
-  FROM shoelace old, shoelace new,
+  FROM shoelace *OLD*, shoelace *NEW*,
        shoelace_data s, unit u
  WHERE s.sl_unit = u.un_name;
 </programlisting>
@@ -432,11 +431,11 @@ SELECT shoelace.sl_name, shoelace.sl_avail,
                s.sl_len * u.un_fact AS sl_len_cm
           FROM shoelace_data s, unit u
          WHERE s.sl_unit = u.un_name) shoelace;
-</programlisting>不过有一点不同：子查询的范围表中有两个额外条目，<literal>shoelace old</literal> 和
-    <literal>shoelace new</literal>。这些条目不直接参与查询，因为子查询的连接树或目标列表并未引用它们。重写器用它们保存原先引用视图的范围表条目中的访问权限检查信息。这样，即使重写后的查询没有直接使用视图，执行器仍会检查用户是否具有访问该视图所需的权限。</para>
+</programlisting>不过有一点不同：子查询的范围表中有两个额外条目，<literal>shoelace *OLD*</literal> 和
+    <literal>shoelace *NEW*</literal>。这些条目不直接参与查询，因为子查询的连接树或目标列表并未引用它们。重写器用它们保存原先引用视图的范围表条目中的访问权限检查信息。这样，即使重写后的查询没有直接使用视图，执行器仍会检查用户是否具有访问该视图所需的权限。</para>
 
 <para>
-    这就是应用的第一条规则。规则系统接着会检查顶层查询中剩余的范围表项（本例中已经没有了），并递归检查新增子查询中的范围表项，看它们是否引用了视图。（但它不会展开<literal>old</literal>或<literal>new</literal>，否则就会出现无限递归！）在这个例子中，<literal>shoelace_data</literal>和<literal>unit</literal>都没有重写规则，因此重写到此结束，上面的结果就是交给规划器的最终结果。
+    这就是应用的第一条规则。规则系统接着会检查顶层查询中剩余的范围表项（本例中已经没有了），并递归检查新增子查询中的范围表项，看它们是否引用了视图。（但它不会展开<literal>*OLD*</literal>或<literal>*NEW*</literal>，否则就会出现无限递归！）在这个例子中，<literal>shoelace_data</literal>和<literal>unit</literal>都没有重写规则，因此重写到此结束，上面的结果就是交给规划器的最终结果。
 </para>
 
 <para>
@@ -530,6 +529,18 @@ SELECT shoe_ready.shoename, shoe_ready.sh_avail,
     的行为，而这不是我们想要的。不过，折叠查询树属于一种优化，
     重写系统本身无须关心。
    </para>
+
+   <note>
+    <para>
+    规则系统目前对视图规则没有递归终止机制（对其他类型的规则才有）。
+    这并不会造成太大问题，因为要把处理推入无限循环（使服务器进程不断膨胀，
+    直至达到内存上限）的唯一方式，是先创建一些表，然后手工用
+    <command>CREATE RULE</command> 把视图规则设置成一个从另一个选择、
+    而另一个又从这个选择的形式。如果使用 <command>CREATE VIEW</command>，
+    这种情况绝不会发生，因为在执行第一个 <command>CREATE VIEW</command> 时，
+    第二个关系尚不存在，因此第一个视图无法从第二个视图选择。
+    </para>
+   </note>
 </sect2>
 
 <sect2>
@@ -546,7 +557,7 @@ SELECT shoe_ready.shoename, shoe_ready.sh_avail,
 <programlisting>
 SELECT t2.b FROM t1, t2 WHERE t1.a = t2.a;
 
-UPDATE t1 SET b = t2.b FROM t2 WHERE t1.a = t2.a;
+UPDATE t1 SET b = t2.b WHERE t1.a = t2.a;
 </programlisting>
 
     几乎是一样的。特别是：
@@ -584,7 +595,7 @@ UPDATE t1 SET b = t2.b FROM t2 WHERE t1.a = t2.a;
     <literal>t1</> 中缺失的列补入目标列表，最终查询树会变成：
 
 <programlisting>
-UPDATE t1 SET a = t1.a, b = t2.b FROM t2 WHERE t1.a = t2.a;
+UPDATE t1 SET a = t1.a, b = t2.b WHERE t1.a = t2.a;
 </programlisting>
 
     因而，执行器在这个连接上运行时会产生与下面语句完全相同的
@@ -699,7 +710,7 @@ SELECT t1.a, t2.b, t1.ctid FROM t1, t2 WHERE t1.a = t2.a;
 
         <listitem>
         <para>
-            它们可以是<literal>INSTEAD</literal>或<literal>ALSO</literal>（缺省）。
+            它们可以是<literal>INSTEAD</literal>，也可以不是。
         </para>
         </listitem>
 
@@ -726,16 +737,16 @@ SELECT t1.a, t2.b, t1.ctid FROM t1, t2 WHERE t1.a = t2.a;
     记住以下语法：
 
 <programlisting>
-CREATE [ OR REPLACE ] RULE <replaceable class="parameter">name</replaceable> AS ON <replaceable class="parameter">event</replaceable>
-    TO <replaceable class="parameter">table</replaceable> [ WHERE <replaceable class="parameter">condition</replaceable> ]
-    DO [ ALSO | INSTEAD ] { NOTHING | <replaceable class="parameter">command</replaceable> | ( <replaceable class="parameter">command</replaceable> ; <replaceable class="parameter">command</replaceable> ... ) }
+CREATE RULE <replaceable class="parameter">rule_name</replaceable> AS ON <replaceable class="parameter">event</replaceable>
+    TO <replaceable class="parameter">object</replaceable> [WHERE <replaceable class="parameter">rule_qualification</replaceable>]
+    DO [INSTEAD] [<replaceable class="parameter">action</replaceable> | (<replaceable class="parameter">actions</replaceable>) | NOTHING];
 </programlisting>
 
     在后文中，<firstterm>更新规则</firstterm>是指定义在<command>INSERT</command>、<command>UPDATE</command>或<command>DELETE</command>上的规则。
 </para>
 
 <para>
-    当查询树的结果关系和命令类型分别等于<command>CREATE RULE</command>命令中给出的对象和事件时，规则系统就会应用更新规则。对于更新规则，规则系统会创建一个查询树列表，初始时该列表为空。动作可以有零个（关键字<literal>NOTHING</literal>）、一个或多个。为简化说明，我们先看只有一个动作的规则。这个规则可以有条件，也可以没有条件；它还可以是<literal>INSTEAD</literal>或<literal>ALSO</literal>（默认值）。
+    当查询树的结果关系和命令类型分别等于<command>CREATE RULE</command>命令中给出的对象和事件时，规则系统就会应用更新规则。对于更新规则，规则系统会创建一个查询树列表，初始时该列表为空。动作可以有零个（关键字<literal>NOTHING</literal>）、一个或多个。为简化说明，我们先看只有一个动作的规则。这个规则可以有条件，也可以没有条件；它可以是<literal>INSTEAD</literal>，也可以不是。
 </para>
 
 <para>
@@ -743,11 +754,11 @@ CREATE [ OR REPLACE ] RULE <replaceable class="parameter">name</replaceable> AS 
 </para>
 
    <para>
-    因此，对于只有一个动作的规则，有以下三种情况会产生相应的查询树。
+    因此，对于只有一个动作的规则，有以下四种情况会产生相应的查询树。
 
     <variablelist>
      <varlistentry>
-      <term>没有条件，有<literal>ALSO</literal>或<literal>INSTEAD</literal></term>
+      <term>没有条件，也不是<literal>INSTEAD</literal></term>
       <listitem>
        <para>
         规则动作的查询树，再附加原始查询树的条件
@@ -756,7 +767,16 @@ CREATE [ OR REPLACE ] RULE <replaceable class="parameter">name</replaceable> AS 
      </varlistentry>
 
      <varlistentry>
-      <term>给出了条件，有<literal>ALSO</literal></term>
+      <term>没有条件，但带有<literal>INSTEAD</literal></term>
+      <listitem>
+       <para>
+        规则动作的查询树，再附加原始查询树的条件
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>给出了条件，不是<literal>INSTEAD</literal></term>
       <listitem>
        <para>
         规则动作的查询树，再附加规则条件和原始查询树的条件
@@ -774,7 +794,7 @@ CREATE [ OR REPLACE ] RULE <replaceable class="parameter">name</replaceable> AS 
      </varlistentry>
     </variablelist>
 
-    最后，如果规则是 <literal>ALSO</literal>，就把未经更改的原始查询树加入列表。由于只有带条件的 <literal>INSTEAD</literal> 规则已经加入了原始查询树，因此，对于只有一个动作的规则，最终会得到一棵或两棵输出查询树。
+    最后，如果规则不是 <literal>INSTEAD</literal>，就把未经更改的原始查询树加入列表。由于只有带条件的 <literal>INSTEAD</literal> 规则已经加入了原始查询树，因此，对于只有一个动作的规则，最终会得到一棵或两棵输出查询树。
 </para>
 
 <para>
@@ -856,22 +876,22 @@ NEW.sl_avail &lt;&gt; OLD.sl_avail
 
 <programlisting>
 INSERT INTO shoelace_log VALUES (
-       new.sl_name, new.sl_avail,
+       *NEW*.sl_name, *NEW*.sl_avail,
        current_user, current_timestamp )
-  FROM shoelace_data new, shoelace_data old;
+  FROM shoelace_data *NEW*, shoelace_data *OLD*;
 </programlisting>
 
-    （这看起来有点奇怪，因为通常你不能写<literal>INSERT ... VALUES ... FROM</literal>。这里的<literal>FROM</literal>子句只是为了表明查询树中存在用于<literal>new</literal>和<literal>old</literal>的范围表项。之所以需要这些项，是为了让<command>INSERT</command>命令查询树中的变量能够引用它们。）
+    （这看起来有点奇怪，因为通常你不能写<literal>INSERT ... VALUES ... FROM</literal>。这里的<literal>FROM</literal>子句只是为了表明查询树中存在用于<literal>*NEW*</literal>和<literal>*OLD*</literal>的范围表项。之所以需要这些项，是为了让<command>INSERT</command>命令查询树中的变量能够引用它们。）
 </para>
 
 <para>
-    该规则是一条带条件的<literal>ALSO</literal>规则，因此规则系统必须返回两棵查询树：修改后的规则动作，以及原始查询树。第 1 步中，原始查询的范围表会并入规则动作的查询树，得到：
+    该规则是一条带条件的非<literal>INSTEAD</literal>规则，因此规则系统必须返回两棵查询树：修改后的规则动作，以及原始查询树。第 1 步中，原始查询的范围表会并入规则动作的查询树，得到：
 
 <programlisting>
 INSERT INTO shoelace_log VALUES (
-       new.sl_name, new.sl_avail,
+       *NEW*.sl_name, *NEW*.sl_avail,
        current_user, current_timestamp )
-  FROM shoelace_data new, shoelace_data old,
+  FROM shoelace_data *NEW*, shoelace_data *OLD*,
        <emphasis>shoelace_data shoelace_data</emphasis>;
 </programlisting>
 
@@ -879,11 +899,11 @@ INSERT INTO shoelace_log VALUES (
 
 <programlisting>
 INSERT INTO shoelace_log VALUES (
-       new.sl_name, new.sl_avail,
+       *NEW*.sl_name, *NEW*.sl_avail,
        current_user, current_timestamp )
-  FROM shoelace_data new, shoelace_data old,
+  FROM shoelace_data *NEW*, shoelace_data *OLD*,
        shoelace_data shoelace_data
- <emphasis>WHERE new.sl_avail &lt;&gt; old.sl_avail</emphasis>;
+ <emphasis>WHERE *NEW*.sl_avail &lt;&gt; *OLD*.sl_avail</emphasis>;
 </programlisting>
 
     （这看起来更奇怪，因为<literal>INSERT ... VALUES</literal>同样没有<literal>WHERE</literal>子句，但规划器和执行器处理它并无困难。反正它们本来也需要为<literal>INSERT ... SELECT</literal>支持相同功能。）
@@ -894,11 +914,11 @@ INSERT INTO shoelace_log VALUES (
 
 <programlisting>
 INSERT INTO shoelace_log VALUES (
-       new.sl_name, new.sl_avail,
+       *NEW*.sl_name, *NEW*.sl_avail,
        current_user, current_timestamp )
-  FROM shoelace_data new, shoelace_data old,
+  FROM shoelace_data *NEW*, shoelace_data *OLD*,
        shoelace_data shoelace_data
- WHERE new.sl_avail &lt;&gt; old.sl_avail
+ WHERE *NEW*.sl_avail &lt;&gt; *OLD*.sl_avail
    <emphasis>AND shoelace_data.sl_name = 'sl7'</emphasis>;
 </programlisting>
    </para>
@@ -910,9 +930,9 @@ INSERT INTO shoelace_log VALUES (
 INSERT INTO shoelace_log VALUES (
        <emphasis>shoelace_data.sl_name</emphasis>, <emphasis>6</emphasis>,
        current_user, current_timestamp )
-  FROM shoelace_data new, shoelace_data old,
+  FROM shoelace_data *NEW*, shoelace_data *OLD*,
        shoelace_data shoelace_data
- WHERE <emphasis>6</emphasis> &lt;&gt; old.sl_avail
+ WHERE <emphasis>6</emphasis> &lt;&gt; *OLD*.sl_avail
    AND shoelace_data.sl_name = 'sl7';
 </programlisting>
 
@@ -925,7 +945,7 @@ INSERT INTO shoelace_log VALUES (
 INSERT INTO shoelace_log VALUES (
        shoelace_data.sl_name, 6,
        current_user, current_timestamp )
-  FROM shoelace_data new, shoelace_data old,
+  FROM shoelace_data *NEW*, shoelace_data *OLD*,
        shoelace_data shoelace_data
  WHERE 6 &lt;&gt; <emphasis>shoelace_data.sl_avail</emphasis>
    AND shoelace_data.sl_name = 'sl7';
@@ -933,7 +953,7 @@ INSERT INTO shoelace_log VALUES (
    </para>
 
    <para>
-    至此就完成了。由于规则是<literal>ALSO</literal>，我们还要输出原始查询树。简而言之，规则系统输出的是一个包含两棵查询树的列表，它们对应于以下语句：
+    至此就完成了。由于规则不是<literal>INSTEAD</literal>，我们还要输出原始查询树。简而言之，规则系统输出的是一个包含两棵查询树的列表，它们对应于以下语句：
 
 <programlisting>
 INSERT INTO shoelace_log VALUES (
@@ -1053,28 +1073,6 @@ CREATE RULE shoelace_del AS ON DELETE TO shoelace
    </para>
 
    <para>
-    如果你想在视图上支持<literal>RETURNING</literal>查询，就需要让规则包含计算视图行的<literal>RETURNING</literal>子句。对于单表视图，这通常很简单；但对于像<literal>shoelace</literal>这样的连接视图，就会有点烦琐。插入场景的一个示例如下：
-
-<programlisting>
-CREATE RULE shoelace_ins AS ON INSERT TO shoelace
-    DO INSTEAD
-    INSERT INTO shoelace_data VALUES (
-           NEW.sl_name,
-           NEW.sl_avail,
-           NEW.sl_color,
-           NEW.sl_len,
-           NEW.sl_unit
-    )
-    RETURNING
-           shoelace_data.*,
-           (SELECT shoelace_data.sl_len * u.un_fact
-            FROM unit u WHERE shoelace_data.sl_unit = u.un_name);
-</programlisting>
-
-   请注意，这一条规则同时支持该视图上的<command>INSERT</command>和<command>INSERT RETURNING</command>查询；对于普通<command>INSERT</command>，<literal>RETURNING</literal>子句会被简单忽略。
-   </para>
-
-   <para>
     现在假定商店每隔一段时间就会收到一包鞋带，随附一份很长的部件清单。但你不想每次都手工更新 <literal>shoelace</literal> 视图。因此，我们建立两个小表：一个用于插入部件清单中的项目，另一个则采用一个特殊技巧。创建命令如下：
 
 <programlisting>
@@ -1176,7 +1174,7 @@ SELECT shoelace_arrive.arr_name, shoelace_arrive.arr_quant
 UPDATE shoelace
    SET sl_avail = shoelace.sl_avail + shoelace_arrive.arr_quant
   FROM shoelace_arrive shoelace_arrive, shoelace_ok shoelace_ok,
-       shoelace_ok old, shoelace_ok new,
+       shoelace_ok *OLD*, shoelace_ok *NEW*,
        shoelace shoelace
  WHERE shoelace.sl_name = shoelace_arrive.arr_name;
 </programlisting>
@@ -1191,9 +1189,9 @@ UPDATE shoelace_data
        sl_len = shoelace.sl_len,
        sl_unit = shoelace.sl_unit
   FROM shoelace_arrive shoelace_arrive, shoelace_ok shoelace_ok,
-       shoelace_ok old, shoelace_ok new,
-       shoelace shoelace, shoelace old,
-       shoelace new, shoelace_data shoelace_data
+       shoelace_ok *OLD*, shoelace_ok *NEW*,
+       shoelace shoelace, shoelace *OLD*,
+       shoelace *NEW*, shoelace_data shoelace_data
  WHERE shoelace.sl_name = shoelace_arrive.arr_name
    AND shoelace_data.sl_name = shoelace.sl_name;
 </programlisting>
@@ -1208,10 +1206,10 @@ UPDATE shoelace_data
        sl_len = s.sl_len,
        sl_unit = s.sl_unit
   FROM shoelace_arrive shoelace_arrive, shoelace_ok shoelace_ok,
-       shoelace_ok old, shoelace_ok new,
-       shoelace shoelace, shoelace old,
-       shoelace new, shoelace_data shoelace_data,
-       shoelace old, shoelace new,
+       shoelace_ok *OLD*, shoelace_ok *NEW*,
+       shoelace shoelace, shoelace *OLD*,
+       shoelace *NEW*, shoelace_data shoelace_data,
+       shoelace *OLD*, shoelace *NEW*,
        shoelace_data s, unit u
  WHERE s.sl_name = shoelace_arrive.arr_name
    AND shoelace_data.sl_name = s.sl_name;
@@ -1226,12 +1224,12 @@ SELECT s.sl_name,
        current_user,
        current_timestamp
   FROM shoelace_arrive shoelace_arrive, shoelace_ok shoelace_ok,
-       shoelace_ok old, shoelace_ok new,
-       shoelace shoelace, shoelace old,
-       shoelace new, shoelace_data shoelace_data,
-       shoelace old, shoelace new,
+       shoelace_ok *OLD*, shoelace_ok *NEW*,
+       shoelace shoelace, shoelace *OLD*,
+       shoelace *NEW*, shoelace_data shoelace_data,
+       shoelace *OLD*, shoelace *NEW*,
        shoelace_data s, unit u,
-       shoelace_data old, shoelace_data new
+       shoelace_data *OLD*, shoelace_data *NEW*
        shoelace_log shoelace_log
  WHERE s.sl_name = shoelace_arrive.arr_name
    AND shoelace_data.sl_name = s.sl_name
@@ -1400,12 +1398,11 @@ SELECT * FROM shoelace;
 <programlisting>
 CREATE TABLE phone_data (person text, phone text, private boolean);
 CREATE VIEW phone_number AS
-    SELECT person, CASE WHEN NOT private THEN phone END AS phone
-    FROM phone_data;
-GRANT SELECT ON phone_number TO assistant;
+    SELECT person, phone FROM phone_data WHERE NOT private;
+GRANT SELECT ON phone_number TO secretary;
 </programlisting>
 
-    除了该用户本人（以及数据库超级用户）之外，没有人可以访问<literal>phone_data</literal>表。但由于<command>GRANT</command>的存在，秘书可以对<literal>phone_number</literal>视图执行<command>SELECT</command>。规则系统会把对<literal>phone_number</literal>的<command>SELECT</command>重写成对<literal>phone_data</literal>的<command>SELECT</command>。由于该用户是<literal>phone_number</literal>的所有者，因此也是规则的所有者，对<literal>phone_data</literal>的读访问会按照该用户的权限进行检查，于是查询被允许。同时，对<literal>phone_number</literal>本身的访问检查仍会执行，但这是针对调用用户进行的，因此除了用户本人和秘书之外，没有其他人能使用它。
+    除了该用户本人（以及数据库超级用户）之外，没有人可以访问<literal>phone_data</literal>表。但由于<command>GRANT</command>的存在，秘书可以对<literal>phone_number</literal>视图执行<command>SELECT</command>。规则系统会把对<literal>phone_number</literal>的<command>SELECT</command>重写成对<literal>phone_data</literal>的<command>SELECT</command>，并附加只选取<literal>private</literal>为假的项的条件。由于该用户是<literal>phone_number</literal>的所有者，因此也是规则的所有者，对<literal>phone_data</literal>的读访问会按照该用户的权限进行检查，于是查询被允许。同时，对<literal>phone_number</literal>本身的访问检查仍会执行，但这是针对调用用户进行的，因此除了用户本人和秘书之外，没有其他人能使用它。
 </para>
 
 <para>
@@ -1417,38 +1414,7 @@ GRANT SELECT ON phone_number TO assistant;
 </para>
 
 <para>
-    需要注意的是，虽然视图可以用前文展示的技术来隐藏某些列的
-    内容，但它们不能被用来可靠地隐藏不可见行中的数据。例如，
-    下面这个视图就是不安全的：
-<programlisting>
-CREATE VIEW phone_number AS
-    SELECT person, phone FROM phone_data WHERE phone NOT LIKE '412%';
-</programlisting>
-    这个视图看起来似乎很安全，因为规则系统会把对
-    <literal>phone_number</> 的任何 <command>SELECT</command> 重写
-    为对 <literal>phone_data</> 的 <command>SELECT</command>，并
-    附加条件，要求只处理 <literal>phone</> 不以 412 开头的项。
-    但是，如果用户可以创建自己的函数，就不难让规划器在
-    <function>NOT LIKE</function> 表达式之前先执行用户定义函数。
-<programlisting>
-CREATE FUNCTION tricky(text, text) RETURNS bool AS $$
-BEGIN
-    RAISE NOTICE '% => %', $1, $2;
-    RETURN true;
-END
-$$ LANGUAGE plpgsql COST 0.0000000000000000000001;
-SELECT * FROM phone_number WHERE tricky(person, phone);
-</programlisting>
-    <literal>phone_data</> 表中的每个人和电话号码都会被打印为一条
-    <literal>NOTICE</literal>，因为规划器会选择先执行廉价的
-    <function>tricky</function> 函数，再执行更昂贵的
-    <function>NOT LIKE</function>。即使禁止用户定义新函数，内置
-    函数也可以用于类似攻击。（例如，类型转换函数会将其输入包含
-    在它们产生的错误消息中。）
-</para>
-
-<para>
-    类似的考虑也适用于更新规则。在上一节的示例中，示例数据库中那些表的所有者可以把<literal>shoelace</literal>视图上的<literal>SELECT</literal>、<literal>INSERT</literal>、<literal>UPDATE</literal>和<literal>DELETE</literal>权限授予其他用户，但对<literal>shoelace_log</literal>只授予<literal>SELECT</literal>权限。写日志记录的规则动作仍会成功执行，因此其他用户可以看到日志记录。但他们不能伪造记录，也不能操纵或删除已有记录。在这个例子里，不存在通过说服规划器改变操作顺序来破坏规则的可能性，因为唯一引用<literal>shoelace_log</literal>的规则是一条无条件的<literal>INSERT</literal>。在更复杂的场景中，情况未必如此。
+    类似的考虑也适用于更新规则。在上一节的示例中，示例数据库中那些表的所有者可以把<literal>shoelace</literal>视图上的<literal>SELECT</literal>、<literal>INSERT</literal>、<literal>UPDATE</literal>和<literal>DELETE</literal>权限授予其他用户，但对<literal>shoelace_log</literal>只授予<literal>SELECT</literal>权限。写日志记录的规则动作仍会成功执行，因此其他用户可以看到日志记录。但他们不能伪造记录，也不能操纵或删除已有记录。
 </para>
 </sect1>
 
@@ -1487,7 +1453,7 @@ SELECT * FROM phone_number WHERE tricky(person, phone);
      </listitem>
     </itemizedlist>
 
-    （这一系统是在 <productname>PostgreSQL</> 7.3 中确立的。在
+    （这一系统是在 PostgreSQL 7.3 中确立的。在
     更早的版本中，存在规则时命令状态可能会显示不同的结果。）
 </para>
 
@@ -1514,8 +1480,7 @@ SELECT * FROM phone_number WHERE tricky(person, phone);
 </para>
 
 <para>
-    另一方面，视图上不能创建触发器，因为视图关系中没有真实的
-    数据；但可以在视图上创建 INSERT、UPDATE 和 DELETE 规则。
+    另一方面，在视图上因 <command>INSERT</command> 而触发的触发器可以做到与规则相同的事情：把数据放到别处，并抑制向视图本身的插入。但在 <command>UPDATE</command> 或 <command>DELETE</command> 上它就无能为力了，因为视图关系中没有被扫描的真实数据，触发器因而永远不会被调用。这时只有规则才能解决问题。
 </para>
 
 <para>
@@ -1523,8 +1488,7 @@ SELECT * FROM phone_number WHERE tricky(person, phone);
     触发器会对每个受影响的行触发一次，而规则会修改查询，或生成
     额外的查询。因此，如果一条语句会影响很多行，那么发出一条额外
     命令的规则往往会比触发器更快，因为触发器必须为每一行调用一次，
-    并反复执行其操作。不过，触发器方法在概念上要比规则方法简单
-    得多，也更容易让新手写对。
+    并反复执行其操作。
 </para>
 
 <para>
@@ -1570,7 +1534,7 @@ DELETE FROM software WHERE computer.hostname = 'mypc.local.net'
                        AND software.hostname = computer.hostname;
 </programlisting>
 
-    由于已经建立了合适的索引，规划器将创建一个规划
+    由于已经建立了合适的索引，规划器将创建一个计划
 
 <literallayout class="monospaced">
 Nestloop
@@ -1626,13 +1590,13 @@ Nestloop
     我们要看的最后一个命令是：
 
 <programlisting>
-DELETE FROM computer WHERE manufacturer = 'bim';
+DELETE FROM computer WHERE manufacurer = 'bim';
 </programlisting>
 
     同样，这也可能导致从<literal>computer</literal>中删除很多行。因此，触发器同样会通过执行器运行很多条命令。规则生成的命令则是：
 
 <programlisting>
-DELETE FROM software WHERE computer.manufacturer = 'bim'
+DELETE FROM software WHERE computer.manufacurer = 'bim'
                        AND software.hostname = computer.hostname;
 </programlisting>
 
@@ -1649,10 +1613,13 @@ Nestloop
 
 <![IGNORE[
 <!-- What's happening with this?  If it doesn't come back, remove this section. -->
-<para>
+<Para>
     Another situation is cases on <command>UPDATE</command> where it depends on the
     change of an attribute if an action should be performed or
-    not. The only way to
+    not. In <ProductName>PostgreSQL</ProductName> version 6.4, the
+    attribute specification for rule events is disabled (it will have
+    its comeback latest in 6.5, maybe earlier 
+    - stay tuned). So for now the only way to
     create a rule as in the shoelace_log example is to do it with
     a rule qualification. That results in an extra query that is
     performed always, even if the attribute of interest cannot
@@ -1668,7 +1635,7 @@ Nestloop
     target list and will suppress the additional query completely
     if the attribute isn't touched. So the rule, qualified or not,
     will only do its scans if there ever could be something to do.
-</para>
+</Para>
 ]]>
 
 <para>

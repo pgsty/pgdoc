@@ -1,4 +1,6 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/plhandler.sgml,v 1.11 2010/06/08 20:12:59 rhaas Exp $ -->
+<!--
+$Header: /cvsroot/pgsql/doc/src/sgml/plhandler.sgml,v 1.1 2003/10/22 22:28:10 tgl Exp $
+-->
 
  <chapter id="plhandler">
    <title>编写过程语言调用处理器</title>
@@ -13,13 +15,39 @@
    </para>
 
    <para>
-    过程语言的调用处理器是一个<quote>普通</quote>函数，必须使用诸如 C 这样的编译型语言、按照版本 1 接口编写，并在 <productname>PostgreSQL</productname> 中注册为不接受参数且返回 <type>language_handler</type> 类型。这个特殊伪类型会将该函数标识为调用处理器，并阻止它在 SQL 命令中被直接调用。有关 C 语言调用约定和动态装载的更多细节，见 <xref linkend="xfunc-c">。
+    过程语言的调用处理器是一个<quote>普通</quote>函数，必须使用诸如 C 这样的编译型语言、按照版本 1 接口编写，并在 <productname>PostgreSQL</productname> 中注册为不接受参数且返回 <type>language_handler</type> 类型。这个特殊伪类型会将该函数标识为调用处理器，并阻止它在 SQL 命令中被直接调用。
    </para>
 
-   <para>调用处理器与其他函数的调用方式相同：它接收一个指向 <structname>FunctionCallInfoData</structname> <type>struct</type> 的指针，其中包含参数值和被调用函数的信息，并应返回一个 <type>Datum</type> 结果（如果要返回 SQL 空值，还需要设置 <structname>FunctionCallInfoData</structname> 结构体的 <structfield>isnull</structfield> 字段）。调用处理器与普通被调用函数的区别在于，<structname>FunctionCallInfoData</structname> 结构体的 <structfield>flinfo-&gt;fn_oid</structfield> 字段包含的是实际要调用的函数的 OID，而不是调用处理器自身的 OID。调用处理器必须使用该字段确定应执行哪个函数。此外，传入的参数列表也是按照目标函数的声明设置的，而不是按照调用处理器的声明。</para>
+   <para>
+    调用处理器的调用方式与任何其他函数相同：
+    它接收一个指向
+    <structname>FunctionCallInfoData</structname> <type>struct</type> 的指针，
+    其中包含参数值和被调用函数的信息，并且
+    它应返回一个 <type>Datum</type> 结果（如果希望
+    返回 SQL 空值结果，还可以设置
+    <structname>FunctionCallInfoData</structname> 结构的
+    <structfield>isnull</structfield> 字段）。调用处理器与普通
+    被调用函数的区别在于：
+    <structname>FunctionCallInfoData</structname> 结构的
+    <structfield>flinfo-&gt;fn_oid</structfield> 字段包含的
+    是要被调用的实际函数的 OID，而不是调用
+    处理器本身的 OID。调用处理器必须用这个字段来确定
+    要执行哪个函数。此外，传递的参数列表是按照
+    目标函数的声明设置的，
+    而不是按照调用处理器设置的。
+   </para>
 
    <para>
-    调用处理器必须从系统目录 <classname>pg_proc</classname> 中取出该函数的条目，并分析被调用函数的参数类型和返回类型。该函数的 <command>CREATE FUNCTION</command> 命令中的 <literal>AS</literal> 子句内容，保存在 <classname>pg_proc</classname> 对应行的 <literal>prosrc</literal> 列中。这里通常是一段过程语言源文本，但理论上也可以是其他内容，例如某个文件的路径名，或者任何能详细告诉调用处理器该做什么的信息。
+    从系统表
+    <classname>pg_proc</classname> 中取出函数的条目并分析被调用
+    函数的参数和返回类型是调用处理器的
+    职责。函数的 <command>CREATE FUNCTION</command> 中的 <literal>AS</literal> 子句
+    可以在
+    <classname>pg_proc</classname> 行的
+    <literal>prosrc</literal> 列中找到。它可能是
+    过程语言自身的源文本（比如 PL/Tcl）、
+    文件的路径名，或者任何告诉调用处理器
+    具体做什么的其他东西。
    </para>
 
    <para>
@@ -28,7 +56,9 @@
 
    <para>过程语言函数作为触发器调用时，不会按通常方式传入参数，但 <structname>FunctionCallInfoData</structname> 的 <structfield>context</structfield> 字段会指向一个 <structname>TriggerData</structname> 结构体，而不是像普通函数调用那样为 <symbol>NULL</symbol>。语言调用处理器应提供让过程语言函数获取触发器信息的机制。</para>
 
-   <para>下面是用 C 编写的过程语言处理器模板：<programlisting>
+   <para>
+    下面是一个用 C 编写的过程语言处理器的模板：
+<programlisting>
 #include "postgres.h"
 #include "executor/spi.h"
 #include "commands/trigger.h"
@@ -37,10 +67,6 @@
 #include "utils/syscache.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
-
-#ifdef PG_MODULE_MAGIC
-PG_MODULE_MAGIC;
-#endif
 
 PG_FUNCTION_INFO_V1(plsample_call_handler);
 
@@ -52,16 +78,16 @@ plsample_call_handler(PG_FUNCTION_ARGS)
     if (CALLED_AS_TRIGGER(fcinfo))
     {
         /*
-         * 作为触发器过程调用
+         * Called as a trigger procedure
          */
-        TriggerData    *trigdata = (TriggerData *) fcinfo-&gt;context;
+        TriggerData    *trigdata = (TriggerData *) fcinfo->context;
 
         retval = ...
     }
     else
     {
         /*
-         * 作为函数调用
+         * Called as a function
          */
 
         retval = ...
@@ -69,7 +95,10 @@ plsample_call_handler(PG_FUNCTION_ARGS)
 
     return retval;
 }
-</programlisting>只需在省略号处添加几千行代码，就能完成这个调用处理器。</para>
+</programlisting>
+    只需用几千行代码代替省略号补充进去，就完成了这个
+    调用处理器。
+   </para>
 
    <para>将处理器函数编译为可加载模块后（参见 <xref linkend="dfunc">），可用以下命令注册示例过程语言：<programlisting>
 CREATE FUNCTION plsample_call_handler() RETURNS language_handler
@@ -80,28 +109,21 @@ CREATE LANGUAGE plsample
 </programlisting>
    </para>
 
-   <para>
-    虽然仅提供调用处理器就足以创建一种最小可用的过程语言，但还可以
-    额外提供另外两个函数，以便让该语言更易于使用。它们是
-    <firstterm>验证器</firstterm>和<firstterm>内联处理器</firstterm>。
-    可以提供验证器，以便在 <xref linkend="sql-createfunction"> 期间
-    执行与该语言相关的检查。也可以提供内联处理器，以便让该语言支持
-    通过 <xref linkend="sql-do"
-   > 命令执行匿名代码块。
-   </para>
-
-   <para>
-    如果过程语言提供了验证器，它必须声明为一个接受单个 <type>oid</type> 参数的函数。验证器的返回值会被忽略，因此习惯上将其声明为返回 <type>void</type>。在 <command>CREATE FUNCTION</command> 命令创建或更新了一个用该过程语言编写的函数之后，验证器会在该命令结束时被调用。传入的 OID 是该函数在 <classname>pg_proc</classname> 中对应行的 OID。验证器必须按通常方式取出这一行，并执行适当的检查。首先，应调用 <function>CheckFunctionValidatorAccess()</function>，以诊断那些用户无法通过 <command>CREATE FUNCTION</command> 实现的对验证器的显式调用。典型检查包括确认该语言支持该函数的参数类型和结果类型，以及确认函数体在该语言中语法正确。如果验证器认为该函数没有问题，就应直接返回；如果发现错误，则应通过常规的 <function>ereport()</function> 错误报告机制加以报告。抛出错误会强制事务回滚，从而阻止错误的函数定义被提交。
-   </para>
-
-   <para>验证器函数通常应遵守 <xref linkend="guc-check-function-bodies"> 参数：关闭该参数时，应跳过代价高昂或依赖上下文的检查。如果语言允许在编译时执行代码，验证器必须禁止会引发这种执行的检查。特别是，<application>pg_dump</application> 会关闭此参数，以便装载过程语言函数，而无需担心副作用或函数体对其他数据库对象的依赖。（因此，调用处理器不应假定验证器已经完整检查了函数。验证器的目的不是让调用处理器省略检查，而是在 <command>CREATE FUNCTION</command> 命令存在明显错误时立即通知用户。）虽然具体检查哪些内容主要由验证器函数自行决定，但要注意，核心 <command>CREATE FUNCTION</command> 代码只有在 <varname>check_function_bodies</varname> 开启时，才执行函数附带的 <literal>SET</literal> 子句。因此，关闭 <varname>check_function_bodies</varname> 时，必须跳过那些结果可能受 GUC 参数影响的检查，以免重新装载转储时误报错误。</para>
-
-   <para>
-    如果过程语言提供了内联处理器，它必须声明为一个接受单个 <type>internal</type> 参数的函数。内联处理器的返回值会被忽略，因此习惯上将其声明为返回 <type>void</type>。当执行指定了该过程语言的 <command>DO</command> 语句时，就会调用内联处理器。实际传入的参数是一个指向 <structname>InlineCodeBlock</structname> 结构体的指针，其中包含 <command>DO</command> 语句参数的相关信息，特别是待执行的匿名代码块文本。内联处理器应执行这段代码并返回。
-   </para>
-
-   <para>
-    标准发行版中附带的各过程语言，在尝试编写自己的语言调用处理器时都是很好的参考资料。请查看源码树中的 <filename>src/pl</filename> 子目录。<xref linkend="sql-createlanguage"> 参考页中也包含一些有用的细节。
-   </para>
-
  </chapter>
+
+<!-- Keep this comment at the end of the file
+Local variables:
+mode:sgml
+sgml-omittag:nil
+sgml-shorttag:t
+sgml-minimize-attributes:nil
+sgml-always-quote-attributes:t
+sgml-indent-step:1
+sgml-indent-data:t
+sgml-parent-document:nil
+sgml-default-dtd-file:"./reference.ced"
+sgml-exposed-tags:nil
+sgml-local-catalogs:("/usr/lib/sgml/catalog")
+sgml-local-ecat-files:nil
+End:
+-->
