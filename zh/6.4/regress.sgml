@@ -1,348 +1,403 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/regress.sgml,v 1.67.2.1 2010/08/17 04:37:17 petere Exp $ -->
+<Chapter Id="regress">
+<Title>回归测试</Title>
 
- <chapter id="regress">
-  <title>回归测试</title>
+<Abstract>
+<Para>
+回归测试的说明与分析。
+</Para>
+</Abstract>
 
-  <indexterm zone="regress">
-   <primary>regression tests</primary>
-  </indexterm>
+<Para>
+  PostgreSQL 回归测试是对由 Jolly Chen 和
+  Andrew Yu 开发的、嵌入在 PostgreSQL 中的 SQL
+  实现的一套全面测试。它既测试标准 SQL
+  操作，也测试 PostgreSQL 的扩展能力。
+</Para>
 
-  <indexterm zone="regress">
-   <primary>test</primary>
-  </indexterm>
+<Para>
+  这些测试最近由 Marc Fournier 和 Thomas Lockhart
+  修订，现在被打包为功能单元，这应当使它们更易于运行、更易于解读。从
+  <ProductName>PostgreSQL</ProductName> v6.1 起，回归测试对每个正式发行版都是最新的。 
+</Para>
 
-  <para>
-   回归测试是针对<productname>PostgreSQL</productname>中 SQL
-   实现的一套全面测试。它们既测试标准 SQL 操作，也测试
-   <productname>PostgreSQL</productname>的扩展能力。
-  </para>
+<Para>
+  某些安装正确且功能完备的 PostgreSQL 安装可能会因浮点表示和时区支持的特有问题而在其中一些回归测试上失败。这些测试目前是用一种简单的
+  "diff" 算法来评估的，对细微的系统差异很敏感。对于表面上失败的测试，检查差异可能会发现这些差异并不重要。
+</Para>
 
-  <sect1 id="regress-run">
-   <title>运行测试</title>
+<Para>
+下面的回归测试说明假定以下条件（除非另有说明）：
+<ItemizedList Mark="bullet" Spacing="compact">
+<ListItem>
+<Para>
+命令是 Unix 兼容的。见下面的说明。
+</Para>
+</ListItem>
+<ListItem>
+<Para>
+除非另有说明，均使用默认值。
+</Para>
+</ListItem>
+<ListItem>
+<Para>
+用户 postgres 是 <ProductName>Postgres</ProductName> 超级用户。
+</Para>
+</ListItem>
+<ListItem>
+<Para>
+源代码路径是 /usr/src/pgsql（其他路径也是可能的）。
+</Para>
+</ListItem>
+<ListItem>
+<Para>
+运行时路径是 /usr/local/pgsql（其他路径也是可能的）。
+</Para>
+</ListItem>
+</ItemizedList>
+</Para>
 
-  <para>
-   回归测试既可以针对已经安装并正在运行的服务器执行，也可以在构建树中使用临时安装来执行。此外，运行测试时还有<quote>parallel</quote>和<quote>sequential</quote>两种模式。顺序方式一次只运行一个测试脚本，而并行方式会启动多个服务器进程，以并行方式运行一组测试。并行测试能够确认进程间通信和锁定是否正常工作。
-  </para>
+<Sect1>
+<Title>回归测试环境</Title>
 
-  <para>
-   要在构建完成后、安装之前运行并行回归测试，请在顶层目录中输入：<screen>
-gmake check
-</screen>（也可以切换到<filename>src/test/regress</filename>并在那里运行此命令。）这会首先构建若干辅助文件（例如示例用户定义触发器函数），然后运行测试驱动脚本。结束时应该会看到类似下面的结果：
-<screen>
-<computeroutput>
-=======================
- All 115 tests passed.
-=======================
-</computeroutput>
-</screen>
-   否则会显示哪些测试失败的说明。在假定<quote>失败</quote>代表严重问题之前，请先阅读下面的<xref linkend="regress-evaluation">。
-  </para>
+<Para>
+  回归测试由 <Command>make</Command> 命令调用，该命令把一个 <Acronym>C</Acronym>
+  程序编译成当前目录中的一个共享库。当前目录中还会创建本地化的 shell
+  脚本。输出文件模板被整理成
+  <FileName>./expected/*.out</FileName>
+  文件。本地化会把源文件中的宏替换为绝对路径名和用户名。
+</Para>
 
-   <para>
-    由于这种测试方法会运行一个临时服务器，如果你以 root 用户身份进行构建，
-    它将无法工作，因为服务器不会以 root 身份启动。推荐做法是不要以 root
-    身份构建；否则应在安装完成后再执行测试。
-   </para>
+<Para>
+  通常，回归测试应当以 pg_superuser 运行，因为
+  'src/test/regress' 目录及其子目录为 pg_superuser
+  所有。如果你以其他用户运行回归测试，那么
+  'src/test/regress' 目录树应当可被该用户写入。
+</Para>
 
-   <para>
-    如果你把<productname>PostgreSQL</productname>配置为安装到某个已经存在旧版<productname>PostgreSQL</productname>安装的位置，并且在安装新版本之前执行<literal>gmake check</literal>，可能会发现测试失败，因为新程序会尝试使用已安装的共享库。（典型症状是报出未定义符号。）
-    如果你希望在覆盖旧安装之前运行测试，就需要使用<literal>configure --disable-rpath</literal>构建。不过，不建议在最终安装中使用此选项。
-   </para>
+<Para>
+  postmaster 应当在系统时区设置为加利福尼亚州伯克利的情况下调用。回归测试脚本会自动完成这项设置。但是，它确实要求机器支持
+  PST8PDT 时区。
+</Para>
 
-   <para>
-    并行回归测试会在你的用户 ID 下启动相当多的进程。目前最大并发度为二十个并行测试脚本，也就是四十个进程：每个测试脚本都有一个服务器进程和一个<application>psql</application>进程。因此，如果你的系统对每个用户可创建的进程数施加限制，请确保该限制至少有五十个左右，否则并行测试中可能会出现看似随机的失败或挂起。如果无法提高该限制，可以通过设置<literal>MAX_CONNECTIONS</literal>参数来降低并行度。例如：
-<screen>
-gmake MAX_CONNECTIONS=10 check
-</screen>
-    这样最多同时运行十个测试。
-   </para>
+<Para>
+要验证你的机器确实支持这一点，请键入：
+<ProgramListing>
+    setenv TZ PST8PDT
+    date
+</ProgramListing>
+</Para>
 
-  <para>
-   要在安装后运行测试<![%standalone-ignore;[ (见 <xref linkend="installation">)]]>，请初始化一个数据区域并启动服务器<![%standalone-ignore;[如 <xref linkend="runtime">所述，]]>然后输入：
-<screen>
-gmake installcheck
-</screen>
-或者进行并行测试：
-<screen>
-gmake installcheck-parallel
-</screen>
-   除非由<envar>PGHOST</envar>和<envar>PGPORT</envar>环境变量另行指定，测试将期望在本地主机和默认端口上连接服务器。
-  </para>
+<Para>
+  上面的 "date" 命令应当以 PST8PDT
+  时区返回当前系统时间。如果 PST8PDT 数据库不可用，你的系统可能返回的是
+  GMT 时间。如果 PST8PDT 时区不可用，你可以显式设置时区规则：
+<ProgramListing>
+    setenv PGTZ PST8PDT7,M04.01.0,M10.05.03
+</ProgramListing>
+</Para>
 
-  <para>
-   源码发布包中还包含针对可选过程语言以及部分<filename>contrib</filename>模块的回归测试。目前这些测试只能针对已安装的服务器使用。  要为所有已构建并安装的过程语言运行测试，请切换到构建树的<filename>src/pl</filename>目录并输入：
-<screen>
-gmake installcheck
-</screen>
-   也可以在<filename>src/pl</filename>的任一子目录中这样做，只为一种过程语言运行测试。要为所有带有测试的<filename>contrib</filename>模块运行测试，请切换到构建树的<filename>contrib</filename>目录并输入：
-<screen>
-gmake installcheck
-</screen>
-   <filename>contrib</filename>模块必须先构建并安装。也可以在<filename>contrib</filename>的某个子目录中这样做，只为一个模块运行测试。
-  </para>
+<Sect1>
+<Title>目录布局</Title>
 
-  <para>
-   源码发布包中还包含针对 Hot Standby 静态行为的回归测试。这些测试需要一个正在运行的主服务器和一个正在运行的备服务器，备服务器通过基于文件的日志传送或流复制接收来自主服务器的新 WAL 更改。这些服务器不会为你自动创建，其设置方法也不在本文档中介绍。请查阅文档中已有的各节，了解所需命令及相关问题。
-  </para>
+<Para>
+<Note>
+<Para>
+这里以后应当变成上一节中的一个表。
+</Para>
+</Note>
+</Para>
 
-  <para>
-   首先在主服务器上创建一个名为"regression"的数据库：
-<screen>
-psql -h primary -c "CREATE DATABASE regression"
-</screen>接着，在主服务器的 regression 数据库中运行准备脚本<filename>src/test/regress/sql/hs_primary_setup.sql</filename>，并等待更改传播到备服务器，例如
-<screen>
-psql -h primary -f src/test/regress/sql/hs_primary_setup.sql regression
-</screen>现在确认测试者的默认连接是被测的备服务器，然后在回归目录中运行<literal>standbycheck</literal>目标：
-<screen>
-cd src/test/regress
-gmake standbycheck
-</screen>
-  </para>
+<Para>
+<ProgramListing>
+  input/ .... .source files that are converted using 'make all' into
+              some of the .sql files in the 'sql' subdirectory
 
-  <para>
-   还可以在主服务器上使用脚本<filename>src/test/regress/sql/hs_primary_extremes.sql</filename>生成一些极端行为，以便测试备服务器的行为。
-  </para>
+  output/ ... .source files that are converted using 'make all' into
+              .out files in the 'expected' subdirectory
 
-  <para>
-   后续版本可能会提供更多的自动化测试。
-  </para>
-  </sect1>
+  sql/ ...... .sql files used to perform the regression tests
 
-  <sect1 id="regress-evaluation">
-   <title>测试结果评估</title> 
+  expected/ . .out files that represent what we *expect* the results to
+              look like
 
-   <para>
-    某些安装正确且功能完备的<productname>PostgreSQL</productname>实例，
-    可能会因为平台特有因素而在部分回归测试中<quote>失败</quote>，例如浮点
-    表示或消息措辞不同。目前这些测试是通过把输出与参考系统生成的输出做
-    简单的<command>diff</command>比较来评估的，因此结果会对细微的系统差异
-    很敏感。报告某项测试<quote>失败</quote>时，请务必检查预期结果与实际结果
-    之间的差异；你可能会发现这些差异并不重要。尽管如此，我们仍努力在所有
-    受支持平台上维护准确的参考文件，因此原则上应期待所有测试都能通过。
-   </para>
+  results/ .. .out files that represent what the results *actually* look
+              like. Also used as temporary storage for table copy testing.
+</ProgramListing>
+</Para>
 
-   <para>
-    回归测试的实际输出位于<filename>src/test/regress/results</filename>目录中的文件里。测试脚本使用<command>diff</command>把每个输出文件与存储在<filename>src/test/regress/expected</filename>目录中的参考输出进行比较。任何差异都会保存到<filename>src/test/regress/regression.diffs</filename>中供你检查。（如果愿意，也可以自己运行<command>diff</command>。）
-   </para>
+</Sect1>
 
-   <para>
-    如果由于某种原因，某个特定平台在某个测试上产生了<quote>失败</quote>，
-    但对输出的检查令你相信结果是有效的，那么可以新增一个比较文件，让后续
-    测试运行不再报告该失败。详情见<xref linkend="regress-variant">。
-   </para>
+<Sect1>
+<Title>回归测试过程</Title>
 
-   <sect2>
-    <title>错误消息差异</title>
-      
-    <para>
-     某些回归测试包含故意构造的非法输入值。错误消息可能来自
-     <productname>PostgreSQL</productname>代码，也可能来自宿主平台的系统例程。
-     在后一种情况下，消息会因平台而异，但应反映相近的信息。这类消息差异
-     会导致回归测试显示为<quote>失败</quote>，但可以通过检查确认其有效性。
-    </para>
-   </sect2>
-    
-   <sect2>
-    <title>Locale differences</title>
+<Para>
+这些命令是在使用 bash shell 的 RedHat Linux 4.2
+版上测试的。除非另有说明，它们在大多数系统上可能都能工作。像
+<FileName>ps</FileName> 和 <FileName>tar</FileName>
+这样的命令在各个平台上应使用的选项差异极大。键入这些命令之前请<Emphasis>运用常识</Emphasis>。
+</Para>
 
-    <para>
-     如果你针对一个使用 C 以外排序规则顺序的区域设置初始化的服务器运行测试，
-     就可能因为排序顺序不同而出现差异，并导致后续失败。回归测试套件通过
-     提供备用结果文件来处理这个问题；这些文件已知可以覆盖大量区域设置。
-    </para>
+<Para>
+<Procedure>
+<Title><ProductName>Postgres</ProductName> 回归测试配置</Title>
 
-    <para>
-     使用临时安装方法时，若要在其他区域下运行测试，请在<command>make</command>命令行上传入适当的区域相关环境变量，例如：
-<programlisting>
-gmake check LANG=de_DE.utf8
-</programlisting>
-     （回归测试驱动程序会取消<envar>LC_ALL</envar>的设置，因此用该变量选择区域是无效的。）要不使用区域，可以取消所有区域相关环境变量的设置（或把它们设为<literal>C</literal>），或者使用下面的特殊调用方式：
-<programlisting>
-gmake check NO_LOCALE=1
-</programlisting>
-     针对已有安装运行测试时，区域设置由该已有安装决定。要更改它，请通过向<command>initdb</command>传入适当的选项，用不同的区域初始化数据库集簇。
-    </para>
+<Para>
+对于全新安装或从先前版本的
+<ProductName>Postgres</ProductName> 升级：
+</Para>
 
-    <para>
-     一般而言，仍然建议尽量在生产环境将要使用的区域设置下运行回归测试，因为这会实际锻炼生产环境中将会用到的区域和编码相关代码部分。根据操作系统环境的不同，可能会出现失败，但这样你至少能了解运行真实应用时应预期哪些区域特定的行为。
-    </para>
-   </sect2>
-    
-   <sect2>
-    <title>日期和时间差异</title>
+<Step Performance="required">
+<Para>
+构建回归测试。键入
+<ProgramListing>
+    cd /usr/src/pgsql/src/test/regress
+    gmake all
+</ProgramListing>
+</Para>
+</Step>
 
-    <para>
-     大多数日期和时间结果依赖于时区环境。参考文件是在时区
-     <literal>PST8PDT</literal>（加利福尼亚州伯克利）下生成的，如果测试未在该时区设置
-     下运行，就会出现表面上的失败。回归测试驱动器会将环境变量
-     <envar>PGTZ</envar>设为<literal>PST8PDT</literal>，
-     这通常能够确保获得正确结果。
-    </para>
-   </sect2>
-    
-   <sect2>
-    <title>浮点差异</title>
-      
-    <para>
-     某些测试涉及从表列计算 64 位浮点数（<type>double precision</type>）。已经观察到涉及<type>double precision</type>列数学函数的结果存在差异。<literal>float8</literal>和<literal>geometry</literal>测试尤其容易在不同平台之间、甚至在不同编译器优化设置下出现微小差异。需要人工目测比较来确定这些差异的真实意义，它们通常出现在小数点右侧第 10 位。
-    </para>
+<Step Performance="optional">
+<Para>
+  如果你之前调用过回归测试，用以下命令清理工作目录：
 
-    <para>
-     某些系统把负零显示为<literal>-0</literal>，而另一些只显示
-     <literal>0</literal>。
-    </para>
+<ProgramListing>
+    cd /usr/src/pgsql/src/test/regress
+    make clean
+</ProgramListing>
 
-    <para>
-     某些系统对<function>pow()</function>和<function>exp()</function>
-     发出错误的方式，与当前<productname>PostgreSQL</productname>代码所
-     预期的机制不同。
-    </para>
-   </sect2>
+<Step Performance="required">
+<Para>
+     文件 /usr/src/pgsql/src/test/regress/README
+     包含关于运行和解读回归测试的详细说明。这里给出一个简短的版本：
+</Para>
 
-   <sect2>
-    <title>行顺序差异</title>
-      
-    <para>
-你可能会看到这样的差异：同样的行在输出中的顺序与预期文件中的顺序不同。
-在大多数情况下，严格说来这并不是缺陷。大多数回归测试脚本并没有细致到
-为每一个<literal>SELECT</literal>都使用<literal>ORDER BY</literal>，
-因此按 SQL 规范，它们的结果行顺序并没有良好定义。实际上，由于我们看到的
-是同一软件在同一数据上执行相同查询，通常在所有平台上都会得到相同的结果
-顺序，所以缺少<literal>ORDER BY</literal>并不是问题。不过，有些查询
-确实会表现出跨平台的顺序差异。针对已安装服务器测试时，非 C 区域设置或
-非默认参数设置，例如自定义的<varname>work_mem</varname>值或规划器代价
-参数，也可能导致顺序差异。
-    </para>
+<Para>
+如果 postmaster 还没有运行，在一个可用的窗口中键入以下命令启动
+postmaster
+<ProgramListing>
+    postmaster
+</ProgramListing>
 
-    <para>
-因此，如果你看到顺序差异，一般无需担心，除非查询确实包含
-<literal>ORDER BY</literal>而你的结果违反了它。不过，仍请报告该问题，
-这样我们可以为那个特定查询加上<literal>ORDER BY</literal>，以在后续
-版本中消除这种虚假的<quote>失败</quote>。
-    </para>
+或者键入以下命令让 postmaster 守护进程在后台运行
+<ProgramListing>
+    cd
+    nohup postmaster > regress.log 2>&1 &
+</ProgramListing>
+</Para>
 
-    <para>
-你可能会好奇，为什么我们不显式地为所有回归测试查询排序，从而一劳永逸地
-解决这个问题。原因在于，那样反而会降低回归测试的价值，因为测试会倾向于
-覆盖能产生有序结果的查询计划类型，而排除那些不能产生有序结果的计划类型。
-    </para>
-   </sect2>
+<Para>
+     从你的 <ProductName>Postgres</ProductName> 超级用户账户（通常是
+     postgres 账户）运行 postmaster。
 
-   <sect2>
-    <title>栈深度不足</title>
-      
-    <para>
-     如果<literal>errors</literal>测试在<literal>select infinite_recurse()</literal>命令处导致服务器崩溃，说明该平台的进程栈大小限制小于<![%standalone-ignore;[<xref linkend="guc-max-stack-depth">]]><![%standalone-include;[<literal>max_stack_depth</literal>]]>参数所指示的值。这可以通过在更高的栈大小限制下运行服务器来解决（在使用默认的<varname>max_stack_depth</varname>值时建议 4MB）。如果无法做到，另一种办法是减小<varname>max_stack_depth</varname>的值。
-    </para>
-   </sect2>
+<Note>
+<Para>
+不要从 root 账户运行 <FileName>postmaster</FileName>。
+</Para>
+</Note>
+</Para>
+</Step>
 
-   <sect2>
-    <title><quote>random</quote> 测试</title>
-      
-    <para>
-     <literal>random</literal>测试脚本旨在产生随机结果。在少数情况下，这会导致随机回归测试失败。输入：
-<programlisting>
-diff results/random.out expected/random.out
-</programlisting>
-     应该只产生一行或几行差异。除非随机测试反复失败，否则不必担心。
-    </para>
-   </sect2>
-  </sect1>
+<Step Performance="required">
+<Para>
+ 运行回归测试。键入
 
-<!-- We might want to move the following section into the developer's guide. -->
-  <sect1 id="regress-variant">
-   <title>变体比较文件</title>
+<ProgramListing>
+    cd /usr/src/pgsql/src/test/regress
+    gmake runtest
+</ProgramListing>
+</Para>
 
-   <para>
-    由于某些测试天生会产生依赖环境的结果，我们提供了指定备用
-    <quote>预期</quote>结果文件的方法。每个回归测试都可以有多个比较文件，
-    用来展示不同平台上的可能结果。对于每个测试应使用哪个比较文件，有两种
-    相互独立的判定机制。
-   </para>
+<Para>
 
-   <para>
-    第一种机制允许针对特定平台选择比较文件。有一个映射文件
-    <filename>src/test/regress/resultmap</filename>，用于定义每个平台应使用
-    哪个比较文件。要为某个特定平台消除虚假的测试<quote>失败</quote>，
-    你需要先选择或创建一个变体结果文件，然后在<filename>resultmap</filename>
-    文件中增加一行。
-   </para>
+     如果这是你第一次运行测试，不需要键入 "gmake clean"。
+</Para>
+</Step>
 
-   <para>
-    映射文件中的每一行都采用如下形式：
-<synopsis>
-testname:output:platformpattern=comparisonfilename
-</synopsis>
-    测试名就是相应回归测试模块的名称。输出值指明要检查哪个输出文件。
-    对标准回归测试而言，这里始终是<literal>out</literal>。该值对应于
-    输出文件的扩展名。平台模式是 Unix 工具<command>expr</command>风格
-    的模式（也就是在开头隐含<literal>^</literal>锚点的正则表达式）。
-    它会与<command>config.guess</command>打印出的平台名进行匹配。
-    比较文件名则是替代结果比较文件的基名。
-   </para>
+<Step Performance="required">
+<Para>
 
-   <para>例如：某些系统会把极小的浮点数值解释为零，而不是报告下溢错误。这会导致<filename>float8</>回归测试出现一些差异。因此，我们提供了一个变体比较文件<filename>float8-small-is-zero.out</filename>，其中包含这些系统上的预期结果。为了消除虚假的<quote>失败</quote>消息，在<systemitem>OpenBSD</systemitem>平台上，<filename>resultmap</filename>包含以下内容：<programlisting>
-float8:out:i.86-.*-openbsd=float8-small-is-zero.out
-</programlisting>如果一台机器上的<command>config.guess</command>输出匹配<literal>i.86-.*-openbsd</literal>，就会触发该规则。<filename>resultmap</filename>中的其他行会为其他适用的平台选择变体比较文件。</para>
+     你应当在屏幕上（同时也写入文件 ./regress.out）看到一系列说明哪些测试通过、哪些测试失败的语句。请注意，某些测试"失败"可能是正常的。对于失败的测试，用
+     diff 比较 ./results 和 ./expected
+     目录中的文件。如果 float8 失败了，键入类似下面的命令：
+<ProgramListing>
+    cd /usr/src/pgsql/src/test/regress
+    diff -w expected/float8.out results
+</ProgramListing>
+</Para>
+</Step>
 
-   <para>
-    第二种用于选择变体比较文件的机制更加自动化：它只是在多个提供的比较文件
-    中选取<quote>最佳匹配</quote>。回归测试驱动脚本既考虑某个测试的标准
-    比较文件<literal><replaceable>testname</replaceable>.out</literal>，
-    也考虑名为
-    <literal><replaceable>testname</replaceable>_<replaceable>digit</replaceable>.out</literal>
-    的变体文件（其中<replaceable>digit</replaceable>可以是任一单个数字
-    <literal>0</literal>-<literal>9</literal>）。如果其中任何一个文件
-    完全匹配，就认为测试通过；否则，会使用生成最短 diff 的那个文件来创建
-    失败报告。（如果<filename>resultmap</filename>为该特定测试包含一项，
-    那么基础<replaceable>testname</replaceable>就是
-    <filename>resultmap</filename>中给出的替代名称。）
-   </para>
+<Step Performance="required">
+<Para>
+     运行测试后，键入
+<ProgramListing>
+    destroydb regression
+    cd /usr/src/pgsql/src/test/regress
+    gmake clean
+</ProgramListing>
+</Para>
+</Step>
 
-   <para>
-    例如，对于<literal>char</literal>测试，比较文件
-    <filename>char.out</filename>包含在<literal>C</literal>和
-    <literal>POSIX</literal>区域设置中应当出现的结果，而文件
-    <filename>char_1.out</filename>则包含在许多其他区域设置中出现的排序结果。
-   </para>
+</Procedure>
 
-   <para>
-    最佳匹配机制原本是为了解决依赖区域设置的结果问题，但它也可以用于任何
-    仅凭平台名无法轻易预测测试结果的场景。该机制的一个局限是，测试驱动器
-    无法判断哪一个变体对当前环境才真正<quote>正确</quote>；它只会选择
-    看起来最合适的那个。因此，最安全的做法是只对那些你愿意在所有上下文中
-    都视为同样有效的变体结果使用这种机制。
-   </para>
-    
-  </sect1>
+</Sect1>
 
-  <sect1 id="regress-coverage">
-   <title>测试覆盖率检查</title>
+<Sect1>
+<Title>回归分析</Title>
 
-   <para>
-    可以用覆盖率测试插装编译 PostgreSQL 源代码，从而检查回归测试或任何
-    其他与该代码一起运行的测试套件覆盖了代码的哪些部分。目前，这只在使用
-    GCC 编译时受支持，并且需要<command>gcov</command>和
-    <command>lcov</command>程序。
-   </para>
+<Para>
+    <Quote>失败</Quote>的测试可能是由于错误消息、数学库或输出格式的细微差异而失败。这类"失败"并不表示
+     <ProductName>Postgres</ProductName> 有问题。
+</Para>
 
-   <para>
-    典型的工作流程如下：
-<screen>
-./configure --enable-coverage ... OTHER OPTIONS ...
-gmake
-gmake check # or other test suite
-gmake coverage-html
-</screen>
-    然后把你的 HTML 浏览器指向<filename>coverage/index.html</filename>。<command>gmake</command>命令也可以在子目录中使用。
-   </para>
+<Para>
+     对于 i686/Linux-ELF 平台，没有测试失败，因为它是
+     v6.2.1 回归测试的参考平台。
+</Para>
 
-   <para>
-    要在测试运行之间重置执行计数，请运行：
-<screen>
-gmake coverage-clean
-</screen>
-   </para>
-  </sect1>
+<Para>
+     对于 SPARC/Linux-ELF 平台，使用
+     <ProductName>Postgres</ProductName> v6.2 的 970525 beta 版时下列测试"失败"：
+     float8 和 geometry 因浮点数的微小精度差异而"失败"。select_views
+     产生大量不同的输出，但差异源于微小的浮点差异。
+</Para>
 
-</chapter>
+<Para>
+     结论是什么？如果你确实看到失败，请设法理解这些差异的本质，然后判断这些差异是否会影响你对
+     <ProductName>Postgres</ProductName> 的预期使用。不过请记住，这很可能是迄今为止最坚实的
+     <ProductName>Postgres</ProductName> 发行版，它合并了来自 v6.1
+     的许多缺陷修复，而且先前版本的
+     <ProductName>Postgres</ProductName> 已经成功使用了一段时间。
+</Para>
+
+<Sect2>
+<Title>比较期望/实际输出</Title>
+
+<Para>
+  结果位于 ./results
+  目录中的文件里。这些结果可以用 'diff' 与
+  ./expected 目录中的结果进行比较。这些文件可能不会完全一致。下面几段试图解释这些差异。
+</Para>
+
+</Sect2>
+
+<Sect2>
+<Title>错误消息差异</Title>
+
+<Para>
+  某些回归测试包含故意构造的非法输入值。错误消息可能来自
+  Postgres 代码，也可能来自宿主平台的系统例程。在后一种情况下，消息会因平台而异，但应反映相近的信息。这类消息差异会导致回归测试显示为"失败"，但可以通过检查确认其有效性。
+</Para>
+
+</Sect2>
+
+<Sect2>
+<Title>OID 差异</Title>
+
+<Para>
+  PostgreSQL OID（对象标识符）出现在 'regress.out'
+  中的若干地方。OID 是唯一的 32 位整数，由 PostgreSQL
+  后端在每次插入或更新表行时生成。如果你在一个非全新的数据库上运行回归测试，或者多次运行它，报告的
+  OID 将具有不同的值。
+
+  'misc.out' 中的下列 SQL 语句表现出了这种行为：
+
+QUERY: SELECT user_relns() AS user_relns ORDER BY user_relns;
+
+  'a,523676' 行就是由一个 OID 组成的。
+</Para>
+
+</Sect2>
+
+<Sect2>
+<Title>日期和时间差异</Title>
+
+<Para>
+  在许多受支持的平台上，你可以让 PostgreSQL
+  认为自己运行在与加利福尼亚州伯克利相同的时区中。详见关于如何运行回归测试的那一节。
+
+  如果你不把时区环境显式设置为
+  PST8PDT，那么大多数日期和时间结果将反映你的本地时区，并且无法通过回归测试。
+
+  有些系统似乎不接受显式设置本地时区规则的推荐语法。某些使用公共域时区包的系统在
+  1970 年前的 PDT
+  时间上表现出小问题，把它们表示为 PST。
+</Para>
+
+</Sect2>
+
+<Sect2>
+<Title>浮点差异</Title>
+
+<Para>
+  某些测试涉及从表列计算 64 位（<Type>float8</Type>）数。已经观察到涉及
+  <Type>float8</Type> 列数学函数的结果存在差异。这些差异出现在同一平台上使用不同操作系统的情况，即
+  Intel/86 上的 BSDI 和 SOLARIS；以及同一操作系统用于不同平台的情况，即
+  SPARC 和 Intel/86 上的 SOLARIS。
+
+  需要人工目测比较来确定这些差异的真实意义，它们通常出现在小数点右侧第
+  10 位。
+
+  某些系统发出 pow() 和 exp() 错误的方式与当前
+  Postgres 代码所预期的机制不同。
+</Para>
+
+</Sect2>
+
+<Sect2>
+<Title>多边形差异</Title>
+
+<Para>
+  若干测试涉及对加利福尼亚州奥克兰/伯克利街道地图地理数据的操作。地图数据被表示为多边形，其顶点用一对
+  <Type>float8</Type> 数（十进制纬度和经度）表示。首先创建一些表并装入地理数据，然后创建一些使用多边形相交操作符（##）连接两个表的视图，再对视图做一次
+  select。
+
+  在比较不同平台的结果时，差异出现在小数点右侧第 2 或第 3 位。出现这些问题的
+  SQL 语句是：
+
+<ProgramListing>
+    QUERY: SELECT * from street;
+    QUERY: SELECT * from iexit;
+</ProgramListing>
+</Para>
+
+</Sect2>
+
+<Sect2>
+<Title>随机差异</Title>
+
+<Para>
+  random.out 中至少有一个测试用例旨在产生随机结果。这会使 random
+  回归测试失败。键入
+<ProgramListing>
+    diff results/random.out expected/random.out
+</ProgramListing>
+
+ 因此应当只产生一行或几行差异，但不同体系结构上的其他浮点差异可能造成多得多的差异。见下面的发行说明。
+</Para>
+
+</Sect2>
+
+<Sect2>
+<Title><Quote>expected</Quote> 文件</Title>
+
+<Para>
+  <FileName>./expected/*.out</FileName> 文件改编自 Jolly Chen 等人提供的原始整体式
+  <FileName>expected.input</FileName> 文件。在各种开发机器上生成的这些文件的新版本经过仔细（？）检查后被替换了进来。许多开发机器运行的是
+  Ix86 硬件上的某种 Unix 变体（FreeBSD、Linux 等）。
+
+  原始的 <FileName>expected.input</FileName> 文件是在一台 SPARC Solaris 2.4
+  系统上使用 <FileName>postgres5-1.02a5.tar.gz</FileName> 源树创建的。它与一台
+  I386 Solaris 2.4 系统上创建的文件比较后，差异仅在于浮点多边形小数点右侧第
+  3 位。（见下面）
+
+  原始的 <FileName>sample.regress.out</FileName> 文件来自 Jolly Chen 构建的
+  postgres-1.01 发行版，这里收录仅供参考。它可能是在一台 DEC ALPHA 机器上创建的，因为
+  postgres-1.01 发行版中的 <FileName>Makefile.global</FileName> 有
+  PORTNAME=alpha。
+</Para>
+
+</Sect2>
+
+</Sect1>
+
+</Chapter>

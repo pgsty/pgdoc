@@ -1,159 +1,96 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/xaggr.sgml,v 1.40.2.1 2010/07/29 19:34:37 petere Exp $ -->
+<Chapter Id="xaggr">
+<Title>扩展 <Acronym>SQL</Acronym>：聚合</Title>
 
- <sect1 id="xaggr">
-  <title>User-Defined Aggregates</title>
-
-  <indexterm zone="xaggr">
-   <primary>aggregate function</primary>
-   <secondary>user-defined</secondary>
-  </indexterm>
-
-  <para>
-   <productname>PostgreSQL</productname> 中的聚合函数是依据
-   <firstterm>状态值</firstterm>和<firstterm>状态转移函数</firstterm>
-   来定义的。也就是说，聚合通过一个状态值来工作，并在处理每个
-   后续输入行时更新该状态值。要定义一个新的聚合函数，需要为状态值
-   选定一种数据类型、为状态选定一个初始值，并指定一个状态转移
-   函数。状态转移函数只是普通函数，也可以在聚合的上下文之外使用。
-   如果聚合的期望结果不同于运行状态值中需要保存的数据，还可以指定
-   一个<firstterm>最终函数</firstterm>。
-  </para>
-
-  <para>
-   因此，除了聚合用户所看到的参数和结果数据类型之外，还存在一种内部状态值数据类型，它可能既不同于参数类型，也不同于结果类型。
-  </para>
-
-  <para>
-   如果我们定义一个不使用最终函数的聚合，那么得到的就是一个对每
-   一行的列值进行逐步计算的聚合。<function>sum</> 就是这种聚合的
-   一个示例。<function>sum</> 从零开始，并始终把当前行的值加到
-   运行总和中。例如，如果我们希望让 <function>sum</> 聚合能用于
-   复数数据类型，那么只需要该数据类型的加法函数。聚合定义如下：
-
-<screen>
-CREATE AGGREGATE sum (complex)
-(
-    sfunc = complex_add,
-    stype = complex,
-    initcond = '(0,0)'
+<Para>
+     <ProductName>Postgres</ProductName>
+     中的聚合是按照状态转换函数来表示的。也就是说，聚合可以按照每当处理一个实例就被修改的状态来定义。有些状态函数在计算新状态时会查看实例中的特定值（即
+     create aggregate
+     语法中的
+     <Acronym>sfunc1</Acronym>），而另一些只跟踪自己的内部状态（
+     <Acronym>sfunc2</Acronym>）。
+     如果我们定义一个只使用
+     <Acronym>sfunc1</Acronym>
+     的聚合，定义的就是一个对每个实例的属性值计算运行函数的聚合。"Sum"
+     就是这类聚合的一个例子。"Sum"
+     从零开始，总是把当前实例的值加到它的运行总和上。我们将使用内置在
+     <ProductName>Postgres</ProductName>
+     中的
+     <Acronym>int4pl</Acronym> 来执行这个加法。
+     
+<ProgramListing>
+CREATE AGGREGATE complex_sum (
+    sfunc1 = complex_add,
+    basetype = complex,
+    stype1 = complex,
+    initcond1 = '(0,0)'
 );
 
-SELECT sum(a) FROM test_complex;
+SELECT complex_sum(a) FROM test_complex;
 
-   sum
------------
- (34,53.9)
-</screen>
+         +------------+
+         |complex_sum |
+         +------------+
+         |(34,53.9)   |
+         +------------+
+</ProgramListing>
+</Para>
 
-   （注意，这里我们依赖的是函数重载：名为 <function>sum</> 的聚合
-   不止一个，但 <productname>PostgreSQL</productname> 能判断出哪种
-   sum 适用于 <type>complex</type> 类型的列。）
-  </para>
-
-  <para>
-   如果没有非空输入值，上面这个 <function>sum</function> 的定义会
-   返回零（初始状态条件）。也许我们希望在这种情况下返回 null
-   —— SQL 标准就期望 <function>sum</function> 这样表现。只需省略
-   <literal>initcond</literal> 短语，使初始状态条件为 null，就可以
-   做到这一点。通常这意味着 <literal>sfunc</literal> 需要检查空
-   状态条件输入。但对于 <function>sum</function> 以及其他一些简单
-   聚合（如 <function>max</> 和 <function>min</>），只需把第一个
-   非空输入值插入状态变量，然后从第二个非空输入值开始应用转移
-   函数即可。如果初始条件为 null 且转移函数被标记为
-   <quote>strict</quote>（即不为空输入调用），
-   <productname>PostgreSQL</productname> 会自动完成这项工作。
-  </para>
-
-  <para>
-   <quote>strict</quote>转移函数的另一项默认行为是，只要遇到空值输入，就会保留先前的状态值不变。因此，空值会被忽略。如果你需要对空值输入采用其他行为，就不要把转移函数声明为 strict，而应在函数代码中自行检测空值输入并完成所需处理。
-  </para>
-
-  <para>
-   <function>avg</>（平均值）是更复杂的聚合示例。它需要两个运行
-   状态：输入的总和与输入的个数。最终结果由二者相除得到。平均值
-   通常用数组作为状态值来实现。例如，<function>avg(float8)</function>
-   的内置实现如下所示：
-
-<programlisting>
-CREATE AGGREGATE avg (float8)
-(
-    sfunc = float8_accum,
-    stype = float8[],
-    finalfunc = float8_avg,
-    initcond = '{0,0,0}'
+<Para>
+     如果我们只定义
+     <Acronym>sfunc2</Acronym>，指定的是一个对每个实例的属性值无关的运行函数计算的聚合。
+     "Count"
+     是这类聚合最常见的例子。
+     "Count"
+     从零开始，对每个实例向其运行总数加一，忽略实例的值。这里我们使用内置的
+     <Acronym>int4inc</Acronym>
+     例程为我们完成这项工作。该例程把输入加一。
+     
+<ProgramListing>
+CREATE AGGREGATE my_count (
+    sfunc2 = int4inc, -- add one
+    basetype = int4,
+    stype2 = int4,
+    initcond2 = '0'
 );
-</programlisting>
 
-   （<function>float8_accum</> 需要一个三元素数组，而不只是两个
-   元素，因为它累积的不仅是输入值的和与计数，还有平方和。这样它
-   除了可用于 <function>avg</> 之外，也可用于其他一些聚合。）
-  </para>
+SELECT my_count(*) as emp_count from EMP;
 
-  <para>
-   聚合函数可以使用多态的状态转移函数或最终函数，这样同一组函数
-   就能用于实现多个聚合。关于多态函数的解释，请参见
-   <xref linkend="extend-types-polymorphic">。再进一步，聚合函数自身
-   也可以指定为具有多态输入类型和状态类型，从而让同一个聚合定义
-   服务于多种输入数据类型。下面是一个多态聚合的示例：
-
-<programlisting>
-CREATE AGGREGATE array_accum (anyelement)
-(
-    sfunc = array_append,
-    stype = anyarray,
-    initcond = '{}'
+         +----------+
+         |emp_count |
+         +----------+
+         |5         |
+         +----------+
+</ProgramListing>
+</Para>
+         
+<Para>
+     "Average"（平均值）是一个既需要计算运行总和的函数又需要计算运行计数的函数的聚合例子。处理完所有实例后，聚合的最终答案是运行总和除以运行计数。我们使用前面用过的
+     <Acronym>int4pl</Acronym> 和
+     <Acronym>int4inc</Acronym>
+     例程，以及
+     <ProductName>Postgres</ProductName>
+     的整数除法例程
+     <Acronym>int4div</Acronym> 来计算总和除以计数。
+     
+<ProgramListing>
+CREATE AGGREGATE my_average (
+    sfunc1 = int4pl,     --  sum
+    basetype = int4,
+    stype1 = int4,
+    sfunc2 = int4inc,    -- count
+    stype2 = int4,
+    finalfunc = int4div, -- division
+    initcond1 = '0',
+    initcond2 = '0'
 );
-</programlisting>
 
-   对于任何给定的聚合调用，其实际状态类型都是一种数组类型，该
-   数组以实际输入类型为元素类型。这个聚合的行为是把所有输入串接
-   成这种类型的一个数组。（注意：内置聚合
-   <function>array_agg</> 提供了类似的功能，而且性能比这个定义
-   更好。）
-  </para>
+SELECT my_average(salary) as emp_average FROM EMP;
 
-  <para>
-   下面是以两种不同的实际数据类型作为参数时的输出：
-
-<programlisting>
-SELECT attrelid::regclass, array_accum(attname)
-    FROM pg_attribute
-    WHERE attnum &gt; 0 AND attrelid = 'pg_tablespace'::regclass
-    GROUP BY attrelid;
-
-   attrelid    |              array_accum              
----------------+---------------------------------------
- pg_tablespace | {spcname,spcowner,spclocation,spcacl}
-(1 row)
-
-SELECT attrelid::regclass, array_accum(atttypid::regtype)
-    FROM pg_attribute
-    WHERE attnum &gt; 0 AND attrelid = 'pg_tablespace'::regclass
-    GROUP BY attrelid;
-
-   attrelid    |        array_accum        
----------------+---------------------------
- pg_tablespace | {name,oid,text,aclitem[]}
-(1 row)
-</programlisting>
-  </para>
-
-  <para>
-   用 C 编写的函数可以通过调用 <function>AggCheckCallContext</>
-   来检测自己是否作为聚合转移函数或最终函数被调用，例如：
-<programlisting>
-if (AggCheckCallContext(fcinfo, NULL))
-</programlisting>
-   检查这一点的一个原因是，如果对状态转移函数来说结果为真，那么
-   第一个输入一定是临时转移值，因此可以安全地原地修改，而不必
-   分配一个新副本。
-   示例见 <literal>int8inc()</>。（这是函数可以安全地修改按引用
-   传递的输入的<emphasis>唯一</>情况。特别是，聚合的最终函数在任何
-   情况下都不得修改其输入，因为在某些情况下，它们会在同一个最终
-   转移值上被再次执行。）
-  </para>
-
-  <para>
-   更多细节请参见<xref linkend="sql-createaggregate">命令。
-  </para>
- </sect1>
+         +------------+
+         |emp_average |
+         +------------+
+         |1640        |
+         +------------+
+</ProgramListing>
+</Para>
+</Chapter>

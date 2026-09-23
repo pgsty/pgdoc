@@ -1,291 +1,145 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/dfunc.sgml,v 1.36 2010/04/03 07:22:53 petere Exp $ -->
+<Chapter Id="dfunc">
+<Title>链接动态装载的函数</Title>
 
-<sect2 id="dfunc">
- <title>Compiling and Linking Dynamically-Loaded Functions</title>
+<Para>
+在你创建并注册一个用户定义的函数之后，你的工作基本上就完成了。然而，
+<ProductName>Postgres</ProductName>必须装载实现你的函数的目标代码
+（例如一个<FileName>.o</FileName>文件或一个共享库）。如前所述，
+<ProductName>Postgres</ProductName>会在运行时按需装载你的代码。为了让你的代码能够被动态装载，你可能必须以一种特殊的方式对它进行编译和链接编辑。本节简要描述在你把用户定义的函数装载进运行中的<ProductName>Postgres</ProductName>服务器之前，需要怎样进行编译和链接编辑。注意，这一过程从 4.2 版开始已经改变。
+<Tip>
+<Para>
+旧的<ProductName>Postgres</ProductName>动态装载机制要求编写动态装载器的人深入了解可执行文件格式、可执行指令在内存中的放置和对齐等方面的知识。那样的装载器往往又慢又有缺陷。从 4.2 版开始，
+<ProductName>Postgres</ProductName>的动态装载机制已被重写为使用操作系统提供的动态装载机制。这种做法通常比我们以前的动态装载机制更快、更可靠也更可移植。原因在于，几乎所有现代版本的
+UNIX 都使用动态装载机制来实现共享库，因此必然提供快速可靠的机制。另一方面，目标文件在被装载进
+<ProductName>Postgres</ProductName>之前必须先做一点后处理。我们希望速度和可靠性上的大幅提升能弥补便利性上的轻微下降。
+<Para>
+</Tip>
+  如果你有具体问题，应该预期去阅读（反复阅读）C 编译器 cc(1) 和链接编辑器 ld(1) 的手册页。此外，
+     <FileName>PGROOT/src/regress</FileName>目录中的回归测试套件包含这一过程的若干可用示例。如果你照抄这些测试的做法，就不会有任何问题。
+     下面将使用下列术语：
+<ItemizedList>
+    <ListItem>
+     <Para>
+      <FirstTerm>动态装载（Dynamic loading）</FirstTerm>是<ProductName>Postgres</ProductName>对一个目标文件所做的事情。目标文件被复制进运行中的<ProductName>Postgres</ProductName>服务器，文件中的函数和变量变得可供<ProductName>Postgres</ProductName>进程中的函数使用。<ProductName>Postgres</ProductName>使用操作系统提供的动态装载机制来完成这件事。
+     </Para>
+    </ListItem>
+    <ListItem>
+     <Para>
+      <FirstTerm>装载和链接编辑（Loading and link editing）</FirstTerm>是你对一个目标文件所做的事情，目的是产生另一种目标文件（例如一个可执行程序或一个共享库）。你使用链接编辑程序 ld(1) 来完成这件事。
+     </Para>
+    </ListItem>
+   </ItemizedList>
+</Para>
+<Para>
+   下列一般性限制和说明也适用于下面的讨论：
+   <ItemizedList>
+    <ListItem>
+     <Para>
+      传给 create function 命令的路径必须是绝对路径（即以“/”开头），并且指向运行<ProductName>Postgres</ProductName>服务器的机器上可见的目录。
 
- <para>
-  在你能够使用以 C 编写的 <productname>PostgreSQL</productname> 扩展函数之前，
-  必须以特殊方式对它们进行编译和链接，以生成一个可由服务器动态装载的文件。
-  更准确地说，需要创建一个<firstterm>共享库</firstterm>。<indexterm><primary>共享库</primary></indexterm>
- </para>
+      <Tip>
+       <Para>
+	相对路径实际上也能工作，但它是相对于数据库所在目录的（前端应用通常看不到这个目录）。显然，让路径相对于用户启动前端应用的目录是没有意义的，因为服务器可能运行在一台完全不同的机器上！
+       </Para>
+      </Tip>
+     </Para>
+    </ListItem>
 
- <para>
-  若想了解本节未涵盖的信息，你应阅读操作系统的文档，特别是 C 编译器
-  <command>cc</command> 和链接编辑器 <command>ld</command> 的手册页。
-  此外，<productname>PostgreSQL</productname> 源代码在
-  <filename>contrib</filename> 目录中包含若干可用的示例。
-  不过，如果你依赖这些示例，就会使你的模块依赖于 <productname>PostgreSQL</productname>
-  源代码是否可用。
- </para>
+    <ListItem>
+     <Para>
+      <ProductName>Postgres</ProductName>用户必须能够遍历传给 create function 命令的路径，并且能够读取该目标文件。这是因为<ProductName>Postgres</ProductName>服务器以<ProductName>Postgres</ProductName>用户身份运行，而不是以启动前端进程的用户身份运行。（让文件或上层目录对“postgres”用户不可读和/或不可执行是一个极其常见的错误。）
+     </Para>
+    </ListItem>
 
- <para>
-  创建共享库通常与链接可执行文件类似：先把源文件编译为目标文件，
-  再把目标文件链接在一起。目标文件需要以<firstterm>位置无关代码</firstterm>
-  （<acronym>PIC</acronym>）形式生成。
-  <indexterm><primary>PIC</primary></indexterm>
-  从概念上讲，这意味着当它们被可执行文件装载时，可以放在内存中的任意位置。
-  （面向可执行文件的目标文件通常不会这样编译。）
-  链接共享库的命令中也包含一些特殊标志，用来把它与链接可执行文件的命令区分开来
-  （至少理论上如此，某些系统上的实际做法要丑陋得多）。
- </para>
+    <ListItem>
+     <Para>
+      目标文件内定义的符号名彼此不能冲突，也不能与<ProductName>Postgres</ProductName>中定义的符号冲突。
+     </Para>
+    </ListItem>
 
- <para>
-  在下面的示例中，我们假定你的源代码位于文件 <filename>foo.c</filename> 中，
-  并将创建共享库 <filename>foo.so</filename>。除非另有说明，
-  中间目标文件名为 <filename>foo.o</filename>。共享库可以包含多个目标文件，
-  但这里我们只使用一个。
- </para>
+    <ListItem>
+     <Para>
+      GNU C 编译器通常不提供使用操作系统动态装载器接口所需的特殊选项。在这种情况下，必须使用操作系统自带的 C 编译器。
+     </Para>
+    </ListItem>
+   </ItemizedList>
 
-<!--
-  Note: Reading GNU Libtool sources is generally a good way of
-  figuring out this information.  The methods used within PostgreSQL
-  source code are not necessarily ideal.
--->
+<Sect1>
+<Title><Acronym>ULTRIX</Acronym></Title>
 
-  <variablelist>
-   <varlistentry>
-    <term><systemitem class="osname">BSD/OS</></term>
-    <indexterm><primary>BSD/OS</><secondary>shared library</></>
-    <listitem>
-     <para>
-      生成 <acronym>PIC</acronym> 的编译器选项是
-      <option>-fpic</option>。创建共享库时使用的链接器选项是
-      <option>-shared</option>。
-<programlisting>
-gcc -fpic -c foo.c
-ld -shared -o foo.so foo.o
-</programlisting>
-      这从 <systemitem class="osname">BSD/OS</> 4.0 版起适用。
-     </para>
-    </listitem>
-   </varlistentry>
+<Para>
+    在 ULTRIX 下构建动态装载的目标文件非常容易。ULTRIX 没有任何共享库机制，因此对动态装载器接口没有任何限制。另一方面，我们不得不自己（重）写一个不可移植的动态装载器，也无法使用真正的共享库。在
+    ULTRIX 下，唯一的限制是每个目标文件都必须用选项 -G 0 生成。（注意那是数字“0”而不是字母“O”。）例如，
+    <ProgramListing>
+# simple ULTRIX example
+% cc -G 0 -c foo.c
+    </ProgramListing>
+    会产生一个名为 foo.o 的目标文件，随后可以把它动态装载进<ProductName>Postgres</ProductName>。不需要再做额外的装载或链接编辑。
+   </Para>
+</Sect1>
+<Sect1>
+<Title><Acronym>DEC OSF/1</Acronym></Title>
 
-   <varlistentry>
-    <term><systemitem class="osname">FreeBSD</></term>
-    <indexterm><primary>FreeBSD</><secondary>shared library</></>
-    <listitem>
-     <para>
-      生成 <acronym>PIC</acronym> 的编译器选项是
-      <option>-fpic</option>。创建共享库时使用的编译器选项是
-      <option>-shared</option>。
-<programlisting>
-gcc -fpic -c foo.c
-gcc -shared -o foo.so foo.o
-</programlisting>
-      这从 <systemitem class="osname">FreeBSD</> 3.0 版起适用。
-     </para>
-    </listitem>
-   </varlistentry>
+<Para>
+    在 DEC OSF/1 下，你可以取任意简单的目标文件，用带正确选项的 ld 命令处理它来产生一个共享目标文件。相应的命令看起来像这样：
+    <ProgramListing>
+# simple DEC OSF/1 example
+% cc -c foo.c
+% ld -shared -expect_unresolved '*' -o foo.so foo.o
+    </ProgramListing>
 
-   <varlistentry>
-    <term><systemitem class="osname">HP-UX</></term>
-    <indexterm><primary>HP-UX</><secondary>shared library</></>
-    <listitem>
-     <para>
-      生成 <acronym>PIC</acronym> 的系统编译器选项是
-      <option>+z</option>。使用 <application>GCC</application> 时则是
-      <option>-fpic</option>。用于共享库的链接器选项是
-      <option>-b</option>。因此：
-<programlisting>
-cc +z -c foo.c
-</programlisting>
-      or:
-<programlisting>
-gcc -fpic -c foo.c
-</programlisting>
-      and then:
-<programlisting>
-ld -b -o foo.sl foo.o
-</programlisting>
-      与大多数其他系统不同，<systemitem class="osname">HP-UX</> 使用
-      <filename>.sl</filename> 作为共享库扩展名。
-     </para>
-    </listitem>
-   </varlistentry>
+    得到的共享目标文件随后就可以装载进<ProductName>Postgres</ProductName>。在向 create function 命令指定目标文件名时，必须给出共享目标文件的名字（以 .so 结尾），而不是简单的目标文件。
 
-   <varlistentry>
-    <term><systemitem class="osname">IRIX</></term>
-    <indexterm><primary>IRIX</><secondary>shared library</></>
-    <listitem>
-     <para>
-      <acronym>PIC</acronym> 是默认行为，无须特殊的编译器选项。
-      生成共享库时使用的链接器选项是 <option>-shared</option>。
-<programlisting>
-cc -c foo.c
-ld -shared -o foo.so foo.o
-</programlisting>
-     </para>
-    </listitem>
-   </varlistentry>
+    <Tip>
+     <Para>
+      实际上，只要是一个共享目标文件，<ProductName>Postgres</ProductName>并不关心你把它命名成什么。如果你更喜欢用扩展名 .o 来命名共享目标文件，这对<ProductName>Postgres</ProductName>也没问题，只要确保把正确的文件名给了 create function 命令。换句话说，你只需保持一致。不过，从实用的角度看，我们不鼓励这种做法，因为你无疑会搞混哪些文件已经被做成了共享目标文件、哪些没有。例如，如果目标文件和共享目标文件都以 .o 结尾，就很难编写 Makefile 来自动完成链接编辑！
+     </Para>
+    </Tip>
 
-   <varlistentry>
-    <term><systemitem class="osname">Linux</></term>
-    <indexterm><primary>Linux</><secondary>shared library</></>
-    <listitem>
-     <para>
-      生成 <acronym>PIC</acronym> 的编译器选项是
-      <option>-fpic</option>。在某些平台的某些情况下，如果
-      <option>-fpic</option> 不起作用，则必须使用
-      <option>-fPIC</option>。更多信息请参阅 GCC 手册。创建共享库的
-      编译器选项是 <option>-shared</option>。完整示例如下：
-<programlisting>
-cc -fpic -c foo.c
-cc -shared -o foo.so foo.o
-</programlisting>
-     </para>
-    </listitem>
-   </varlistentry>
+    如果你指定的文件不是共享目标文件，后端将会挂起！
+   </Para>
+</Sect1>
+<Sect1>
+<Title>
+    <Acronym>SunOS 4.x</Acronym>、<Acronym>Solaris 2.x</Acronym> 和
+    <Acronym>HP-UX</Acronym></Title>
 
-   <varlistentry>
-    <term><systemitem class="osname">MacOS X</></term>
-    <indexterm><primary>MacOS X</><secondary>shared library</></>
-    <listitem>
-     <para>
-     下面是一个示例。它假定开发者工具已经安装。
-<programlisting>
-cc -c foo.c
-cc -bundle -flat_namespace -undefined suppress -o foo.so foo.o
-</programlisting>
-    </para>
-    </listitem>
-   </varlistentry>
+<Para>
+    在 SunOS 4.x、Solaris 2.x 和 HP-UX 下，必须用特殊的编译器标志编译源文件来创建简单的目标文件，并且必须产生一个共享库。HP-UX 所需的步骤如下。HP-UX C 编译器的
+    +z 标志产生所谓的“位置无关代码”（PIC），+u 标志移除 PA-RISC 体系结构通常会强制施加的某些对齐限制。必须使用 HP-UX 链接编辑器并带 -b 选项把目标文件变成共享库。这听起来复杂，其实非常简单，因为相应的命令就是：
 
-   <varlistentry>
-    <term><systemitem class="osname">NetBSD</></term>
-    <indexterm><primary>NetBSD</><secondary>shared library</></>
-    <listitem>
-     <para>
-      生成 <acronym>PIC</acronym> 的编译器选项是
-      <option>-fpic</option>。对于 <acronym>ELF</acronym> 系统，使用
-      带 <option>-shared</option> 选项的编译器来链接共享库。在较旧
-      的非 ELF 系统上，则使用 <literal>ld
-      -Bshareable</literal>。
-<programlisting>
-gcc -fpic -c foo.c
-gcc -shared -o foo.so foo.o
-</programlisting>
-     </para>
-    </listitem>
-   </varlistentry>
+    <ProgramListing>
+# simple HP-UX example
+% cc +z +u -c foo.c
+% ld -b -o foo.sl foo.o
+    </ProgramListing>
+   </Para>
 
-   <varlistentry>
-    <term><systemitem class="osname">OpenBSD</></term>
-    <indexterm><primary>OpenBSD</><secondary>shared library</></>
-    <listitem>
-     <para>
-      生成 <acronym>PIC</acronym> 的编译器选项是
-      <option>-fpic</option>。链接共享库使用
-      <literal>ld -Bshareable</literal>。
-<programlisting>
-gcc -fpic -c foo.c
-ld -Bshareable -o foo.so foo.o
-</programlisting>
-     </para>
-    </listitem>
-   </varlistentry>
+<Para>
+    与上一小节提到的 .so 文件一样，必须告诉 create function 命令哪个是要装载的正确文件（即必须给出共享库即 .sl 文件的位置）。
+    在 SunOS 4.x 下，命令看起来像这样：
+    <ProgramListing>
+# simple SunOS 4.x example
+% cc -PIC -c foo.c
+% ld -dc -dp -Bdynamic -o foo.so foo.o
+    </ProgramListing>
 
-   <varlistentry>
-    <term><systemitem class="osname">Solaris</></term>
-    <indexterm><primary>Solaris</><secondary>shared library</></>
-    <listitem>
-     <para>
-      使用 Sun 编译器时，生成 <acronym>PIC</acronym> 的编译器选项是
-      <option>-KPIC</option>；使用 <application>GCC</> 时则是
-      <option>-fpic</option>。要链接共享库，两种编译器都使用编译器
-      选项 <option>-G</option>，或者在使用 <application>GCC</> 时
-      改用 <option>-shared</option>。
-<programlisting>
-cc -KPIC -c foo.c
-cc -G -o foo.so foo.o
-</programlisting>
-      or
-<programlisting>
-gcc -fpic -c foo.c
-gcc -G -o foo.so foo.o
-</programlisting>
-     </para>
-    </listitem>
-   </varlistentry>
+    在 Solaris 2.x 下等价的命令行是：
+    <ProgramListing>
+# simple Solaris 2.x example
+% cc -K PIC -c foo.c
+% ld -G -Bdynamic -o foo.so foo.o
+    </ProgramListing>
+    或者
+    <ProgramListing>
+# simple Solaris 2.x example
+% gcc -fPIC -c foo.c
+% ld -G -Bdynamic -o foo.so foo.o
+    </ProgramListing>
+   </Para>
 
-   <varlistentry>
-    <term><systemitem class="osname">Tru64 UNIX</></term>   
-    <indexterm><primary>Tru64 UNIX</><secondary>shared library</></>
-    <indexterm><primary>Digital UNIX</><see>Tru64 UNIX</></>
-    <listitem>
-     <para>
-      <acronym>PIC</acronym> 是默认值，因此编译命令就是常规的那条。链接时需要使用带特殊选项的<command>ld</command>。
-<programlisting>
-cc -c foo.c
-ld -shared -expect_unresolved '*' -o foo.so foo.o
-</programlisting>
-      使用 GCC 代替系统编译器时过程相同；不需要特殊选项。
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><systemitem class="osname">UnixWare</></term>
-    <indexterm><primary>UnixWare</><secondary>shared library</></>
-    <listitem>
-     <para>
-     生成 <acronym>PIC</acronym> 的编译器选项，对于 SCO 编译器是 <option>-K
-     PIC</option>，而 <option>-fpic</option> 则用于 <productname>GCC</productname>。
-     链接共享库时，编译器选项对于 SCO 编译器是 <option>-G</option>，
-     对于 <productname>GCC</productname> 则是 <option>-shared</option>。
-<programlisting>
-cc -K PIC -c foo.c
-cc -G -o foo.so foo.o
-</programlisting>
-     或者
-<programlisting>
-gcc -fpic -c foo.c
-gcc -shared -o foo.so foo.o
-</programlisting>
-    </para>
-    </listitem>
-   </varlistentry>
-
-  </variablelist>
-
- <tip>
-  <para>
-   如果这些内容对你来说过于复杂，可以考虑使用
-   <ulink url="http://www.gnu.org/software/libtool/">
-   <productname>GNU Libtool</productname></ulink>，
-   它通过统一接口隐藏了平台差异。
-  </para>
- </tip>
-
- <para>
-  生成的共享库文件随后就可以装载到 <productname>PostgreSQL</productname> 中。
-  在向 <command>CREATE FUNCTION</command> 命令指定文件名时，
-  必须给出共享库文件名，而不是中间目标文件名。
-  请注意，系统标准的共享库扩展名（通常是 <literal>.so</literal> 或 <literal>.sl</literal>）
-  可以在 <command>CREATE FUNCTION</command> 命令中省略，并且通常也应省略，以获得最佳可移植性。
- </para>
-
- <para>
-  关于服务器期望在何处找到共享库文件，请回头参见
-  <xref linkend="xfunc-c-dynload">。
- </para>
-
-<!--
-Under AIX, object files are compiled normally but building the shared
-library requires a couple of steps.  First, create the object file:
-.nf
-cc <other flags> -c foo.c
-.fi
-You must then create a symbol \*(lqexports\*(rq file for the object
-file:
-.nf
-mkldexport foo.o `pwd` &gt; foo.exp
-.fi
-Finally, you can create the shared library:
-.nf
-ld <other flags> -H512 -T512 -o foo.so -e _nostart \e
-   -bI:.../lib/postgres.exp -bE:foo.exp foo.o \e
-   -lm -lc 2>/dev/null
-.fi
-  -->
-
-</sect2>
+<Para>
+     链接共享库时，你可能必须在 ld 命令行上指定一些额外的共享库（通常是系统库，例如 C 库和数学库）。
+</Para>
+</Sect1>
+</Chapter>
