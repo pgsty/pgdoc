@@ -1,636 +1,77 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/sources.sgml,v 2.36.2.1 2010/09/09 00:48:29 momjian Exp $ -->
+<!--
+$Header: /home/projects/pgsql/cvsroot/pgsql/doc/src/sgml/sources.sgml,v 2.3 2000/09/29 20:21:34 petere Exp $
+-->
 
  <chapter id="source">
-  <title>PostgreSQL 编码约定</title>
+  <title>Postgres 源代码</title>
 
   <sect1 id="source-format">
    <title>格式</title>
 
    <para>
-    源代码格式使用 4 列制表宽度，并保留制表符（即，不会把制表符展开为空格）。
-    每个逻辑缩进层级都对应再增加一个制表位。
+    源代码格式使用 4 列制表宽度，目前保留制表符（即，不把制表符展开为空格）。
    </para>
 
    <para>
-    布局规则（花括号位置等）遵循 BSD 约定。特别是，<literal>if</literal>、
-    <literal>while</literal>、<literal>switch</literal> 等控制语句所对应代码块的花括号都单独占一行。
-   </para>
+    对于 emacs，把下列内容（或类似内容）加入你的
+    <filename>~/.emacs</filename> 初始化文件：
 
-   <para>不要使用 C++ 风格注释（<literal>//</literal> 注释）。严格的 ANSI C 编译器不接受这种注释。同样，也不要使用在块中途声明新变量这样的 C++ 扩展。</para>
+    <programlisting>
+;; check for files with a path containing "postgres" or "pgsql"
+(setq auto-mode-alist (cons '("\\(postgres\\|pgsql\\).*\\.[ch]\\'" . pgsql-c-mode) auto-mode-alist))
+(setq auto-mode-alist (cons '("\\(postgres\\|pgsql\\).*\\.cc\\'" . pgsql-c-mode) auto-mode-alist))
 
-   <para>
-    多行注释块的首选样式是
-<programlisting>
-/*
- * comment text begins here
- * and continues here
- */
-</programlisting>
-    注意，从第 1 列开始的注释块会被 <application>pgindent</application> 原样保留，
-    但它会把缩进的注释块当作普通文本重新排版。如果想保留缩进块中的换行，
-    请像下面这样加上横线：
-<programlisting>
-    /*----------
-     * comment text begins here
-     * and continues here
-     *----------
-     */
-</programlisting>
+(defun pgsql-c-mode ()
+  ;; sets up formatting for Postgres C code
+  (interactive)
+  (c-mode)
+  (setq-default tab-width 4)
+  (c-set-style "bsd")             ; set c-basic-offset to 4, plus other stuff
+  (c-set-offset 'case-label '+)   ; tweak case indent to match PG custom
+  (setq indent-tabs-mode t))      ; make sure we keep tabs when indenting
+    </programlisting>
    </para>
 
    <para>
-    尽管提交的补丁并不绝对必须遵循这些格式规则，但这样做是个好主意。
-    你的代码会在下一个版本发布前经过 <application>pgindent</>
-    处理，因此按另一套格式约定把它写得再漂亮也没有意义。
+    对于 <application>vi</application>，你的
+    <filename>~/.vimrc</filename> 或等价文件应包含：
+
+    <programlisting>
+set tabstop=4
+    </programlisting>
+
+    或在 vi 中等价地尝试
+
+    <programlisting>
+:set ts=4
+    </programlisting>
    </para>
 
    <para>
-    <filename>src/tools</filename> 目录中包含可供 <productname>emacs</productname>、
-    <productname>xemacs</productname> 或 <productname>vim</productname> 编辑器使用的示例设置文件，
-    以帮助确保它们按这些约定格式化代码。
-   </para>
+    文本浏览工具 <application>more</application> 和
+    <application>less</application> 可以这样调用
 
-   <para>
-    文本浏览工具 <application>more</application> 和 <application>less</application> 可以这样调用：
-<programlisting>
+    <programlisting>
 more -x4
 less -x4
-</programlisting>
-    以便正确显示制表符。
+    </programlisting>
    </para>
   </sect1>
-
-  <sect1 id="error-message-reporting">
-   <title>在服务器内部报告错误</title>
-
-   <indexterm>
-    <primary>ereport</primary>
-   </indexterm>
-   <indexterm>
-    <primary>elog</primary>
-   </indexterm>
-
-   <para>
-    服务器代码内生成的错误、警告和日志消息应使用 <function>ereport</function>，
-    或其更老的近亲 <function>elog</function> 来创建。这一函数的用法相当复杂，
-    因此需要一些解释。
-   </para>
-
-   <para>
-    每条消息都必须包含两个元素：严重性级别（范围从
-    <literal>DEBUG</literal> 到 <literal>PANIC</literal>）以及主消息文本。
-    此外还可以有可选元素，其中最常见的是遵循 SQL 规范 SQLSTATE 约定的错误标识符代码。
-    <function>ereport</function> 本身只是一个包装函数，主要为了语法上的便利，
-    使消息生成在 C 源代码中看起来像一次函数调用。
-    <function>ereport</function> 唯一直接接受的参数是严重性级别。
-    主消息文本以及任何可选消息元素都是通过在 <function>ereport</function> 调用中调用辅助函数
-    （例如 <function>errmsg</function>）来生成的。
-   </para>
-
-   <para>对<function>ereport</function>的一次典型调用可能如下：<programlisting>
-ereport(ERROR,
-        (errcode(ERRCODE_DIVISION_BY_ZERO),
-         errmsg("division by zero")));
-</programlisting>这指定了错误严重性级别<literal>ERROR</literal>（一种普通错误）。<function>errcode</function>调用使用定义在<filename>src/include/utils/errcodes.h</filename>中的一个宏指定 SQLSTATE 错误代码。<function>errmsg</function>调用提供主消息文本。注意辅助函数调用外面多了一层圆括号 &mdash; 它们虽然烦人，但在语法上是必需的。</para>
-
-   <para>这里有一个更复杂的示例：<programlisting>
-ereport(ERROR,
-        (errcode(ERRCODE_AMBIGUOUS_FUNCTION),
-         errmsg("function %s is not unique",
-                func_signature_string(funcname, nargs,
-                                      NIL, actual_arg_types)),
-         errhint("Unable to choose a best candidate function. "
-                 "You might need to add explicit typecasts.")));
-</programlisting>这展示了如何用格式代码把运行时值嵌入消息文本中。此外还提供了一条可选的<quote>提示</quote>消息。</para>
-
-   <para>
-    适用于 <function>ereport</> 的辅助例程有：
-  <itemizedlist>
-   <listitem>
-    <para>
-     <function>errcode(sqlerrcode)</function> 为该条件指定 SQLSTATE
-     错误标识符代码。如果不调用这个例程，则默认错误标识符在错误
-     严重性级别为 <literal>ERROR</> 或更高时为
-     <literal>ERRCODE_INTERNAL_ERROR</literal>，在错误级别为
-     <literal>WARNING</> 时为 <literal>ERRCODE_WARNING</literal>，
-     否则（对于 <literal>NOTICE</> 及以下）为
-     <literal>ERRCODE_SUCCESSFUL_COMPLETION</literal>。虽然这些默认值
-     常常很方便，但在省略 <function>errcode()</function> 调用之前，
-     始终要先想想它们是否合适。
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <function>errmsg(const char *msg, ...)</function> 指定主错误消息
-     文本，以及可能要插入其中的运行时值。插入项通过
-     <function>sprintf</> 风格的格式代码指定。除了
-     <function>sprintf</> 接受的标准格式代码外，还可以使用格式代码
-     <literal>%m</literal> 插入 <function>strerror</function> 为
-     <literal>errno</literal> 当前值返回的错误消息。
-     <footnote>
-      <para>
-       也就是说，是到达 <function>ereport</> 调用点时的那个值；
-       辅助报告例程内部对 <literal>errno</literal> 的更改不会影响
-       它。如果显式写出 <literal>strerror(errno)</> 作为
-       <function>errmsg</> 的参数列表内容，就不是这样了；因此不要
-       这么做。
-      </para>
-     </footnote>
-     <literal>%m</> 不需要在 <function>errmsg</> 的参数列表中有任何
-     对应项。注意，在处理格式代码之前，消息字符串会先经过
-     <function>gettext</> 以便可能进行本地化。
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <function>errmsg_internal(const char *msg, ...)</function> 与
-     <function>errmsg</> 相同，只是消息字符串不会被翻译，也不会被
-     收入国际化消息字典。这应当用于那些<quote>不可能发生</quote>、
-     大概不值得为之投入翻译精力的情况。
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <function>errmsg_plural(const char *fmt_singular, const char *fmt_plural,
-     unsigned long n, ...)</function> 类似于 <function>errmsg</>，
-     但支持消息的各种复数形式。<replaceable>fmt_singular</> 是英文
-     单数格式，<replaceable>fmt_plural</> 是英文复数格式，
-     <replaceable>n</> 是决定需要哪种复数形式的整数值，其余参数按
-     所选格式字符串进行格式化。更多信息见
-     <xref linkend="nls-guidelines">。
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <function>errdetail(const char *msg, ...)</function> 提供一条可选的
-     <quote>详情</quote>消息；当有额外信息但似乎不适合放在主消息中时，
-     可使用它。消息字符串的处理方式与 <function>errmsg</> 完全相同。
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <function>errdetail_log(const char *msg, ...)</function> 与
-     <function>errdetail</> 相同，只是该字符串只会写入服务器日志，
-     绝不会发送给客户端。如果同时使用 <function>errdetail</> 和
-     <function>errdetail_log</>，那么一条字符串会发往客户端，另一条
-     会发往日志。对于那些因安全性过于敏感或内容过于庞大而不适合
-     放入发给客户端的报告中的错误细节，这很有用。
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <function>errdetail_plural(const char *fmt_singular, const char *fmt_plural,
-     unsigned long n, ...)</function> 类似于 <function>errdetail</>，
-     但支持消息的各种复数形式。更多信息见
-     <xref linkend="nls-guidelines">。
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <function>errhint(const char *msg, ...)</function> 提供一条可选的
-     <quote>提示</quote>消息；当要就如何修复问题给出建议（而非关于
-     出了什么问题的事实性详情）时，可使用它。消息字符串的处理方式
-     与 <function>errmsg</> 完全相同。
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <function>errcontext(const char *msg, ...)</function> 通常不会直接在
-     <function>ereport</> 消息处调用；它用于
-     <literal>error_context_stack</> 回调函数中，提供错误发生时的
-     上下文信息，例如 PL 函数中的当前位置。消息字符串的处理方式与
-     <function>errmsg</> 完全相同。与其他辅助函数不同，它在每次
-     <function>ereport</> 调用中可以被调用多次；这样提供的 successive
-     字符串会用换行符分隔拼接起来。
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <function>errposition(int cursorpos)</function> 指定错误在查询
-     字符串中的文本位置。目前，它只对在查询处理的词法和语法分析
-     阶段检测到的错误有用。
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <function>errcode_for_file_access()</function> 是一个便捷函数，
-     用于为与文件访问相关的系统调用失败选择合适的 SQLSTATE 错误
-     标识符。它使用保存下来的 <literal>errno</literal> 来确定要生成
-     哪种错误代码。通常应将它与主错误消息文本中的
-     <literal>%m</literal> 结合使用。
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <function>errcode_for_socket_access()</function> 是一个便捷函数，
-     用于为与套接字相关的系统调用失败选择合适的 SQLSTATE 错误
-     标识符。
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <function>errhidestmt(bool hide_stmt)</function> 可被调用以指定
-     在 postmaster 日志中抑制消息的 <literal>STATEMENT:</> 部分。
-     一般来说，如果消息文本已经包含当前语句，这样做就是合适的。
-    </para>
-   </listitem>
-  </itemizedlist>
-   </para>
-
-   <para>还有一个较旧的函数<function>elog</function>，至今仍被大量使用。一个<function>elog</function>调用：<programlisting>
-elog(level, "format string", ...);
-</programlisting>完全等价于：<programlisting>
-ereport(level, (errmsg_internal("format string", ...)));
-</programlisting>注意，SQLSTATE 错误代码总会取默认值，而且消息字符串不会被翻译。因此，<function>elog</function>只应用于内部错误和低层调试日志。凡是普通用户可能感兴趣的消息，都应通过<function>ereport</function>。尽管如此，系统中仍有足够多的内部<quote>不可能发生</quote>错误检查，因此<function>elog</function>依然被广泛使用；对这类消息来说，由于记法更简洁，它更受青睐。</para>
-
-   <para>
-    关于如何编写良好的错误消息，可参见 <xref linkend="error-style-guide">。
-   </para>
-  </sect1>
-
-  <sect1 id="error-style-guide">
-   <title>错误消息风格指南</title>
-
-   <para>
-    提供这份风格指南，是希望在 <productname>PostgreSQL</productname>
-    生成的所有消息中保持一致、对用户友好的风格。
-   </para>
-
-  <simplesect>
-   <title>What goes where</title>
-
-   <para>
-    主消息应简短、陈述事实，并避免提及具体函数名等实现细节。
-    <quote>简短</quote> 的意思是 <quote>在正常情况下应能放在一行里</quote>。
-    如果为了保持主消息简短，或者你觉得有必要提及特定失败的系统调用之类的实现细节，
-    可使用详情消息。主消息和详情消息都应当陈述事实。提示消息则用于给出如何修复问题的建议，
-    尤其是在该建议未必总是适用时。
-   </para>
-
-   <para>例如，不要写：<programlisting>
-IpcMemoryCreate: shmget(key=%d, size=%u, 0%o) failed: %m
-(plus a long addendum that is basically a hint)
-</programlisting>而要写：<programlisting>
-Primary:    could not create shared memory segment: %m
-Detail:     Failed syscall was shmget(key=%d, size=%u, 0%o).
-Hint:       the addendum
-</programlisting>
-   </para>
-
-   <para>
-    原理：保持主消息简短，有助于使其切中要点，也便于客户端假定一行足以容纳错误消息，
-    从而安排屏幕空间。详情消息和提示消息可以归入详细模式，或者放到弹出的错误详情窗口中。
-    此外，为节省空间，详情消息和提示消息通常会从服务器日志中省略。
-    最好避免提及实现细节，因为用户反正也不知道这些细节。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>格式</title>
-
-   <para>
-    不要在消息文本中写入任何特定的格式假设。应预期客户端和服务器日志会按照各自需要折行。
-    对于较长的消息，可以使用换行字符（\n）来表示建议的分段。不要让消息以换行结束。
-    不要使用制表符或其他格式控制字符。（在错误上下文显示中，会自动添加换行以分隔函数调用等上下文层次。）
-   </para>
-
-   <para>
-    原理：消息不一定显示在终端类设备上。在 GUI 显示或浏览器中，
-    这些格式指令充其量也只是被忽略。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>Quotation marks</title>
-
-   <para>
-    英文文本在适合引用时应使用双引号。其他语言的文本应一致地使用一种引号，
-    这种引号应符合该语言的出版习惯以及其他程序的计算机输出习惯。
-   </para>
-
-   <para>
-    原理：选择双引号而不是单引号多少有些武断，但通常更符合首选用法。
-    有人建议按照 SQL 约定，根据对象类型来选择引号的种类
-    （即字符串用单引号，标识符用双引号）。但这是语言内部的技术问题，
-    很多用户甚至并不熟悉；它也无法扩展到其他类型的被引术语，
-    更无法翻译到其他语言中，而且本身也没什么意义。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>Use of quotes</title>
-
-   <para>
-    对文件名、用户提供的标识符以及其他可能包含单词的变量，
-    始终使用引号界定。对于不会包含单词的变量（例如操作符名），则不要加引号。
-   </para>
-
-   <para>
-    后端中有些函数会在需要时自行给其输出加上双引号（例如
-    <function>format_type_be()</function>）。不要再对这类函数的输出额外加引号。
-   </para>
-
-   <para>
-    原理：对象的名称在嵌入消息时可能造成歧义。对于插入的名称从哪里开始、到哪里结束，要保持一致。
-    但也不要用不必要或重复的引号把消息弄得杂乱无章。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>Grammar and punctuation</title>
-
-   <para>
-    主错误消息与详情/提示消息的规则不同：
-   </para>
-
-   <para>
-    主错误消息：首字母不要大写。消息末尾不要加句号。更不要想着在消息末尾加感叹号。
-   </para>
-
-   <para>
-    详情消息和提示消息：使用完整句子，并且每条都用句号结束。句子的第一个词要首字母大写。
-    如果后面还有一句，在句号后放两个空格（针对英文文本；对其他语言可能并不合适）。
-   </para>
-
-   <para>
-    错误上下文字符串：首字母不要大写，字符串末尾不要加句号。上下文字符串通常不应是完整句子。
-   </para>
-
-   <para>
-    原理：避免使用标点，能让客户端应用更容易把消息嵌入各种语法上下文中。
-    主消息往往本来也不是语法完整的句子。（而如果它们长到不止一句，
-    就应当拆分成主消息和详情消息。）不过，详情消息和提示消息更长，
-    也可能需要包含多个句子。为了保持一致，即便只有一个句子，它们也应遵循完整句子的风格。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>Upper case vs. lower case</title>
-
-   <para>
-    消息措辞应使用小写，包括主错误消息的首字母。如果消息中出现 SQL 命令或关键字，则使用大写形式。
-   </para>
-
-   <para>
-    原理：这样更容易让所有消息看起来一致，因为有些消息是完整句子，而有些则不是。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>Avoid passive voice</title>
-
-   <para>
-    使用主动语态。有施动者时，用完整句子（<quote>A could not do B</quote>）。
-    如果施动者就是程序本身，则使用无主语的电报式写法，但不要把程序写成 <quote>I</quote>。
-   </para>
-
-   <para>
-    原理：程序不是人。不要假装它是。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>Present vs past tense</title>
-
-   <para>
-    如果一次尝试做某事失败了，但下次仍可能成功（也许在修复某个问题之后），
-    就使用过去时。如果失败显然是永久性的，就使用现在时。
-   </para>
-
-   <para>
-    下面两种句式在语义上有明显差别：
-<programlisting>
-could not open file "%s": %m
-</programlisting>
-和：
-<programlisting>
-cannot open file "%s"
-</programlisting>
-    第一种表示尝试打开文件失败了。消息应给出原因，例如 <quote>磁盘已满</quote>
-    或 <quote>文件不存在</quote>。过去时更合适，因为下次磁盘可能就不满了，
-    或者所请求的文件可能已经存在。
-   </para>
-
-   <para>
-    第二种形式表示，程序中根本不存在打开该命名文件的功能，或者从概念上就不可能。
-    现在时更合适，因为这种情况会无限期持续下去。
-   </para>
-
-   <para>
-    原理：诚然，普通用户未必能仅凭消息的时态得出什么重要结论，
-    但既然语言提供了语法，我们就应当正确使用它。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>Type of the object</title>
-
-   <para>
-    在引用对象名称时，要说明它是什么类型的对象。
-   </para>
-
-   <para>
-    原理：否则没人会知道 <quote>foo.bar.baz</quote> 指的是什么。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>括号</title>
-
-   <para>
-    方括号只应用于：（1）命令概要中表示可选参数，或（2）表示数组下标。
-   </para>
-
-   <para>
-    原理：其他任何用法都不符合广为人知的习惯用法，而且会让人困惑。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>Assembling error messages</title>
-
-   <para>
-   当消息中包含其他地方生成的文本时，应按以下方式嵌入：
-<programlisting>
-could not open file %s: %m
-</programlisting>
-   </para>
-
-   <para>
-    原理：要把这种文本拼进一个流畅的单句中，同时照顾所有可能的错误代码会很困难，
-    因此需要某种标点。也有人建议把嵌入的文本放在圆括号里，但如果嵌入的文本很可能是消息中最重要的部分
-    （而这往往确实如此），那样就显得不自然了。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>Reasons for errors</title>
-
-   <para>
-    消息总应说明错误发生的原因。例如：
-<programlisting>
-BAD:    could not open file %s
-BETTER: could not open file %s (I/O failure)
-</programlisting>
-    如果不知道原因，最好去修复代码。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>Function names</title>
-
-   <para>不要在错误文本中包含报告该错误的例程名。需要时，我们有其他机制可以找出它，而且对大多数用户来说，这项信息没有帮助。如果去掉函数名后错误文本就不够清楚，请重新措辞。<programlisting>
-BAD:    pg_atoi: error in "z": cannot parse "z"
-BETTER: invalid input syntax for integer: "z"
-</programlisting>
-   </para>
-
-   <para>
-    也要避免提及被调用函数的名称；应改为说明代码想要做什么：
-<programlisting>
-BAD:    open() failed: %m
-BETTER: could not open file %s: %m
-</programlisting>
-    如果确实有必要，可在详情消息中提及系统调用。
-    （在某些情况下，在详情消息中提供传给该系统调用的实际值也许是合适的信息。）
-   </para>
-
-   <para>
-    原理：用户并不知道那些函数都做了什么。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>Tricky words to avoid</title>
-
-  <formalpara>
-    <title>Unable</title>
-   <para>
-    <quote>Unable</quote> 几乎就是被动语态。更好的做法是视情况使用
-    <quote>cannot</quote> 或 <quote>could not</quote>。
-   </para>
-  </formalpara>
-
-  <formalpara>
-    <title>Bad</title>
-   <para>
-    像 <quote>bad result</quote> 这样的错误消息，实在很难被合理理解。
-    最好写出结果为什么是 <quote>bad</quote>，例如 <quote>invalid format</quote>。
-   </para>
-  </formalpara>
-
-  <formalpara>
-    <title>Illegal</title>
-   <para>
-    <quote>Illegal</quote> 指的是违法，其余情况应使用 <quote>invalid</quote>。
-    更好的是，直接说明为什么无效。
-   </para>
-  </formalpara>
-
-  <formalpara>
-    <title>Unknown</title>
-   <para>
-    尽量避免 <quote>unknown</quote>。考虑 <quote>error: unknown
-    response</quote>。如果你都不知道响应是什么，又如何知道它有错？
-    <quote>Unrecognized</quote> 往往是更好的选择。此外，一定要包含被抱怨的值。
-<programlisting>
-BAD:    unknown node type
-BETTER: unrecognized node type: 42
-</programlisting>
-   </para>
-  </formalpara>
-
-  <formalpara>
-    <title>Find vs. Exists</title>
-   <para>
-    如果程序为了定位某个资源使用了非平凡算法（例如路径搜索），而该算法失败了，
-    那么说程序没能 <quote>find</quote> 该资源是公平的。另一方面，如果资源的预期位置已知，
-    但程序无法在那里访问它，那么就应说该资源并不 <quote>exist</quote>。
-    在这种情况下使用 <quote>find</quote> 显得含糊，也会混淆问题。
-   </para>
-  </formalpara>
-
-  <formalpara>
-    <title>May、Can 与 Might</title>
-   <para>
-    <quote>May</quote> 暗示许可（例如，"You may borrow my rake."），
-    在文档或错误消息中用途不大。<quote>Can</quote> 暗示能力
-    （例如，"I can lift that log."），而 <quote>might</quote> 暗示可能性
-    （例如，"It might rain today."）。使用恰当的词能澄清含义，也有助于翻译。
-   </para>
-  </formalpara>
-
-  <formalpara>
-    <title>Contractions</title>
-   <para>
-    避免使用缩略形式，例如 <quote>can't</quote>；应改用 <quote>cannot</quote>。
-   </para>
-  </formalpara>
-
-  </simplesect>
-
-  <simplesect>
-   <title>Proper spelling</title>
-
-   <para>
-    单词应完整拼写。例如，避免使用：
-  <itemizedlist>
-   <listitem>
-    <para>
-     spec
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     stats
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     parens
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     auth
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     xact
-    </para>
-   </listitem>
-  </itemizedlist>
-   </para>
-
-   <para>
-    原理：这会提升一致性。
-   </para>
-
-  </simplesect>
-
-  <simplesect>
-   <title>本地化</title>
-
-   <para>
-    请记住，错误消息文本需要被翻译成其他语言。请遵循
-    <xref linkend="nls-guidelines"> 中的指导，避免给翻译者制造麻烦。
-   </para>
-  </simplesect>
-
-  </sect1>
-
  </chapter>
+
+<!-- Keep this comment at the end of the file
+Local variables:
+mode:sgml
+sgml-omittag:nil
+sgml-shorttag:t
+sgml-minimize-attributes:nil
+sgml-always-quote-attributes:t
+sgml-indent-step:1
+sgml-indent-data:t
+sgml-parent-document:nil
+sgml-default-dtd-file:"./reference.ced"
+sgml-exposed-tags:nil
+sgml-local-catalogs:("/usr/lib/sgml/catalog")
+sgml-local-ecat-files:nil
+End:
+-->
