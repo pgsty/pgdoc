@@ -3,103 +3,92 @@ $Header: /home/projects/pgsql/cvsroot/pgsql/doc/src/sgml/plan.sgml,v 2.3 2000/03
 -->
 
  <chapter>
-  <title>Understanding Performance</title>
+  <title>理解性能</title>
 
   <para>
-   Query performance can be affected by many things. Some of these can 
-   be manipulated by the user, while others are fundamental to the underlying
-   design of the system.
+   查询性能会受到许多因素的影响。其中一些可以由用户操纵，而另一些
+   则是系统底层设计的根本所在。
   </para>
 
   <para>
-   Some performance issues, such as index creation and bulk data
-   loading, are covered elsewhere. This chapter will discuss the
-   <command>EXPLAIN</command> command, and will show how the details
-   of a query can affect the query plan, and hence overall
-   performance.
+   一些性能问题（例如索引创建和批量数据装载）在别处讨论。本章将
+   讨论<command>EXPLAIN</command>命令，并展示查询的细节如何影响
+   查询计划，从而影响整体性能。
   </para>
 
   <sect1>
-   <title>Using <command>EXPLAIN</command></title>
+   <title>使用<command>EXPLAIN</command></title>
 
    <note>
-    <title>Author</title>
+    <title>作者</title>
     <para>
-     Written by Tom Lane, from e-mail dated 2000-03-27.
+     由 Tom Lane 撰写，摘自 2000-03-27 的电子邮件。
     </para>
    </note>
 
    <para>
-    Plan-reading is an art that deserves a tutorial, and I haven't
-    had time to write one.  Here is some quick &amp; dirty explanation.
+    计划阅读是一门值得写一篇教程的艺术，而我还没来得及写。下面是
+    一些快速而粗糙的解释。
    </para>
 
    <para>
-    The numbers that are currently quoted by EXPLAIN are:
+    目前 EXPLAIN 给出的数字包括：
 
     <itemizedlist>
      <listitem>
       <para>
-       Estimated startup cost (time expended before output scan can start,
-       eg, time to do the sorting in a SORT node).
+       估计的启动代价（在输出扫描可以开始之前花费的时间，
+       例如在 SORT 节点中执行排序的时间）。
       </para>
      </listitem>
 
      <listitem>
       <para>
-       Estimated total cost (if all tuples are retrieved, which they may not
-       be --- LIMIT will stop short of paying the total cost, for
-       example).
+       估计的总代价（如果检索所有元组——实际可能不会，
+       例如 LIMIT 会在付出总代价之前停止）。
       </para>
      </listitem>
 
      <listitem>
       <para>
-       Estimated number of rows output by this plan node.
+       该计划节点估计输出的行数。
       </para>
      </listitem>
 
      <listitem>
       <para>
-       Estimated average width (in bytes) of rows output by this plan
-       node.
+       该计划节点估计输出的行的平均宽度（字节）。
       </para>
      </listitem>
     </itemizedlist>
    </para>
 
    <para>
-    The costs are measured in units of disk page fetches.  (CPU effort
-    estimates are converted into disk-page units using some
-    fairly arbitrary fudge-factors.  See the <command>SET</command>
-    reference page if you want to experiment with these.)
-    It's important to note that the cost of an upper-level node includes
-    the cost of all its child nodes.  It's also important to realize that
-    the cost only reflects things that the planner/optimizer cares about.
-    In particular, the cost does not consider the time spent transmitting
-    result tuples to the frontend --- which could be a pretty dominant
-    factor in the true elapsed time, but the planner ignores it because
-    it cannot change it by altering the plan.  (Every correct plan will
-    output the same tuple set, we trust.)
+    代价以磁盘页获取次数为单位度量。（CPU 工作量估计用一些相当
+    任意的主观因子换算成磁盘页单位。如果你想试验这些因子，请参阅
+    <command>SET</command>参考页。）重要的是要注意，上层节点的
+    代价包括其所有子节点的代价。同样重要的是要认识到，代价只反映
+    规划器/优化器关心的东西。特别地，代价不考虑把结果元组传输到
+    前端所花的时间——这可能是实际耗时的一个相当主要的因素，但
+    规划器忽略它，因为它无法通过改变计划来改变它。（我们相信
+    每个正确的计划都会输出相同的元组集。）
    </para>
 
    <para>
-    Rows output is a little tricky because it is <emphasis>not</emphasis> the number of rows
-    processed/scanned by the query --- it is usually less, reflecting the
-    estimated selectivity of any WHERE-clause constraints that are being
-    applied at this node.
+    输出行数有点棘手，因为它<emphasis>不是</emphasis>查询处理/扫描的
+    行数——它通常更少，反映在该节点上应用的所有 WHERE 子句
+    约束的估计选择率。
    </para>
 
    <para>
-    Average width is pretty bogus because the thing really doesn't have
-    any idea of the average length of variable-length columns.  I'm thinking
-    about improving that in the future, but it may not be worth the trouble,
-    because the width isn't used for very much.
+    平均宽度是相当虚假的，因为系统实际上并不知道变长列的平均
+    长度。我在考虑将来改进这一点，但可能不值得费这个麻烦，因为
+    宽度的用途不多。
    </para>
 
    <para>
-    Here are some examples (using the regress test database after a
-    vacuum analyze, and almost-7.0 sources):
+    下面是一些例子（使用经过 vacuum analyze 的回归测试数据库，
+    以及接近 7.0 的源代码）：
 
     <programlisting>
 regression=# explain select * from tenk1;
@@ -110,20 +99,19 @@ Seq Scan on tenk1  (cost=0.00..333.00 rows=10000 width=148)
    </para>
 
    <para>
-    This is about as straightforward as it gets.  If you do
+    这是最直白的情况。如果你执行
 
     <programlisting>
 select * from pg_class where relname = 'tenk1';
     </programlisting>
 
-    you'll find out that tenk1 has 233 disk
-    pages and 10000 tuples.  So the cost is estimated at 233 block
-    reads, defined as 1.0 apiece, plus 10000 * cpu_tuple_cost which is
-    currently 0.01 (try <command>show cpu_tuple_cost</command>).
+    你会发现 tenk1 有 233 个磁盘页和 10000 个元组。所以代价估计为
+    233 次块读取（每次定义为 1.0），加上 10000 * cpu_tuple_cost
+    （当前为 0.01，试试 <command>show cpu_tuple_cost</command>）。
    </para>
 
    <para>
-    Now let's modify the query to add a qualification clause:
+    现在让我们修改查询，加一个限定子句：
 
     <programlisting>
 regression=# explain select * from tenk1 where unique1 &lt; 1000;
@@ -132,18 +120,16 @@ NOTICE:  QUERY PLAN:
 Seq Scan on tenk1  (cost=0.00..358.00 rows=1000 width=148)
     </programlisting>
 
-    The estimate of output rows has gone down because of the WHERE clause.
-    (The uncannily accurate estimate is just because tenk1 is a particularly
-    simple case --- the unique1 column has 10000 distinct values ranging
-    from 0 to 9999, so the estimator's linear interpolation between min and
-    max column values is dead-on.)  However, the scan will still have to
-    visit all 10000 rows, so the cost hasn't decreased; in fact it has gone
-    up a bit to reflect the extra CPU time spent checking the WHERE
-    condition.
+    由于 WHERE 子句，输出行数的估计下降了。（估计异常准确只是因为
+    tenk1 是一个特别简单的例子——unique1 列有 10000 个从 0 到
+    9999 的不同值，所以估计器在列的最小值和最大值之间做的线性
+    插值正好命中。）然而，扫描仍然必须访问全部 10000 行，所以
+    代价没有降低；实际上它还略微上升了，以反映检查 WHERE 条件
+    额外花费的 CPU 时间。
    </para>
 
    <para>
-    Modify the query to restrict the qualification even more:
+    再修改查询，进一步收紧限定：
 
     <programlisting>
 regression=# explain select * from tenk1 where unique1 &lt; 100;
@@ -152,15 +138,13 @@ NOTICE:  QUERY PLAN:
 Index Scan using tenk1_unique1 on tenk1  (cost=0.00..89.35 rows=100 width=148)
     </programlisting>
 
-    and you will see that if we make the WHERE condition selective
-    enough, the planner will
-    eventually decide that an indexscan is cheaper than a sequential scan.
-    This plan will only have to visit 100 tuples because of the index,
-    so it wins despite the fact that each individual fetch is expensive.
+    你会看到，如果我们让 WHERE 条件足够有选择性，规划器最终会
+    判定索引扫描比顺序扫描便宜。由于索引，这个计划只需访问
+    100 个元组，所以尽管每次单独的获取很昂贵，它仍然胜出。
    </para>
 
    <para>
-    Add another condition to the qualification:
+    再给限定加一个条件：
 
     <programlisting>
 regression=# explain select * from tenk1 where unique1 &lt; 100 and
@@ -170,12 +154,12 @@ NOTICE:  QUERY PLAN:
 Index Scan using tenk1_unique1 on tenk1  (cost=0.00..89.60 rows=1 width=148)
     </programlisting>
 
-    The added clause "stringu1 = 'xxx'" reduces the output-rows estimate,
-    but not the cost because we still have to visit the same set of tuples.
+    添加的子句 "stringu1 = 'xxx'" 降低了输出行数的估计，但没有
+    降低代价，因为我们仍然要访问同一批元组。
    </para>
 
    <para>
-    Let's try joining two tables, using the fields we have been discussing:
+    让我们试着用一直在讨论的字段连接两个表：
 
     <programlisting>
 regression=# explain select * from tenk1 t1, tenk2 t2 where t1.unique1 &lt; 100
@@ -191,36 +175,30 @@ Nested Loop  (cost=0.00..144.07 rows=100 width=296)
    </para>
 
    <para>
-    In this nested-loop join, the outer scan is the same indexscan we had
-    in the example before last, and so its cost and row count are the same
-    because we are applying the "unique1 &lt; 100" WHERE clause at that node.
-    The "t1.unique2 = t2.unique2" clause isn't relevant yet, so it doesn't
-    affect the outer scan's row count.  For the inner scan, the
-    current
-    outer-scan tuple's unique2 value is plugged into the inner indexscan
-    to produce an indexqual like
-    "t2.unique2 = <replaceable>constant</replaceable>".  So we get the
-     same inner-scan plan and costs that we'd get from, say, "explain select
-     * from tenk2 where unique2 = 42".  The loop node's costs are then set
-     on the basis of the outer scan's cost, plus one repetition of the
-     inner scan for each outer tuple (100 * 0.53, here), plus a little CPU
-     time for join processing.
+    在这个嵌套循环连接中，外层扫描与倒数第二个例子中的索引扫描
+    相同，所以其代价和行数也相同，因为我们在该节点上应用的是
+    "unique1 &lt; 100" WHERE 子句。"t1.unique2 = t2.unique2" 子句
+    此时还不相关，所以它不影响外层扫描的行数。对于内层扫描，
+    当前外层扫描元组的 unique2 值被代入内层索引扫描，产生一个
+    形如 "t2.unique2 = <replaceable>常量</replaceable>" 的索引
+    限定。所以我们得到的内层扫描计划和代价，与例如 "explain
+    select * from tenk2 where unique2 = 42" 得到的相同。循环节点
+    的代价随后在外层扫描代价的基础上设定，加上每个外层元组一次
+    的内层扫描重复（这里是 100 * 0.53），再加上一点用于连接处理
+    的 CPU 时间。
    </para>
 
    <para>
-    In this example the loop's output row count is the same as the product
-    of the two scans' row counts, but that's not true in general, because
-    in general you can have WHERE clauses that mention both relations and
-    so can only be applied at the join point, not to either input scan.
-    For example, if we added "WHERE ... AND t1.hundred &lt; t2.hundred",
-    that'd decrease the output row count of the join node, but not change
-    either input scan.
+    在这个例子中，循环的输出行数是两个扫描行数的乘积，但一般
+    并非如此，因为一般你可能会有同时提到两个关系的 WHERE 子句，
+    它们只能在连接点上应用，而不能应用于任一输入扫描。例如，
+    如果我们加上 "WHERE ... AND t1.hundred &lt; t2.hundred"，
+    那会降低连接节点的输出行数，但不改变任一输入扫描。
    </para>
 
    <para>
-    We can look at variant plans by forcing the planner to disregard
-    whatever strategy it thought was the winner (a pretty crude tool,
-    but it's what we've got at the moment):
+    我们可以通过强制规划器无视它认为获胜的策略来查看不同的计划
+    （一个相当粗糙的工具，但我们目前只有这个）：
 
     <programlisting>
 regression=# set enable_nestloop = off;
@@ -237,16 +215,14 @@ Hash Join  (cost=89.60..574.10 rows=100 width=296)
                (cost=0.00..89.35 rows=100 width=148)
     </programlisting>
 
-    This plan proposes to extract the 100 interesting rows of tenk1
-    using ye same olde indexscan, stash them into an in-memory hash table,
-    and then do a sequential scan of tenk2, probing into the hash table
-    for possible matches of "t1.unique2 = t2.unique2" at each tenk2 tuple.
-    The cost to read tenk1 and set up the hash table is entirely startup
-    cost for the hash join, since we won't get any tuples out until we can
-    start reading tenk2.  The total time estimate for the join also
-    includes a pretty hefty charge for CPU time to probe the hash table
-    10000 times.  Note, however, that we are NOT charging 10000 times 89.35;
-    the hash table setup is only done once in this plan type.
+    这个计划提议用同样的老索引扫描提取 tenk1 的 100 个感兴趣的
+    行，把它们存入一个内存散列表，然后对 tenk2 做顺序扫描，在每个
+    tenk2 元组上探查散列表以寻找 "t1.unique2 = t2.unique2" 的
+    可能匹配。读取 tenk1 并建立散列表的代价完全是散列连接的启动
+    代价，因为在我们能开始读取 tenk2 之前不会得到任何元组。连接
+    的总时间估计还包括探查散列表 10000 次的相当可观的 CPU 时间
+    费用。但注意，我们没有收取 10000 次 89.35；在这种计划类型中
+    散列表的建立只做一次。
    </para>
   </sect1>
  </chapter>
@@ -263,7 +239,7 @@ sgml-indent-data:t
 sgml-parent-document:nil
 sgml-default-dtd-file:"./reference.ced"
 sgml-exposed-tags:nil
-sgml-local-catalogs:("/usr/lib/sgml/catalog")
+sgml-local-catalogs:"/usr/lib/sgml/catalog"
 sgml-local-ecat-files:nil
 End:
 -->

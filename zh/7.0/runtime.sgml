@@ -1,1160 +1,638 @@
-<!-- $PostgreSQL: pgsql/doc/src/sgml/runtime.sgml,v 1.436.2.1 2010/08/15 01:57:12 rhaas Exp $ -->
+<!--
+$Header: /home/projects/pgsql/cvsroot/pgsql/doc/src/sgml/runtime.sgml,v 1.10 2000/05/02 20:01:52 thomas Exp $
+-->
 
-<chapter Id="runtime">
- <title>服务器设置和操作</title>
+ <Chapter Id="runtime">
+  <Title>运行时环境</Title>
 
- <para>本章讨论如何设置和运行数据库服务器，以及它与操作系统的交互。</para>
-
- <sect1 id="postgres-user">
-  <title>The <productname>PostgreSQL</productname> User Account</title>
-
-  <indexterm>
-   <primary>postgres user</primary>
-  </indexterm>
-
-  <para>与任何可从外部访问的服务器守护进程一样，建议使用单独的用户账户运行 <productname>PostgreSQL</productname>。该用户账户应该只拥有服务器管理的数据，不应与其他守护进程共用。（例如，使用 <literal>nobody</literal> 用户就不是好主意。）不建议将可执行文件安装为由该用户所有，因为系统一旦被攻破，就可能修改自己的二进制文件。</para>
-
-  <para>
-   要在系统中添加一个 Unix 用户账户，请查找<command>useradd</command>或<command>adduser</command>命令。通常使用的用户名是<systemitem>postgres</systemitem>，本书也都按此假定，不过你也可以使用其他名称。
-  </para>
- </sect1>
-
- <sect1 id="creating-cluster">
-  <title>创建一个数据库集簇</title>
-
-  <indexterm>
-   <primary>database cluster</primary>
-  </indexterm>
-
-  <indexterm>
-   <primary>data area</primary>
-   <see>database cluster</see>
-  </indexterm>
-
-  <para>
-   在做任何事情之前，必须先在磁盘上初始化一个数据库存储区域。我们把它称为<firstterm>数据库集簇</firstterm>。（<acronym>SQL</acronym> 标准使用术语目录集簇（catalog cluster）。）数据库集簇是由一个正在运行的数据库服务器实例管理的一组数据库。初始化之后，数据库集簇中会包含一个名为<literal>postgres</literal>的数据库，作为供工具、用户和第三方应用使用的默认数据库。数据库服务器本身并不要求该<literal>postgres</literal>数据库存在，但许多外部工具程序都假定它存在。初始化期间，集簇中还会创建另一个数据库，名为<literal>template1</literal>。顾名思义，它会作为后续新建数据库的模板；不应将它用于实际工作。（关于在集簇中创建新数据库的信息，见<xref linkend="managing-databases">。）
+  <Para>
+   本章概述 <Productname>Postgres</Productname> 与操作系统的交互。
   </para>
 
-  <para>从文件系统角度看，数据库集簇就是一个目录，所有数据都存储在其下。我们将它称为<firstterm>数据目录</firstterm>或<firstterm>数据区域</firstterm>。数据存放位置完全由你决定，没有默认值；常用位置包括 <filename>/usr/local/pgsql/data</filename>或<filename>/var/lib/pgsql/data</filename>。要初始化数据库集簇，请使用命令 <xref linkend="app-initdb">，<indexterm><primary>initdb</primary></indexterm>该命令随以下产品安装：<productname>PostgreSQL</productname>。数据库集簇在文件系统中的目标位置通过 <option>-D</option> 选项指定，例如：<screen>
-<prompt>$</prompt> <userinput>initdb -D /usr/local/pgsql/data</userinput>
-</screen>注意，必须先登录 <productname>PostgreSQL</productname> 用户账户，再执行此命令。该账户已在上一节介绍。</para>
-
-  <tip>
-   <para>
-    除了使用 <option>-D</option> 选项，也可以设置环境变量 <envar>PGDATA</envar>。
-    <indexterm><primary><envar>PGDATA</envar></primary></indexterm>
-   </para>
-  </tip>
-
-  <para>
-   或者，也可以通过<xref linkend="app-pg-ctl"><indexterm><primary>pg_ctl</primary></indexterm>程序运行<command>initdb</command>，如下所示：
-<screen>
-<prompt>$</prompt> <userinput>pg_ctl -D /usr/local/pgsql/data initdb</userinput>
-</screen>
-   如果你打算用<command>pg_ctl</command>来启动和停止服务器（见<xref linkend="server-start">），这种方式可能更直观，因为这样<command>pg_ctl</command>就会成为你管理数据库服务器实例时使用的唯一命令。
-  </para>
-
-  <para>
-   如果指定的目录尚不存在，<command>initdb</command>会尝试创建它。当然，如果<command>initdb</command>对其父目录没有写权限，这会失败。通常建议让<productname>PostgreSQL</productname>用户不仅拥有数据目录，也拥有其父目录，这样就不会有这个问题。如果目标父目录也不存在，则需要先创建它；如果祖父目录不可写，就需要使用 root 权限。因此，过程可能如下所示：
-<screen>
-root# <userinput>mkdir /usr/local/pgsql</userinput>
-root# <userinput>chown postgres /usr/local/pgsql</userinput>
-root# <userinput>su postgres</userinput>
-postgres$ <userinput>initdb -D /usr/local/pgsql/data</userinput>
-</screen>
-  </para>
-
-  <para>
-   如果数据目录已存在且其中已有文件，<command>initdb</command>会拒绝运行；这是为了防止意外覆盖现有安装。
-  </para>
-
-  <para>由于数据目录包含存储在数据库中的全部数据，必须保护它免遭未经授权的访问。因此，<command>initdb</command> 会撤销除 <productname>PostgreSQL</productname> 用户以外所有人的访问权限。</para>
-
-  <para>
-   不过，尽管目录内容是安全的，默认的客户端认证设置却允许任何本地用户连接到数据库，甚至成为数据库超级用户。如果你不信任其他本地用户，我们建议在运行<command>initdb</command>时使用<option>-W</option>、<option>--pwprompt</option>或<option>--pwfile</option>之一，为数据库超级用户指定密码。<indexterm><primary>password</primary><secondary>超级用户的</secondary></indexterm>另外，指定<option>-A md5</option>或<option>-A password</option>，以避免使用默认的<literal>trust</literal>认证方式；或者在运行<command>initdb</command>之后、首次启动服务器<emphasis>之前</emphasis>修改生成的<filename>pg_hba.conf</filename>文件。（其他合理方法包括使用<literal>ident</literal>认证，或使用文件系统权限限制连接。更多信息见<xref linkend="client-authentication">。）
-  </para>
-
-  <para><command>initdb</command> 还会初始化数据库集簇的默认区域设置<indexterm><primary>区域设置</primary></indexterm>。通常，它会直接采用环境中的区域设置，并将其应用于初始化的数据库。可以为数据库指定不同的区域设置；更多信息见 <xref linkend="locale">。特定数据库集簇中使用的默认排序顺序由 <command>initdb</command> 设置，虽然你可以使用不同的排序顺序创建新数据库，但 initdb 创建的模板数据库所使用的顺序，只有删除并重建这些数据库才能更改。使用 <literal>C</literal> 或 <literal>POSIX</literal> 以外的区域设置还会影响性能。因此，一开始就作出正确选择很重要。</para>
-
-  <para>
-   <command>initdb</command>还会为数据库集簇设置默认字符集编码。通常应选择与区域设置相匹配的字符集编码。详见<xref linkend="multibyte">。
-  </para>
-
-  <sect2 id="creating-cluster-mount-points">
-   <title>二级文件系统的使用</title>
-
-   <indexterm zone="creating-cluster-mount-points">
-    <primary>file system mount points</primary>
-   </indexterm>
+  <sect1>
+   <title>在 Unix 上使用 <Productname>Postgres</Productname></title>
 
    <para>
-    很多安装会把数据库集簇建在机器<quote>根</quote>卷以外的文件系统（卷）上。如果这样做，不建议把二级卷的最顶层目录（挂载点）直接用作数据目录。最佳实践是在挂载点目录下创建一个由<productname>PostgreSQL</productname>用户拥有的目录，再在其下创建数据目录。这样可以避免权限问题，尤其是在执行<application>pg_upgrade</application>之类的操作时；同时也能确保二级卷脱机时以干净的方式失败。
+    所有直接从 Unix shell 执行的 <Productname>Postgres</Productname>
+    命令都位于目录 <filename>.../bin</filename> 中。把这个目录包含在
+    你的搜索路径中会让执行这些命令更容易。
    </para>
-
-  </sect2>
-
-  <sect2 id="creating-cluster-nfs">
-   <title>使用网络文件系统</title>
-
-   <indexterm zone="creating-cluster-nfs">
-    <primary>Network File Systems</primary>
-   </indexterm>
-   <indexterm><primary><acronym>NFS</></><see>Network File Systems</></>
-   <indexterm><primary>Network Attached Storage (<acronym>NAS</>)</><see>Network File Systems</></>
-
-   <para>许多安装会在网络文件系统上创建数据库集簇。有时通过 <acronym>NFS</acronym> 完成，有时则使用内部采用 <acronym>NFS</acronym> 的网络附加存储（<acronym>NAS</acronym>）设备。<productname>PostgreSQL</productname> 不会对 <acronym>NFS</acronym> 文件系统做特殊处理，也就是说，它假定 <acronym>NFS</acronym> 的行为与本地连接的驱动器完全一致。如果客户端或服务器端的 <acronym>NFS</acronym> 实现不提供标准文件系统语义，就可能导致可靠性问题（参见 <ulink url="http://www.time-travellers.org/shane/papers/NFS_considered_harmful.html"></ulink>）。具体而言，对 <acronym>NFS</acronym> 服务器的延迟（异步）写入可能导致数据损坏。如果可能，应以同步方式（不使用缓存）挂载 <acronym>NFS</acronym> 文件系统，以避免这一风险。此外，不建议对 <acronym>NFS</acronym> 文件系统使用软挂载。</para>
-
-   <para>存储区域网络（<acronym>SAN</acronym>）通常使用 <acronym>NFS</acronym> 以外的通信协议，可能存在也可能不存在此类风险。建议查阅供应商文档中有关数据一致性保证的说明。<productname>PostgreSQL</productname> 的可靠性不可能高于它所使用的文件系统。</para>
-
-  </sect2>
-
- </sect1>
-
- <sect1 id="server-start">
-  <title>启动数据库服务器</title>
-
-  <para>在任何人访问数据库之前，必须先启动数据库服务器。数据库服务器程序名为 <command>postgres</command>。<indexterm><primary>postgres</primary></indexterm>其中，<command>postgres</command> 程序必须知道应到哪里查找它要使用的数据。这通过 <option>-D</option> 选项指定。因此，启动服务器最简单的方法是：<screen>
-$ <userinput>postgres -D /usr/local/pgsql/data</userinput>
-</screen>这会让服务器在前台运行。必须先登录 <productname>PostgreSQL</productname> 用户账户再执行此操作。如果不使用 <option>-D</option>，服务器会尝试使用环境变量所指定的数据目录，该变量为 <envar>PGDATA</envar>。如果也未提供该变量，则会失败。</para>
-
-  <para>
-   通常最好在后台启动<command>postgres</command>。做法是使用常见的 Unix shell 语法：
-<screen>
-$ <userinput>postgres -D /usr/local/pgsql/data &gt;logfile 2&gt;&amp;1 &amp;</userinput>
-</screen>
-   如上所示，把服务器的<systemitem>stdout</systemitem>和<systemitem>stderr</systemitem>输出保存到某个地方非常重要。这有助于审计，也有助于诊断问题。（关于日志文件处理的更深入讨论，见<xref linkend="logfile-maintenance">。）
-  </para>
-
-  <para>
-   <command>postgres</command>还接受许多其他命令行选项。更多信息请见<xref linkend="app-postgres">参考页以及下面的<xref linkend="runtime-config">。
-  </para>
-
-  <para>
-   这些 shell 语法很快就会让人觉得繁琐。因此提供了包装器程序<xref linkend="app-pg-ctl"><indexterm><primary>pg_ctl</primary></indexterm>来简化一些任务。例如：
-<programlisting>
-pg_ctl start -l logfile
-</programlisting>
-   这会在后台启动服务器，并把输出写入指定的日志文件。这里的 <option>-D</option> 选项含义与在 <command>postgres</command> 中相同。<command>pg_ctl</command> 还可用于停止服务器。
-  </para>
-
-  <para>通常，你会希望在计算机启动时就启动数据库服务器。<indexterm> <primary>引导</primary> <secondary>期间启动服务器</secondary> </indexterm> 自动启动脚本依赖于操作系统。<productname>PostgreSQL</productname> 在 <filename>contrib/start-scripts</filename> 目录中附带了一些示例脚本。安装这些脚本需要 root 权限。</para>
-
-  <para>
-   不同系统在引导时启动守护进程的惯例各不相同。许多系统有<filename>/etc/rc.local</filename>或<filename>/etc/rc.d/rc.local</filename>文件，其他系统则使用<filename>rc.d</filename>目录。无论采用哪种方式，服务器都必须由<productname>PostgreSQL</productname>用户账户<emphasis>而不是 root</emphasis>或其他用户来启动。因此，你大概应该在命令中使用<literal>su postgres -c '...'</literal>这种形式。例如：
-<programlisting>
-su postgres -c 'pg_ctl start -D /usr/local/pgsql/data -l serverlog'
-</programlisting>
-  </para>
-
-  <para>
-   下面是一些与操作系统相关的补充建议。（在每种情况下，请确保使用正确的安装目录和用户名；这里展示的是通用值。）
-
-   <itemizedlist>
-    <listitem>
-     <para>
-      在<productname>FreeBSD</productname>上，请查看<productname>PostgreSQL</productname>源码发布包中的<filename>contrib/start-scripts/freebsd</filename>文件。
-      <indexterm><primary>FreeBSD</primary><secondary>启动脚本</secondary></indexterm>
-     </para>
-    </listitem>
-
-    <listitem>
-     <para>
-      在<productname>OpenBSD</productname>上，把以下内容加入<filename>/etc/rc.local</filename>：
-      <indexterm><primary>OpenBSD</primary><secondary>启动脚本</secondary></indexterm>
-<programlisting>
-if [ -x /usr/local/pgsql/bin/pg_ctl -a -x /usr/local/pgsql/bin/postgres ]; then
-    su -l postgres -c '/usr/local/pgsql/bin/pg_ctl start -s -l /var/postgresql/log -D /usr/local/pgsql/data'
-    echo -n ' postgresql'
-fi
-</programlisting>
-     </para>
-    </listitem>
-
-    <listitem>
-     <para>
-      在<productname>Linux</productname>系统上，可以把
-      <indexterm><primary>Linux</primary><secondary>启动脚本</secondary></indexterm>
-<programlisting>
-/usr/local/pgsql/bin/pg_ctl start -l logfile -D /usr/local/pgsql/data
-</programlisting>
-      加入<filename>/etc/rc.d/rc.local</filename>，或者查看<productname>PostgreSQL</productname>源码发布包中的<filename>contrib/start-scripts/linux</filename>文件。
-     </para>
-    </listitem>
-
-    <listitem>
-     <para>
-      在<productname>NetBSD</productname>上，可以根据喜好使用<productname>FreeBSD</productname>或<productname>Linux</productname>的启动脚本。
-      <indexterm><primary>NetBSD</primary><secondary>启动脚本</secondary></indexterm>
-     </para>
-    </listitem>
-
-    <listitem>
-     <para>
-      在<productname>Solaris</productname>上，创建一个名为<filename>/etc/init.d/postgresql</filename>的文件，其中包含以下行：
-      <indexterm><primary>Solaris</primary><secondary>启动脚本</secondary></indexterm>
-<programlisting>
-su - postgres -c "/usr/local/pgsql/bin/pg_ctl start -l logfile -D /usr/local/pgsql/data"
-</programlisting>
-      然后在<filename>/etc/rc3.d</filename>中创建一个指向它的符号链接<filename>S99postgresql</filename>。
-     </para>
-    </listitem>
-   </itemizedlist>
-
-  </para>
 
    <para>
-    当服务器运行时，其<acronym>PID</acronym>会保存在数据目录中的<filename>postmaster.pid</filename>文件里。这可以防止多个服务器实例在同一个数据目录上运行，也可以用来关闭服务器。
+    每个站点都存在一组系统目录。其中包括一个类
+    （<literal>pg_user</literal>），它为每个有效的
+    <Productname>Postgres</Productname> 用户包含一个实例。该实例指定了
+    一组 <Productname>Postgres</Productname> 权限，例如充当
+    <Productname>Postgres</Productname> 超级用户的能力、创建/删除数据库
+    的能力以及更新系统目录的能力。在把适当的实例安装到这个类中之前，
+    Unix 用户无法用 <Productname>Postgres</Productname> 做任何事。
+    有关系统目录的更多信息可以通过在相应的类上运行查询获得。
    </para>
-
-   <sect2 id="server-start-failures">
-    <title>服务器启动失败</title>
-
-    <para>
-     服务器启动失败有几种常见原因。请检查服务器日志文件，或者手工启动服务器（不要重定向标准输出和标准错误），看看出现了什么错误消息。下面将更详细地解释一些最常见的错误消息。
-    </para>
-
-    <para>
-<screen>
-LOG:  could not bind IPv4 socket: Address already in use
-HINT:  Is another postmaster already running on port 5432? If not, wait a few seconds and retry.
-FATAL:  could not create TCP/IP listen socket
-</screen>
-     这通常就是字面上的意思：你试图在一个已有服务器运行的端口上再启动另一个服务器。不过，如果内核错误消息不是<computeroutput>Address already in use</computeroutput>或类似变体，也可能是别的问题。例如，试图在一个保留端口上启动服务器，可能会得到类似下面的消息：
-<screen>
-$ <userinput>postgres -p 666</userinput>
-LOG:  could not bind IPv4 socket: Permission denied
-HINT:  Is another postmaster already running on port 666? If not, wait a few seconds and retry.
-FATAL:  could not create TCP/IP listen socket
-</screen>
-    </para>
-
-    <para>像下面这样的消息：<screen>
-FATAL:  could not create shared memory segment: Invalid argument
-DETAIL:  Failed system call was shmget(key=5440001, size=4011376640, 03600).
-</screen>可能表示内核对共享内存大小的限制小于 <productname>PostgreSQL</productname> 尝试创建的工作区（本例中为 4011376640 字节）。也可能表示内核中根本没有配置 System V 风格的共享内存支持。作为临时解决办法，可以尝试以少于通常数量的缓冲区启动服务器（<xref linkend="guc-shared-buffers">）。最终还是需要重新配置内核，增大允许的共享内存大小。如果尝试在同一台机器上启动多个服务器，而它们请求的总空间超出内核限制，也可能看到这条消息。</para>
-
-    <para>
-     像下面这样的错误：
-<screen>
-FATAL:  could not create semaphores: No space left on device
-DETAIL:  Failed system call was semget(5440126, 17, 03600).
-</screen>
-     并<emphasis>不</emphasis>意味着你已经用光了磁盘空间。它表示你的内核对<systemitem class="osname">System V</systemitem>信号量数量的限制，小于<productname>PostgreSQL</productname>想要创建的数量。和上面一样，你也许可以通过减少允许的连接数（<xref linkend="guc-max-connections">）来暂时绕过这个问题，但最终还是应该提高内核限制。
-    </para>
-
-    <para>如果收到 <quote>illegal system call</quote> 错误，很可能是内核根本不支持共享内存或信号量。在这种情况下，唯一的办法就是重新配置内核以启用这些功能。</para>
-
-    <para>
-     关于配置<systemitem class="osname">System V</systemitem> <acronym>IPC</acronym>功能的细节请见<xref linkend="sysvipc">。
-    </para>
-   </sect2>
-
-   <sect2 id="client-connection-problems">
-    <title>客户端连接问题</title>
-
-    <para>
-     客户端一侧可能出现的错误种类很多，并且依赖于具体应用，但其中有一些可能直接与服务器的启动方式有关。除下面列出的几种情况外，其他问题应查阅相应客户端应用的文档。
-    </para>
-
-    <para>
-<screen>
-psql: could not connect to server: Connection refused
-        Is the server running on host "server.joe.com" and accepting
-        TCP/IP connections on port 5432?
-</screen>这种常见的失败表示<quote>我找不到可通信的服务器</quote>。尝试 TCP/IP 通信时，它就会显示为上述形式。一个常见错误是忘记配置服务器以允许 TCP/IP 连接。</para>
-
-    <para>另一种情况是，尝试通过 Unix 域套接字与本地服务器通信时，会得到以下消息：<screen>
-psql: could not connect to server: No such file or directory
-        Is the server running locally and accepting
-        connections on Unix domain socket "/tmp/.s.PGSQL.5432"?
-</screen>
-    </para>
-
-    <para>最后一行有助于确认客户端是否正尝试连接到正确的位置。如果那里实际上没有运行服务器，内核错误消息通常会像示例那样是 <computeroutput>Connection refused</computeroutput> 或 <computeroutput>No such file or directory</computeroutput>。（要注意，在这里 <computeroutput>Connection refused</computeroutput> <emphasis>并不</emphasis>表示服务器收到了你的连接请求并拒绝了它；那种情况会产生另一条消息，如 <xref linkend="client-authentication-problems"> 所示。）其他错误消息，例如 <computeroutput>Connection timed out</computeroutput>，可能表示更底层的问题，例如网络不通。</para>
-   </sect2>
   </sect1>
 
- <sect1 id="kernel-resources">
-  <title>管理内核资源</title>
+  <sect1 Id="postmaster">
+   <Title>启动 <Application>postmaster</Application></Title>
 
-  <para>
-   一个大型<productname>PostgreSQL</productname>安装会很快耗尽各种操作系统资源限制。（在某些系统上，出厂默认值非常低，你甚至不需要真正<quote>大型</quote>的安装就会遇到问题。）如果你遇到过这类问题，请继续阅读。
-  </para>
+   <Para>
+    <Application>postmaster</Application> 进程没有运行时，数据库什么
+    也做不了。作为站点管理员，在启动
+    <Application>postmaster</Application> 之前有若干事项应当记住。这些
+    在本手册的安装和配置小节中讨论。不过，如果
+    <ProductName>Postgres</ProductName> 是严格按照安装说明安装的，那么
+    只需以下简单命令就应当足以启动
+    <Application>postmaster</Application>：
 
-  <sect2 id="sysvipc">
-   <title>共享内存和信号量</title>
-
-   <indexterm zone="sysvipc">
-    <primary>shared memory</primary>
-   </indexterm>
-
-   <indexterm zone="sysvipc">
-    <primary>semaphores</primary>
-   </indexterm>
-
-   <para>
-    共享内存和信号量统称为<quote><systemitem class="osname">System V</systemitem><acronym>IPC</acronym></quote>（连同消息队列，但消息队列与<productname>PostgreSQL</productname>无关）。几乎所有现代操作系统都提供这些特性，但其中许多系统默认没有启用它们或尺寸不足，尤其是随着可用内存和数据库应用需求的增长。（在<systemitem class="osname">Windows</systemitem>上，<productname>PostgreSQL</productname>为这些设施提供了自己的替代实现，因此可以忽略本节的大部分内容。）
-   </para>
-
-   <para>完全缺少这些功能时，通常会在服务器启动时出现 <errorname>Illegal system call</errorname> 错误。在这种情况下，除了重新配置内核别无选择。没有它们，<productname>PostgreSQL</productname> 就无法工作。不过，在现代操作系统中，这种情况很少见。</para>
-
-   <para>
-    当<productname>PostgreSQL</productname>超出各种硬性<acronym>IPC</acronym>限制之一时，服务器会拒绝启动，并应留下带有指导性的错误消息，说明问题所在以及应如何处理（另见<xref linkend="server-start-failures">）。相关内核参数在不同系统上的命名基本一致，<xref linkend="sysvipc-parameters">给出了概览；不过，设置它们的方法却各不相同。下面给出一些平台上的建议。
-   </para>
-
-
-   <table id="sysvipc-parameters">
-    <title><systemitem class="osname">System V</systemitem> <acronym>IPC</acronym>参数</title>
-
-    <tgroup cols="3">
-     <thead>
-
-      <row>
-       <entry>名称</entry>
-       <entry>描述</entry>
-       <entry>合理的值</entry>
-      </row>
-     </thead>
-
-     <tbody>
-      <row>
-       <entry><varname>SHMMAX</></entry>
-       <entry>共享内存段的最大尺寸（字节）</entry>
-       <entry>至少数 MB（见正文）</entry>
-      </row>
-
-      <row>
-       <entry><varname>SHMMIN</></entry>
-       <entry>共享内存段的最小尺寸（字节）</entry>
-       <entry>1</entry>
-      </row>
-
-      <row>
-       <entry><varname>SHMALL</></entry>
-       <entry>可用共享内存的总量（字节或页面）</entry>
-       <entry>如果是字节，同<varname>SHMMAX</>；如果是页面，为<literal>ceil(SHMMAX/PAGE_SIZE)</literal></entry>
-      </row>
-
-      <row>
-       <entry><varname>SHMSEG</></entry>
-       <entry>每个进程的最大共享内存段数目</entry>
-       <entry>只需要 1 段，但是默认值高很多</entry>
-      </row>
-
-       <row>
-        <entry><varname>SHMMNI</></entry>
-        <entry>系统范围内的最大共享内存段数目</entry>
-        <entry>像<varname>SHMSEG</>外加其他应用的空间</entry>
-       </row>
-
-       <row>
-        <entry><varname>SEMMNI</></entry>
-        <entry>信号量标识符（即，集合）的最大数目</entry>
-        <entry>至少 <literal>ceil((max_connections + autovacuum_max_workers + 4) / 16)</literal></>
-       </row>
-
-       <row>
-        <entry><varname>SEMMNS</></entry>
-        <entry>系统范围内的最大信号量数目</entry>
-        <entry><literal>ceil((max_connections + autovacuum_max_workers + 4) / 16) * 17</literal>，并为其他应用保留空间</>
-       </row>
-
-       <row>
-        <entry><varname>SEMMSL</></entry>
-        <entry>每个集合中信号量的最大数目</entry>
-        <entry>至少 17</entry>
-       </row>
-
-       <row>
-        <entry><varname>SEMMAP</></entry>
-        <entry>信号量映射中的项数</entry>
-        <entry>见文本</entry>
-       </row>
-
-       <row>
-        <entry><varname>SEMVMX</></entry>
-        <entry>信号量的最大值</entry>
-        <entry>至少 1000 （默认值常常是 32767，如非必要不要更改）</entry>
-       </row>
-
-     </tbody>
-    </tgroup>
-   </table>
-
-
-   <para>
-    <indexterm><primary>SHMMAX</primary></indexterm>最重要的共享内存参数是<varname>SHMMAX</varname>，即以字节计的共享内存段的最大尺寸。如果<function>shmget</function>返回像<quote>Invalid argument</quote>这样的错误消息，很可能是超出了这个限制。所需共享内存段的尺寸取决于若干<productname>PostgreSQL</productname>配置参数，如<xref linkend="shared-memory-parameters">所示。（你可能得到的任何错误消息都会包含失败分配请求的确切尺寸。）
-    作为临时解决办法，你可以调低其中某些设置来避免失败。虽然<varname>SHMMAX</varname>小到 2 MB 也能让<productname>PostgreSQL</productname>运行，但要获得可接受的性能，需要的远不止这个数。比较理想的设置是几百兆字节到几吉字节。
+    <ProgramListing>
+% postmaster
+    </ProgramListing>
    </para>
 
    <para>
-    一些系统还对系统内共享内存的总量有限制（<varname>SHMALL</varname>）。请确保它对<productname>PostgreSQL</productname>以及使用共享内存段的任何其他应用来说都足够大。注意，在许多系统上<varname>SHMALL</varname>以页而不是字节计。
+    <Application>postmaster</Application> 偶尔会打印一些在排障时往往
+    有帮助的消息。如果你想查看来自
+    <Application>postmaster</Application> 的调试消息，可以用 -d 选项
+    启动它并把输出重定向到日志文件：
+
+    <ProgramListing>
+% postmaster -d > pm.log 2>&1 &
+    </ProgramListing>
+
+    如果你不希望看到这些消息，可以输入
+    <ProgramListing>
+% postmaster -S
+    </ProgramListing>
+    这样 <Application>postmaster</Application> 就是"S"（静默）的。
+    这种情况下不需要与号（"&amp"），因为指定 -S 时 postmaster 会自动
+    脱离终端。
+   </Para>
+  </sect1>
+
+  <sect1 Id="pg-options">
+   <Title id="pg-options-title">使用 pg_options</Title>
+
+   <Para>
+    <Note>
+     <Para>
+      由 <ULink url="mailto:dz@cs.unitn.it">Massimo Dal Zotto</ULink>
+      贡献
+     </Para>
+    </Note>
+   </para>
+   <Para>
+    可选文件 <filename>data/pg_options</filename> 包含后端用来控制跟踪
+    消息和其他可调后端参数的运行时选项。后端收到 SIGHUP 信号时会重新
+    读取该文件，因此无需重启
+    <productname>Postgres</productname> 就能即时更改运行时选项。此文件
+    中指定的选项可以是跟踪包
+    （<filename>backend/utils/misc/trace.c</filename>）使用的调试标志，
+    也可以是后端可用来控制自身行为的数值参数。
    </para>
 
    <para>
-    不太可能出问题的是共享内存段的最小尺寸（<varname>SHMMIN</varname>），对<productname>PostgreSQL</productname>来说应该最多大约是 500 kB（通常只是 1）。而系统范围（<varname>SHMMNI</varname>）或每个进程（<varname>SHMSEG</varname>）的最大共享内存段数目不太可能会导致问题，除非你的系统把它们设成零。
+    所有 pg_options 在后端启动时初始化为零。新的或修改过的选项会被
+    所有新启动的后端读取。要让更改对所有正在运行的后端生效，需要向
+    postmaster 发送 SIGHUP。该信号会被自动发送给所有后端。我们也可以
+    通过直接向特定后端发送 SIGHUP，只为该后端激活更改。
    </para>
+   <para>
+    pg_options 也可以用 <productname>Postgres</productname> 的
+    <option>-T</option> 开关指定：
+
+    <programlisting>
+postgres <replaceable>options</replaceable> -T "verbose=2,query,hostlookup-"
+    </programlisting>
+   </para>
+
+   <Para>
+    用于打印错误和调试消息的函数现在可以利用
+    <citetitle>syslog(2)</citetitle> 设施。打印到 stdout 或 stderr 的
+    消息带有包含后端 pid 的时间戳前缀：
+
+    <programlisting>
+#timestamp          #pid    #message
+980127.17:52:14.173 [29271] StartTransactionCommand
+980127.17:52:14.174 [29271] ProcessUtility: drop table t;
+980127.17:52:14.186 [29271] SIIncNumEntries: table is 70% full
+980127.17:52:14.186 [29286] Async_NotifyHandler
+980127.17:52:14.186 [29286] Waking up sleeping backend process
+980127.19:52:14.292 [29286] Async_NotifyFrontEnd
+980127.19:52:14.413 [29286] Async_NotifyFrontEnd done
+980127.19:52:14.466 [29286] Async_NotifyHandler done
+    </programlisting>
+   </para>
+   <para>
+    这种格式提高了日志的可读性，使人们能准确了解哪个后端在什么时间
+    做什么。它也让编写监视日志以检测数据库错误或问题、或计算事务时间
+    统计的简单 awk 或 perl 脚本变得更容易。
+   </para>
+   <para>
+    打印到 syslog 的消息使用日志设施 LOG_LOCAL0。syslog 的使用可以由
+    syslog pg_option 控制。遗憾的是，许多函数直接调用
+    <function>printf()</function> 把消息打印到 stdout 或 stderr，这类
+    输出无法重定向到 syslog，也无法带有时间戳。明智的做法是把所有对
+    printf 的调用替换为 PRINTF 宏，并把输出到 stderr 的做法改为使用
+    EPRINTF，这样我们就能以统一的方式控制所有输出。
+   </Para>
 
    <para>
-    <productname>PostgreSQL</productname>为每个允许的连接（<xref linkend="guc-max-connections">）和每个允许的自动清理工作进程（<xref linkend="guc-autovacuum-max-workers">）各使用一个信号量，每 16 个组成一组。每组还包含第 17 个信号量，其中存放一个<quote>魔数</quote>，用来检测与其他应用程序使用的信号量集的冲突。系统中的信号量最大数量由<varname>SEMMNS</varname>设置，因此它必须至少等于<varname>max_connections</varname>加上<varname>autovacuum_max_workers</varname>，再加上每 16 个允许连接加工作进程一个的额外信号量（见<xref linkend="sysvipc-parameters">中的公式）。参数<varname>SEMMNI</varname>决定系统中同时可以存在的信号量集的数量上限，因此它必须至少为<literal>ceil((max_connections + autovacuum_max_workers + 4) / 16)</literal>。降低允许的连接数是失败时的一种临时变通办法，这种失败通常表现为<function>semget</function>函数返回措辞令人困惑的<quote>No space left on device</quote>。
+    <filename>pg_options</filename> 文件的格式如下：
+
+    <programlisting>
+# <replaceable>comment</replaceable>
+<replaceable>option</replaceable>=<replaceable class="parameter">integer_value</replaceable>  # set value for <replaceable>option</replaceable>
+<replaceable>option</replaceable>                # set <replaceable>option</replaceable> = 1
+<replaceable>option</replaceable>+               # set <replaceable>option</replaceable> = 1
+<replaceable>option</replaceable>-               # set <replaceable>option</replaceable> = 0
+    </programlisting>
+
+    注意 <replaceable class="parameter">keyword</replaceable> 也可以是
+    <filename>backend/utils/misc/trace.c</filename> 中定义的选项名的
+    缩写。
+
+    <example>
+     <title>pg_options 文件</title>
+
+     <para>
+      例如，我的 pg_options 文件包含以下值：
+
+      <programlisting>
+verbose=2
+query
+hostlookup
+showportnumber
+      </programlisting>
+     </para>
+    </example>
    </para>
 
-   <para>
-    在某些情况下，可能还需要增大<varname>SEMMAP</varname>，使其至少与<varname>SEMMNS</varname>处于同一数量级。这个参数定义信号量资源映射的大小，映射中每个连续的可用信号量块都需要占用一项。每当一个信号量集合被释放时，它要么会并入与该释放块相邻的现有项，要么会登记为一个新的映射项。如果映射已满，被释放的信号量就会丢失（直到重启）。因此，随着时间推移，信号量空间碎片化可能会导致可用信号量少于应有数量。
-   </para>
+   <sect2>
+    <title>可识别的选项</title>
 
-   <para><varname>SEMMSL</varname> 参数决定一个信号量集中可以包含多少个信号量，对于<productname>PostgreSQL</productname>，它必须至少为 17。</para>
+    <Para>
+     当前定义的选项有：
 
-   <para>
-    与<quote>信号量撤销</quote>有关的其他各种设置，如<varname>SEMMNU</varname>和<varname>SEMUME</varname>，不会影响<productname>PostgreSQL</productname>。
-   </para>
+     <variablelist>
+      <varlistentry>
+       <term>
+	all
+       </term>
+       <listitem>
+	<para>
+	 全局跟踪标志。允许的值有：
+	</para>
 
+       <variablelist>
+	<varlistentry>
+	 <term>
+	  0
+	 </term>
+	 <listitem>
+	  <para>
+	   单独启用各跟踪消息
+	  </para>
+	 </listitem>
+	</varlistentry>
 
-    <variablelist>
-     <varlistentry>
-      <term><systemitem class="osname">AIX</></term>
-      <indexterm><primary>AIX</><secondary>IPC configuration</></>
-      <listitem>
-       <para>至少从 5.1 版起，应该不需要对 <varname>SHMMAX</varname> 等参数进行任何特殊配置，因为它似乎已配置为允许将全部内存用作共享内存。这也是 <application>DB/2</application> 等其他数据库常用的配置。</para>
+	<varlistentry>
+	 <term>
+	  1
+	 </term>
+	 <listitem>
+	  <para>
+	   启用所有跟踪消息
+	  </para>
+	 </listitem>
+	</varlistentry>
 
-       <para>不过，可能需要修改 <filename>/etc/security/limits</filename> 中的全局 <command>ulimit</command> 信息，因为文件大小（<varname>fsize</varname>）和文件数量（<varname>nofiles</varname>）的默认硬限制可能过低。</para>
+	<varlistentry>
+	 <term>
+	  -1
+	 </term>
+	 <listitem>
+	  <para>
+	   禁用所有跟踪消息
+	  </para>
+	 </listitem>
+	</varlistentry>
+
+       </variablelist>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><systemitem class="osname">BSD/OS</></term>
-      <indexterm><primary>BSD/OS</><secondary>IPC configuration</></>
-      <listitem>
-       <formalpara>
-        <title>共享内存</>
-        <para>
-         默认只支持 4 MB 共享内存。请记住，共享内存是不可换页的，它被锁定在 RAM 中。要增加系统支持的共享内存量，可以在内核配置文件中加入类似下面的内容：
-<programlisting>
-options "SHMALL=8192"
-options "SHMMAX=\(SHMALL*PAGE_SIZE\)"
-</programlisting>
-         <varname>SHMALL</varname>以 4 kB 页计，因此值 1024 表示 4 MB 共享内存。所以上面的设置把最大共享内存区域增加到 32 MB。
-         对于运行 4.3 或更高版本的用户，可能还需要把<varname>KERNEL_VIRTUAL_MB</varname>增加到默认值<literal>248</literal>之上。
-         所有修改完成后，重新编译内核并重启。
-        </para>
-       </formalpara>
-
-       <formalpara>
-        <title>Semaphores</>
-        <para>
-         你可能还想同时增加信号量的数量；系统默认总数 60 只允许大约 50 个<productname>PostgreSQL</productname>连接。请在内核配置文件中设置你想要的值，例如：
-<programlisting>
-options "SEMMNI=40"
-options "SEMMNS=240"
-</programlisting>
-        </para>
-       </formalpara>
-      </listitem>
-     </varlistentry>
-
-
-     <varlistentry>
-      <term><systemitem class="osname">FreeBSD</></term>
-      <indexterm><primary>FreeBSD</><secondary>IPC configuration</></>
+      <term>
+       verbose
+      </term>
       <listitem>
        <para>
-        默认设置只适合小型安装（例如，默认的<varname>SHMMAX</varname>为 32 MB）。可以通过<command>sysctl</command>或<command>loader</command>接口进行修改。以下参数可以用<command>sysctl</command>设置：
-<screen>
-<prompt>#</prompt> <userinput>sysctl kern.ipc.shmall=32768</userinput>
-<prompt>#</prompt> <userinput>sysctl kern.ipc.shmmax=134217728</userinput>
-</screen>
-        要让这些设置在重启后保持，请修改<filename>/etc/sysctl.conf</filename>。
+	详尽程度标志。允许的值有：
        </para>
 
-       <para>
-        就<command>sysctl</command>而言，这些信号量相关的设置是只读的，但可以在<filename>/boot/loader.conf</filename>中设置：
-<programlisting>
-kern.ipc.semmni=256
-kern.ipc.semmns=512
-kern.ipc.semmnu=256
-</programlisting>
-        修改这些值后，需要重启才能使新设置生效。（注意：FreeBSD 不使用<varname>SEMMAP</varname>。较旧的版本会接受但忽略<literal>kern.ipc.semmap</literal>设置；较新的版本则直接拒绝它。）
-       </para>
+       <variablelist>
+	<varlistentry>
+	 <term>
+	  0
+	 </term>
+	 <listitem>
+	  <para>
+	   无消息。这是默认值。
+	  </para>
+	 </listitem>
+	</varlistentry>
 
-       <para>你可能还希望配置内核，把共享内存锁定在 RAM 中，防止其被换出到交换区。这可以通过 <command>sysctl</command> 设置 <literal>kern.ipc.shm_use_phys</literal> 来实现。</para>
+	<varlistentry>
+	 <term>
+	  1
+	 </term>
+	 <listitem>
+	  <para>
+	   打印信息性消息。
+	  </para>
+	 </listitem>
+	</varlistentry>
 
-       <para>如果通过启用 <application>sysctl</application> 的 <literal>security.jail.sysvipc_allowed</literal> 在 FreeBSD jail 中运行，应让不同 jail 中的 <application>postmaster</application> 使用不同的操作系统用户。这能提高安全性，因为它可以防止非 root 用户干扰不同 jail 中的共享内存或信号量，也能让 PostgreSQL 的 IPC 清理代码正常工作。（在 FreeBSD 6.0 及更高版本中，IPC 清理代码无法正确检测其他 jail 中的进程，导致无法在不同 jail 中使用同一端口运行 postmaster。）</para>
+	<varlistentry>
+	 <term>
+	  2
+	 </term>
+	 <listitem>
+	  <para>
+	   打印更多信息性消息。
+	  </para>
+	 </listitem>
+	</varlistentry>
 
-       <para>
-        <systemitem class="osname">FreeBSD</systemitem> 4.0 之前的版本行为类似于
-        <systemitem class="osname">OpenBSD</> (see below).
-       </para>
+       </variablelist>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><systemitem class="osname">NetBSD</></term>
-      <indexterm><primary>NetBSD</><secondary>IPC configuration</></>
+      <term>
+       query
+      </term>
       <listitem>
        <para>
-        在<systemitem class="osname">NetBSD</systemitem> 5.0 及更高版本中，可以用<command>sysctl</command>调整 IPC 参数，例如：
-<screen>
-<prompt>$</prompt> <userinput>sysctl -w kern.ipc.shmmax=16777216</userinput>
-</screen>
-        要让这些设置在重启后保持，请修改<filename>/etc/sysctl.conf</filename>。
+	查询跟踪标志。允许的值有：
        </para>
 
-       <para>你可能还希望配置内核，把共享内存锁定在 RAM 中，防止其被换出到交换区。这可以通过 <command>sysctl</command> 设置 <literal>kern.ipc.shm_use_phys</literal> 来实现。</para>
+       <variablelist>
+	<varlistentry>
+	 <term>
+	  0
+	 </term>
+	 <listitem>
+	  <para>
+	   不打印查询。
+	  </para>
+	 </listitem>
+	</varlistentry>
 
+	<varlistentry>
+	 <term>
+	  1
+	 </term>
+	 <listitem>
+	  <para>
+	   在一行内打印压缩的查询。
+	  </para>
+	 </listitem>
+	</varlistentry>
+
+	<varlistentry>
+	 <term>
+	  4
+	 </term>
+	 <listitem>
+	  <para>
+	   打印完整查询。
+	  </para>
+	 </listitem>
+	</varlistentry>
+
+       </variablelist>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       plan
+      </term>
+      <listitem>
        <para>
-        <systemitem class="osname">NetBSD</systemitem> 5.0 之前的版本行为与<systemitem class="osname">OpenBSD</systemitem>类似（见下文），只是参数应该用关键字<literal>options</literal>而不是<literal>option</literal>设置。
+	打印查询计划。
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><systemitem class="osname">OpenBSD</></term>
-      <indexterm><primary>OpenBSD</><secondary>IPC configuration</></>
+      <term>
+       parse
+      </term>
       <listitem>
        <para>
-        编译内核时需要启用选项<varname>SYSVSHM</varname>和<varname>SYSVSEM</varname>（默认已启用）。共享内存的最大尺寸由选项<varname>SHMMAXPGS</varname>（以页计）决定。下面展示了一个如何设置各参数的例子：
-<programlisting>
-option        SYSVSHM
-option        SHMMAXPGS=4096
-option        SHMSEG=256
-
-option        SYSVSEM
-option        SEMMNI=256
-option        SEMMNS=512
-option        SEMMNU=256
-option        SEMMAP=256
-</programlisting>
-       </para>
-
-       <para>你可能还希望配置内核，把共享内存锁定在 RAM 中，防止其被换出到交换区。这可以通过 <command>sysctl</command> 设置 <literal>kern.ipc.shm_use_phys</literal> 来实现。</para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><systemitem class="osname">HP-UX</></term>
-      <indexterm><primary>HP-UX</><secondary>IPC configuration</></>
-      <listitem>
-       <para>默认设置通常足以满足普通安装的需求。在 <productname>HP-UX</productname> 10 上，<varname>SEMMNS</varname> 的出厂默认值为 128，对较大的数据库站点来说可能过低。</para>
-       <para>可以在 <application>System Administration Manager</application>（<acronym>SAM</acronym>）的 <menuchoice><guimenu>Kernel Configuration</guimenu><guimenuitem>Configurable Parameters</guimenuitem></menuchoice> 中设置 <acronym>IPC</acronym> 参数。完成后选择 <guibutton>Create A New Kernel</guibutton>。</para>
-      </listitem>
-     </varlistentry>
-
-
-     <varlistentry>
-      <term><systemitem class="osname">Linux</></term>
-      <indexterm><primary>Linux</><secondary>IPC configuration</></>
-      <listitem>
-       <para>
-        默认的最大段尺寸是 32 MB，只对非常小的<productname>PostgreSQL</productname>安装够用。默认的最大总量是 2097152 页。除了使用<quote>巨页</quote>的不常见内核配置外，一页几乎总是 4096 字节（可以用<literal>getconf PAGE_SIZE</literal>验证）。这使得默认限制为 8 GB，通常够用，但并非总是如此。
-       </para>
-
-       <para>可以通过以下接口更改共享内存大小设置：<command>sysctl</command>。例如，要允许 16 GB：<screen>
-<prompt>$</prompt> <userinput>sysctl -w kernel.shmmax=17179869184</userinput>
-<prompt>$</prompt> <userinput>sysctl -w kernel.shmall=4194304</userinput>
-</screen>此外，可以将这些设置保存在以下文件中，使其在重启后仍然生效：<filename>/etc/sysctl.conf</filename>。强烈建议这样做。</para>
-
-       <para>很旧的发行版可能没有 <command>sysctl</command> 程序，但可以通过操作 <filename>/proc</filename> 文件系统进行等效更改：<screen>
-<prompt>$</prompt> <userinput>echo 17179869184 &gt;/proc/sys/kernel/shmmax</userinput>
-<prompt>$</prompt> <userinput>echo 4194304 &gt;/proc/sys/kernel/shmall</userinput>
-</screen>
-       </para>
-
-       <para>其他默认值都相当充裕，通常不需要更改。</para>
-      </listitem>
-     </varlistentry>
-
-
-     <varlistentry>
-      <term><systemitem class="osname">MacOS X</></term>
-      <indexterm><primary>MacOS X</><secondary>IPC configuration</></>
-      <listitem>
-       <para>
-        在 OS X 中配置共享内存的推荐方法是创建一个名为<filename>/etc/sysctl.conf</filename>的文件，其中包含这样的变量赋值：
-<programlisting>
-kern.sysv.shmmax=4194304
-kern.sysv.shmmin=1
-kern.sysv.shmmni=32
-kern.sysv.shmseg=8
-kern.sysv.shmall=1024
-</programlisting>
-        注意，在某些 OS X 版本中，<emphasis>全部五个</emphasis>共享内存参数都必须在<filename>/etc/sysctl.conf</filename>中设置，否则这些值会被忽略。
-       </para>
-
-       <para>请注意，近期 OS X 版本会忽略将 <varname>SHMMAX</varname> 设为非 4096 整数倍的值的尝试。</para>
-
-       <para>在这个平台上，<varname>SHMALL</varname> 以 4 kB 的页为单位。</para>
-
-       <para>在较旧的 OS X 版本中，必须重启才能使共享内存参数的变更生效。从 10.5 起，除了 <varname>SHMMNI</varname>，都可以使用 <application>sysctl</application> 在线更改。但最好仍通过 <filename>/etc/sysctl.conf</filename> 设置所需的值，以便重启后保留这些值。</para>
-
-       <para>文件 <filename>/etc/sysctl.conf</filename> 只在 OS X 10.3.9 及更高版本中生效。如果运行的是更早的 10.3.x 版本，必须编辑文件 <filename>/etc/rc</> 并更改以下命令中的值：<programlisting>
-sysctl -w kern.sysv.shmmax
-sysctl -w kern.sysv.shmmin
-sysctl -w kern.sysv.shmmni
-sysctl -w kern.sysv.shmseg
-sysctl -w kern.sysv.shmall
-</programlisting>注意，<filename>/etc/rc</> 通常会被 OS X 系统更新覆盖，因此每次更新后可能都需要重新进行这些编辑。</para>
-
-       <para>在 OS X 10.2 及更早版本中，请改为编辑 <filename>/System/Library/StartupItems/SystemTuning/SystemTuning</filename> 文件中的这些命令。</para>
-      </listitem>
-     </varlistentry>
-
-
-     <varlistentry>
-      <term><systemitem class="osname">SCO OpenServer</></term>
-      <indexterm><primary>SCO OpenServer</><secondary>IPC configuration</></>
-      <listitem>
-       <para>
-        在默认配置中，每个共享内存段只允许 512 kB。要提高此设置，首先切换到目录<filename>/etc/conf/cf.d</filename>。要显示<varname>SHMMAX</varname>的当前值，运行：
-<programlisting>
-./configure -y SHMMAX
-</programlisting>
-        要为<varname>SHMMAX</varname>设置新值，运行：
-<programlisting>
-./configure SHMMAX=<replaceable>value</replaceable>
-</programlisting>
-        其中<replaceable>value</replaceable>是你要使用的新值（以字节为单位）。设置<varname>SHMMAX</varname>后，重新构建内核：
-<programlisting>
-./link_unix
-</programlisting>
-        然后重启。
+	打印解析器输出。
        </para>
       </listitem>
      </varlistentry>
 
-
      <varlistentry>
-      <term><systemitem class="osname">Solaris</></term>
-      <indexterm><primary>Solaris</><secondary>IPC configuration</></>
+      <term>
+       rewritten
+      </term>
       <listitem>
        <para>
-        至少在 2.6 版本中，共享内存段的默认最大尺寸对<productname>PostgreSQL</productname>来说太低。相关设置可以在<filename>/etc/system</filename>中修改，例如：<programlisting>
-set shmsys:shminfo_shmmax=0x2000000
-set semsys:seminfo_semmns=1024
-</programlisting>要让更改生效，需要重启。
-       </para>
-
-       <para>
-        另见<ulink url="http://sunsite.uakom.sk/sunworldonline/swol-09-1997/swol-09-insidesolaris.html"></ulink>，其中介绍了<productname>Solaris</productname>下的共享内存。
+	打印重写后的查询。
        </para>
       </listitem>
      </varlistentry>
 
-
      <varlistentry>
-      <term><systemitem class="osname">UnixWare</></term>
-      <indexterm><primary>UnixWare</><secondary>IPC configuration</></>
+      <term>
+       pretty_plan
+      </term>
       <listitem>
        <para>
-        在<productname>UnixWare</productname> 7 中，默认配置下共享内存段的最大尺寸只有 512 kB。要显示<varname>SHMMAX</varname>的当前值，请运行：
-<programlisting>
-/etc/conf/bin/idtune -g SHMMAX
-</programlisting>
-        这会显示当前值、默认值、最小值和最大值。要为<varname>SHMMAX</varname>设置新值，请运行：
-<programlisting>
-/etc/conf/bin/idtune SHMMAX <replaceable>value</>
-</programlisting>
-        其中<replaceable>value</replaceable>是你要使用的新值（以字节计）。设置<varname>SHMMAX</varname>之后，重新构建内核：
-<programlisting>
-/etc/conf/bin/idbuild -B
-</programlisting>
-        and reboot.
+	美化打印查询计划。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       pretty_parse
+      </term>
+      <listitem>
+       <para>
+	美化打印解析器输出。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       pretty_rewritten
+      </term>
+      <listitem>
+       <para>
+	美化打印重写后的查询。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       parserstats
+      </term>
+      <listitem>
+       <para>
+	打印解析器统计。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       plannerstats
+      </term>
+      <listitem>
+       <para>
+	打印规划器统计。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       executorstats
+      </term>
+      <listitem>
+       <para>
+	打印执行器统计。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       shortlocks
+      </term>
+      <listitem>
+       <para>
+	目前未用，但为将来启用特性所需。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       locks
+      </term>
+      <listitem>
+       <para>
+	跟踪锁。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       userlocks
+      </term>
+      <listitem>
+       <para>
+	跟踪用户锁。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       spinlocks
+      </term>
+      <listitem>
+       <para>
+	跟踪自旋锁。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       notify
+      </term>
+      <listitem>
+       <para>
+	跟踪通知函数。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       malloc
+      </term>
+      <listitem>
+       <para>
+	目前未用。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       palloc
+      </term>
+      <listitem>
+       <para>
+	目前未用。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       lock_debug_oidmin
+      </term>
+      <listitem>
+       <para>
+	锁跟踪的最小关系 oid。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       lock_debug_relid
+      </term>
+      <listitem>
+       <para>
+	如果非零，为锁跟踪的关系 oid。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       lock_read_priority
+      </term>
+      <listitem>
+       <para>
+	目前未用。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       deadlock_timeout
+      </term>
+      <listitem>
+       <para>
+	死锁检查计时器。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       syslog
+      </term>
+      <listitem>
+       <para>
+	syslog 标志。允许的值有：
+       </para>
+
+       <variablelist>
+	<varlistentry>
+	 <term>
+	  0
+	 </term>
+	 <listitem>
+	  <para>
+	   消息发到 stdout/stderr。
+	  </para>
+	 </listitem>
+	</varlistentry>
+
+	<varlistentry>
+	 <term>
+	  1
+	 </term>
+	 <listitem>
+	  <para>
+	   消息发到 stdout/stderr 和 syslog。
+	  </para>
+	 </listitem>
+	</varlistentry>
+
+	<varlistentry>
+	 <term>
+	  2
+	 </term>
+	 <listitem>
+	  <para>
+	   消息只发到 syslog。
+	  </para>
+	 </listitem>
+	</varlistentry>
+
+       </variablelist>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       hostlookup
+      </term>
+      <listitem>
+       <para>
+	在 ps_status 中启用主机名查找。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       showportnumber
+      </term>
+      <listitem>
+       <para>
+	在 ps_status 中显示端口号。
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       nofsync
+      </term>
+      <listitem>
+       <para>
+	按后端禁用 fsync。
        </para>
       </listitem>
      </varlistentry>
 
     </variablelist>
-
-
-   <table id="shared-memory-parameters">
-    <title><productname>PostgreSQL</productname> shared memory usage</>
-
-    <tgroup cols="2">
-     <thead>
-      <row>
-       <entry>Usage</>
-       <entry>大致所需的共享内存字节数（按 8.3 计）</>
-      </row>
-     </thead>
-
-     <tbody>
-      <row>
-       <entry>连接</>
-       <entry>(1800 + 270 * <xref
-       linkend="guc-max-locks-per-transaction">) * <xref
-       linkend="guc-max-connections"></entry>
-      </row>
-
-      <row>
-       <entry>自动清理工作进程</>
-       <entry>(1800 + 270 * <xref
-       linkend="guc-max-locks-per-transaction">) * <xref
-       linkend="guc-autovacuum-max-workers"></entry>
-      </row>
-
-      <row>
-       <entry>预备事务</>
-       <entry>(770 + 270 * <xref
-       linkend="guc-max-locks-per-transaction">) * <xref linkend="guc-max-prepared-transactions"></entry>
-      </row>
-
-      <row>
-       <entry>共享磁盘缓冲区</>
-       <entry>(<xref linkend="guc-block-size"> + 208) * <xref linkend="guc-shared-buffers"></entry>
-      </row>
-
-      <row>
-       <entry>WAL 缓冲区</>
-       <entry>(<xref linkend="guc-wal-block-size"> + 8) * <xref linkend="guc-wal-buffers"></entry>
-      </row>
-
-      <row>
-       <entry>固定空间需求</>
-       <entry>770 kB</entry>
-      </row>
-     </tbody>
-    </tgroup>
-   </table>
-
-  </sect2>
-
-  <sect2>
-   <title>Resource Limits</title>
-
-   <para>
-    类 Unix 操作系统会施加多种资源限制，这些限制可能干扰 <productname>PostgreSQL</productname> 服务器的运行。其中尤其重要的是：每个用户可用的进程数限制、每个进程可打开文件数限制，以及每个进程可用内存量限制。每一种限制都有<quote>硬</quote>限制和<quote>软</quote>限制。实际生效的是软限制，但用户可以自行把它调高到不超过硬限制；硬限制则只能由 root 用户修改。系统调用<function>setrlimit</function>负责设置这些参数。shell 的内置命令<command>ulimit</command>（Bourne shell）或<command>limit</command>（<application>csh</application>）可用于在命令行控制资源限制。在 BSD 派生系统上，<filename>/etc/login.conf</filename>文件控制登录时设置的各种资源限制。详细信息请参阅操作系统文档。相关参数有<varname>maxproc</varname>、<varname>openfiles</varname>和<varname>datasize</varname>。例如：
-<programlisting>
-default:\
-...
-        :datasize-cur=256M:\
-        :maxproc-cur=256:\
-        :openfiles-cur=256:\
-...
-</programlisting>
-    （<literal>-cur</literal>表示软限制；把它改为<literal>-max</literal>则表示设置硬限制。）
-   </para>
-
-   <para>
-    内核还可能对某些资源施加系统范围的限制。
-    <itemizedlist>
-     <listitem>
-      <para>
-      在<productname>Linux</productname>上，内核参数
-      <filename>/proc/sys/fs/file-max</filename>确定内核支持的最大打开文件数。
-      可以向该文件写入一个不同的数字来修改它，也可以在<filename>/etc/sysctl.conf</filename>中添加相应赋值。
-      每个进程的文件数上限是在内核编译时固定的；请参阅
-      <filename>/usr/src/linux/Documentation/proc.txt</filename>获取更多信息。
-      </para>
-     </listitem>
-    </itemizedlist>
-   </para>
-
-   <para>
-    <productname>PostgreSQL</productname>服务器为每个连接使用一个进程，因此你至少应提供与允许连接数相同数量的进程，再加上系统其他部分所需的进程数。通常这不是问题，但如果你在一台机器上运行多个服务器，资源可能就会变得紧张。
-  </para>
-
-   <para>
-    打开文件数的出厂默认限制通常被设为<quote>对共享环境友好</quote>的值，也就是允许许多用户在一台机器上共存，而不会占用不成比例的系统资源。如果你在一台机器上运行很多服务器，这也许正合适；但在专用服务器上，你可能会希望提高这个限制。
-  </para>
-
-   <para>
-    另一方面，有些系统允许单个进程打开非常多的文件；如果不止少数几个进程都这么做，就很容易超过系统范围的限制。如果你遇到这种情况，又不想修改系统范围的限制，可以设置<productname>PostgreSQL</productname>的<xref linkend="guc-max-files-per-process">配置参数来限制其打开文件的消耗。
-  </para>
-  </sect2>
-
-  <sect2 id="linux-memory-overcommit">
-   <title>Linux 内存过量分配</title>
-
-   <para>在 Linux 2.4 及更高版本中，默认的虚拟内存行为对 <productname>PostgreSQL</productname> 并非最佳。由于内核实现内存过量分配的方式，如果 <productname>PostgreSQL</productname> 或其他进程的内存需求导致系统耗尽虚拟内存，内核可能会终止 <productname>PostgreSQL</productname> 的 postmaster（主管服务器进程）。</para>
-
-   <para>
-    如果发生这种情况，你会看到类似下面的内核消息（至于应到哪里查看此类消息，请参阅你的系统文档和配置）：
-<programlisting>
-Out of Memory: Killed process 12345 (postgres).
-</programlisting>
-    这表示 <filename>postgres</filename> 进程因内存压力而被终止。尽管现有数据库连接仍会继续正常运行，但新连接将不再被接受。要恢复服务，必须重启<productname>PostgreSQL</productname>。
-   </para>
-
-   <para>
-    避免该问题的一种办法，是让<productname>PostgreSQL</productname>运行在一台你能确定不会被其他进程耗尽内存的机器上。如果内存紧张，增加操作系统交换空间也有助于避免这个问题，因为内存不足（OOM）杀手只有在物理内存和交换空间都耗尽时才会被触发。
-   </para>
-
-   <para>如果导致系统耗尽内存的正是 <productname>PostgreSQL</productname> 自身，那么你可以通过调整配置来避免该问题。在某些情况下，调低与内存相关的配置参数会有帮助，尤其是 <link linkend="guc-shared-buffers"><varname>shared_buffers</varname></link> 和 <link linkend="guc-work-mem"><varname>work_mem</varname></link>。在其他情况下，允许数据库服务器接受过多连接也可能导致这一问题。很多时候，更好的做法可能是减小 <link linkend="guc-max-connections"><varname>max_connections</varname></link>，并转而使用外部连接池软件。</para>
-
-   <para>在 Linux 2.6 及更高版本中，可以修改内核的行为，使其不会<quote>过量分配</quote>内存。虽然此设置无法完全阻止 <ulink
-    url="http://lwn.net/Articles/104179/">OOM 杀手</> 被调用，但会显著降低发生概率，从而使系统行为更健壮。方法是选择严格的过量分配模式，使用以下命令：<command>sysctl</command>：
-<programlisting>
-sysctl -w vm.overcommit_memory=2
-</programlisting>或者在以下文件中加入等效条目：<filename>/etc/sysctl.conf</filename>。你可能还希望修改相关设置 <varname>vm.overcommit_ratio</varname>。详细信息参见内核文档文件 <filename>Documentation/vm/overcommit-accounting</filename>。
-   </para>
-
-   <para>
-    另一种方法（无论是否修改<varname>vm.overcommit_memory</varname>都可以使用）是把 postmaster 进程的进程专属<varname>oom_adj</varname>值设置为<literal>-17</literal>，从而保证它不会被 OOM 杀手选中。最简单的做法是在 postmaster 的启动脚本中、调用 postmaster 之前执行
-<programlisting>
-echo -17 > /proc/self/oom_adj
-</programlisting>
-    在 postmaster 的启动脚本中、调用 postmaster 之前执行上述命令。
-    注意这一操作必须以 root 身份进行，否则不会生效；因此由 root 拥有的启动脚本是最容易做到这一点的位置。如果你这样做了，可能还会希望在构建<productname>PostgreSQL</productname>时在<varname>CPPFLAGS</varname>中加入<literal>-DLINUX_OOM_ADJ=0</literal>。这会使 postmaster 的子进程以正常的<varname>oom_adj</varname>值零运行，这样 OOM 杀手在需要时仍能选中它们。
-   </para>
-
-   <note>
-   <para>据报告，某些厂商的 Linux 2.4 内核包含 2.6 版过量分配 <command>sysctl</command> 参数的早期实现。但是，在没有相关代码的 2.4 内核上将 <literal>vm.overcommit_memory</literal> 设为 2，会使情况更糟，而非更好。建议在 2.4 安装上尝试之前，检查实际内核源码（参见文件 <filename>mm/mmap.c</filename> 中的函数 <function>vm_enough_memory</function>），确认内核支持的功能。存在 <filename>overcommit-accounting</filename> 文档文件，<emphasis>不能</emphasis>作为该功能已存在的证据。如有任何疑问，请咨询内核专家或内核供应商。</para>
-   </note>
-  </sect2>
- </sect1>
-
-
- <sect1 id="server-shutdown">
-  <title>关闭服务器</title>
-
-  <indexterm zone="server-shutdown">
-   <primary>shutdown</>
-  </indexterm>
-
-  <para>
-   关闭数据库服务器有几种方式。通过向主<command>postgres</command>进程发送不同的信号来控制关闭的类型。
-
-   <variablelist>
-    <varlistentry>
-     <term><systemitem>SIGTERM</systemitem><indexterm><primary>SIGTERM</></></term>
-     <listitem>
-      <para>
-       这是<firstterm>智能关闭</firstterm>模式。收到<systemitem>SIGTERM</systemitem>后，服务器禁止新连接，但让现有会话正常结束其工作。只有在所有会话终止之后，它才关闭。如果服务器处于在线备份模式，它还会等到在线备份模式不再活动为止。在备份模式活动期间，仍允许新连接，但仅限超级用户（这一例外允许超级用户连接以终止在线备份模式）。如果在请求智能关闭时服务器正处于恢复中，恢复和流复制只在所有常规会话终止之后才停止。
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><systemitem>SIGINT</systemitem><indexterm><primary>SIGINT</></></term>
-     <listitem>
-      <para>
-       这是<firstterm>快速关闭</firstterm>模式。服务器禁止新连接，并向所有现有服务器进程发送<systemitem>SIGTERM</systemitem>，使它们中止当前事务并立即退出。然后它等待所有服务器进程退出并最终关闭。如果服务器处于在线备份模式，备份模式将被终止，使备份作废。
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><systemitem>SIGQUIT</systemitem><indexterm><primary>SIGQUIT</></></term>
-     <listitem>
-      <para>
-      This is the <firstterm>Immediate Shutdown</firstterm> mode.
-      主<command>postgres</command>进程将向所有子进程发送<systemitem>SIGQUIT</systemitem>并立即退出，而不进行正常的关闭。子进程收到<systemitem>SIGQUIT</systemitem>后同样立即退出。这将导致下次启动时需要恢复（通过重放 WAL 日志）。仅在紧急情况下才建议这样做。
-      </para>
-     </listitem>
-    </varlistentry>
-   </variablelist>
-  </para>
-
-  <para>
-   <xref linkend="app-pg-ctl">程序提供了一个便于发送这些信号以关闭服务器的接口。另外，在非 Windows 系统上，你也可以用<command>kill</command>直接发送这些信号。可以用<command>ps</command>程序，或者从数据目录中的<filename>postmaster.pid</filename>文件找到<command>postgres</command>进程的<acronym>PID</acronym>。例如，要执行一次快速关闭：
-<screen>
-$ <userinput>kill -INT `head -1 /usr/local/pgsql/data/postmaster.pid`</userinput>
-</screen>
-  </para>
-
-  <important>
-   <para>最好不要使用 <systemitem>SIGKILL</systemitem> 关闭服务器。这样做会阻止服务器释放共享内存和信号量，因此在启动新服务器之前，可能必须手动释放它们。此外，<systemitem>SIGKILL</systemitem> 会终止 <command>postgres</command> 进程，使其没有机会将信号转发给子进程，因此还必须手动逐个终止子进程。</para>
-  </important>
-
-  <para>
-   要终止单个会话并允许其他会话继续运行，可使用<function>pg_terminate_backend()</function>（参阅<xref linkend="functions-admin-signal-table">），或者向与该会话相关的子进程发送<systemitem>SIGTERM</systemitem>信号。
-  </para>
- </sect1>
-
- <sect1 id="preventing-server-spoofing">
-  <title>防止服务器欺骗</title>
-
-  <indexterm zone="preventing-server-spoofing">
-   <primary>server spoofing</primary>
-  </indexterm>
-
-  <para>
-   当服务器正在运行时，恶意用户不可能取代正常的数据库服务器。然而，当服务器关闭时，本地用户却可能通过启动自己的服务器来冒充正常服务器。这个伪造服务器可以读取客户端发出的密码和查询语句，但由于<varname>PGDATA</varname>目录仍然受目录权限保护，它无法返回任何真实数据。之所以会出现这种冒充，是因为任何用户都可以启动一个数据库服务器；而客户端除非经过专门配置，否则无法识别服务器是否为伪造。
-  </para>
-
-  <para>
-   防止<literal>local</literal>连接被欺骗的最简单办法，是使用一个 Unix 域套接字目录（<xref linkend="guc-unix-socket-directory">），并且只允许可信的本地用户对该目录拥有写权限。这样可以防止恶意用户在其中创建自己的套接字文件。如果你担心某些应用程序仍会引用<filename>/tmp</filename>中的套接字文件，因此仍然容易受到欺骗，那么可以在操作系统启动时创建一个符号链接<filename>/tmp/.s.PGSQL.5432</filename>，使其指向迁移后的套接字文件。你可能还需要修改<filename>/tmp</filename>清理脚本，防止该符号链接被删除。
-  </para>
-
-  <para>
-   要防止 TCP 连接被欺骗，最好的解决方案是使用 SSL 证书，并确保客户端检查服务器的证书。为此，服务器必须配置为只接受<literal>hostssl</literal>连接（见<xref linkend="auth-pg-hba-conf">），并拥有 SSL 的<filename>server.key</filename>（密钥）和<filename>server.crt</filename>（证书）文件（见<xref linkend="ssl-tcp">）。TCP 客户端必须使用<literal>sslmode=verify-ca</literal>或<literal>verify-full</literal>连接，并安装了相应的根证书文件（见<xref linkend="libpq-connect">）。
-  </para>
- </sect1>
-  
- <sect1 id="encryption-options">
-  <title>加密选项</title>
-
-  <indexterm zone="encryption-options">
-   <primary>encryption</primary>
-  </indexterm>
-
-  <para>
-   <productname>PostgreSQL</productname>提供了多个层次的加密，并在防止数据因数据库服务器被盗、不诚实的管理员或不安全网络等原因而泄露方面提供了很高的灵活性。为了保护医疗记录、金融交易等敏感数据，也可能需要使用加密。
-  </para>
-   
-  <variablelist>
-
-  <varlistentry>
-   <term>密码存储加密</term>
-   <listitem>
-
-    <para>
-     默认情况下，数据库用户口令以 MD5 哈希的形式存储，因此管理员无法确定指派给用户的实际口令。如果客户端认证使用 MD5 加密，那么未加密的口令甚至不会临时出现在服务器上，因为客户端在通过网络发送之前就先对它做了 MD5 加密。
     </para>
-   </listitem>
-  </varlistentry>
+   </sect2>
+  </sect1>
 
-  <varlistentry>
-   <term>跨网络安全密码</term>
+</Chapter>
 
-   <listitem>
-    <para>
-     <filename>contrib</filename>函数库<link linkend="pgcrypto"><function>pgcrypto</function></link>允许某些字段以加密形式存储。如果只有部分数据是敏感的，这将很有用。客户端提供解密密钥，数据在服务器上解密后发送给客户端。
-    </para>
-     
-    <para>
-     当数据被解密并在服务器与客户端之间传输时，解密后的数据和解密密钥会在服务器端短暂存在。这就给那些可以完全访问数据库服务器的人（例如系统管理员）提供了一个短暂的机会来截获密钥和数据。
-    </para>
-   </listitem>
-  </varlistentry>
-
-  <varlistentry>
-   <term>指定列加密</term>
-
-   <listitem>
-    <para>
-     在 Linux 上，可以使用<quote>回环设备</quote>在文件系统之上叠加加密。这允许整个文件系统分区在磁盘上加密，由操作系统解密。在 FreeBSD 上，等价的设施称为基于 GEOM 的磁盘加密（<acronym>gbde</acronym>），许多其他操作系统也支持这一功能，包括 Windows。
-    </para>
-
-    <para>
-     这种机制可以防止在整台计算机或磁盘被盗时，从驱动器中直接读取未加密数据。但它无法防御文件系统已挂载时的攻击，因为在挂载之后，操作系统会提供数据的解密视图。不过，要挂载该文件系统，就必须以某种方式把加密密钥提供给操作系统，而有时这个密钥就存放在挂载该磁盘的主机上的某处。
-    </para>
-   </listitem>
-  </varlistentry>
-
-  <varlistentry>
-   <term>数据分区加密</term>
-
-   <listitem>
-     <para>
-      <literal>MD5</literal>认证方法在把口令发送给服务器之前，先在客户端对其进行双重加密。它先基于用户名做 MD5 加密，然后再基于建立数据库连接时服务器发送的随机盐加密。通过网络发送给服务器的正是这个双重加密后的值。双重加密不仅可防止口令被发现，还可防止其他连接在之后利用同一个已加密的口令连接到数据库服务器。
-     </para>
-    </listitem>
-  </varlistentry>
-
-  <varlistentry>
-   <term>跨网络加密数据</term>
-
-    <listitem>
-     <para>SSL 连接会加密通过网络发送的全部数据：密码、查询和返回的数据。<filename>pg_hba.conf</filename> 文件允许管理员指定哪些主机可以使用非加密连接（<literal>host</literal>），哪些主机必须使用 SSL 加密连接（<literal>hostssl</literal>）。此外，客户端可以指定仅通过 SSL 连接到服务器。也可以使用 <application>Stunnel</application> 或 <application>SSH</application> 加密传输。</para>
-    </listitem>
-  </varlistentry>
-
-  <varlistentry>
-   <term>SSL 主机认证</term>
-
-   <listitem>
-    <para>
-     客户端和服务器都可以向对方提供 SSL 证书。这需要双方做一些额外配置，但它提供的认证强度高于单纯依赖密码。它可以防止某台计算机短暂冒充服务器，只为读取客户端发送的密码；同时也有助于防御<quote>中间人</quote>攻击，即某台位于客户端与服务器之间的计算机冒充服务器，读取并转发双方之间的全部数据。
-    </para>
-   </listitem>
-  </varlistentry>
-
-  <varlistentry>
-   <term>客户端加密</term>
-
-   <listitem>
-    <para>
-     如果服务器所在机器的系统管理员不可信，那么就有必要由客户端自行加密数据。这样一来，未加密的数据就永远不会出现在数据库服务器上。数据在发送给服务器之前就在客户端加密，而查询结果也必须在客户端解密后才能使用。
-    </para>
-   </listitem>
-  </varlistentry>
-
-  </variablelist>
-
- </sect1>
-
- <sect1 id="ssl-tcp">
-  <title>使用 SSL 的安全 TCP/IP 连接</title>
-
-  <indexterm zone="ssl-tcp">
-   <primary>SSL</primary>
-  </indexterm>
-
-  <para>
-   <productname>PostgreSQL</productname>原生支持使用<acronym>SSL</acronym>连接来加密客户端与服务器之间的通信，以提高安全性。这要求客户端和服务器系统上都安装了<productname>OpenSSL</productname>，并且在构建<productname>PostgreSQL</productname>时启用了该支持（见<xref linkend="installation">）。
-  </para>
-
-  <para>如果构建时启用了 <acronym>SSL</acronym> 支持，那么在 <filename>postgresql.conf</filename> 中将参数 <xref linkend="guc-ssl"> 设为 <literal>on</literal>，就可以在启动 <productname>PostgreSQL</productname> 服务器时启用 <acronym>SSL</acronym>。服务器会在同一个 TCP 端口上同时监听普通连接和 <acronym>SSL</acronym> 连接，并与每个连接进来的客户端协商是否使用 <acronym>SSL</acronym>。默认情况下，这由客户端决定；关于如何把服务器配置为要求某些或全部连接必须使用 <acronym>SSL</acronym>，请参阅 <xref linkend="auth-pg-hba-conf">。</para>
-
-  <para>
-   <productname>PostgreSQL</productname>会读取系统范围的<productname>OpenSSL</productname>配置文件。默认情况下，该文件名为<filename>openssl.cnf</filename>，位于<literal>openssl version -d</literal>报告的目录中。可以通过把环境变量<envar>OPENSSL_CONF</envar>设为所需配置文件的名称，覆盖这一默认值。
-  </para>
-
-  <para>
-   <productname>OpenSSL</productname>支持种类繁多、强度不一的密码套件和认证算法。虽然可以在<productname>OpenSSL</productname>配置文件中指定密码套件列表，但你也可以通过修改<filename>postgresql.conf</filename>中的<xref linkend="guc-ssl-ciphers">，专门为数据库服务器指定要使用的密码套件。
-  </para>
-
-  <note>
-   <para>
-    使用<literal>NULL-SHA</literal>或<literal>NULL-MD5</literal>密码套件，可以在没有加密开销的情况下完成认证。不过，中间人仍然能够读取并转发客户端与服务器之间的通信。此外，与认证的开销相比，加密开销本身很小。基于这些原因，不建议使用 NULL 密码套件。
-   </para>
-  </note>
-
-  <para>
-   要以<acronym>SSL</acronym>模式启动，服务器数据目录中必须存在文件<filename>server.crt</filename>和<filename>server.key</filename>。这两个文件应分别包含服务器证书和私钥。在 Unix 系统上，<filename>server.key</filename>的权限必须禁止任何组或全局访问；这可以通过命令<command>chmod 0600 server.key</command>实现。如果私钥受口令保护，服务器将提示输入该口令，输入之前不会启动。
-  </para>
-
-  <para>
-   在某些情况下，服务器证书可能由一个<quote>中间</quote>证书颁发机构签名，而不是由客户端直接信任的机构签名。要使用这样的证书，请把签名机构的证书追加到<filename>server.crt</filename>文件中，然后是其上级机构的证书，依此类推，直到客户端信任的<quote>根</quote>机构。只要<filename>server.crt</filename>包含多个证书，就应包含根证书。
-  </para>
-
-  <sect2 id="ssl-client-certificates">
-   <title>Using client certificates</title>
-
-   <para>
-   要要求客户端提供受信任的证书，请把你信任的证书颁发机构（<acronym>CA</acronym>）的证书放在数据目录中的<filename>root.crt</filename>文件里，并把<filename>pg_hba.conf</filename>中相应<literal>hostssl</literal>行上的<literal>clientcert</literal>参数设置为<literal>1</literal>。此后，在 SSL 连接启动时会向客户端请求证书。（关于如何在客户端设置证书，见<xref linkend="libpq-ssl">。）服务器将验证客户端的证书是否由某个受信任的证书颁发机构签名。如果文件<filename>root.crl</filename>存在，还将检查证书吊销列表（CRL）条目。
-   <!-- If this URL changes replace it with a URL to www.archive.org. -->
-   （SSL 证书用法的图示见<ulink url="http://h71000.www7.hp.com/doc/83final/ba554_90007/ch04s02.html"></ulink>。）
-  </para>
-
-  <para>
-   <filename>pg_hba.conf</filename>中的<literal>clientcert</literal>选项可用于所有认证方法，但只适用于指定为<literal>hostssl</literal>的行。当未指定<literal>clientcert</literal>或将其设置为<literal>0</literal>时，如果<filename>root.crt</filename>文件存在，服务器仍会根据它验证出示的客户端证书&mdash;&mdash;但不会坚持要求客户端出示证书。
-  </para>
-
-  <para>
-   注意，<filename>root.crt</filename>列出的是被认为可为客户端证书签名、受信任的顶层 CA。原则上它不必列出为服务器证书签名的 CA，尽管在大多数情况下该 CA 也会为客户端证书所信任。
-  </para>
-
-  <para>如果正在设置客户端证书，可以考虑使用 <literal>cert</literal> 认证方法，让证书在提供连接安全性的同时也控制用户认证。详情参见 <xref linkend="auth-cert">。</para>
-  </sect2>
-
-  <sect2 id="ssl-server-files">
-   <title>SSL 服务器文件用法</title>
-  <para>
-   文件<filename>server.key</filename>、<filename>server.crt</filename>、<filename>root.crt</filename>和<filename>root.crl</filename>只在服务器启动时检查；因此更改它们后必须重启服务器才能生效。
-  </para>
-
-  <table id="ssl-file-usage">
-   <title>SSL 服务器文件用法</title>
-   <tgroup cols="3">
-    <thead>
-     <row>
-      <entry>文件</entry>
-      <entry>内容</entry>
-      <entry>效果</entry>
-     </row>
-    </thead>
-
-    <tbody>
-
-     <row>
-      <entry><filename>server.crt</></entry>
-      <entry>服务器证书</entry>
-      <entry>发送给客户端以表明服务器的身份</entry>
-     </row>
-
-     <row>
-      <entry><filename>server.key</filename></entry>
-      <entry>服务器私钥</entry>
-      <entry>证明服务器证书由其所有者发送；并不表明证书所有者可信</entry>
-     </row>
-
-     <row>
-      <entry><filename>root.crt</filename></entry>
-      <entry>受信任的证书颁发机构</entry>
-      <entry>检查客户端证书是否由受信任的证书颁发机构签名</entry>
-     </row>
-
-     <row>
-      <entry><filename>root.crl</filename></entry>
-      <entry>被证书颁发机构吊销的证书</entry>
-      <entry>客户端证书不能出现在此列表中</entry>
-     </row>
-
-    </tbody>
-   </tgroup>
-  </table>
-  </sect2>
-
-  <sect2 id="ssl-certificate-creation">
-   <title>Creating a Self-Signed Certificate</title>
-
-   <para>
-    要为服务器快速创建一个自签名证书，可以使用下面的<productname>OpenSSL</productname>命令：
-<programlisting>
-openssl req -new -text -out server.req
-</programlisting>
-    请填写<application>openssl</application>要求的信息。确保把本地主机名输入为<quote>Common Name</quote>；挑战密码可以留空。该程序会生成一个带口令保护的密钥；它不接受少于四个字符的口令。要移除口令（如果希望服务器自动启动就必须这样做），请运行命令：
-<programlisting>
-openssl rsa -in privkey.pem -out server.key
-rm privkey.pem
-</programlisting>
-    输入旧口令以解锁现有密钥。接着执行：
-<programlisting>
-openssl req -x509 -in server.req -text -key server.key -out server.crt
-</programlisting>
-    把证书转换为自签名证书，并把密钥和证书复制到服务器将会查找它们的位置。最后执行：
-<programlisting>
-chmod og-rwx server.key
-</programlisting>
-    因为如果文件的权限比这更宽松，服务器将拒绝该文件。关于如何创建服务器私钥和证书的更多细节，请参阅<productname>OpenSSL</productname>文档。
-   </para>
-
-   <para>
-    自签名证书可用于测试，但在生产环境中应使用由证书颁发机构（<acronym>CA</acronym>）（全局<acronym>CA</acronym>之一或本地 CA）签名的证书，以便客户端能验证服务器的身份。如果所有客户端都在组织内部，建议使用本地<acronym>CA</acronym>。
-   </para>
-
-  </sect2>
-
- </sect1>
-
- <sect1 id="ssh-tunnels">
-  <title>Secure TCP/IP Connections with <application>SSH</application> Tunnels</title>
-
-  <indexterm zone="ssh-tunnels">
-   <primary>ssh</primary>
-  </indexterm>
-
-  <para>
-   可以使用<application>SSH</application>来加密客户端与<productname>PostgreSQL</productname>服务器之间的网络连接。如果配置得当，即使客户端本身不支持 SSL，这种方法也能提供足够安全的网络连接。
-  </para>
-
-  <para>
-   首先确认在<productname>PostgreSQL</productname>服务器所在的同一台机器上有一个正常运行的<application>SSH</application>服务器，并且你可以使用<command>ssh</command>以某个用户身份登录；然后就可以建立通向远程服务器的安全隧道。安全隧道会监听本地端口，并把所有流量转发到远程机器上的某个端口。发送到该远程端口的流量可以到达其localhost地址，或者在需要时到达其他绑定地址；对远端来说，这些流量看起来并不是来自你的本地机器。下面这个命令会创建一条从客户端机器到远程机器<literal>foo.com</literal>的安全隧道：
-<programlisting>
-ssh -L 63333:localhost:5432 joe@foo.com
-</programlisting>
-   <option>-L</option>参数中的第一个数字 63333 是隧道在本地的端口号；它可以是任何未使用的端口。（IANA 保留 49152 到 65535 端口供私用。）其后的名称或 IP 地址是你要连接的远程绑定地址，这里是默认值localhost。第二个数字 5432 是隧道远端的端口，例如数据库服务器所使用的端口。要通过这条隧道连接数据库服务器，只需连接本地机器上的 63333 端口：
-<programlisting>
-psql -h localhost -p 63333 postgres
-</programlisting>
-   对数据库服务器来说，它看到的是来自主机<literal>foo.com</literal>上用户<literal>joe</literal>对<literal>localhost</literal>绑定地址的连接，并将应用为该用户到该绑定地址所配置的认证方式。请注意，服务器不会认为这是 SSL 加密连接，因为实际上<application>SSH</application>服务器与<productname>PostgreSQL</productname>服务器之间并没有加密。不过这通常不会带来额外安全风险，因为两者位于同一台机器上。
-  </para>
-
-  <para>要让这条隧道建立成功，你必须有权通过 <command>ssh</command> 以 <literal>joe@foo.com</literal> 身份连接，就像尝试使用 <command>ssh</command> 创建终端会话一样。</para>
-
-  <para>
-   你也可以把端口转发设成这样：
-<programlisting>
-ssh -L 63333:foo.com:5432 joe@foo.com
-</programlisting>
-   但这样一来，数据库服务器会把该连接看作是到达其<literal>foo.com</literal>绑定地址的连接，而默认设置<literal>listen_addresses = 'localhost'</literal>并不会监听该地址。这通常不是你想要的结果。
-  </para>
-
-  <para>
-   如果你必须经由某个登录主机<quote>跳转</quote>到数据库服务器，那么一种可能的设置如下：
-<programlisting>
-ssh -L 63333:db.foo.com:5432 joe@shell.foo.com
-</programlisting>
-   请注意，这种从<literal>shell.foo.com</literal>到<literal>db.foo.com</literal>的连接不会受到 SSH 隧道的加密保护。当网络受到各种限制时，SSH 还提供了许多其他配置方式。详情请参阅 SSH 文档。
-  </para>
-
-  <tip>
-   <para>
-    还有一些其他应用也能提供安全隧道，其思路与刚才描述的 SSH 方法类似。
-   </para>
-  </tip>
-
- </sect1>
-
-</chapter>
+<!-- Keep this comment at the end of the file
+Local variables:
+mode:sgml
+sgml-omittag:nil
+sgml-shorttag:t
+sgml-minimize-attributes:nil
+sgml-always-quote-attributes:t
+sgml-indent-step:1
+sgml-indent-data:t
+sgml-parent-document:nil
+sgml-default-dtd-file:"./reference.ced"
+sgml-exposed-tags:nil
+sgml-local-catalogs:("/usr/lib/sgml/catalog")
+sgml-local-ecat-files:nil
+End:
+-->
