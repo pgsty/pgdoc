@@ -239,8 +239,9 @@ def main():
     with open(makefile, encoding="utf-8") as f:
         mf = f.read()
 
-    if "xslthtml-stamp:" in mf:
-        return  # PG >= 9.2 already ships the XSL pipeline
+    if ("xslthtml-stamp:" in mf or
+            re.search(r"^html-stamp:.*\bstylesheet\.xsl\b", mf, re.M)):
+        return  # PG >= 9.2 ships XSL; PG10 renamed its stamp to html-stamp.
     if "postgres.xml:" not in mf:
         # PG 6.x jade-era makefiles have neither an html: target nor a
         # postgres.xml rule; the 6.x branch synthesizes the whole pipeline.
