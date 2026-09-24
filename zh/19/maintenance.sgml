@@ -141,8 +141,9 @@
    <para>
     标准形式的 <command>VACUUM</command> 会移除表和索引中的死行版本，并将空间标记为可供将来重用。
     不过，它不会把空间归还给操作系统，除非出现一种特殊情况：表尾的一个或多个页面完全空闲，
-    并且能够轻松获得一个排他表锁。相比之下，<command>VACUUM FULL</command> 会主动压实表，
-    它会写出一个不含死空间的全新表文件版本。这会将表的大小降到最小，但可能耗时很长。
+    并且能够轻松获得一个排他表锁。相比之下，<command>VACUUM FULL</command>、<command>CLUSTER</command> 和
+    <command>REPACK</command> 等表重写命令会主动压实表，
+    写出一个不含旧行版本所留死空间的全新表文件版本。这会将表的大小降到最小，但可能耗时很长。
     在操作完成之前，它还需要额外的磁盘空间来存放表的新副本。
    </para>
 
@@ -151,15 +152,16 @@
     从而避免需要 <command>VACUUM FULL</command>。自动清理守护进程就是按照这种方式工作的，
     事实上它永远不会发出 <command>VACUUM FULL</command>。这种方法的思路不是让表始终保持在最小尺寸，
     而是让磁盘空间的使用维持在稳态：每个表占用的空间相当于其最小尺寸，再加上两次清理之间又被用掉的空间。
-    虽然 <command>VACUUM FULL</command> 可以把表重新缩小到最小尺寸，并把磁盘空间归还给操作系统，
+    虽然 <command>VACUUM FULL</command>、<command>CLUSTER</command> 和
+    <command>REPACK</command> 等通过重写表进行压实的操作可以把表重新缩小到最小尺寸，并把磁盘空间归还给操作系统，
     但如果该表之后还会再次增长，这样做意义并不大。因此，对于维护被频繁更新的表，
-    与其不常执行 <command>VACUUM FULL</command>，不如适度频繁地执行标准 <command>VACUUM</command>。
+    与其不常执行这类操作，不如适度频繁地执行标准 <command>VACUUM</command>。
    </para>
 
    <para>
     有些管理员喜欢自己安排清理，例如在夜间负载较低时完成全部工作。按固定时间表执行清理的难点在于，
-    如果某个表的更新活动出现意外高峰，它可能膨胀到确实需要 <command>VACUUM FULL</command>
-    才能回收空间的程度。使用自动清理守护进程可以缓解这个问题，因为守护进程会根据更新活动动态安排清理。
+    如果某个表的更新活动出现意外高峰，它可能膨胀到需要 <command>VACUUM FULL</command> 或 <command>REPACK</command> 等
+    通过重写表进行压实的操作来回收空间的程度。使用自动清理守护进程可以缓解这个问题，因为守护进程会根据更新活动动态安排清理。
     除非工作负载极其可预测，否则完全禁用守护进程是不明智的。一种可能的折中办法是设置守护进程参数，
     使其只对异常繁重的更新活动作出反应，从而防止情况失控，而在负载正常时，则期望定期调度的
     <command>VACUUM</command> 完成大部分工作。
@@ -177,11 +179,14 @@
    <para>
     当一个表由于大规模更新或删除活动而包含大量死行版本时，普通的 <command>VACUUM</command>
     可能并不能令人满意。如果你有这样一个表，并且需要回收它所占用的多余磁盘空间，
-    就需要使用 <command>VACUUM FULL</command>，或者改用
-    <link linkend="sql-cluster"><command>CLUSTER</command></link>，
+    就需要使用 <command>VACUUM FULL</command>、
+    <link linkend="sql-cluster"><command>CLUSTER</command></link>、
+    <link linkend="sql-repack"><command>REPACK</command></link>，
     又或者使用 <link linkend="sql-altertable"><command>ALTER TABLE</command></link>
     的某一种重写表变体。这些命令会重写整个表的新副本，并为其构建新的索引。
-    所有这些选项都需要 <literal>ACCESS EXCLUSIVE</literal> 锁。还要注意，
+    所有这些选项都需要 <literal>ACCESS EXCLUSIVE</literal> 锁，不过 <command>REPACK</command>
+    可以带 <literal>CONCURRENTLY</literal> 运行，此时只在交换表和索引文件期间持有
+    <literal>ACCESS EXCLUSIVE</literal> 锁。还要注意，
     它们会临时额外占用大约等于该表大小的磁盘空间，因为在新表和新索引完成之前，
     旧的表和索引副本都不能被释放。
    </para>

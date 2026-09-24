@@ -204,14 +204,15 @@
 
   <para>
    可以在使用 <link linkend="app-initdb-data-checksums"><application>initdb</application></link>
-   初始化集簇时禁用校验和。之后也可以作为离线操作，或者在允许并发访问的运行中
-   集簇上在线启用或禁用。数据校验和是在整个集簇级别启用或禁用的，不能为单个
+   初始化集簇时禁用校验和。之后也可以通过离线操作启用或禁用。数据校验和是在整个集簇级别启用或禁用的，不能为单个
    数据库、表或复制的集簇成员分别指定。
   </para>
 
   <para>
    可以通过查看只读配置变量 <xref linkend="guc-data-checksums" /> 的值来确认
    集簇当前的校验和状态，执行命令 <command>SHOW data_checksums</command> 即可。
+  <link linkend="functions-pg-control-init"><literal>pg_control_init</literal></link>
+   也可以用来检查集簇初始化时的数据校验和状态。
   </para>
 
   <para>
@@ -225,106 +226,11 @@
    <para>
     <link linkend="app-pgchecksums"><application>pg_checksums</application></link>
     程序可用于在离线集簇上启用或禁用数据校验和，也可以用来验证校验和。
+   在重新启动集簇之前，必须在复制集簇的每个节点上执行相同的操作。
    </para>
 
   </sect2>
 
-  <sect2 id="checksums-online-enable-disable" xreflabel="Online Enabling of Checksums">
-   <title>在线启用校验和</title>
-
-   <para>
-    可以通过调用相应的 <link linkend="functions-admin-checksum">函数</link> 在线启用
-    或禁用校验和。
-   </para>
-
-   <para>
-    启用和禁用数据校验和都分两个阶段完成，中间由一次检查点分隔，以确保持久性。
-    不同状态及其转换关系如 <xref linkend="data-checksums-states-figure"/> 所示，本节
-    将进一步说明。
-   </para>
-
-   <para>
-    <figure id="data-checksums-states-figure">
-     <title>数据校验和状态</title>
-     <mediaobject>
-      <imageobject>
-       <imagedata fileref="images/datachecksums.svg" format="SVG" width="100%"/>
-      </imageobject>
-     </mediaobject>
-    </figure>
-   </para>
-
-   <para>
-    启用校验和会把集簇校验和状态设为 <literal>inprogress-on</literal>。在此期间，
-    校验和会被写入，但不会被验证。除此之外，还会启动一个后台工作进程，用于为集簇
-    中所有现有数据启用校验和。该工作进程完成集簇中所有数据库的处理后，校验和状态
-    会自动切换为 <literal>on</literal>。该处理会占用两个后台工作进程，因此要
-    确保 <varname>max_worker_processes</varname> 至少还能容纳另外两个进程。
-   </para>
-
-   <para>
-    该过程在开始前会先等待所有打开的事务结束，以便确认不存在在尚未提交的事务内部
-    创建、从而对启用校验和的过程不可见的表。它还会在完成前，针对每个数据库等待所
-    有预先存在的临时表被移除。如果应用中使用了生命周期较长的临时表，则可能需要终
-    止这些应用连接，以便该过程完成。
-   </para>
-
-   <para>
-    如果集簇在 <literal>inprogress-on</literal> 状态下由于任何原因停止，或者处理
-    被中断，那么必须手工重新启动校验和启用过程。为此，在集簇重启后重新执行
-    <function>pg_enable_data_checksums()</function> 函数。该过程会从头开始，不支
-    持从中断处继续。若集簇在 <literal>inprogress-off</literal> 状态下停止，则在
-    集簇重启时，校验和状态会被设为 <literal>off</literal>。
-   </para>
-
-   <para>
-    禁用数据校验和会把数据校验和状态设为 <literal>inprogress-off</literal>。
-    在此期间，校验和会被写入，但不会被验证。所有进程确认该变更后，状态会自动设为
-    <literal>off</literal>。
-   </para>
-
-   <para>
-    在数据校验和正在被启用时禁用数据校验和，会中止当前处理。
-   </para>
-
-   <sect3 id="checksums-online-system-impact">
-    <title>在线操作对系统的影响</title>
-    <para>
-     启用数据校验和会给系统带来显著的 I/O 压力，因为所有数据库页面都需要重写，
-     并且既要写入数据文件，也要写入 WAL。可以通过
-     <function>pg_enable_data_checksums()</function> 函数的
-     <parameter>cost_delay</parameter> 和 <parameter>cost_limit</parameter>
-     参数进行节流，从而限制影响。
-    </para>
-
-    <para>
-     <itemizedlist>
-      <listitem><para>
-       I/O：所有页面都需要计算并写入数据校验和，这会生成大量脏页，之后这些脏页还
-       需要刷盘，同时也会写入 WAL。
-      </para></listitem>
-      <listitem><para>
-       复制：当备库在 WAL 流中收到数据校验和状态变更时，它会发起一个
-       <glossterm linkend="glossary-restartpoint">重启点</glossterm>，以便把
-       当前状态刷入 <filename>pg_control</filename> 文件。重启点会把当前状态刷到
-       磁盘，并在完成前阻塞重做。这反过来会引入复制延迟，在同步备库上还会阻塞
-       主库。在过程启动前减小 <xref linkend="guc-max-wal-size"/>，有助于缩短
-       重启点完成所需的时间。
-      </para></listitem>
-      <listitem><para>
-       关闭/重启：如果在启用数据校验和期间服务器被关闭或重启，处理过程不会恢复，
-       所有页面都需要重新计算并重写。应当在无需常规维护或处于服务窗口期间启用数据
-       校验和。
-      </para></listitem>
-     </itemizedlist>
-    </para>
-
-    <para>
-     禁用数据校验和时不会产生 I/O，但仍然需要检查点。
-    </para>
-   </sect3>
-
-  </sect2>
  </sect1>
 
   <sect1 id="wal-intro">

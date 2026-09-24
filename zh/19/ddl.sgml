@@ -248,8 +248,6 @@ CREATE TABLE people (
 
   <para>
    生成列不能直接写入。在<command>INSERT</command>或<command>UPDATE</command>命令中，不能为生成列指定值，但可以指定关键字<literal>DEFAULT</literal>。
-   此外，生成列不能用于<command>UPDATE</command>或<command>DELETE</command>命令的
-   <literal>FOR PORTION OF</literal>子句。
   </para>
 
   <para>
@@ -1122,7 +1120,7 @@ CREATE TABLE circles (
      </indexterm>
 
      <para>
-      行版本在其表中的物理位置。注意尽管<structfield>ctid</structfield>可以被用来非常快速地定位行版本，但是一个行的<structfield>ctid</structfield>会在被更新或者被<command>VACUUM FULL</command>移动时改变。因此，不应将<structfield>ctid</structfield>用作行标识符。应使用主键来标识逻辑行。
+      行版本在其表中的物理位置。注意尽管<structfield>ctid</structfield>可以被用来非常快速地定位行版本，但是一个行的<structfield>ctid</structfield>会在被更新，或者被<command>VACUUM FULL</command>、<command>CLUSTER</command>或<command>REPACK</command>等表重写操作移动时改变。因此，不应将<structfield>ctid</structfield>用作行标识符。应使用主键来标识逻辑行。
      </para>
     </listitem>
    </varlistentry>
@@ -1715,7 +1713,6 @@ REVOKE ALL ON accounts FROM PUBLIC;
        允许从表、视图、物化视图或其他类似表的对象的任何列或特定列进行<command>SELECT</command>。
        还允许使用<command>COPY TO</command>。
        这个权限还需要用于引用<command>UPDATE</command>、<command>DELETE</command>或<command>MERGE</command>中的现有列值。
-       对于属性图，这个权限允许在<literal>GRAPH_TABLE</literal>子句中引用该对象。
        对于序列，这个权限还允许使用<function>currval</function>函数。
        对于大对象，这个权限允许读取对象。
       </para>
@@ -1952,7 +1949,7 @@ REVOKE ALL ON accounts FROM PUBLIC;
       <entry><literal>SELECT</literal></entry>
       <entry><literal>r</literal>（<quote>读取</quote>）</entry>
      <entry>
-       <literal>LARGE OBJECT</literal>、<literal>PROPERTY GRAPH</literal>、<literal>SEQUENCE</literal>、<literal>TABLE</literal>（和类似表的对象）、表列
+       <literal>LARGE OBJECT</literal>、<literal>SEQUENCE</literal>、<literal>TABLE</literal>（和类似表的对象）、表列
       </entry>
      </row>
 
@@ -2115,13 +2112,6 @@ REVOKE ALL ON accounts FROM PUBLIC;
       <entry>无</entry>
       <entry><literal>\dconfig+</literal></entry>
 </row>
-
-     <row>
-      <entry><literal>PROPERTY GRAPH</literal></entry>
-      <entry><literal>r</literal></entry>
-      <entry>无</entry>
-      <entry><literal>\dp</literal></entry>
-     </row>
 
      <row>
       <entry><literal>SCHEMA</literal></entry>
@@ -3538,31 +3528,6 @@ ALTER INDEX measurement_city_id_logdate_key
 </programlisting>
     </para>
 
-    <para>
-     还可以使用<link linkend="sql-altertable-merge-partitions"><command>ALTER TABLE ... MERGE PARTITIONS</command></link>
-     将多个表分区合并为一个分区。此功能通过允许用户将不再需要作为独立实体存在的分区组合起来，简化了分区表的管理。
-     需要注意的是，该操作不支持 hash 分区表，并且会获取<literal>ACCESS EXCLUSIVE</literal>锁，由于该锁的限制性较强，
-     可能会影响高负载系统。例如，我们可以将三个按月分区合并为一个季度分区：
-<programlisting>
-ALTER TABLE measurement
-    MERGE PARTITIONS (measurement_y2006m01,
-                      measurement_y2006m02,
-                      measurement_y2006m03) INTO measurement_y2006q1;
-</programlisting>
-    </para>
-
-    <para>
-     与合并多个表分区类似，也可以使用<link linkend="sql-altertable-split-partition"><command>ALTER TABLE ... SPLIT PARTITION</command></link>
-     将一个分区拆分为多个分区。当某个分区增长过大、需要拆分成多个分区时，这个功能就很有用。
-     需要注意的是，该操作不支持 hash 分区表，并且会获取<literal>ACCESS EXCLUSIVE</literal>锁，由于该锁的限制性较强，
-     可能会影响高负载系统。例如，我们可以把季度分区拆回按月分区：
-<programlisting>
-ALTER TABLE measurement SPLIT PARTITION measurement_y2006q1 INTO
-   (PARTITION measurement_y2006m01 FOR VALUES FROM ('2006-01-01') TO ('2006-02-01'),
-    PARTITION measurement_y2006m02 FOR VALUES FROM ('2006-02-01') TO ('2006-03-01'),
-    PARTITION measurement_y2006m03 FOR VALUES FROM ('2006-03-01') TO ('2006-04-01'));
-</programlisting>
-    </para>
    </sect3>
 
    <sect3 id="ddl-partitioning-declarative-limitations">
@@ -4198,205 +4163,6 @@ EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
     <xref linkend="sql-createforeigntable"/>、以及
     <xref linkend="sql-importforeignschema"/>。
    </para>
- </sect1>
-
- <sect1 id="ddl-property-graphs">
-  <title>属性图</title>
-
-  <indexterm zone="ddl-property-graphs">
-   <primary>属性图</primary>
-  </indexterm>
-
-  <para>
-   属性图是一种表示数据库内容的方法，它是传统（在 SQL 中）使用表等关系结构来表示数据库内容的替代方案。
-   随后便可以使用图模式匹配语法来查询属性图，而不是采用关系数据库中常见的连接查询。
-   <productname>PostgreSQL</productname> 实现了 SQL/PGQ<footnote><para>这里 PGQ 代表
-   <quote>属性图查询（property graph query）</quote>。在图数据库术语中，<quote>属性图（property graph）</quote>
-   通常缩写为 PG，这对 <productname>PostgreSQL</productname> 的使用者显然会造成混淆，
-   因为 <productname>PostgreSQL</productname> 也通常缩写为 PG。</para></footnote>，
-   这是 SQL 标准的一部分，其中属性图被定义为关系表上的一种只读视图。因此，实际数据仍然存放在表或类似表的对象中，
-   但在图查询操作中会作为图暴露出来。（这与原生图数据库形成对比，后者的数据直接存储在图结构中。）
-   在底层，关系查询和图查询使用的是同一套查询规划与执行基础设施，实际上两者还能在同一个查询中组合并混合使用。
-  </para>
-
-  <para>
-   图是由顶点和边构成的集合。每条边都有两个可区分的关联顶点，称为源顶点和目标顶点。
-   （因此在这个模型中，所有边都是有向的。）顶点和边合在一起称为图的元素。属性图在这个众所周知的数学结构上
-   增加了一种表示用户数据的方式。在属性图中，每个顶点或边都有一个或多个关联标签，每个标签又有零个或多个属性。
-   这些标签类似于表行类型，因为它们定义了所含数据的种类及其结构。属性则类似于列，因为它们包含实际数据。
-   实际上，默认情况下，属性图定义会把底层表和列分别暴露为标签和属性，但也可以定义更复杂的映射。
-  </para>
-
-  <para>
-   先看下面这些表定义：
-<programlisting>
-CREATE TABLE products (
-    product_no integer PRIMARY KEY,
-    name varchar,
-    price numeric
-);
-
-CREATE TABLE customers (
-    customer_id integer PRIMARY KEY,
-    name varchar,
-    address varchar
-);
-
-CREATE TABLE orders (
-    order_id integer PRIMARY KEY,
-    ordered_when date
-);
-
-CREATE TABLE order_items (
-    order_items_id integer PRIMARY KEY,
-    order_id integer REFERENCES orders (order_id),
-    product_no integer REFERENCES products (product_no),
-    quantity integer
-);
-
-CREATE TABLE customer_orders (
-    customer_orders_id integer PRIMARY KEY,
-    customer_id integer REFERENCES customers (customer_id),
-    order_id integer REFERENCES orders (order_id)
-);
-</programlisting>
-   把这些表映射成图后，前三个表会成为顶点，后两个表会成为边。外键定义对应于边连接两个顶点这一事实。
-   （图定义通常更适合多对多关系，因此这个例子按这种方式组织，尽管在纯关系方式中这里可能会使用一对多关系。）
-  </para>
-
-  <para>
-   下面给出一个在这些表之上定义属性图的例子：
-<programlisting>
-CREATE PROPERTY GRAPH myshop
-    VERTEX TABLES (
-        products,
-        customers,
-        orders
-    )
-    EDGE TABLES (
-        order_items SOURCE orders DESTINATION products,
-        customer_orders SOURCE customers DESTINATION orders
-    );
-</programlisting>
-  </para>
-
-  <para>
-   然后就可以像这样查询这个图：
-<programlisting>
--- 获取今日活跃客户列表
-SELECT customer_name FROM GRAPH_TABLE (myshop MATCH (c IS customers)-[IS customer_orders]->(o IS orders WHERE o.ordered_when = current_date) COLUMNS (c.name AS customer_name));
-</programlisting>
-   其大致对应的关系查询是：
-<programlisting>
--- 获取今日活跃客户列表
-SELECT customers.name FROM customers JOIN customer_orders USING (customer_id) JOIN orders USING (order_id) WHERE orders.ordered_when = current_date;
-</programlisting>
-  </para>
-
-  <para>
-   上面的定义要求所有表都具有主键，且每条边都有合适的外键。否则，就必须额外指定键列。
-   例如，下面给出一个完全显式、不依赖主键和外键的定义：
-<programlisting>
-CREATE PROPERTY GRAPH myshop
-    VERTEX TABLES (
-        products KEY (product_no),
-        customers KEY (customer_id),
-        orders KEY (order_id)
-    )
-    EDGE TABLES (
-        order_items KEY (order_items_id)
-            SOURCE KEY (order_id) REFERENCES orders (order_id)
-            DESTINATION KEY (product_no) REFERENCES products (product_no),
-        customer_orders KEY (customer_orders_id)
-            SOURCE KEY (customer_id) REFERENCES customers (customer_id)
-            DESTINATION KEY (order_id) REFERENCES orders (order_id)
-    );
-</programlisting>
-  </para>
-
-  <para>
-   如上所述，默认情况下，表名和列名会分别作为标签和属性暴露出来。<literal>MATCH</literal> 子句中的
-   <literal>IS customer</literal>、<literal>IS order</literal> 等子句实际上引用的是标签，
-   而不是表名。
-  </para>
-
-  <para>
-   标签的一个用途是把表以不同的名称暴露到图中。例如，在图里，顶点的标签通常是单数名词，
-   边的标签通常是动词或从动词派生的短语，例如 <quote>has</quote>、<quote>contains</quote>
-   或者像 <quote>approved_by</quote> 这样的具体表达。我们可以像下面这样把这类标签引入示例：
-<programlisting>
-CREATE PROPERTY GRAPH myshop
-    VERTEX TABLES (
-        products LABEL product,
-        customers LABEL customer,
-        orders LABEL "order"
-    )
-    EDGE TABLES (
-        order_items SOURCE orders DESTINATION products LABEL contains,
-        customer_orders SOURCE customers DESTINATION orders LABEL has_placed
-    );
-</programlisting>
-  </para>
-
-  <para>
-   使用这个定义，我们就可以写出如下查询：
-<programlisting>
-SELECT customer_name FROM GRAPH_TABLE (myshop MATCH (c IS customer)-[IS has_placed]->(o IS "order" WHERE o.ordered_when = current_date) COLUMNS (c.name AS customer_name));
-</programlisting>
-   使用这些新标签后，<literal>MATCH</literal> 子句就更直观了。
-  </para>
-
-  <para>
-   请注意，标签 <literal>order</literal> 是带引号的。如果在上述语句中不为
-   <literal>order</literal> 加引号，就会得到语法错误，因为 <literal>order</literal> 是关键字。
-  </para>
-
-  <para>
-   另一个用途是把同一个标签应用到多个元素表。例如，考虑再增加这样一张表：
-<programlisting>
-CREATE TABLE employees (
-    employee_id integer PRIMARY KEY,
-    employee_name varchar,
-    ...
-);
-</programlisting>
-以及下面的图定义：
-<programlisting>
-CREATE PROPERTY GRAPH myshop
-    VERTEX TABLES (
-        products LABEL product,
-        customers LABEL customer LABEL person PROPERTIES (name),
-        orders LABEL "order",
-        employees LABEL employee LABEL person PROPERTIES (employee_name AS name)
-    )
-    EDGE TABLES (
-        order_items SOURCE orders DESTINATION products LABEL contains,
-        customer_orders SOURCE customers DESTINATION orders LABEL has
-    );
-</programlisting>
-   （实际上，应当有一条边将<literal>employees</literal>表连接到其他元素，但像这样写也是允许的。）
-   然后我们可以运行这样一个查询（不完整）：
-<programlisting>
-SELECT ... FROM GRAPH_TABLE (myshop MATCH (IS person WHERE name = '...')-[]->... COLUMNS (...));
-</programlisting>
-   这样在查找带有 <literal>person</literal> 标签的顶点时，就会自动同时考虑
-   <literal>customers</literal> 和 <literal>employees</literal> 两张表。
-  </para>
-
-  <para>
-   当多个元素表具有相同标签时，它们的属性在数量、名称和类型上必须一致。在这个例子中，
-   我们通过显式属性列表，并在一个地方重命名列来实现这一点。
-  </para>
-
-  <para>
-   通过让一个元素表关联多个标签，并让每个标签暴露不同的一组属性，相同的关系数据及其内部图结构
-   就可以通过多个并存的逻辑视图暴露出来，并用图模式匹配构造进行查询。
-  </para>
-
-  <para>
-   关于创建属性图的语法细节，请参见 <link linkend="sql-create-property-graph"><command>CREATE PROPERTY GRAPH</command></link>。
-   关于图查询语法的更多细节，请参见 <xref linkend="queries-graph"/>。
-  </para>
  </sect1>
 
  <sect1 id="ddl-others">

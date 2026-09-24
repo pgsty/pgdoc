@@ -64,9 +64,18 @@ REPACK [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] USING
    <title>聚簇说明</title>
 
    <para>
-    如果指定了 <literal>USING INDEX</literal> 子句，表中的行会按该索引指定的顺序存储；由于行会随后在物理上聚簇，因此称为
-    <firstterm>聚簇</firstterm>。
-    如果命令中指定了索引名，则使用该索引隐含的顺序，并将该索引配置为聚簇所用的索引。
+    如果指定了 <literal>USING INDEX</literal> 子句，表中的行会按指定索引隐含的顺序在物理上重新排列，
+    这称为<firstterm>聚簇</firstterm>。这可能影响性能：如果是在表内随机访问单行，
+    那么表中数据的实际顺序并不重要。但如果更频繁地访问某些数据，并且有一个能把它们聚集在一起的索引，
+    就能从聚簇中受益。如果从表中请求一个索引值范围，或者请求一个匹配多行的单个索引值，
+    聚簇也会有所帮助，因为一旦索引确定了第一个匹配行所在的表页，其他匹配行很可能已经在同一个表页上，
+    从而节省磁盘访问并加快查询。
+   </para>
+
+   <para>
+    对于 B-树索引，聚簇使用索引的线性排序顺序。其他支持聚簇的索引访问方法可能使用不同的排序策略，
+    这种策略不一定对应任何 SQL 排序顺序。
+    如果命令中指定了索引名，则使用该索引，并将其记录为该表的聚簇索引。
     （这同样适用于传给 <command>CLUSTER</command> 命令的索引。）
     如果未指定索引名，则使用已经被配置为聚簇索引的索引；如果没有这样的索引，就会报错。
     可以使用 <command>ALTER TABLE ... CLUSTER ON</command> 手工设置索引，也可以使用
@@ -74,30 +83,28 @@ REPACK [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] USING
    </para>
 
    <para>
-    如果在 <command>REPACK USING INDEX</command> 中没有指定表名，那么所有已经定义了聚簇索引、且调用用户有权限访问的表都会被处理。
-   </para>
-
-   <para>
-    聚簇是一次性操作：表随后被更新时，这些更改不会继续保持聚簇。也就是说，并不会尝试根据索引顺序存储新行或更新后的行。
+    聚簇是一次性操作：表随后被更新时，这些更改不会继续保持聚簇。也就是说，并不会尝试根据聚簇顺序存储新行或更新后的行。
     （如果愿意，可以通过再次发出该命令来定期重新聚簇。
     此外，把表的 <literal>fillfactor</literal> 存储参数设置为低于 100%，有助于在更新期间保持聚簇顺序，因为如果页面上有足够空间，更新后的行会保留在同一页面上。）
    </para>
 
    <para>
-    如果你是在表内随机访问单行，那么表中数据的实际顺序并不重要。
-    但如果你倾向于更频繁地访问某些数据，并且有一个能把它们分组在一起的索引，那么使用聚簇就会受益。
-    如果你从表中请求一个索引值范围，或者请求一个匹配多行的单个索引值，聚簇会有所帮助，因为一旦索引确定了第一个匹配行所在的表页，其他匹配行很可能已经在同一个表页上，因此可以节省磁盘访问并加快查询。
+    在 B-树索引上聚簇时，<command>REPACK</command> 可以通过在指定索引上进行索引扫描，
+    或者先执行顺序扫描再排序，来重写表。它会根据规划器代价参数和可用的统计信息，
+    尝试选择速度更快的方法。在使用 B-树以外的访问方法的索引上聚簇时，
+    <command>REPACK</command> 始终使用索引扫描。
    </para>
 
    <para>
-    <command>REPACK</command> 可以通过在指定索引上进行索引扫描（如果该索引是 B-树），或者先执行顺序扫描再排序，来对表重新排序。
-    它会根据规划器代价参数和可用的统计信息，尝试选择速度更快的方法。
-   </para>
-
-   <para>
-    因为规划器会记录有关表中数据顺序的统计信息，建议在新近重整过的表上运行 <link linkend="sql-analyze"><command>ANALYZE</command></link>。
+    因为规划器会记录有关表中数据顺序的统计信息，建议指定 <literal>ANALYZE</literal> 选项，
+    或者在新近重整过的表上运行 <link linkend="sql-analyze"><command>ANALYZE</command></link>。
     否则，规划器可能会选择很差的查询计划。
    </para>
+
+   <para>
+    如果在 <command>REPACK USING INDEX</command> 中没有指定表名，那么所有已经定义了聚簇索引、且调用用户具有相应权限的表都会被处理。
+   </para>
+
   </refsect2>
 
   <refsect2 id="sql-repack-notes-on-resources" xreflabel="Notes on Resources">
@@ -190,6 +197,12 @@ REPACK [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] USING
       <itemizedlist>
       <listitem>
         <para>
+          该关系不是表（例如，它是物化视图）。
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
           该表是 <literal>UNLOGGED</literal>。
         </para>
        </listitem>
@@ -209,6 +222,19 @@ REPACK [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] USING
        <listitem>
         <para>
           该表是系统目录或 <acronym>TOAST</acronym> 表。
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+          表的访问方法不是 <literal>heap</literal>。
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+          表通过 <link linkend="reloption-user-catalog-table"><literal>user_catalog_table</literal></link>
+          存储参数声明为目录表。
         </para>
        </listitem>
 
@@ -251,6 +277,7 @@ REPACK [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] USING
     <listitem>
      <para>
       在重整表之后对该表执行 <xref linkend="sql-analyze"/>。目前这只在指定单个（非分区）表时受支持。
+     此选项不能在事务块内使用，也不能从函数、过程或 <command>DO</command> 块中使用。
      </para>
     </listitem>
    </varlistentry>
@@ -271,6 +298,10 @@ REPACK [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] USING
 
    <para>
     要重整表，必须对该表具有 <literal>MAINTAIN</literal> 特权。
+   </para>
+
+   <para>
+    <command>REPACK</command> 拒绝处理存在无效索引的表。用户必须事先删除或重建这些索引。
    </para>
 
    <para>

@@ -649,10 +649,6 @@ ORDER BY p;
     </para>
 
     <para>
-     一个<literal>GRAPH_TABLE</literal> <literal>FROM</literal>项也可以始终包含横向引用。
-    </para>
-
-    <para>
      <literal>LATERAL</literal>项可以出现在<literal>FROM</literal>列表的顶层，也可以出现在<literal>JOIN</literal>树中。在后一种情况下，如果它位于某个<literal>JOIN</literal>的右侧，也可以引用该连接左侧的任何项。
     </para>
 
@@ -2028,121 +2024,6 @@ SELECT * FROM t;
 
   </sect2>
 
- </sect1>
-
- <sect1 id="queries-graph">
-  <title>图查询</title>
-
-  <para>
-   本节描述用于查询属性图的子语言，属性图的定义方式见<xref linkend="ddl-property-graphs"/>。
-  </para>
-
-  <sect2 id="queries-graph-overview">
-   <title>概述</title>
-
-   <para>
-    请看<xref linkend="ddl-property-graphs"/>中的这个示例：
-<programlisting>
--- 获取今日活跃客户列表
-SELECT customer_name FROM GRAPH_TABLE (myshop MATCH (c IS customers)-[IS customer_orders]->(o IS orders WHERE o.ordered_when = current_date) COLUMNS (c.name AS customer_name));
-</programlisting>
-    图查询部分发生在<literal>GRAPH_TABLE</literal>构造内部。就查询的其余部分而言，它的作用就像一个表函数，因为它会生成一个计算出的表作为输出。和其他<literal>FROM</literal>子句元素一样，可以为结果指定表别名和列别名，而且结果还可以与其他表连接、随后再过滤，等等，例如：
-<programlisting>
-SELECT ... FROM GRAPH_TABLE (mygraph MATCH ... COLUMNS (...)) AS myresult (a, b, c) JOIN othertable USING (a) WHERE b > 0 ORDER BY c;
-</programlisting>
-   </para>
-
-   <para>
-    <literal>GRAPH_TABLE</literal>子句由图名、关键字<literal>MATCH</literal>、一个图模式表达式（见下文）、关键字<literal>COLUMNS</literal>和一个列列表组成。
-   </para>
-  </sect2>
-
-  <sect2 id="queries-graph-patterns">
-   <title>图模式</title>
-
-   <para>
-    图查询功能的核心是图模式，它出现在关键字<literal>MATCH</literal>之后。从形式上说，图模式由一个或多个路径模式组成。路径是图元素的序列，以顶点开始并以顶点结束，在顶点与边之间交替出现。路径模式是一种匹配路径的语法表达式。
-   </para>
-
-   <para>
-    因此，路径模式会匹配一串顶点和边。最简单的路径模式是
-<programlisting>
-()
-</programlisting>
-    它匹配单个顶点。下一个最简单的模式是
-<programlisting>
-()-[]->()
-</programlisting>
-    它匹配一个顶点、后跟一条边、再后跟一个顶点。字符<literal>()</literal>是顶点模式，而字符<literal>-[]-></literal>是边模式。
-   </para>
-
-   <para>
-    这些字符也可以用空白分隔，例如：
-<programlisting>
-( ) - [ ] - > ( )
-</programlisting>
-   </para>
-
-   <tip>
-    <para>
-     记住这些符号的一种办法是：在属性图的可视化表示中，顶点通常画成圆形（就像<literal>()</literal>），边则带有矩形标签（就像<literal>[]</literal>）。
-    </para>
-   </tip>
-
-   <para>
-    上面的模式会匹配任意顶点，或者任意两个由任意边连接的顶点，这并不算特别有趣。通常，我们希望搜索具有某些特征的元素（顶点和边）。这些特征写在圆括号或方括号之间（这也称为元素模式填充项）。通常，我们会搜索带有某个标签的元素。这写作<literal>IS <replaceable>labelname</replaceable></literal>。例如，这会匹配所有带有<literal>person</literal>标签的顶点：
-<programlisting>
-(IS person)
-</programlisting>
-    下一个示例会匹配一个带有<literal>person</literal>标签的顶点，它连接到一个带有<literal>account</literal>标签的顶点，而连接它们的边带有<literal>has</literal>标签。
-<programlisting>
-(IS person)-[IS has]->(IS account)
-</programlisting>
-    也可以匹配多个标签，使用<quote>或</quote>语义：
-<programlisting>
-(IS person)-[IS has]->(IS account|creditcard)
-</programlisting>
-   </para>
-
-   <para>
-    请记住，边是有向的。在路径模式中也可以使用另一方向，例如：
-<programlisting>
-(IS account)&lt;-[IS has]-(IS person)
-</programlisting>
-    也可以同时匹配两个方向：
-<programlisting>
-(IS person)-[IS is_friend_of]-(IS person)
-</programlisting>
-    这表示<quote>或</quote>：任一方向的边都会匹配。
-   </para>
-
-   <para>
-    在很多情况下，边模式不需要填充项。（所有过滤随后都会在顶点上进行。）对于这些情况，可以使用一种省略方括号的缩写边模式语法，例如：
-<programlisting>
-(IS person)->(IS account)
-(IS account)&lt;-(IS person)
-(IS person)-(IS person)
-</programlisting>
-    和往常一样，缩写语法可以让表达式更紧凑，但有时也更难理解。
-   </para>
-
-   <para>
-    此外，可以在路径模式表达式中定义图模式变量。它们会绑定到匹配到的元素上，并且可以用来引用这些元素上的属性值。最重要的用途是把它们用在<literal>COLUMNS</literal>子句中，以定义<literal>GRAPH_TABLE</literal>子句的表格结果。例如（假设属性图及其底层表都有适当定义）：
-<programlisting>
-GRAPH_TABLE (mygraph MATCH (p IS person)-[h IS has]->(a IS account)
-             COLUMNS (p.name AS person_name, h.since AS has_account_since, a.num AS account_number)
-</programlisting>
-    可以在元素模式内部使用<literal>WHERE</literal>子句来过滤匹配：
-<programlisting>
-(IS person)-[IS has]->(a IS account WHERE a.type = 'savings')
-</programlisting>
-   </para>
-
-   <!-- TODO: multiple path patterns in a graph pattern (comma-separated) -->
-
-   <!-- TODO: quantifiers -->
-
-  </sect2>
  </sect1>
 
 </chapter>

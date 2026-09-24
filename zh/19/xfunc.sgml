@@ -2998,6 +2998,15 @@ my_shmem_init(void *arg)
 
      <para>
       当在启动后调用 <function>RegisterShmemCallbacks()</function> 时，它会根据请求的内存区域是否已经由其他后端初始化过，立即调用相应的回调函数。回调函数会在持有内部锁（ShmemIndexLock）的情况下执行，这可以防止两个后端同时尝试初始化该内存区域时出现竞态条件。
+     如果分配或初始化因任何原因失败，这些共享内存区域会处于废弃状态；
+      在服务器重新启动之前，任何附加或重新初始化这些区域的尝试都会失败。
+     </para>
+     <para>
+      后端附加到已分配的共享内存区域时，通常必须向 <function>ShmemRequestStruct()</function>
+      传入与分配该区域时相同的 <literal>size</literal>；两者不匹配会导致错误。
+      如果附加的后端事先不知道大小，可以改为传入 <literal>SHMEM_ATTACH_UNKNOWN_SIZE</literal>，
+      以跳过这项交叉检查。<literal>SHMEM_ATTACH_UNKNOWN_SIZE</literal> 只能用于附加到已存在的区域；
+      在区域分配之前使用它会导致错误。
      </para>
     </sect3>
 
@@ -3335,7 +3344,7 @@ extern PgStat_Kind pgstat_register_kind(PgStat_Kind kind,
    </para>
 
    <para>
-    也可以把一个<firstterm>规划器支持函数</firstterm>附加到某个 SQL 可调用函数（称为其<firstterm>目标函数</firstterm>）上，从而提供那些过于复杂、无法用声明式方式表示的目标函数知识。规划器支持函数必须用 C 编写（尽管目标函数本身不一定如此），因此这是一个较少人会用到的高级特性。
+    也可以把一个<firstterm>规划器支持函数</firstterm>附加到某个 SQL 可调用函数或聚合（称为其<firstterm>目标函数</firstterm>）上，从而提供那些过于复杂、无法用声明式方式表示的目标函数知识。规划器支持函数必须用 C 编写（尽管目标函数本身不一定如此），因此这是一个较少人会用到的高级特性。
    </para>
 
    <para>
@@ -3359,6 +3368,15 @@ supportfn(internal) returns internal
 
    <para>
     <literal>SupportRequestSimplify</literal> 不用于<link linkend="queries-tablefunctions">返回集合的函数</link>。相反，支持函数可以实现 <literal>SupportRequestInlineInFrom</literal> 请求，以展开查询 <literal>FROM</literal> 子句中出现的函数调用。（对于不返回集合的函数也可以支持这一请求，不过通常用 <literal>SupportRequestSimplify</literal> 就足够了。）对于这种请求类型，成功结果必须是一个 <literal>SELECT</literal> 查询树，它会取代 <literal>FROM</literal> 项，就像写了一个子查询一样。该查询树必须呈现出解析分析和重写处理之后的样子。确保这一点的一种方法是先构造 SQL 字符串，再将其送入 <function>pg_parse_query</function> 和 <function>pg_analyze_and_rewrite</function>，或者相关函数。<literal>PARAM_EXTERN</literal> <structname>Param</structname> 节点可以出现在查询树中，用来表示函数的参数；它们会被实际参数表达式替换。与 <literal>SupportRequestSimplify</literal> 一样，支持函数有责任确保替换后的查询与目标函数的正常执行严格等价。
+   </para>
+
+   <para>
+    聚合函数调用也可以在规划期间简化。例如，当已知 <replaceable>x</replaceable> 不为空时，
+    可以将 <literal>COUNT(<replaceable>x</replaceable>)</literal> 替换为 <literal>COUNT(*)</literal>。
+    实现 <literal>SupportRequestSimplifyAggref</literal> 请求类型的支持函数可以完成这一操作。
+    对于查询解析树中发现的每个目标聚合实例，都会调用该支持函数。如果它发现某次调用可以被替换，
+    就可以构造并返回一个新节点（通常是另一个聚合调用），同时保持传入的节点不变。
+    与 <literal>SupportRequestSimplify</literal> 一样，支持函数有责任确保替换结果与目标聚合的正常执行等价。
    </para>
 
    <para>

@@ -1,21 +1,21 @@
 <!--
-doc/src/sgml/ref/wait_for.sgml
+doc/src/sgml/ref/wait.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="sql-wait-for">
- <indexterm zone="sql-wait-for">
-  <primary>WAIT FOR</primary>
+<refentry id="sql-wait">
+ <indexterm zone="sql-wait">
+  <primary>WAIT</primary>
  </indexterm>
 
  <refmeta>
-  <refentrytitle>WAIT FOR</refentrytitle>
+  <refentrytitle>WAIT</refentrytitle>
   <manvolnum>7</manvolnum>
   <refmiscinfo>SQL - 语言语句</refmiscinfo>
  </refmeta>
 
  <refnamediv>
-  <refname>WAIT FOR</refname>
+  <refname>WAIT</refname>
   <refpurpose>等待 WAL 达到目标 <acronym>LSN</acronym></refpurpose>
  </refnamediv>
 
@@ -50,7 +50,7 @@ WAIT FOR LSN '<replaceable class="parameter">lsn</replaceable>'
    超时时会发出错误，除非在 WITH 子句中指定了 <literal>NO_THROW</literal>。
    对于备库模式（<literal>standby_replay</literal>、<literal>standby_write</literal>、
    <literal>standby_flush</literal>），如果在达到 <parameter>lsn</parameter> 之前服务器被提升，
-   也会发出错误。如果指定了 <parameter>NO_THROW</parameter>，命令会返回一个状态字符串，而不是抛出错误。
+   也会发出错误。如果指定了 <parameter>NO_THROW</parameter>，命令会以状态字符串报告这些结果，而不抛出错误。
   </para>
 
   <para>
@@ -128,13 +128,18 @@ WAIT FOR LSN '<replaceable class="parameter">lsn</replaceable>'
          <para>
           在指定且 <parameter>timeout</parameter> 大于零时，命令会一直等待到
           <parameter>lsn</parameter> 达到，或者直到指定的 <parameter>timeout</parameter> 到期为止。
+          值为零（默认值）表示命令会无限期等待。
          </para>
          <para>
-          <parameter>timeout</parameter> 可以给定为整数毫秒数。
-          也可以给定为字符串字面量，表示整数毫秒数，或者带单位的数值
-          （见 <xref linkend="config-setting-names-values"/>）。
+          <parameter>timeout</parameter> 是以毫秒为单位的时长。也可以将其指定为一个字符串，
+          其中包含数值及其后的时间单位（见 <xref linkend="config-setting-names-values"/>）。
+          最大值为 <literal>2147483647 ms</literal>。
          </para>
-        </listitem>
+         <para>
+          小数值会舍入到最接近的毫秒数。因此，注意半毫秒或更短的 <parameter>timeout</parameter>
+          会向下舍入为零，这意味着无限期等待。
+         </para>
+      </listitem>
        </varlistentry>
 
        <varlistentry id="zh18-auto-wait_for-varlistentry-5">
@@ -142,6 +147,27 @@ WAIT FOR LSN '<replaceable class="parameter">lsn</replaceable>'
         <listitem>
          <para>
           指定在超时或在主库上运行时不抛出错误。在这种情况下，可以从返回值中获取结果状态。
+         </para>
+
+         <para>
+          当 <literal>timeout</literal> 或 <literal>not in recovery</literal> 是应用预期并打算处理的结果时，
+          可使用此选项，例如重试等待、报告复制延迟，或为后续操作选择另一台服务器。
+          命令随后会将结果作为状态返回；应用必须检查该状态，才能认定已达到目标 <acronym>LSN</acronym>。
+          如果应用必须在达到目标 <acronym>LSN</acronym> 后才能继续，则应省略此选项，
+          这样等待未成功时就会通过错误停止正常执行。
+         </para>
+
+         <para>
+          返回状态也会使显式事务保持可用；如果不使用此选项，相应错误会要求先回滚事务，
+          或回滚到保存点，才能发出后续命令。
+         </para>
+
+         <para>
+          此选项只改变 <literal>timeout</literal> 和 <literal>not in recovery</literal> 的报告方式。
+          其他错误仍会抛出，包括无效输入（例如格式错误的 <acronym>LSN</acronym> 或无法识别的选项值），
+          以及等待开始前检查的所有条件（例如在恢复期间请求 <literal>primary_flush</literal>，
+          或在持有锁的同时等待备库 <acronym>LSN</acronym>）。此选项也不限制等待时长；
+          要限制时长，应指定 <literal>TIMEOUT</literal>。
          </para>
         </listitem>
        </varlistentry>
@@ -191,16 +217,47 @@ WAIT FOR LSN '<replaceable class="parameter">lsn</replaceable>'
  <refsect1>
   <title>备注</title>
   <para>
-   <command>WAIT FOR</command> 必须作为顶层命令执行。
-   它不能在函数、过程或 <command>DO</command> 块中执行。
-   它还要求不存在活动或已注册的快照，因此不能在必须保持此类快照处于活动状态的上下文中使用，
-   包括隔离级别高于 <literal>READ COMMITTED</literal> 的事务。
+   <command>WAIT</command> 必须作为顶层命令执行，不能从函数、过程或 <command>DO</command> 块中执行。
+   当前事务持有快照时也不能执行。<command>WAIT</command> 本身不获取快照，
+   因此可以在 <literal>REPEATABLE READ</literal> 或 <literal>SERIALIZABLE</literal> 事务中
+   第一条获取快照的语句之前运行，但不能在该语句之后运行；无论处于何种隔离级别，
+   如果游标或导出的快照使事务持有快照，也不能运行。此处持有的快照可能延迟重放，
+   而 <literal>standby_replay</literal> 会等待重放，其他备库模式最终也可能需要等待重放。
+   这也是 <command>WAIT</command> 被实现为命令而不是函数或过程的原因，因为函数和过程执行时会持有快照。
   </para>
 
   <para>
-   <command>WAIT FOR</command> 会根据指定的 <parameter>mode</parameter> 一直等待直到达到指定的
+   恢复进行期间，如果会话已经持有锁，且尚未达到目标 <parameter>lsn</parameter>，则会拒绝
+   <literal>standby_replay</literal>（默认）、<literal>standby_write</literal> 或
+   <literal>standby_flush</literal> 模式的等待。这样的锁可能使启动进程直接或通过另一个会话
+   等待当前会话，而当前会话又在等待启动进程推进恢复。这个循环在当前会话一侧不涉及锁等待，
+   因而死锁检测无法发现，也没有机制可以打破它。如果已经达到目标，等待会立即返回，因此始终允许。
+  </para>
+
+  <para>
+   应在事务块之外发出 <command>WAIT FOR</command>，或将其作为事务块的第一条语句，
+   在运行任何会获取锁的操作之前执行。这也是下文示例所示读己之写模式的自然顺序：
+   先等待目标 <parameter>lsn</parameter>，再运行必须看到相应更改的查询。
+   注意，在 <literal>READ COMMITTED</literal> 下，即使先前语句的快照已经释放，
+   它获取的锁仍会保留。因此，即使隔离级别允许等待，在这类语句之后执行等待仍会被拒绝。
+  </para>
+
+  <para>
+   此限制也适用于 <literal>standby_write</literal> 和 <literal>standby_flush</literal>，
+   尽管流复制可以在不依赖启动进程的情况下推进这两个位置。这两个位置都不会落后于重放位置，
+   因此当 walreceiver 未处于活动状态时，重放可能是推进它们的唯一途径。
+   如果所持有的锁阻塞了重放，会话就在等待重放推进，而重放又在等待会话释放锁。
+   在流复制下，只有 WAL 持续到达时，这些位置才会独立推进。如果接收在达到目标之前停止，
+   被阻塞的启动进程就无法重新启动 walreceiver。它也无法重放推进重启点和回收 WAL 所需的
+   较新检查点记录，因此 <filename>pg_wal</filename> 可能被填满，导致接收在达到目标之前停止。
+   所以，即使等待开始时流复制处于活动状态，此限制也仍然适用。
+  </para>
+
+  <para>
+   <command>WAIT</command> 会根据指定的 <parameter>mode</parameter> 一直等待直到达到指定的
    <parameter>lsn</parameter>。<literal>standby_replay</literal> 模式会等待该 LSN 被重放（应用到数据库），
-   这有助于在使用异步副本读取和主库写入时实现读己之写一致性。
+   这有助于在使用异步副本读取和主库写入时实现读己之写一致性，
+   前提是目标 <acronym>LSN</acronym> 位于主库上相关写事务的 <literal>COMMIT</literal> 记录末尾或其后。
    <literal>standby_flush</literal> 模式会等待 WAL 在副本上刷入持久存储，或者等待备库上已有的 WAL 已被重放。
    <literal>standby_write</literal> 模式会等待 WAL 被写入操作系统，或者已经重放；对于新接收的 WAL，
    这比刷盘更快，但持久性保证更弱。
@@ -217,17 +274,17 @@ WAIT FOR LSN '<replaceable class="parameter">lsn</replaceable>'
   </para>
 
   <para>
-   <command>WAIT FOR</command>只比较<acronym>LSN</acronym>数值；它并不知道 WAL 记录属于哪条时间线。
+   <command>WAIT</command>只比较<acronym>LSN</acronym>数值；它并不知道 WAL 记录属于哪条时间线。
    当备库跨上游时间线切换继续恢复时，这一点很重要&mdash;例如，级联备库的上游被提升。
    在这种情况下，只要所选等待模式使用的位置达到或超过该<acronym>LSN</acronym>数值，
-   <command>WAIT FOR</command>就会返回<literal>success</literal>，而不考虑该
+   <command>WAIT</command>就会返回<literal>success</literal>，而不考虑该
    <acronym>LSN</acronym>属于哪条时间线。需要确认目标指向预期时间线的应用程序必须自行验证时间线。
   </para>
 
   <para>
-   在备库服务器上，<command>WAIT FOR</command> 会话可能会被恢复冲突中断。
+   在备库服务器上，<command>WAIT</command> 会话可能会被恢复冲突中断。
    某些恢复冲突是不可避免的：例如，重放一个表空间删除操作时，无论后端正在执行什么，都会通过终止所有后端来解决冲突。
-   在备库上使用 <command>WAIT FOR</command> 的应用程序应准备好处理此类中断，例如通过重试命令或回退到其他机制。
+   在备库上使用 <command>WAIT</command> 的应用程序应准备好处理此类中断，例如通过重试命令或回退到其他机制。
   </para>
 
 </refsect1>
@@ -236,8 +293,11 @@ WAIT FOR LSN '<replaceable class="parameter">lsn</replaceable>'
   <title>示例</title>
 
   <para>
-   可以使用 <command>WAIT FOR</command> 命令等待 <type>pg_lsn</type> 值。
-   例如，应用程序可以更新 <literal>movie</literal> 表，并在刚刚完成更改后获取 <acronym>lsn</acronym>。
+   可以使用 <command>WAIT</command> 命令等待 <type>pg_lsn</type> 值。
+   例如，应用程序可以更新 <literal>movie</literal> 表，并获取位于相关写事务的
+   <literal>COMMIT</literal> 记录末尾或其后的 <acronym>lsn</acronym>。
+   在这里展示的默认自动提交模式下，<command>UPDATE</command> 会在后续的
+   <command>SELECT</command> 之前提交。
    由于 <varname>synchronous_commit</varname> 可能设置为 <literal>off</literal>，此示例在主库上使用
    <function>pg_current_wal_insert_lsn</function> 获取 <acronym>lsn</acronym>。
 
@@ -247,15 +307,15 @@ UPDATE 100
 postgres=# SELECT pg_current_wal_insert_lsn();
  pg_current_wal_insert_lsn
 ---------------------------
- 0/306EE20
+ 0/0306EE20
 (1 row)
 </programlisting>
 
-   然后，应用程序可以使用从主库获得的 <parameter>lsn</parameter> 运行 <command>WAIT FOR</command>。
+   然后，应用程序可以使用提交之后从主库获得的 <parameter>lsn</parameter> 运行 <command>WAIT</command>。
    之后，主库上所做的更改应当保证在副本上可见。
 
 <programlisting>
-postgres=# WAIT FOR LSN '0/306EE20';
+postgres=# WAIT FOR LSN '0/0306EE20';
  status
 ---------
  success
@@ -271,7 +331,7 @@ postgres=# SELECT * FROM movie WHERE genre = 'Drama';
    等待刷盘（数据在副本上持久化）：
 
 <programlisting>
-postgres=# WAIT FOR LSN '0/306EE20' WITH (MODE 'standby_flush');
+postgres=# WAIT FOR LSN '0/0306EE20' WITH (MODE 'standby_flush');
  status
 ---------
  success
@@ -283,7 +343,7 @@ postgres=# WAIT FOR LSN '0/306EE20' WITH (MODE 'standby_flush');
    带超时的等待写入：
 
 <programlisting>
-postgres=# WAIT FOR LSN '0/306EE20' WITH (MODE 'standby_write', TIMEOUT '100ms', NO_THROW);
+postgres=# WAIT FOR LSN '0/0306EE20' WITH (MODE 'standby_write', TIMEOUT '100ms', NO_THROW);
  status
 ---------
  success
@@ -295,7 +355,7 @@ postgres=# WAIT FOR LSN '0/306EE20' WITH (MODE 'standby_write', TIMEOUT '100ms',
    等待主库刷盘：
 
 <programlisting>
-postgres=# WAIT FOR LSN '0/306EE20' WITH (MODE 'primary_flush');
+postgres=# WAIT FOR LSN '0/0306EE20' WITH (MODE 'primary_flush');
  status
 ---------
  success
@@ -307,16 +367,16 @@ postgres=# WAIT FOR LSN '0/306EE20' WITH (MODE 'primary_flush');
    如果在超时之前未达到目标 LSN，则会抛出错误：
 
 <programlisting>
-postgres=# WAIT FOR LSN '0/306EE20' WITH (TIMEOUT '0.1s');
-ERROR:  timed out while waiting for target LSN 0/306EE20 to be replayed; current replay LSN 0/306EA60
+postgres=# WAIT FOR LSN '0/0306EE20' WITH (TIMEOUT '0.1s');
+ERROR:  timed out while waiting for target LSN 0/0306EE20 to be replayed; current standby_replay LSN 0/0306EA60
 </programlisting>
   </para>
 
   <para>
-   同一个示例使用带 <parameter>NO_THROW</parameter> 选项的 <command>WAIT FOR</command>：
+   同一个示例使用带 <parameter>NO_THROW</parameter> 选项的 <command>WAIT</command>：
 
 <programlisting>
-postgres=# WAIT FOR LSN '0/306EE20' WITH (TIMEOUT '100ms', NO_THROW);
+postgres=# WAIT FOR LSN '0/0306EE20' WITH (TIMEOUT '100ms', NO_THROW);
  status
 ---------
  timeout

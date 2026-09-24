@@ -42,7 +42,7 @@
 | **16** | 16.15 | [中文手册](https://pgsql.cc/docs/16/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/16/postgresql-16-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/16/postgresql-16-US.pdf) |
 | **15** | 15.19 | [中文手册](https://pgsql.cc/docs/15/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/15/postgresql-15-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/15/postgresql-15-US.pdf) |
 | **14** | 14.24 | [中文手册](https://pgsql.cc/docs/14/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/14/postgresql-14-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/14/postgresql-14-US.pdf) |
-| **19 · 测试版** | 19beta3 | [中文手册](https://pgsql.cc/docs/19/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-US.pdf) |
+| **19 · 测试版** | 19beta4 | [中文手册](https://pgsql.cc/docs/19/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-US.pdf) |
 | **20 · 开发版** | 20devel | [开发快照](https://pgsql.cc/docs/devel/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/20/postgresql-20-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/20/postgresql-20-US.pdf) |
 
 <details>

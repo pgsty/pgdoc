@@ -2,7 +2,7 @@
 
 REPO_ROOT := $(abspath $(CURDIR)/../..)
 DOC_VERSION := $(notdir $(CURDIR))
-PG_VERSION ?= 19beta3
+PG_VERSION ?= 19beta4
 DOC_LANG := $(notdir $(abspath $(CURDIR)/..))
 
 BUILD_SCRIPT := $(REPO_ROOT)/bin/build_standalone_docsrc.sh
