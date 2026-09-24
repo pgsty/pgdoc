@@ -128,3 +128,7 @@ PG14—19 中文源文完成 1,895 个定点原子修改、321 个文件：1,626
 - refentry 小节标题样板：Examples→示例、See also→另见、Notes→注解、Usage→用法（此前 例子/参见/注意/使用 多译并存，以 zh/18 校准形统一）。
 - 术语：Developer Options→开发人员选项（开发者选项 弃用）；中止当前事务（SPI_ROLLBACK refpurpose，回滚当前事务 弃用）。
 - 程序输出表头保持字面（pgbench 初始化输出 table/# of rows 不译）。
+
+## 2026-09-18 final9x 统一精校收官（批1-44，52 提交）
+
+无新术语条目：全部修复复用既有家族形（母本优先 zh/10/9.x 最佳形），判例沉淀于 tmp/final9x/findings/（51 份）与 tmp/final9x/summary.md。延后项四类（9.0/9.1 表头未译 840 格/indexterm/SQL 注释/空格）登记待专门波次。
