@@ -141,15 +141,18 @@ set       toc,title
        gets pushed down to the elements output by autoidx.xsl -->
   <div class="index" xmlns:xlink="http://www.w3.org/1999/xlink">
     <p class="indexdiv-quicklinks">
-      <a href="#indexdiv-Symbols">
-        <xsl:call-template name="gentext">
-          <xsl:with-param name="key" select="'index symbols'"/>
-        </xsl:call-template>
-      </a>
+      <xsl:if test="$others">
+        <a href="#indexdiv-Symbols">
+          <xsl:call-template name="gentext">
+            <xsl:with-param name="key" select="'index symbols'"/>
+          </xsl:call-template>
+        </a>
+      </xsl:if>
       <xsl:apply-templates select="$alphabetical[count(.|key('letter',
                                    translate(substring(&primary;, 1, 1),
                                    &lowercase;,&uppercase;))[&scope;][1]) = 1]"
                            mode="index-div-quicklinks">
+        <xsl:with-param name="has-symbols" select="boolean($others)"/>
         <xsl:with-param name="position" select="position()"/>
         <xsl:with-param name="scope" select="$scope"/>
         <xsl:with-param name="role" select="$role"/>
@@ -262,6 +265,7 @@ set       toc,title
 
 <!-- pgsql-docs -->
 <xsl:template match="indexterm" mode="index-div-quicklinks">
+  <xsl:param name="has-symbols" select="1"/>
   <xsl:param name="scope" select="."/>
   <xsl:param name="role" select="''"/>
   <xsl:param name="type" select="''"/>
@@ -273,7 +277,7 @@ set       toc,title
   <xsl:if test="key('letter', $key)[&scope;]
                 [count(.|key('primary', &primary;)[&scope;][1]) = 1]">
     <xsl:if test="contains(concat(&lowercase;, &uppercase;), $key)">
-      |
+      <xsl:if test="$has-symbols or position() &gt; 1"> | </xsl:if>
       <a>
         <xsl:attribute name="href">
           <xsl:value-of select="concat('#indexdiv-', $key)"/>
@@ -651,6 +655,45 @@ set       toc,title
       <dd></dd>
     </xsl:if>
   </xsl:for-each>
+</xsl:template>
+
+<!-- Historical sources sometimes omitted the URI scheme on external links. -->
+<xsl:template match="ulink[contains(@url, '@') and not(contains(@url, ':')) and not(contains(@url, '/'))]">
+  <xsl:call-template name="ulink">
+    <xsl:with-param name="url" select="concat('mailto:', @url)"/>
+  </xsl:call-template>
+</xsl:template>
+
+<xsl:template match="ulink[@url = 'postgresql.org']">
+  <xsl:call-template name="ulink">
+    <xsl:with-param name="url" select="concat('https://', @url)"/>
+  </xsl:call-template>
+</xsl:template>
+
+<!-- Legacy bookbiblio abstracts contain reader-facing notes, not metadata.
+     Bibliography entries already wrap their contents in p, so retain these
+     paragraphs as block-displayed spans without nesting another p. -->
+<xsl:template match="biblioentry/abstract" mode="bibliography.mode">
+  <span class="bibliographic-annotation" style="display: block">
+    <xsl:apply-templates mode="bibliographic-annotation"/>
+  </span>
+</xsl:template>
+
+<xsl:template match="para|simpara" mode="bibliographic-annotation">
+  <span style="display: block"><xsl:apply-templates/></span>
+</xsl:template>
+
+<xsl:template match="node()" mode="bibliographic-annotation">
+  <xsl:apply-templates select="."/>
+</xsl:template>
+
+<!-- The original bibliography has no DATE93 entry. Retain its citation text
+     without emitting a link to a nonexistent file; do not invent a source. -->
+<xsl:template match="ulink[@url = 'refs.html#DATE93']">
+  <xsl:choose>
+    <xsl:when test="//*[@id = 'DATE93' or @id = 'date93']"><xsl:apply-imports/></xsl:when>
+    <xsl:otherwise><xsl:apply-templates/></xsl:otherwise>
+  </xsl:choose>
 </xsl:template>
 
 </xsl:stylesheet>

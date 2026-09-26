@@ -653,4 +653,9 @@ set       toc,title
   </xsl:for-each>
 </xsl:template>
 
+<!-- Cross-references repeat the title text, not the title anchor. -->
+<xsl:template match="refentrytitle[@id]" mode="no.anchor.mode">
+  <span class="refentrytitle"><xsl:apply-templates mode="no.anchor.mode"/></span>
+</xsl:template>
+
 </xsl:stylesheet>

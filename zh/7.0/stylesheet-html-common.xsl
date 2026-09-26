@@ -653,4 +653,51 @@ set       toc,title
   </xsl:for-each>
 </xsl:template>
 
+<!-- Preserve historical title/refname IDs at their displayed locations.
+     Contents, navigation and other repeated titles stay anchor-free. -->
+<xsl:template match="title[@id]" mode="title.markup">
+  <xsl:param name="allow-anchors" select="0"/>
+  <xsl:choose>
+    <xsl:when test="$allow-anchors != 0">
+      <a><xsl:attribute name="id"><xsl:call-template name="object.id"/></xsl:attribute></a>
+      <xsl:apply-templates/>
+    </xsl:when>
+    <xsl:otherwise>
+      <xsl:apply-templates mode="no.anchor.mode"/>
+    </xsl:otherwise>
+  </xsl:choose>
+</xsl:template>
+
+<xsl:template match="refnamediv[refname/@id]">
+  <xsl:for-each select="refname[@id]">
+    <a><xsl:attribute name="id"><xsl:call-template name="object.id"/></xsl:attribute></a>
+  </xsl:for-each>
+  <xsl:apply-imports/>
+</xsl:template>
+
+
+<!-- Historical sources sometimes omitted the URI scheme on external links. -->
+<xsl:template match="ulink[contains(@url, '@') and not(contains(@url, ':')) and not(contains(@url, '/'))]">
+  <xsl:call-template name="ulink">
+    <xsl:with-param name="url" select="concat('mailto:', @url)"/>
+  </xsl:call-template>
+</xsl:template>
+
+<xsl:template match="ulink[@url = 'postgresql.org']">
+  <xsl:call-template name="ulink">
+    <xsl:with-param name="url" select="concat('https://', @url)"/>
+  </xsl:call-template>
+</xsl:template>
+
+<!-- refsect titles have their own IDs in this historical source. -->
+<xsl:template match="refsect1/title[@id]|refsect2/title[@id]|refsect3/title[@id]">
+  <a><xsl:attribute name="id"><xsl:call-template name="object.id"/></xsl:attribute></a>
+  <xsl:apply-imports/>
+</xsl:template>
+
+<!-- Historical bibliography links target the abbreviated title directly. -->
+<xsl:template match="biblioentry/titleabbrev" mode="xref-to">
+  <xsl:apply-templates/>
+</xsl:template>
+
 </xsl:stylesheet>

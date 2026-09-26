@@ -653,4 +653,17 @@ set       toc,title
   </xsl:for-each>
 </xsl:template>
 
+<!-- Cross-references repeat the title text, not the title anchor. -->
+<xsl:template match="refentrytitle[@id]" mode="no.anchor.mode">
+  <span class="refentrytitle"><xsl:apply-templates mode="no.anchor.mode"/></span>
+</xsl:template>
+
+<!-- Bare historical image filenames already have no directory to strip. -->
+<xsl:template match="imagedata/@fileref" priority="1">
+  <xsl:choose>
+    <xsl:when test="contains(., '/')"><xsl:value-of select="substring-after(., '/')"/></xsl:when>
+    <xsl:otherwise><xsl:value-of select="."/></xsl:otherwise>
+  </xsl:choose>
+</xsl:template>
+
 </xsl:stylesheet>
