@@ -365,6 +365,62 @@ create_fop_config() {
   math_regular_xml="$(xml_escape_attr "${math_regular}")"
   math_bold_xml="$(xml_escape_attr "${math_bold}")"
 
+  # Font entries with an empty embed-url would be rejected by FOP's strict
+  # configuration; emit each block only when its font file is present.
+  local fonts_xml=""
+  if [[ -n "${math_regular_xml}" ]]; then
+    fonts_xml+="        <font kerning=\"yes\" embed-url=\"${math_regular_xml}\">
+          <font-triplet name=\"${math_family_xml}\" style=\"normal\" weight=\"normal\"/>
+          <font-triplet name=\"${math_family_xml}\" style=\"italic\" weight=\"normal\"/>
+        </font>
+"
+  fi
+  if [[ -n "${math_bold_xml}" ]]; then
+    fonts_xml+="        <font kerning=\"yes\" embed-url=\"${math_bold_xml}\">
+          <font-triplet name=\"${math_family_xml}\" style=\"normal\" weight=\"bold\"/>
+          <font-triplet name=\"${math_family_xml}\" style=\"italic\" weight=\"bold\"/>
+        </font>
+"
+  fi
+  if [[ -n "${cjk_regular_xml}" ]]; then
+    fonts_xml+="        <font kerning=\"yes\" embed-url=\"${cjk_regular_xml}\">
+          <font-triplet name=\"${cjk_family_xml}\" style=\"normal\" weight=\"normal\"/>
+          <font-triplet name=\"${cjk_family_xml}\" style=\"italic\" weight=\"normal\"/>
+        </font>
+"
+  fi
+  if [[ -n "${cjk_bold_xml}" ]]; then
+    fonts_xml+="        <font kerning=\"yes\" embed-url=\"${cjk_bold_xml}\">
+          <font-triplet name=\"${cjk_family_xml}\" style=\"normal\" weight=\"bold\"/>
+          <font-triplet name=\"${cjk_family_xml}\" style=\"italic\" weight=\"bold\"/>
+        </font>
+"
+  fi
+  if [[ -n "${mono_regular_xml}" ]]; then
+    fonts_xml+="        <font kerning=\"yes\" embed-url=\"${mono_regular_xml}\">
+          <font-triplet name=\"${mono_family_xml}\" style=\"normal\" weight=\"normal\"/>
+        </font>
+"
+  fi
+  if [[ -n "${mono_bold_xml}" ]]; then
+    fonts_xml+="        <font kerning=\"yes\" embed-url=\"${mono_bold_xml}\">
+          <font-triplet name=\"${mono_family_xml}\" style=\"normal\" weight=\"bold\"/>
+        </font>
+"
+  fi
+  if [[ -n "${mono_italic_xml}" ]]; then
+    fonts_xml+="        <font kerning=\"yes\" embed-url=\"${mono_italic_xml}\">
+          <font-triplet name=\"${mono_family_xml}\" style=\"italic\" weight=\"normal\"/>
+        </font>
+"
+  fi
+  if [[ -n "${mono_bold_italic_xml}" ]]; then
+    fonts_xml+="        <font kerning=\"yes\" embed-url=\"${mono_bold_italic_xml}\">
+          <font-triplet name=\"${mono_family_xml}\" style=\"italic\" weight=\"bold\"/>
+        </font>
+"
+  fi
+
   cat > "${dst}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <fop version="1.0">
@@ -373,35 +429,7 @@ create_fop_config() {
   <renderers>
     <renderer mime="application/pdf">
       <fonts>
-        <font kerning="yes" embed-url="${math_regular_xml}">
-          <font-triplet name="${math_family_xml}" style="normal" weight="normal"/>
-          <font-triplet name="${math_family_xml}" style="italic" weight="normal"/>
-        </font>
-        <font kerning="yes" embed-url="${math_bold_xml}">
-          <font-triplet name="${math_family_xml}" style="normal" weight="bold"/>
-          <font-triplet name="${math_family_xml}" style="italic" weight="bold"/>
-        </font>
-        <font kerning="yes" embed-url="${cjk_regular_xml}">
-          <font-triplet name="${cjk_family_xml}" style="normal" weight="normal"/>
-          <font-triplet name="${cjk_family_xml}" style="italic" weight="normal"/>
-        </font>
-        <font kerning="yes" embed-url="${cjk_bold_xml}">
-          <font-triplet name="${cjk_family_xml}" style="normal" weight="bold"/>
-          <font-triplet name="${cjk_family_xml}" style="italic" weight="bold"/>
-        </font>
-        <font kerning="yes" embed-url="${mono_regular_xml}">
-          <font-triplet name="${mono_family_xml}" style="normal" weight="normal"/>
-        </font>
-        <font kerning="yes" embed-url="${mono_bold_xml}">
-          <font-triplet name="${mono_family_xml}" style="normal" weight="bold"/>
-        </font>
-        <font kerning="yes" embed-url="${mono_italic_xml}">
-          <font-triplet name="${mono_family_xml}" style="italic" weight="normal"/>
-        </font>
-        <font kerning="yes" embed-url="${mono_bold_italic_xml}">
-          <font-triplet name="${mono_family_xml}" style="italic" weight="bold"/>
-        </font>
-      </fonts>
+${fonts_xml}      </fonts>
     </renderer>
   </renderers>
 </fop>
@@ -453,6 +481,75 @@ rsync -a \
   --exclude='html-stamp' \
   "${doc_src_root}/" "${work_tree}/doc/src/sgml/"
 
+# EN archives predating 9.5 either ship no XSL stylesheet family at all
+# (6.x-7.x, jade era) or ship one that does not drive the backported pipeline
+# (8.x-9.4).  The pgdoc overlay stylesheets kept alongside the matching zh
+# major are language-neutral customizations of the same era; use them for EN.
+if [[ "${lang}" == "en" && "${version}" =~ ^([0-9]+(\.[0-9]+)?) ]]; then
+  zh_major="${BASH_REMATCH[1]}"
+  if [[ -f "${REPO_ROOT}/zh/${zh_major}/stylesheet-fo.xsl" ]] \
+     && awk -v m="${zh_major}" 'BEGIN{exit !(m < 9.5)}'; then
+    cp "${REPO_ROOT}/zh/${zh_major}"/stylesheet*.xsl "${work_tree}/doc/src/sgml/" 2>/dev/null || true
+    cp "${REPO_ROOT}/zh/${zh_major}"/stylesheet.css "${REPO_ROOT}/zh/${zh_major}"/stylesheet.dsl \
+       "${work_tree}/doc/src/sgml/" 2>/dev/null || true
+    # The pgdoc speedup layer hard-codes zh_cn gentext; EN documents carry no
+    # lang attribute, so the override must be neutralised for English output.
+    sed -i.bak 's|<xsl:template name="l10n.language">zh_cn</xsl:template>|<xsl:template name="l10n.language">en</xsl:template>|' \
+      "${work_tree}/doc/src/sgml/stylesheet-speedup-common.xsl" 2>/dev/null \
+      && rm -f "${work_tree}/doc/src/sgml/stylesheet-speedup-common.xsl.bak"
+    echo "EN build: using pgdoc overlay stylesheets from zh/${zh_major}." >&2
+  fi
+fi
+
+# 7.x-era upstream SGML references figures without a file extension
+# (<imagedata fileref="connections">); jade resolved those by probing
+# extensions, osx/XSL/FOP do not.  Point them at the shipped .gif files.
+if [[ "${lang}" == "en" ]]; then
+  python3 - "$work_tree/doc/src/sgml" <<'PYFIX'
+import re, sys, glob, os
+d = sys.argv[1]
+gifs = {os.path.basename(g)[:-4] for g in glob.glob(os.path.join(d, '*.gif'))}
+n = 0
+for f in glob.glob(os.path.join(d, '*.sgml')):
+    s = open(f, encoding='utf-8', errors='surrogateescape').read()
+    def sub(m):
+        global n
+        if m.group(1) in gifs:
+            n += 1
+            return 'fileref="%s.gif"' % m.group(1)
+        return m.group(0)
+    s2 = re.sub(r'fileref="([A-Za-z0-9_-]+)"', sub, s)
+    if s2 != s:
+        open(f, 'w', encoding='utf-8', errors='surrogateescape').write(s2)
+if n:
+    print("EN build: added .gif to %d extension-less filerefs." % n)
+PYFIX
+fi
+
+# Upstream 7.0.3's inherit.sgml closes its paragraph prematurely (a jade-era
+# OMITTAG artifact); with the XSL pipeline the orphan text lands at FO root
+# and FOP rejects it.  Repair the work-tree copy only.
+if [[ "${lang}" == "en" && "${version}" == "7.0.3" ]]; then
+  python3 - "$work_tree/doc/src/sgml/inherit.sgml" <<'PY7'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='surrogateescape').read()
+fixed = []
+bad = '   </note>\n  </para>\n\n   For example'
+if bad in s:
+    s = s.replace(bad, '   </note>\n\n   For example', 1)
+    fixed.append('premature </para>')
+bad2 = '</chapter>\n  <para>\n'
+if bad2 in s:
+    s = s.replace(bad2, '</chapter>\n', 1)
+    fixed.append('stray trailing <para>')
+if fixed:
+    open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s)
+    print('EN build: repaired 7.0.3 inherit.sgml (%s).' % ', '.join(fixed))
+PY7
+fi
+
+
 # PG 6.x and 7.0 have no top-level configure; their doc makefiles either are
 # standalone (6.x) or include src/Makefile.global only conditionally (7.0).
 # Skip configure when the doc makefile has no unconditional include of it;
@@ -490,6 +587,7 @@ fi
 # widened SDATA entity fixup in the SGML->XML step (both needed for an
 # index-bearing, accent-clean postgres.xml).  Backport them; no-op for PG >= 9.2.
 python3 "${SCRIPT_DIR}/patch_legacy_xsl_pipeline.py" "${work_tree}/doc/src/sgml"
+python3 "${SCRIPT_DIR}/prepare_pdf_stylesheet.py" "${work_tree}/doc/src/sgml/stylesheet-fo.xsl"
 
 # Incremental generated-text overlays are kept with each Chinese source.
 # Generate from the selected upstream inputs before applying exact-hash edits.
@@ -608,6 +706,32 @@ if [[ "${lang}" == "zh" ]]; then
   append_xsltproc_flag "--stringparam monospace.font.family '${pdf_mono_param}${pdf_math_suffix:-}'"
 fi
 
+# EN builds keep the base-14 body fonts but need the same system math
+# fallback as zh: 6.x/7.x use set-theory glyphs (∊∖∃∀) that Times, Helvetica
+# and Courier do not carry.  Register STIXGeneral and append it to every
+# font-family chain.
+if [[ "${lang}" == "en" ]]; then
+  pdf_math_family="${PDF_MATH_FAMILY:-STIXGeneral}"
+  pdf_math_regular="${PDF_MATH_REGULAR:-$(resolve_font_file "${pdf_math_family}:style=Regular" || true)}"
+  if [[ -z "${pdf_math_regular}" ]]; then
+    pdf_math_regular="$(resolve_font_file "${pdf_math_family}" || true)"
+  fi
+  pdf_math_bold="${PDF_MATH_BOLD:-$(resolve_font_file "${pdf_math_family}:style=Bold" || true)}"
+  if [[ -z "${pdf_math_bold}" ]]; then
+    pdf_math_bold="${pdf_math_regular}"
+  fi
+  if [[ -n "${pdf_math_regular}" && -f "${pdf_math_regular}" ]]; then
+    fop_config="${work_tree}/doc/src/sgml/fop-local.xconf"
+    create_fop_config "${fop_config}" \
+      "" "" "" "" "" "" "" "" \
+      "${pdf_math_family}" "${pdf_math_regular}" "${pdf_math_bold}"
+    append_xsltproc_flag "--stringparam body.font.family 'Times,${pdf_math_family}'"
+    append_xsltproc_flag "--stringparam sans.font.family 'Helvetica,${pdf_math_family}'"
+    append_xsltproc_flag "--stringparam title.font.family 'Helvetica,${pdf_math_family}'"
+    append_xsltproc_flag "--stringparam monospace.font.family 'Courier,${pdf_math_family}'"
+  fi
+fi
+
 (cd "${work_tree}" && XSLTPROCFLAGS="${xslprocflags_extra}" "${MAKE_CMD}" -C doc/src/sgml DOC_LANG="${lang}" "postgres-${paper}.fo" >/dev/null)
 
 if [[ "${lang}" == "zh" ]]; then
@@ -629,7 +753,24 @@ if ! LANG=C "${FOP_CMD}" "${fop_args[@]}" >"${fop_log}" 2>&1; then
   exit 1
 fi
 
-if grep -q 'not available in font' "${fop_log}"; then
+# FOP can exit successfully while reporting clipped content or unresolved
+# references. Retain its complete diagnostics beside the PDF and surface the
+# warnings in the build log so a successful renderer is not mistaken for QA.
+mkdir -p "$(dirname "${output_pdf}")"
+cp "${fop_log}" "${output_pdf%.pdf}.fop.log"
+grep -E '(^|[[:space:]])(WARNING:|WARN:|SEVERE:|ERROR:|\[WARN\]|\[ERROR\])' "${fop_log}" >&2 || true
+if grep -qE '(^|[[:space:]])(SEVERE:|ERROR:|\[ERROR\])' "${fop_log}"; then
+  echo "PDF rendering completed with FOP errors; see ${output_pdf%.pdf}.fop.log" >&2
+  exit 1
+fi
+
+# U+FFFD reaches the render straight from ancient upstream archives (e.g. a
+# 1998-era message string in 6.4); EN body fonts have no glyph for it.  For
+# EN builds it is an accepted source artifact -- every other missing glyph
+# stays a hard failure.
+glyph_denied="$(grep 'not available in font' "${fop_log}" | grep -v '(0xfffd)' || true)"
+glyph_any="$(grep -c 'not available in font' "${fop_log}" || true)"
+if [[ -n "${glyph_denied}" ]] || { [[ "${lang}" == "zh" ]] && [[ "${glyph_any}" -gt 0 ]]; }; then
   cat "${fop_log}" >&2
   echo "PDF rendering completed with missing glyph warnings." >&2
   exit 1

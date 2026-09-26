@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Backport the XSL pipeline onto PG <= 9.1 doc makefiles in a build work tree.
+"""Adapt historical XSL pipelines in an isolated documentation build tree.
 
 PG 9.2+ doc/src/sgml/Makefile ships an xslthtml-stamp target, and PG 9.4+
 postgres.sgml/filelist.sgml carry the include-xslt-index marked section, so
@@ -30,8 +30,8 @@ appended block instead: osx (with an OMITTAG YES DocBook V3.0 declaration,
 see tmp/pg6x/deps) -> postgres.xml -> xsltproc chunked HTML.
 
 Usage: patch_legacy_xsl_pipeline.py <doc/src/sgml dir>
-No-op when the makefile already has xslthtml-stamp (PG >= 9.2) or lacks a
-postgres.xml rule.
+Existing native XSL targets are preserved. Their missing index activation
+and historical SDATA filters are still repaired when needed.
 """
 import os
 import re
@@ -153,7 +153,7 @@ SDATA_6X = (
     "aacute acirc aelig agrave amp and aring atilde auml bull cap copy cup "
     "divide eacute egrave exist ge gt iacute infin isin le lt mdash mid "
     "minus nbsp ntilde oacute ocirc oslash ouml pi plusmn prod quot scaron "
-    "setmn sigma sube sup tdot times uuml"
+    "percnt setmn sigma sube sup tdot times uuml"
 )
 
 # PG 6.x block appended to the (static, jade-era) doc makefile.  Tool vars
@@ -222,13 +222,20 @@ def patch_pg6x(sgml_dir):
     # The build work tree name embeds the version (build_standalone_docsrc.sh
     # mktemp pattern "standalone-<lang>-<version>.XXXXXX"); empty fallback is
     # harmless (pg.version only drives the footer/devel switches).
-    m = re.search(r"standalone-(?:en|zh)-(\d+\.\d+(?:\.\d+)?)\.[A-Za-z0-9]+",
+    m = re.search(r"standalone-(?:pdf-)?(en|zh)-(\d+\.\d+(?:\.\d+)?)\.[A-Za-z0-9]+",
                   os.path.abspath(sgml_dir))
-    version = m.group(1) if m else ""
+    version = m.group(2) if m else ""
     sdata = "|".join(SDATA_6X.split())
-    mf += XSLTHTML_BLOCK_6X_TEMPLATE.format(
+    block = XSLTHTML_BLOCK_6X_TEMPLATE.format(
         version=version, sgml_decl=sgml_decl, sdata=sdata,
         normalizer=os.path.join(repo_root, "bin", "normalize_cals_tables.py"))
+    # 原始上游 6.x 归档同样保留 jade 时代的宽松标记（ENDTERM 里裸 "["、
+    # 正文里裸 "<email>" 等）；osx 报错但输出仍可被后续管线消费，这里把
+    # osx 的退出码降级，错误保留在构建日志，坏 XML 由 xsltproc 硬拦。
+    block = block.replace(
+        "$(OSX) -D. -Dref -x lower $(PGDOC_SGML_DECL) $< |",
+        "{ $(OSX) -D. -Dref -x lower $(PGDOC_SGML_DECL) $< || true; } |")
+    mf += block
     # 2026-09-25: the synthesized html chain alone leaves `make postgres-A4.fo`
     # without a rule; append the shared FO block when the zh overlay carries
     # stylesheet-fo.xsl (it always does).
@@ -263,16 +270,25 @@ def patch_pg7x(sgml_dir):
         return False
     if "-//oasis//dtd docbook v3.1//en" not in pg.lower():
         return False
+    prepare_legacy_indexes(sgml_dir, pg)
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    m = re.search(r"standalone-(?:en|zh)-(\d+\.\d+(?:\.\d+)?)\.[A-Za-z0-9]+",
+    m = re.search(r"standalone-(?:pdf-)?(en|zh)-(\d+\.\d+(?:\.\d+)?)\.[A-Za-z0-9]+",
                   os.path.abspath(sgml_dir))
-    version = m.group(1) if m else ""
+    version = m.group(2) if m else ""
     sdata = "|".join(SDATA_6X.split())
     # jade 的 html 目标改名保留，避免 GNU make 的 overriding 警告与歧义。
     mf = re.sub(r"(?m)^html:", "jade-html:", mf)
-    mf += XSLTHTML_BLOCK_6X_TEMPLATE.format(
+    block = XSLTHTML_BLOCK_6X_TEMPLATE.format(
         version=version, sgml_decl="", sdata=sdata,
         normalizer=os.path.join(repo_root, "bin", "normalize_cals_tables.py"))
+    # The separate legacy-EN compatibility path accepts historical upstream
+    # SGML diagnostics. Never apply that exception to maintained translations
+    # or unidentified work directories: their converter must fail strictly.
+    if m and m.group(1) == 'en':
+        block = block.replace(
+            "$(OSX) -D. -Dref -x lower $(PGDOC_SGML_DECL) $< |",
+            "{ $(OSX) -D. -Dref -x lower $(PGDOC_SGML_DECL) $< || true; } |")
+    mf += block
     # features 附录引用 &features-supported; 等生成文件；合成的 postgres.xml 用
     # 通配符依赖不会触发生成规则，这里显式补一道（Makefile 已有对应规则时）。
     if re.search(r"(?m)^features-supported\.sgml:", mf):
@@ -298,6 +314,64 @@ def patch_pg7x(sgml_dir):
     return True
 
 
+def prepare_legacy_indexes(sgml_dir, postgres):
+    """Let XSL generate the old book/set indexes formerly produced by jade."""
+    for name, tag in (('setindex', 'setindex'), ('bookindex', 'index')):
+        path = os.path.join(sgml_dir, name + '.sgml')
+        if f'&{name};' in postgres and not os.path.exists(path):
+            with open(path, 'w', encoding='utf-8') as stream:
+                stream.write(f'<{tag} id="{name}"></{tag}>\n')
+            print(f'patch_legacy_xsl_pipeline: enabled generated {name}')
+
+
+def prepare_native_xsl_index(sgml_dir):
+    """Enable the stylesheet index without replacing native XSL targets.
+
+    PG 9.2/9.3 can have xslthtml-stamp while their overlaid SGML still only
+    has the jade index branch. A native target is not proof of index support.
+    """
+    pg_path = os.path.join(sgml_dir, 'postgres.sgml')
+    if not os.path.isfile(pg_path):
+        return
+    with open(pg_path, encoding='utf-8') as stream:
+        postgres = stream.read()
+    active = re.sub(r'<!--.*?-->', '', postgres, flags=re.S)
+    anchor = '<![%include-index;[&bookindex;]]>'
+    if anchor not in active:
+        return
+    makefile = os.path.join(sgml_dir, 'Makefile')
+    with open(makefile, encoding='utf-8') as stream:
+        mf = stream.read()
+    if '$(OSX)' not in mf:
+        return  # XML-native releases have no SGML marked-section switch.
+    if OSX_OLD in mf:
+        updated_mf = mf.replace(OSX_OLD, OSX_NEW, 1)
+    elif '-i include-xslt-index' in mf:
+        updated_mf = mf
+    else:
+        raise ValueError('native XSL index requires an identifiable osx recipe')
+
+    fl_path = os.path.join(sgml_dir, 'filelist.sgml')
+    with open(fl_path, encoding='utf-8') as stream:
+        filelist = stream.read()
+    updated_fl = filelist
+    if 'include-xslt-index' not in re.sub(r'<!--.*?-->', '', filelist, flags=re.S):
+        updated_fl += '\n<!-- XSL generates the index formerly built by jade. -->\n<!ENTITY % include-xslt-index "IGNORE">\n'
+    updated_pg = postgres
+    if 'include-xslt-index' not in active:
+        updated_pg = postgres.replace(anchor, anchor + '\n<![%include-xslt-index;[<index id="bookindex"></index>]]>', 1)
+    changed = False
+    for path, before, after in ((fl_path, filelist, updated_fl),
+                                (pg_path, postgres, updated_pg),
+                                (makefile, mf, updated_mf)):
+        if before != after:
+            with open(path, 'w', encoding='utf-8') as stream:
+                stream.write(after)
+            changed = True
+    if changed:
+        print('patch_legacy_xsl_pipeline: enabled index in native XSL pipeline')
+
+
 def main():
     sgml_dir = sys.argv[1]
     makefile = f"{sgml_dir}/Makefile"
@@ -306,7 +380,8 @@ def main():
 
     if ("xslthtml-stamp:" in mf or
             re.search(r"^html-stamp:.*\bstylesheet\.xsl\b", mf, re.M)):
-        return  # PG >= 9.2 ships XSL; PG10 renamed its stamp to html-stamp.
+        prepare_native_xsl_index(sgml_dir)
+        return  # Preserve native targets; PG10 renamed its stamp to html-stamp.
     if "postgres.xml:" not in mf:
         # PG 6.x jade-era makefiles have neither an html: target nor a
         # postgres.xml rule; the 6.x branch synthesizes the whole pipeline.
@@ -390,6 +465,28 @@ def main():
     else:
         print("patch_legacy_xsl_pipeline: WARNING: entity fixup line not replaced",
               file=sys.stderr)
+    # Makefile: append the CALS normalizer to the postgres.xml pipeline --
+    # raw upstream 8.x archives ship ragged tables (tgroup cols vs row
+    # entries) that FOP rejects, exactly like the 6.x/7.x archives already
+    # normalized.  The insertion point is after the perl DOCTYPE-append `-e`
+    # line, i.e. right before the recipe's final `>$@`.
+    # Chinese overlays have separately reviewed table layouts. Only extend
+    # the raw-English pipeline here; keep Chinese and unidentified build
+    # directories unchanged, including their existing 6.x/7.x handling.
+    if re.search(r"(?:^|/)standalone-(?:pdf-)?en-\d+(?:\.\d+)*\.[A-Za-z0-9]+(?:/|$)",
+                 os.path.normpath(sgml_dir)):
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        norm_stage = ("\t  | $(PYTHON) "
+                      + os.path.join(repo_root, "bin", "normalize_cals_tables.py") + " \\\n")
+
+        def _insert_normalizer(m):
+            return m.group(1) + norm_stage + "\t  >$@\n"
+        mf2 = re.sub(r"(\t +-e '\$\$_ \.= qq\{<!DOCTYPE book[^\n]*\\\n)\t +>\$@\n",
+                     _insert_normalizer, mf, count=1)
+        if mf2 == mf:
+            print("patch_legacy_xsl_pipeline: WARNING: normalizer stage not inserted",
+                  file=sys.stderr)
+        mf = mf2
     # Makefile: drop the jade-only bookindex.sgml prerequisite (PG <= 8.4)
     if PGXML_OLD in mf:
         if "ALMOSTALLSGML" not in mf:
@@ -416,5 +513,46 @@ def main():
     print("patch_legacy_xsl_pipeline: backported XSL pipeline onto PG <= 9.1 doc makefile")
 
 
+def guard_sgml_pipelines(sgml_dir):
+    """Do not let a successful perl/sed mask an osx SGML parse failure."""
+    path = os.path.join(sgml_dir, 'Makefile')
+    with open(path, encoding='utf-8') as stream:
+        text = stream.read()
+    guarded, count = re.subn(r'(?m)^(\t[ \t]*)(\$\(OSX\)[^\n]*\|[^\n]*)$',
+                             r'\1set -o pipefail; \2', text)
+    if count:
+        guarded += '\n# SGML converter pipelines require failure propagation.\nSHELL := /bin/bash\n'
+        with open(path, 'w', encoding='utf-8') as stream:
+            stream.write(guarded)
+        print(f'patch_legacy_xsl_pipeline: guarded {count} SGML converter pipeline(s)')
+
+
+def expand_sdata_fixups(sgml_dir):
+    """Bring historical osx filters up to the verified modern entity set."""
+    path = os.path.join(sgml_dir, 'Makefile')
+    with open(path, encoding='utf-8') as stream:
+        text = stream.read()
+
+    def expand(match):
+        names = match[2].split('|')
+        if not {'amp', 'quot'} <= set(names):
+            return match[0]
+        complete = ('aacute acirc aelig agrave amp aring atilde auml bull copy '
+                    'eacute egrave gt iacute lt mdash nbsp ntilde oacute ocirc '
+                    'oslash ouml pi quot scaron uuml dollar forall ndash percnt').split()
+        names.extend(n for n in complete if n not in names)
+        # Matching ignores case; the captured source spelling is retained so
+        # [Aacute] becomes &Aacute; (uppercase accent), not &aacute;.
+        return match[1] + '|'.join(names) + match[3] + 'i'
+
+    updated = re.sub(r'(s/\\\[\()([A-Za-z|]+)(\) \*\\\]/\\&\\1;/g)(i?)', expand, text)
+    if updated != text:
+        with open(path, 'w', encoding='utf-8') as stream:
+            stream.write(updated)
+        print('patch_legacy_xsl_pipeline: completed ISO SDATA entity fixups')
+
+
 if __name__ == "__main__":
     main()
+    expand_sdata_fixups(sys.argv[1])
+    guard_sgml_pipelines(sys.argv[1])

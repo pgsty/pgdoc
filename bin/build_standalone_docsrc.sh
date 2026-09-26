@@ -297,6 +297,76 @@ rsync -a \
   --exclude='html-stamp' \
   "${doc_src_root}/" "${work_tree}/doc/src/sgml/"
 
+# EN archives predating 9.5 either ship no XSL stylesheet family at all
+# (6.x-7.x, jade era) or ship one that does not chunk under the backported
+# pipeline (8.x-9.4).  The pgdoc overlay stylesheets kept alongside the
+# matching zh major are language-neutral customizations of the same era and
+# drive this pipeline directly; use them for EN builds too.
+if [[ "${lang}" == "en" && "${version}" =~ ^([0-9]+(\.[0-9]+)?) ]]; then
+  zh_major="${BASH_REMATCH[1]}"
+  if [[ -f "${REPO_ROOT}/zh/${zh_major}/stylesheet.xsl" ]] \
+     && awk -v m="${zh_major}" 'BEGIN{exit !(m < 9.5)}'; then
+    cp "${REPO_ROOT}/zh/${zh_major}"/stylesheet*.xsl "${work_tree}/doc/src/sgml/" 2>/dev/null || true
+    cp "${REPO_ROOT}/zh/${zh_major}"/stylesheet.css "${REPO_ROOT}/zh/${zh_major}"/stylesheet.dsl \
+       "${work_tree}/doc/src/sgml/" 2>/dev/null || true
+    # The pgdoc speedup layer hard-codes zh_cn gentext; EN documents carry no
+    # lang attribute, so the override must be neutralised for English output.
+    sed -i.bak 's|<xsl:template name="l10n.language">zh_cn</xsl:template>|<xsl:template name="l10n.language">en</xsl:template>|' \
+      "${work_tree}/doc/src/sgml/stylesheet-speedup-common.xsl" 2>/dev/null \
+      && rm -f "${work_tree}/doc/src/sgml/stylesheet-speedup-common.xsl.bak"
+    echo "EN build: using pgdoc overlay stylesheets from zh/${zh_major}." >&2
+  fi
+fi
+
+# 7.x-era upstream SGML references figures without a file extension
+# (<imagedata fileref="connections">); jade resolved those by probing
+# extensions, osx/XSL/FOP do not.  Point them at the shipped .gif files.
+if [[ "${lang}" == "en" ]]; then
+  python3 - "$work_tree/doc/src/sgml" <<'PYFIX'
+import re, sys, glob, os
+d = sys.argv[1]
+gifs = {os.path.basename(g)[:-4] for g in glob.glob(os.path.join(d, '*.gif'))}
+n = 0
+for f in glob.glob(os.path.join(d, '*.sgml')):
+    s = open(f, encoding='utf-8', errors='surrogateescape').read()
+    def sub(m):
+        global n
+        if m.group(1) in gifs:
+            n += 1
+            return 'fileref="%s.gif"' % m.group(1)
+        return m.group(0)
+    s2 = re.sub(r'fileref="([A-Za-z0-9_-]+)"', sub, s)
+    if s2 != s:
+        open(f, 'w', encoding='utf-8', errors='surrogateescape').write(s2)
+if n:
+    print("EN build: added .gif to %d extension-less filerefs." % n)
+PYFIX
+fi
+
+# Upstream 7.0.3's inherit.sgml closes its paragraph prematurely (a jade-era
+# OMITTAG artifact); with the XSL pipeline the orphan text lands at FO root
+# and FOP rejects it.  Repair the work-tree copy only.
+if [[ "${lang}" == "en" && "${version}" == "7.0.3" ]]; then
+  python3 - "$work_tree/doc/src/sgml/inherit.sgml" <<'PY7'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='surrogateescape').read()
+fixed = []
+bad = '   </note>\n  </para>\n\n   For example'
+if bad in s:
+    s = s.replace(bad, '   </note>\n\n   For example', 1)
+    fixed.append('premature </para>')
+bad2 = '</chapter>\n  <para>\n'
+if bad2 in s:
+    s = s.replace(bad2, '</chapter>\n', 1)
+    fixed.append('stray trailing <para>')
+if fixed:
+    open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s)
+    print('EN build: repaired 7.0.3 inherit.sgml (%s).' % ', '.join(fixed))
+PY7
+fi
+
+
 # --- Configure (minimal, just enough for docs) ---
 echo "Configuring source tree ..."
 extra_configure_flags="${CONFIGURE_FLAGS:-}"
@@ -363,16 +433,38 @@ if [[ "${ALLOW_NET:-0}" == "1" ]]; then
     "${work_tree}/doc/src/sgml/Makefile"
 fi
 
+# Backported HTML stylesheets use the upstream CSS entity wrapper too.
+# Older source archives predate that file; generate it from their real CSS
+# so DocBook can emit the stylesheet without a missing-XML diagnostic.
+if [[ -f "${work_tree}/doc/src/sgml/stylesheet.css" &&
+      ! -f "${work_tree}/doc/src/sgml/stylesheet.css.xml" ]]; then
+  cat > "${work_tree}/doc/src/sgml/stylesheet.css.xml" <<'CSS_XML'
+<!DOCTYPE style [
+<!ENTITY css SYSTEM "stylesheet.css">
+]>
+<style>&css;</style>
+CSS_XML
+fi
+
 # --- Build HTML ---
 echo "Building HTML docs (${lang} ${version}) ..."
 (cd "${work_tree}" && "${MAKE_CMD}" -C doc/src/sgml DOC_LANG="${lang}" html)
 
-# PG <= 9.2 reroutes html to the xslthtml target, which lacks the
-# stylesheet.css copy that xslthtml-stamp (9.3+) performs.  Copy it here so
-# the chunked output always references a real CSS file (no-op for 9.3+).
-if [[ -f "${work_tree}/doc/src/sgml/stylesheet.css" && ! -f "${work_tree}/doc/src/sgml/html/stylesheet.css" ]]; then
-  cp "${work_tree}/doc/src/sgml/stylesheet.css" "${work_tree}/doc/src/sgml/html/stylesheet.css"
+if [[ "${lang}" == "zh" ]]; then
+  html_spacing_args=(--report "${work_tree}/doc/src/sgml/html-spacing-report.json")
+  if [[ "${keep_work}" == "1" ]]; then
+    html_spacing_args+=(--before-dir "${work_tree}/doc/src/sgml/html-before-spacing")
+  fi
+  python3 "${SCRIPT_DIR}/prepare_chinese_html.py" \
+    "${work_tree}/doc/src/sgml/html" "${html_spacing_args[@]}"
 fi
+
+# Older XSL targets do not copy every referenced image or stylesheet.
+# Populate those resources from this build's sources and fail on missing
+# local files before publishing the output, even if make ignored a failed cp.
+python3 "${SCRIPT_DIR}/prepare_html_resources.py" "${work_tree}/doc/src/sgml" \
+    --localization-report "${work_tree}/doc/src/sgml/html-localization-report.json" \
+    --style-report "${work_tree}/doc/src/sgml/html-legacy-css-report.json"
 
 # --- Copy output ---
 mkdir -p "${build_out}"
