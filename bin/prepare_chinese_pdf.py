@@ -23,24 +23,14 @@ SGML, identifiers, links, or whitespace-preserving code examples:
 from pathlib import Path
 import argparse
 import re
+import sys
 import xml.etree.ElementTree as ET
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cjk_spacing import (FW_RE as _FW_RE, QUOTES_RE as _QUOTES_RE,  # noqa: E402
+                         STRICT_RE as _STRICT_RE, WS_RUN as _WS_RUN,
+                         eff as _eff, drop_space as _drop_space)
 
-_HAN = '\u3400-\u9fff\uf900-\ufaff'
-# Full-width punctuation that never takes an adjacent space in running text.
-_STRICT = ('\u3001\u3002\u3008\u3009\u300a\u300b\u3010\u3011\u3014\u3015'
-           '\u3017-\u301c\u301f\u3030\u3031\u303b-\u303f'
-           '\uff01-\uff0f\uff1a-\uff1f\uff3b-\uff40\uff5b-\uff60'
-           '\uffe0-\uffe5')
-# Double/single quotation marks rendered by <quote>/l10n gentext.
-_QUOTES = '\u201c\u201d\u2018\u2019\u301d\u301e'
-# U+2014 (em dash) and U+2026 (ellipsis) are deliberately absent from both
-# sets; see the module docstring.
-_FW_RE = re.compile(f'[{_HAN}\u3001-\u303f\uff01-\uff60\uffe0-\uffe5{_QUOTES}]')
-_STRICT_RE = re.compile(f'[{_STRICT}]')
-_QUOTES_RE = re.compile(f'[{_QUOTES}]')
-_WS_RUN = re.compile(r'[ \t\n\r]+')
-_SKIP = ' \t\n\r\u200b'
 # 行首禁则字符：break_prose 插入的 \u200b 不得把断行机会放在它们之前，
 # 否则 FOP 会在「）。」之间断行，让下一行以句号开头。
 _NO_LINE_START = ('\u3001\u3002\uff0c\uff1b\uff1a\uff1f\uff01\uff09'
@@ -52,30 +42,6 @@ _NOSTART_RE = re.compile(f'[{_NO_LINE_START}]')
 _BREAK_RE = re.compile(
     r'(?:[、，；。）_.]|(?<=[A-Za-z])-(?=[A-Za-z]))(?!\u200b)(?![%s])'
     % _NO_LINE_START)
-
-
-def _drop_space(left, right):
-    """True when the collapsed space between the two chars must not render."""
-    if not left or not right:
-        return False
-    l_fw = bool(_FW_RE.match(left))
-    r_fw = bool(_FW_RE.match(right))
-    if _STRICT_RE.match(left) or _STRICT_RE.match(right):
-        return True
-    if l_fw and r_fw:
-        return True
-    return bool((_QUOTES_RE.match(left) and r_fw)
-                or (_QUOTES_RE.match(right) and l_fw))
-
-
-def _eff(s, reverse=False):
-    if not s:
-        return None
-    it = reversed(s) if reverse else iter(s)
-    for c in it:
-        if c not in _SKIP:
-            return c
-    return None
 
 
 class _Edge:
