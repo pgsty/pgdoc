@@ -346,9 +346,13 @@ create_fop_config() {
   local mono_bold="$7"
   local mono_italic="$8"
   local mono_bold_italic="$9"
+  local math_family="${10}"
+  local math_regular="${11}"
+  local math_bold="${12}"
 
   local cjk_family_xml mono_family_xml cjk_regular_xml cjk_bold_xml
   local mono_regular_xml mono_bold_xml mono_italic_xml mono_bold_italic_xml
+  local math_family_xml math_regular_xml math_bold_xml
   cjk_family_xml="$(xml_escape_attr "${cjk_family}")"
   mono_family_xml="$(xml_escape_attr "${mono_family}")"
   cjk_regular_xml="$(xml_escape_attr "${cjk_regular}")"
@@ -357,6 +361,9 @@ create_fop_config() {
   mono_bold_xml="$(xml_escape_attr "${mono_bold}")"
   mono_italic_xml="$(xml_escape_attr "${mono_italic}")"
   mono_bold_italic_xml="$(xml_escape_attr "${mono_bold_italic}")"
+  math_family_xml="$(xml_escape_attr "${math_family}")"
+  math_regular_xml="$(xml_escape_attr "${math_regular}")"
+  math_bold_xml="$(xml_escape_attr "${math_bold}")"
 
   cat > "${dst}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -366,6 +373,14 @@ create_fop_config() {
   <renderers>
     <renderer mime="application/pdf">
       <fonts>
+        <font kerning="yes" embed-url="${math_regular_xml}">
+          <font-triplet name="${math_family_xml}" style="normal" weight="normal"/>
+          <font-triplet name="${math_family_xml}" style="italic" weight="normal"/>
+        </font>
+        <font kerning="yes" embed-url="${math_bold_xml}">
+          <font-triplet name="${math_family_xml}" style="normal" weight="bold"/>
+          <font-triplet name="${math_family_xml}" style="italic" weight="bold"/>
+        </font>
         <font kerning="yes" embed-url="${cjk_regular_xml}">
           <font-triplet name="${cjk_family_xml}" style="normal" weight="normal"/>
           <font-triplet name="${cjk_family_xml}" style="italic" weight="normal"/>
@@ -438,9 +453,31 @@ rsync -a \
   --exclude='html-stamp' \
   "${doc_src_root}/" "${work_tree}/doc/src/sgml/"
 
-echo "Configuring source tree ..."
-extra_configure_flags="${CONFIGURE_FLAGS:-}"
-(cd "${work_tree}" && ./configure --without-icu --without-readline --without-zlib ${extra_configure_flags} >/dev/null)
+# PG 6.x and 7.0 have no top-level configure; their doc makefiles either are
+# standalone (6.x) or include src/Makefile.global only conditionally (7.0).
+# Skip configure when the doc makefile has no unconditional include of it;
+# otherwise a missing top-level configure is a hard error.
+if [[ "${PGDOC_SKIP_CONFIGURE:-0}" == "1" ]]; then
+  # PG 7.1 – 7.3 的 configure 在现代工具链上跑不通，而它们的 doc 构建只从
+  # Makefile.global 取 VERSION/srcdir 等少量变量；直接写桩。
+  echo "Skipping configure (PGDOC_SKIP_CONFIGURE=1); writing stub src/Makefile.global."
+  printf 'srcdir = .\ntop_srcdir = ../..\nVERSION = %s\n' "${version}" \
+    > "${work_tree}/src/Makefile.global"
+elif [[ -x "${work_tree}/configure" ]]; then
+  echo "Configuring source tree ..."
+  extra_configure_flags="${CONFIGURE_FLAGS:-}"
+  (cd "${work_tree}" && ./configure --without-icu --without-readline --without-zlib ${extra_configure_flags} >/dev/null)
+elif grep -qE '^include .*Makefile\.global' "${work_tree}/doc/src/sgml/Makefile"; then
+  # PG 6.x doc makefiles include src/Makefile.global unconditionally, but
+  # their doc targets only use self-defined jade-era variables.  A stub
+  # satisfies the include without running a 1998-era configure on a modern
+  # toolchain.
+  echo "No top-level configure; writing stub src/Makefile.global for the doc build."
+  printf '# pgdoc stub: legacy doc makefile include target (doc rules are self-contained).\n' \
+    > "${work_tree}/src/Makefile.global"
+else
+  echo "Skipping configure (legacy standalone doc makefile)."
+fi
 
 # XML parsing uses XML_CATALOG_FILES; --catalogs would also load native SGML catalogs.
 if [[ "${lang}" != "en" ]]; then
@@ -523,6 +560,24 @@ if [[ "${lang}" == "zh" ]]; then
     pdf_mono_bold_italic="${pdf_mono_bold}"
   fi
 
+  # 老版本手册（6.x/7.x）的集合论记号（∊∖∃∀…）在正文与代码字体里都没有
+  # 字形；注册系统 STIXGeneral 作数学后备，接在所有字体族列表末尾。
+  pdf_math_family="${PDF_MATH_FAMILY:-STIXGeneral}"
+  pdf_math_regular="${PDF_MATH_REGULAR:-$(resolve_font_file "${pdf_math_family}:style=Regular" || true)}"
+  if [[ -z "${pdf_math_regular}" ]]; then
+    pdf_math_regular="$(resolve_font_file "${pdf_math_family}" || true)"
+  fi
+  pdf_math_bold="${PDF_MATH_BOLD:-$(resolve_font_file "${pdf_math_family}:style=Bold" || true)}"
+  if [[ -z "${pdf_math_bold}" ]]; then
+    pdf_math_bold="${pdf_math_regular}"
+  fi
+  pdf_math_suffix=""
+  if [[ -n "${pdf_math_regular}" ]] && [[ -f "${pdf_math_regular}" ]]; then
+    pdf_math_suffix=",${pdf_math_family}"
+  else
+    pdf_math_family=""
+  fi
+
   fop_config="${work_tree}/doc/src/sgml/fop-local.xconf"
   create_fop_config \
     "${fop_config}" \
@@ -533,7 +588,10 @@ if [[ "${lang}" == "zh" ]]; then
     "${pdf_mono_regular}" \
     "${pdf_mono_bold}" \
     "${pdf_mono_italic}" \
-    "${pdf_mono_bold_italic}"
+    "${pdf_mono_bold_italic}" \
+    "${pdf_math_family}" \
+    "${pdf_math_regular}" \
+    "${pdf_math_bold}"
 fi
 
 append_xsltproc_flag() {
@@ -544,10 +602,10 @@ append_xsltproc_flag() {
 }
 
 if [[ "${lang}" == "zh" ]]; then
-  append_xsltproc_flag "--stringparam body.font.family '${pdf_cjk_family}'"
-  append_xsltproc_flag "--stringparam sans.font.family '${pdf_cjk_family}'"
-  append_xsltproc_flag "--stringparam title.font.family '${pdf_cjk_family}'"
-  append_xsltproc_flag "--stringparam monospace.font.family '${pdf_mono_param}'"
+  append_xsltproc_flag "--stringparam body.font.family '${pdf_cjk_family}${pdf_math_suffix:-}'"
+  append_xsltproc_flag "--stringparam sans.font.family '${pdf_cjk_family}${pdf_math_suffix:-}'"
+  append_xsltproc_flag "--stringparam title.font.family '${pdf_cjk_family}${pdf_math_suffix:-}'"
+  append_xsltproc_flag "--stringparam monospace.font.family '${pdf_mono_param}${pdf_math_suffix:-}'"
 fi
 
 (cd "${work_tree}" && XSLTPROCFLAGS="${xslprocflags_extra}" "${MAKE_CMD}" -C doc/src/sgml DOC_LANG="${lang}" "postgres-${paper}.fo" >/dev/null)
