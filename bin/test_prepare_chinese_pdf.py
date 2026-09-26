@@ -12,6 +12,61 @@ spec.loader.exec_module(module)
 
 
 class ChinesePdfTests(unittest.TestCase):
+    def test_email_can_wrap_in_a_table_without_changing_address(self):
+        source = '''<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format">
+          <fo:table-cell><fo:block><fo:inline keep-together.within-line="always">&lt;pgman@candle.pha.pa.us&gt;</fo:inline></fo:block></fo:table-cell>
+          <fo:block><fo:inline keep-together.within-line="always">&lt;a@example.org&gt;</fo:inline></fo:block>
+        </fo:root>'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'test.fo'
+            path.write_text(source)
+            module.prepare(path)
+            inline = [n for n in ET.parse(path).iter() if n.tag.endswith('}inline')]
+            self.assertEqual(inline[0].get('keep-together.within-line'), 'auto')
+            self.assertEqual(inline[0].text.replace('\u200b', ''), '<pgman@candle.pha.pa.us>')
+            self.assertIn('@\u200b', inline[0].text)
+            self.assertEqual(inline[1].get('keep-together.within-line'), 'always')
+            self.assertNotIn('@\u200b', inline[1].text)
+
+    def test_quoted_latin_terms_break_without_moving_closing_punctuation(self):
+        source = '''<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format">
+          <fo:block>在“origin”和“local”模式；“local”。</fo:block>
+          <fo:block white-space-treatment="preserve">“origin”和“local”</fo:block>
+        </fo:root>'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'test.fo'
+            path.write_text(source)
+            module.prepare(path)
+            blocks = [n for n in ET.parse(path).iter() if n.tag.endswith('}block')]
+            self.assertIn('“origin”\u200b和“local”\u200b模式', blocks[0].text)
+            self.assertIn('“local”。', blocks[0].text)
+            self.assertEqual(blocks[1].text, '“origin”和“local”')
+
+    def test_unsized_diagrams_fit_the_containing_block(self):
+        source = '''<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format">
+          <fo:layout-master-set><fo:simple-page-master master-name="body-first"
+              page-height="11in" margin-top="0.5in" margin-bottom="0.5in">
+            <fo:region-body margin-top="0.5in" margin-bottom="0.5in"/>
+          </fo:simple-page-master></fo:layout-master-set>
+          <fo:block><fo:external-graphic src="url(catalogs.gif)" width="auto"
+            content-width="auto" height="auto" content-height="auto"/></fo:block>
+          <fo:block><fo:external-graphic src="url(icon.png)" width="12pt"
+            content-width="12pt"/></fo:block>
+        </fo:root>'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'test.fo'
+            path.write_text(source)
+            module.prepare(path)
+            images = [n for n in ET.parse(path).iter() if n.tag.endswith('}external-graphic')]
+            self.assertEqual(images[0].get('width'), '100%')
+            self.assertEqual(images[0].get('content-width'), 'scale-down-to-fit')
+            self.assertEqual(images[0].get('scaling'), 'uniform')
+            self.assertEqual(images[0].get('max-height'), '600.000pt')
+            self.assertEqual(images[0].get('src'), 'url(catalogs.gif)')
+            self.assertEqual(images[1].get('width'), '12pt')
+            self.assertEqual(images[1].get('content-width'), '12pt')
+            self.assertIsNone(images[1].get('max-height'))
+
     def test_layout_preserves_code_links_and_existing_breaks(self):
         source = '''<fo:root xmlns:fo="http://www.w3.org/1999/XSL/Format">
           <fo:block id="pg_stat_activity">函数<fo:inline>array_agg</fo:inline>、

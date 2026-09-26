@@ -26,6 +26,26 @@ def apply(s):
 
 class SourceDespaceTests(unittest.TestCase):
 
+    def test_application_is_inline_but_keeps_latin_spacing(self):
+        source = '<para>工作区中。\n <Application>psql</Application>\n 程序会继续。</para>'
+        self.assertEqual(apply(source), '<para>工作区中。<Application>psql</Application>\n 程序会继续。</para>')
+        source = '<para>使用 <application>psql</application> 程序。</para>'
+        self.assertEqual(apply(source), source)
+
+    def test_generated_quote_marks_are_visible_edges(self):
+        self.assertEqual(apply('<para>字符串 <quote>Graphic</quote> 后面</para>'),
+                         '<para>字符串<quote>Graphic</quote>后面</para>')
+        latin = '<para>word <quote>term</quote> word</para>'
+        self.assertEqual(apply(latin), latin)
+        # The quote's own interior spacing is judged against its marks, not
+        # the parent characters outside the quote.
+        inner = '<para>字<quote> term </quote>字</para>'
+        self.assertEqual(apply(inner), inner)
+        self.assertEqual(apply('<para>word <quote>\n 中文\n </quote> word</para>'),
+                         '<para>word <quote>中文</quote> word</para>')
+        protected = '<screen>字 <quote>term</quote> 字</screen>'
+        self.assertEqual(apply(protected), protected)
+
     def test_basic_wrap_join_after_punctuation(self):
         src = '<para>\n    本章解释如何控制 PostgreSQL 的可靠性，\n    并介绍预写式日志的相关细节。\n</para>\n'
         out = apply(src)

@@ -75,7 +75,7 @@ EMPTY_ELEMENTS = frozenset((
 INLINE = frozenset((
     'emphasis', 'phrase', 'quote', 'foreignphrase', 'wordasword',
     'citetitle', 'citation', 'firstterm', 'glossterm', 'trademark',
-    'abbreviation', 'acronym', 'productname', 'personname', 'filename',
+    'abbreviation', 'acronym', 'application', 'productname', 'personname', 'filename',
     'command', 'replaceable', 'parameter', 'option', 'optional', 'argument',
     'systemitem', 'classname', 'methodname', 'varname', 'function', 'type',
     'constant', 'envar', 'email', 'ulink', 'link', 'subscript',
@@ -321,6 +321,10 @@ def _resolve_edges(node, s):
             if l is not None:
                 last = l
     node.first, node.last = first, last
+    if node.name == 'quote':
+        # DocBook renders quotation marks outside the element's text. Even
+        # a Latin-only quote therefore has full-width rendered outer edges.
+        node.first, node.last = '“', '”'
 
 
 def _boundary_left(items, idx, s):
@@ -423,18 +427,23 @@ def _collect(node, s, deletions, stats):
         if isinstance(item, Node):
             _collect(item, s, deletions, stats)
             if (item.kind in ('inline', 'wrap')
-                    and item.name not in VERBATIM_INLINE):
+                    and item.name not in VERBATIM_INLINE
+                    and item.name != 'quote'):
                 # Whitespace just inside an inline child's tags renders
                 # between the parent's neighbours and the child's edges.
                 lead, trail = _child_edge_runs(item, s)
                 if lead is not None:
                     lctx = _boundary_left(node.children, idx, s)
+                    if lctx is None and node.name == 'quote':
+                        lctx = '“'
                     if lctx is not None and item.first is not None \
                             and drop_space(lctx, item.first):
                         deletions.append((lead.start(), lead.end()))
                         stats['fw-fw'] += 1
                 if trail is not None:
                     rctx = _boundary_right(node.children, idx, s)
+                    if rctx is None and node.name == 'quote':
+                        rctx = '”'
                     if rctx is not None and item.last is not None \
                             and drop_space(item.last, rctx):
                         deletions.append((trail.start(), trail.end()))
@@ -445,9 +454,13 @@ def _collect(node, s, deletions, stats):
         lo, hi = item[1], item[2]
         for m in WS_RUN.finditer(s, lo, hi):
             left = _resolve_left(node.children, idx, m.start(), s)
+            if left is None and node.name == 'quote':
+                left = '“'
             if left is None:
                 continue
             right = _resolve_right(node.children, idx, m.end(), s)
+            if right is None and node.name == 'quote':
+                right = '”'
             if right is None:
                 continue
             if drop_space(left, right):

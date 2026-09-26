@@ -40,7 +40,7 @@ _NO_LINE_START = ('\u3001\u3002\uff0c\uff1b\uff1a\uff1f\uff01\uff09'
 _NOSTART_RE = re.compile(f'[{_NO_LINE_START}]')
 # 断行机会插入：字符类别 + 不与既有 \u200b 重复 + 不得把禁则字符推到行首
 _BREAK_RE = re.compile(
-    r'(?:[、，；。）_.]|(?<=[A-Za-z])-(?=[A-Za-z]))(?!\u200b)(?![%s])'
+    r'(?:[、，；。）”’_.]|(?<=[A-Za-z])-(?=[A-Za-z]))(?!\u200b)(?![%s])'
     % _NO_LINE_START)
 
 
@@ -235,6 +235,16 @@ def _kinsoku_pass(root):
         else:
             child.tail = value
 
+    # Resolve the next rendered character once. Slicing the remaining holder
+    # list at every trailing sentinel makes a full manual quadratic in size.
+    following = [None] * len(holders)
+    next_char = None
+    for idx in range(len(holders) - 1, -1, -1):
+        following[idx] = next_char
+        char = _eff(text_of(holders[idx]))
+        if char is not None:
+            next_char = char
+
     removed = 0
     for idx, h in enumerate(holders):
         if h[2]:
@@ -249,18 +259,40 @@ def _kinsoku_pass(root):
 
         new = re.sub(r'\u200b+', strip_bad, t)
         if new.endswith('\u200b'):
-            nxt = None
-            for h2 in holders[idx + 1:]:
-                c = _eff(text_of(h2))
-                if c is not None:
-                    nxt = c
-                    break
+            nxt = following[idx]
             if nxt is not None and _NOSTART_RE.match(nxt):
                 new = new.rstrip('\u200b')
         if new != t:
             removed += t.count('\u200b') - new.count('\u200b')
             set_text(h, new)
     return removed
+
+
+def _image_height_limit(root):
+    """Reserve room for a figure caption inside the portrait body masters."""
+    def points(value):
+        match = re.fullmatch(r'([0-9.]+)(pt|in|mm|cm|pc)', value)
+        if not match:
+            return None
+        return float(match[1]) * {'pt': 1, 'in': 72, 'mm': 72/25.4,
+                                  'cm': 72/2.54, 'pc': 12}[match[2]]
+
+    limits = []
+    for master in root.iter('{http://www.w3.org/1999/XSL/Format}simple-page-master'):
+        if not master.get('master-name', '').startswith('body'):
+            continue
+        body = master.find('{http://www.w3.org/1999/XSL/Format}region-body')
+        if body is None:
+            continue
+        values = [points(master.get('page-height', 'auto'))]
+        for node in (master, body):
+            values.extend(points(node.get('margin-' + side, node.get('margin', '0pt')))
+                          for side in ('top', 'bottom'))
+        if all(v is not None for v in values):
+            limit = values[0] - sum(values[1:]) - 48
+            if limit > 0:
+                limits.append(limit)
+    return min(limits) if limits else None
 
 
 def prepare(path, cjk_family='Alibaba PuHuiTi 3.0'):
@@ -272,24 +304,50 @@ def prepare(path, cjk_family='Alibaba PuHuiTi 3.0'):
     tree = ET.parse(path, parser=parser)
     removed = [0]
     _despace_pass(tree.getroot(), False, removed)
+    image_height_limit = _image_height_limit(tree.getroot())
     added = 0
 
-    def break_prose(text):
+    def break_prose(text, email=False):
         nonlocal added
         if not text:
             return text
         # Idempotent if the same FO is rendered more than once; same-node
         # kinsoku via the lookahead, cross-node by _kinsoku_pass below.
         broken = _BREAK_RE.sub(lambda m: m[0] + '\u200b', text)
+        if email:
+            broken = re.sub(r'@(?!\u200b)', '@\u200b', broken)
         added += broken.count('\u200b') - text.count('\u200b')
         return broken
 
-    def visit(node, preserve=False, in_cell=False, centered_cell=False):
+    def visit(node, preserve=False, in_cell=False, centered_cell=False, email=False):
         if not isinstance(node.tag, str):
             return
         preserve = (preserve or node.get('white-space-treatment') == 'preserve'
                     or node.tag.endswith('}instream-foreign-object'))
+        if (node.tag.endswith('}external-graphic')
+                and node.get('width', 'auto') == 'auto'
+                and node.get('content-width', 'auto') == 'auto'):
+            # Legacy GIF diagrams have no physical size. Rendering their
+            # intrinsic pixels as points clips wide figures (and tall catalog
+            # diagrams) outside the page. FOP resolves 100% against the actual
+            # containing block, including its indents; small images stay small.
+            node.set('width', '100%')
+            node.set('content-width', 'scale-down-to-fit')
+            node.set('scaling', 'uniform')
+            if (image_height_limit is not None
+                    and node.get('height', 'auto') == 'auto'
+                    and node.get('content-height', 'auto') == 'auto'
+                    and node.get('max-height', 'none') == 'none'):
+                node.set('max-height', f'{image_height_limit:.3f}pt')
         in_cell = in_cell or node.tag.endswith('}table-cell')
+        if (in_cell and not preserve
+                and node.get('keep-together.within-line') == 'always'
+                and re.fullmatch(r'<[^<>\s]+@[^<>\s]+>',
+                                 ''.join(node.itertext()).strip().replace('\u200b', ''))):
+            # DocBook email markup otherwise overrides the break opportunities
+            # at domain dots. Also permit a break after @ for narrow columns.
+            node.set('keep-together.within-line', 'auto')
+            email = True
         centered_cell = centered_cell or (node.tag.endswith('}table-cell') and node.get('text-align') == 'center')
         family = node.get('font-family', '')
         if (node.tag.endswith('}inline') and cjk_family in [x.strip() for x in family.split(',')]
@@ -316,13 +374,14 @@ def prepare(path, cjk_family='Alibaba PuHuiTi 3.0'):
             if (re.fullmatch(r'[A-Za-z0-9_:+.\-]{9,}', value)
                     or re.search(r'\d{16,}', value)
                     or (centered_cell and re.search(r'[A-Za-z]{8,}', value))):
-                node.set('font-size', '7.8pt' if centered_cell else '8.5pt')
+                node.set('font-size', '7.8pt' if centered_cell else
+                         '8.4pt' if re.search(r'\d{16,}', value) else '8.5pt')
         if not preserve:
-            node.text = break_prose(node.text)
+            node.text = break_prose(node.text, email)
         for child in node:
-            visit(child, preserve, in_cell, centered_cell)
+            visit(child, preserve, in_cell, centered_cell, email)
             if not preserve:
-                child.tail = break_prose(child.tail)
+                child.tail = break_prose(child.tail, email)
         if node.tag.endswith('}list-item-label'):
             for child in node:
                 if child.tag.endswith('}block') and re.fullmatch(r'\d{2,}\.\u200b?', (child.text or '').strip()):

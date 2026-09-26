@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Normalize legacy CALS tables in osx-generated postgres.xml (stdin → stdout).
+"""Adapt legacy DocBook markup in osx-generated postgres.xml (stdin → stdout).
 
 PG 6.x – 7.x sources carry 1998-era DocBook tables whose ``tgroup cols``
 disagrees with the per-row ``<entry>`` counts (jade-era renderers tolerated
@@ -12,13 +12,60 @@ that; FOP rejects the resulting XSL-FO).  For every tgroup:
   left untouched and reported on stderr — spans need human judgement.
 
 Every change is reported to stderr so build logs carry the audit trail.
+Legacy bookbiblio entries use the modern biblioentry template; figure xrefs
+whose endterm points to the entire figure use the normal numbered reference
+instead of copying the image into the referring paragraph. Source SGML is
+never modified.
 """
 import re
 import sys
+from pathlib import Path
 
 TG = re.compile(r'(<tgroup\b[^>]*cols=")(\d+)("[^>]*>)(.*?)(</tgroup>)', re.S)
 ROW = re.compile(r'(<row\b[^>]*>)(.*?)(</row>)', re.S)
 ENTRY = re.compile(r'<entry\b[^>]*>')
+
+
+def normalize_legacy_markup(data, base_dir=None):
+    base_dir = Path(base_dir) if base_dir is not None else Path.cwd()
+
+    def resolve_image(match):
+        tag = match.group(0)
+        ref = re.search(r'\bfileref="([^"]+)"', tag)
+        if not ref or '://' in ref[1]:
+            return tag
+        original = base_dir / ref[1]
+        if original.exists() or original.suffix:
+            return tag
+        candidates = [original.with_suffix(ext) for ext in
+                      ('.gif', '.png', '.jpg', '.jpeg', '.svg')
+                      if original.with_suffix(ext).is_file()]
+        if len(candidates) == 1:
+            replacement = ref[1] + candidates[0].suffix
+            print(f'normalize_cals_tables: resolved image {ref[1]} -> {replacement}',
+                  file=sys.stderr)
+            return tag[:ref.start(1)] + replacement + tag[ref.end(1):]
+        return tag
+
+    data = re.sub(r'<(?:graphic|imagedata)\b[^>]*>', resolve_image, data)
+    figures = set(re.findall(r'<figure\b[^>]*\bid="([^"]+)"', data))
+
+    def fix_xref(match):
+        tag = match.group(0)
+        link = re.search(r'\blinkend="([^"]+)"', tag)
+        end = re.search(r'\s+endterm="([^"]+)"', tag)
+        if link and end and link[1] == end[1] and link[1] in figures:
+            print(f'normalize_cals_tables: use numbered figure xref {link[1]}',
+                  file=sys.stderr)
+            return tag[:end.start()] + tag[end.end():]
+        return tag
+
+    data = re.sub(r'<xref\b[^>]*>', fix_xref, data)
+    data, count = re.subn(r'(<\/?)(bookbiblio)(?=[\s>])', r'\1biblioentry', data)
+    if count:
+        print(f'normalize_cals_tables: adapted {count // 2} bookbiblio entries',
+              file=sys.stderr)
+    return data
 
 
 def fix_tgroup(m):
@@ -68,7 +115,7 @@ def body_replace(body, rebuilt_rows):
 
 
 def main():
-    data = sys.stdin.read()
+    data = normalize_legacy_markup(sys.stdin.read())
     # 旧源的 <figure float="1"> 会让 docbook-xsl 生成 fo:float；FOP 不支持
     # float（渲染期 area-null NPE）。这个 jade 时代的排版暗示对 PDF 无意义，剥掉。
     data = re.sub(r'(<(?:figure|informalfigure|table|informaltable|equation)\b[^>]*?)\s+float="1"', r'\1', data)
