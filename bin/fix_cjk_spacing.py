@@ -244,7 +244,7 @@ def _parse_range(s, lo, hi, root):
         elif kind == 'cdata':
             stack[-1].children.append(('verbatim-text', i, j))
         elif kind == 'msection':
-            node = Node('#msection', 'block')
+            node = Node('#msection', 'wrap')
             stack[-1].children.append(node)
             # Content starts after the keyword/condition bracket, i.e. the
             # first '[' past the '<![' opener.
@@ -323,12 +323,8 @@ def _resolve_edges(node, s):
     node.first, node.last = first, last
 
 
-def _resolve_left(items, idx, pos, s):
-    """Effective rendered char immediately left of items[idx][:pos]."""
-    _, lo, _ = items[idx]
-    c = _last_char(s[lo:pos])
-    if c is not None:
-        return c
+def _boundary_left(items, idx, s):
+    """Effective rendered char immediately left of items[idx] (an element)."""
     k = idx - 1
     while k >= 0:
         item = items[k]
@@ -338,6 +334,9 @@ def _resolve_left(items, idx, pos, s):
                 continue
             if item.kind == 'block':
                 return None
+            if item.last is None:
+                k -= 1
+                continue
             return item.last
         c = _last_char(s[item[1]:item[2]])
         if c is not None:
@@ -346,12 +345,8 @@ def _resolve_left(items, idx, pos, s):
     return None
 
 
-def _resolve_right(items, idx, pos, s):
-    """Effective rendered char immediately right of items[idx][pos:]."""
-    _, _, hi = items[idx]
-    c = _first_char(s[pos:hi])
-    if c is not None:
-        return c
+def _boundary_right(items, idx, s):
+    """Effective rendered char immediately right of items[idx] (an element)."""
     k = idx + 1
     while k < len(items):
         item = items[k]
@@ -361,12 +356,60 @@ def _resolve_right(items, idx, pos, s):
                 continue
             if item.kind == 'block':
                 return None
+            if item.first is None:
+                k += 1
+                continue
             return item.first
         c = _first_char(s[item[1]:item[2]])
         if c is not None:
             return c
         k += 1
     return None
+
+
+def _resolve_left(items, idx, pos, s):
+    """Effective rendered char immediately left of items[idx][:pos]."""
+    _, lo, _ = items[idx]
+    c = _last_char(s[lo:pos])
+    if c is not None:
+        return c
+    return _boundary_left(items, idx, s)
+
+
+def _resolve_right(items, idx, pos, s):
+    """Effective rendered char immediately right of items[idx][pos:]."""
+    _, _, hi = items[idx]
+    c = _first_char(s[pos:hi])
+    if c is not None:
+        return c
+    return _boundary_right(items, idx, s)
+
+
+def _child_edge_runs(item, s):
+    """Proper-prefix/suffix whitespace runs at the rendered edges of an
+    inline child's own content: whitespace between the child's open tag and
+    its first char (or last char and close tag) renders against the parent's
+    neighbours across those tags."""
+    lead = trail = None
+    for it in item.children:
+        if isinstance(it, Node):
+            if it.kind == 'transparent':
+                continue
+            break  # content begins with a rendered element
+        m = WS_RUN.match(s, it[1], it[2])
+        if m and m.end() < it[2]:
+            lead = m
+        break
+    for it in reversed(item.children):
+        if isinstance(it, Node):
+            if it.kind == 'transparent':
+                continue
+            break
+        for m in WS_RUN.finditer(s, it[1], it[2]):
+            if m.end() == it[2] and m.start() > it[1]:
+                trail = m
+        break
+    return lead, trail
 
 
 def _collect(node, s, deletions, stats):
@@ -379,6 +422,23 @@ def _collect(node, s, deletions, stats):
     for idx, item in enumerate(node.children):
         if isinstance(item, Node):
             _collect(item, s, deletions, stats)
+            if (item.kind in ('inline', 'wrap')
+                    and item.name not in VERBATIM_INLINE):
+                # Whitespace just inside an inline child's tags renders
+                # between the parent's neighbours and the child's edges.
+                lead, trail = _child_edge_runs(item, s)
+                if lead is not None:
+                    lctx = _boundary_left(node.children, idx, s)
+                    if lctx is not None and item.first is not None \
+                            and drop_space(lctx, item.first):
+                        deletions.append((lead.start(), lead.end()))
+                        stats['fw-fw'] += 1
+                if trail is not None:
+                    rctx = _boundary_right(node.children, idx, s)
+                    if rctx is not None and item.last is not None \
+                            and drop_space(item.last, rctx):
+                        deletions.append((trail.start(), trail.end()))
+                        stats['fw-fw'] += 1
             continue
         if item[0] == 'verbatim-text':
             continue

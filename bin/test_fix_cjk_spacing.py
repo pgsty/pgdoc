@@ -171,6 +171,20 @@ class SourceDespaceTests(unittest.TestCase):
         src = '<para>使用 <command>initdb</command> 初始化。\n  之后运行。</para>\n'
         self.assertEqual(apply(src), '<para>使用 <command>initdb</command> 初始化。之后运行。</para>\n')
 
+    def test_inline_child_leading_ws_against_parent(self):
+        # Whitespace just inside an inline child's open tag renders between
+        # the parent's preceding char and the child's first char.
+        src = '<para>文档由<ulink url="x">\n   官方站点</ulink>提供了信息。</para>\n'
+        self.assertEqual(apply(src),
+                         '<para>文档由<ulink url="x">官方站点</ulink>提供了信息。</para>\n')
+
+    def test_marked_section_boundary_wrap(self):
+        src = ('<para>测试会失败。<![%flattext-install-include[文件包含]]>'
+               '<![%flattext-install-ignore[<xref linkend="r">包含]]>\n    关于解释测试结果。</para>\n')
+        self.assertEqual(apply(src),
+                         '<para>测试会失败。<![%flattext-install-include[文件包含]]>'
+                         '<![%flattext-install-ignore[<xref linkend="r">包含]]>关于解释测试结果。</para>\n')
+
     def test_footnote_is_block_boundary(self):
         src = '<para>句。<footnote><para>注。</para></footnote>\n后句</para>\n'
         # Footnote renders out-of-line; space after it is legitimate.
