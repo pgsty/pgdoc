@@ -59,6 +59,10 @@ VERBATIM_INLINE = frozenset((
 GENTEXT = frozenset(('xref',))
 # Renders nothing; neighbour resolution looks straight through.
 TRANSPARENT = frozenset(('indexterm', 'anchor', 'remark', 'beginpage'))
+# Index terms render into the back-of-book index joined by generated
+# full-width separators, so whitespace at the very start/end of their
+# content is junk next to the separator.
+INDEX_TEXT = frozenset(('primary', 'secondary', 'tertiary', 'see', 'seealso'))
 # SGML EMPTY elements whose open tag is the whole element.
 EMPTY_ELEMENTS = frozenset((
     'xref', 'anchor', 'graphic', 'inlinegraphic', 'imagedata', 'videodata',
@@ -367,8 +371,11 @@ def _resolve_right(items, idx, pos, s):
 
 def _collect(node, s, deletions, stats):
     if node.name in VERBATIM_BLOCK or node.name in VERBATIM_INLINE \
-            or node.kind in ('transparent', 'gentext'):
+            or node.kind == 'gentext':
         return
+    # TRANSPARENT elements render out of line (e.g. indexterm renders into
+    # the back-of-book index), so their inner text still gets cleaned; only
+    # their inline neighbours look through them.
     for idx, item in enumerate(node.children):
         if isinstance(item, Node):
             _collect(item, s, deletions, stats)
@@ -387,6 +394,46 @@ def _collect(node, s, deletions, stats):
                 deletions.append((m.start(), m.end()))
                 stats['strict-punct' if (STRICT_RE.match(left) or STRICT_RE.match(right))
                      else 'fw-fw'] += 1
+    if node.name in INDEX_TEXT:
+        _strip_index_edge_ws(node, s, deletions, stats)
+
+
+def _strip_index_edge_ws(node, s, deletions, stats):
+    """Delete whitespace runs touching the start/end of an index term's
+    content: the index joins entries with generated separators, so edge
+    whitespace only produces a spurious gap before them."""
+    def first_text():
+        for item in node.children:
+            if isinstance(item, Node):
+                if item.kind == 'transparent':
+                    continue
+                return None  # content begins with an element
+            return item
+        return None
+
+    def last_text():
+        for item in reversed(node.children):
+            if isinstance(item, Node):
+                if item.kind == 'transparent':
+                    continue
+                return None
+            return item
+        return None
+
+    item = first_text()
+    if item:
+        lo, hi = item[1], item[2]
+        m = WS_RUN.match(s, lo, hi)
+        if m:
+            deletions.append((m.start(), m.end()))
+            stats['fw-fw'] += 1
+    item = last_text()
+    if item:
+        lo, hi = item[1], item[2]
+        for m in WS_RUN.finditer(s, lo, hi):
+            if m.end() == hi:
+                deletions.append((m.start(), m.end()))
+                stats['fw-fw'] += 1
 
 
 def fix_text(s):

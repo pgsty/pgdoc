@@ -108,8 +108,22 @@ class SourceDespaceTests(unittest.TestCase):
         self.assertEqual(apply(src), '<para>字。<!-- 注释 -->字</para>\n')
 
     def test_indexterm_transparent(self):
+        # Inline neighbours look through the indexterm; boundary whitespace
+        # (across the element edges) is dropped, and inner han-han spaces
+        # are cleaned too (renders into the index).
         src = '<para>字。<indexterm><primary>事 务</primary></indexterm>\n字</para>\n'
-        self.assertEqual(apply(src), '<para>字。<indexterm><primary>事 务</primary></indexterm>字</para>\n')
+        self.assertEqual(apply(src), '<para>字。<indexterm><primary>事务</primary></indexterm>字</para>\n')
+
+    def test_index_term_edge_whitespace_stripped(self):
+        src = '<indexterm>\n  <primary>\n   <varname>pg_trgm.sim</varname> 配置参数\n  </primary>\n</indexterm>\n'
+        self.assertEqual(apply(src),
+                         '<indexterm>\n  <primary><varname>pg_trgm.sim</varname> 配置参数</primary>\n</indexterm>\n')
+
+    def test_indexterm_inner_text_cleaned(self):
+        # indexterm renders into the back-of-book index: its own wrapped
+        # text must be cleaned even though inline neighbours look through.
+        src = '<para>字。<indexterm><primary>配置参数\n      ，归档</primary></indexterm>字</para>\n'
+        self.assertEqual(apply(src), '<para>字。<indexterm><primary>配置参数，归档</primary></indexterm>字</para>\n')
 
     def test_table_cell_internal_wrap(self):
         src = '<entry>主机名。\n      说明字</entry>\n'
