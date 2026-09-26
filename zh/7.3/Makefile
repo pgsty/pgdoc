@@ -14,10 +14,12 @@ export CFLAGS := -Wno-error=implicit-int -Wno-error=implicit-function-declaratio
 # Catalogs: shared DocBook 4.2/unicode deps + local DocBook 3.1 overlay
 # (tmp/pg7x/deps; first SGMLDECL wins, so the shared unicode declaration
 # applies and the overlay only adds the 3.1 DTD public-id mappings).
-PGDOC_SGML_DEPS := $(REPO_ROOT)/tmp/pg10-13-from-14/20260909-150220/agents/archive_build/deps
-OSX ?= $(PGDOC_SGML_DEPS)/bin/osx
-NSGMLS ?= $(PGDOC_SGML_DEPS)/bin/onsgmls
-SGML_CATALOG_FILES ?= $(PGDOC_SGML_DEPS)/sgml-unicode.catalog:$(REPO_ROOT)/tmp/pg7x/deps/catalog
+# 现代 clang 跑不通 7.x 的古董 configure；doc 构建只需 VERSION，走桩。
+export PGDOC_SKIP_CONFIGURE := 1
+PGDOC_SGML_DEPS := $(REPO_ROOT)/deps/sgml
+OSX ?= osx
+NSGMLS ?= onsgmls
+SGML_CATALOG_FILES ?= $(PGDOC_SGML_DEPS)/sgml-unicode.catalog
 SP_ENCODING ?= UTF-8
 SP_CHARSET_FIXED ?= YES
 export OSX NSGMLS SGML_CATALOG_FILES SP_ENCODING SP_CHARSET_FIXED

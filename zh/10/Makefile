@@ -4,13 +4,13 @@ REPO_ROOT := $(abspath $(CURDIR)/../..)
 DOC_VERSION := $(notdir $(CURDIR))
 PG_VERSION ?= 10.23
 # Fixed official release package for this archive reconstruction.
-PGDOC_SOURCE_ARCHIVE ?= $(REPO_ROOT)/tmp/pg10-13-from-14/20260909-150220/downloads/postgresql-10.23.tar.bz2
+PGDOC_SOURCE_ARCHIVE ?= $(REPO_ROOT)/.cache/upstream/postgresql-10.23.tar.bz2
 PGDOC_SOURCE_SHA256 ?= 94a4b2528372458e5662c18d406629266667c437198160a18cdfd2c4a4d6eee9
 export PGDOC_SOURCE_ARCHIVE PGDOC_SOURCE_SHA256
 # PG10 uses DocBook SGML 4.2 and OpenSP before the shared XML/XSL pipeline.
-PGDOC_SGML_DEPS := $(REPO_ROOT)/tmp/pg10-13-from-14/20260909-150220/agents/archive_build/deps
-OSX ?= $(PGDOC_SGML_DEPS)/bin/osx
-NSGMLS ?= $(PGDOC_SGML_DEPS)/bin/onsgmls
+PGDOC_SGML_DEPS := $(REPO_ROOT)/deps/sgml
+OSX ?= osx
+NSGMLS ?= onsgmls
 SGML_CATALOG_FILES ?= $(PGDOC_SGML_DEPS)/sgml-unicode.catalog
 SP_ENCODING ?= UTF-8
 SP_CHARSET_FIXED ?= YES

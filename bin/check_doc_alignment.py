@@ -899,7 +899,7 @@ def main():
         'argv': sys.argv, 'python': sys.version, 'expat': expat.EXPAT_VERSION,
         'script_sha256': file_hash(__file__), 'git_head': git('rev-parse', 'HEAD'),
         'git_status': git('status', '--short'), 'inputs': initial, 'preparation': prepared,
-        'catalogs': en.catalogs, 'rules': source_manifest(root / 'tmp/ref')}
+        'catalogs': en.catalogs, 'rules': source_manifest(root / 'docs')}
     coverage = report(Alignment(en, zh).run(), out, manifest)
     print(json.dumps({k: v for k,v in coverage.items() if k != 'landmark_coverage_by_tag'}, ensure_ascii=False))
     return coverage['exit_code']

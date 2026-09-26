@@ -20,14 +20,26 @@ def version_declarations_pg6x(source, requested):
     # PG 6.x archives have no top-level Autoconf input; the version lives in
     # src/include/version.h(.in).  6.3.x omits PG_SUBVERSION (branch patch
     # level only in the archive name), so accept a prefix match there.
+    # PG 7.1/7.2 keep old-style AC_INIT(source-file) and have no version.h;
+    # the top-level generated configure carries VERSION='x.y.z'.
     vh = source / 'src/include/version.h.in'
     if not vh.is_file():
         vh = source / 'src/include/version.h'
+    if not vh.is_file():
+        configure = source / 'configure'
+        if configure.is_file():
+            m = re.search(r"(?m)^VERSION='([^']+)'", configure.read_text())
+            if m:
+                version = m[1]
+                if requested != version and not requested.startswith(version + '.'):
+                    raise ValueError(f'pinned source version mismatch: requested {requested}, got {version}')
+                return version, {'configure': version}
+        raise ValueError('pinned source has no configure.ac, configure.in'
+                         ' or src/include/version.h(.in)')
     try:
         text = vh.read_text()
     except OSError:
-        raise ValueError('pinned source has no configure.ac, configure.in'
-                         ' or src/include/version.h(.in)')
+        raise ValueError('pinned source has no readable version declaration')
     parts = {key: re.search(rf'^#define\s+{key}\s+"?(\d+)', text, re.M)
              for key in ('PG_RELEASE', 'PG_VERSION', 'PG_SUBVERSION')}
     if not (parts['PG_RELEASE'] and parts['PG_VERSION']):
@@ -45,6 +57,13 @@ def version_declarations(source, requested):
     autoconf_inputs = [name for name in ('configure.ac', 'configure.in')
                        if (source / name).is_file()]
     if not autoconf_inputs:
+        return version_declarations_pg6x(source, requested)
+    init = re.search(r'AC_INIT\(([^,)]*)',
+                     (source / autoconf_inputs[0]).read_text())
+    if not init or 'PostgreSQL' not in init.group(1):
+        # PG 7.0 – 7.2 used the old AC_INIT(source-file) form without a
+        # version literal; the authoritative version lives in
+        # src/include/version.h(.in), exactly as in the PG 6.x trees.
         return version_declarations_pg6x(source, requested)
     patterns = {name: r'AC_INIT\(\[PostgreSQL\],\s*\[([^]]+)\]'
                 for name in autoconf_inputs}

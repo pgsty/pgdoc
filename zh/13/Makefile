@@ -4,7 +4,7 @@ REPO_ROOT := $(abspath $(CURDIR)/../..)
 DOC_VERSION := $(notdir $(CURDIR))
 PG_VERSION ?= 13.23
 # Fixed official release package for this archive reconstruction.
-PGDOC_SOURCE_ARCHIVE ?= $(REPO_ROOT)/tmp/pg10-13-from-14/20260909-150220/downloads/postgresql-13.23.tar.bz2
+PGDOC_SOURCE_ARCHIVE ?= $(REPO_ROOT)/.cache/upstream/postgresql-13.23.tar.bz2
 PGDOC_SOURCE_SHA256 ?= 6ec3c82726af92b7dec873fa1cdf881eca92a4219787dfad05acb6b10e041fd6
 export PGDOC_SOURCE_ARCHIVE PGDOC_SOURCE_SHA256
 DOC_LANG := $(notdir $(abspath $(CURDIR)/..))

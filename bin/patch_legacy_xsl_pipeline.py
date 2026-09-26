@@ -164,6 +164,7 @@ SDATA_6X = (
 XSLTHTML_BLOCK_6X_TEMPLATE = """
 # -- begin pgdoc backport: XSL HTML pipeline for PG 6.x (patch_legacy_xsl_pipeline.py) --
 OSX ?= osx
+PYTHON ?= python3
 PERL ?= perl
 XSLTPROC ?= xsltproc
 XSLTPROCFLAGS ?= --nonet
@@ -177,6 +178,7 @@ postgres.xml: postgres.sgml $(PGDOC_ALLSGML)
 \t$(OSX) -D. -Dref -x lower $(PGDOC_SGML_DECL) $< | \\
 \t  $(PERL) -p -e 's/\\[({sdata}) *\\]/\\&\\1;/g;' \\
 \t             -e '$$_ .= qq{{<!DOCTYPE book PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN" "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">\\n}} if $$. == 1;' \\
+\t  | $(PYTHON) {normalizer} \
 \t  >$@
 
 html: xslthtml-stamp
@@ -211,7 +213,7 @@ def patch_pg6x(sgml_dir):
     if "-//Davenport//DTD DocBook V3.0//EN" not in pg:
         return False
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    sgml_decl = f"{repo_root}/tmp/pg6x/deps/docbk30/docbook-omittag.dcl"
+    sgml_decl = f"{repo_root}/deps/sgml/docbook-omittag.dcl"
     if not os.path.exists(sgml_decl):
         print("patch_legacy_xsl_pipeline: WARNING:"
               f" {sgml_decl} missing; osx will fall back to OMITTAG NO",
@@ -225,10 +227,73 @@ def patch_pg6x(sgml_dir):
     version = m.group(1) if m else ""
     sdata = "|".join(SDATA_6X.split())
     mf += XSLTHTML_BLOCK_6X_TEMPLATE.format(
-        version=version, sgml_decl=sgml_decl, sdata=sdata)
+        version=version, sgml_decl=sgml_decl, sdata=sdata,
+        normalizer=os.path.join(repo_root, "bin", "normalize_cals_tables.py"))
+    # 2026-09-25: the synthesized html chain alone leaves `make postgres-A4.fo`
+    # without a rule; append the shared FO block when the zh overlay carries
+    # stylesheet-fo.xsl (it always does).
+    if "%-A4.fo.tmp:" not in mf and os.path.exists(f"{sgml_dir}/stylesheet-fo.xsl"):
+        mf += XSLFO_BLOCK
     with open(makefile, "w", encoding="utf-8") as f:
         f.write(mf)
     print("patch_legacy_xsl_pipeline: synthesized XSL pipeline onto PG 6.x"
+          f" doc makefile (pgdoc version '{version}')")
+    return True
+
+
+def patch_pg7x(sgml_dir):
+    """Synthesize the XSL pipeline onto a PG 7.x jade-era makefile.
+
+    Same shape as 6.x (no postgres.xml rule) but the makefile usually already
+    owns an `html:` target and may include src/Makefile.global
+    (7.1 – 7.4 run top-level configure; 7.0's include is conditional).
+    Rename the jade html target so the appended XSL rules win, then reuse the
+    6.x block (DocBook V3.1 doctype, osx + SDATA fixup) plus the FO chain.
+    """
+    makefile = f"{sgml_dir}/Makefile"
+    with open(makefile, encoding="utf-8") as f:
+        mf = f.read()
+    if "xslthtml-stamp:" in mf or "postgres.xml:" in mf:
+        return False
+    try:
+        with open(f"{sgml_dir}/postgres.sgml", encoding="utf-8",
+                  errors="replace") as f:
+            pg = f.read()
+    except OSError:
+        return False
+    if "-//oasis//dtd docbook v3.1//en" not in pg.lower():
+        return False
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    m = re.search(r"standalone-(?:en|zh)-(\d+\.\d+(?:\.\d+)?)\.[A-Za-z0-9]+",
+                  os.path.abspath(sgml_dir))
+    version = m.group(1) if m else ""
+    sdata = "|".join(SDATA_6X.split())
+    # jade 的 html 目标改名保留，避免 GNU make 的 overriding 警告与歧义。
+    mf = re.sub(r"(?m)^html:", "jade-html:", mf)
+    mf += XSLTHTML_BLOCK_6X_TEMPLATE.format(
+        version=version, sgml_decl="", sdata=sdata,
+        normalizer=os.path.join(repo_root, "bin", "normalize_cals_tables.py"))
+    # features 附录引用 &features-supported; 等生成文件；合成的 postgres.xml 用
+    # 通配符依赖不会触发生成规则，这里显式补一道（Makefile 已有对应规则时）。
+    if re.search(r"(?m)^features-supported\.sgml:", mf):
+        mf += ("\n\n# -- begin pgdoc backport: generated feature tables (PG 7.x) --\n"
+               "postgres.xml: | pgdoc-features\n\n"
+               "pgdoc-features:\n"
+               "\t$(MAKE) features-supported.sgml features-unsupported.sgml\n"
+               "# -- end pgdoc backport --\n")
+    # postgres.sgml 引用 &version;；通配符依赖不触发上游的 version.sgml 规则。
+    # 7.0 的版本实体内联在 postgres.sgml 里（Makefile 无 version.sgml 规则），跳过。
+    if re.search(r"(?m)^version\.sgml:", mf):
+        mf += ("\n\n# -- begin pgdoc backport: generated version entity (PG 7.x) --\n"
+               "postgres.xml: | pgdoc-version\n\n"
+               "pgdoc-version:\n"
+               "\t@test -f version.sgml || $(MAKE) version.sgml\n"
+               "# -- end pgdoc backport --\n")
+    if "%-A4.fo.tmp:" not in mf and os.path.exists(f"{sgml_dir}/stylesheet-fo.xsl"):
+        mf += XSLFO_BLOCK
+    with open(makefile, "w", encoding="utf-8") as f:
+        f.write(mf)
+    print("patch_legacy_xsl_pipeline: synthesized XSL pipeline onto PG 7.x"
           f" doc makefile (pgdoc version '{version}')")
     return True
 
@@ -245,7 +310,10 @@ def main():
     if "postgres.xml:" not in mf:
         # PG 6.x jade-era makefiles have neither an html: target nor a
         # postgres.xml rule; the 6.x branch synthesizes the whole pipeline.
-        patch_pg6x(sgml_dir)
+        # PG 7.x jade-era makefiles (DocBook V3.1) get the same treatment via
+        # patch_pg7x; each patcher declines doctypes it does not recognise.
+        if not patch_pg6x(sgml_dir):
+            patch_pg7x(sgml_dir)
         return
     # PG <= 8.2 ships stylesheet.xsl + a bare "XSLTPROC = xsltproc"
     # assignment (no ifndef wrapper, no xslthtml target at all).  Wrap the

@@ -11,9 +11,9 @@ export PGDOC_SOURCE_ARCHIVE PGDOC_SOURCE_SHA256
 export CFLAGS := -Wno-error=implicit-int -Wno-error=implicit-function-declaration -Wno-error=int-conversion
 # PG9.x uses DocBook SGML 4.2 and OpenSP; its doc makefile defaults html to
 # DSSSL/jade, so build_standalone_docsrc.sh reroutes html to the XSL pipeline.
-PGDOC_SGML_DEPS := $(REPO_ROOT)/tmp/pg10-13-from-14/20260909-150220/agents/archive_build/deps
-OSX ?= $(PGDOC_SGML_DEPS)/bin/osx
-NSGMLS ?= $(PGDOC_SGML_DEPS)/bin/onsgmls
+PGDOC_SGML_DEPS := $(REPO_ROOT)/deps/sgml
+OSX ?= osx
+NSGMLS ?= onsgmls
 SGML_CATALOG_FILES ?= $(PGDOC_SGML_DEPS)/sgml-unicode.catalog
 SP_ENCODING ?= UTF-8
 SP_CHARSET_FIXED ?= YES

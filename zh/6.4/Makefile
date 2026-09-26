@@ -11,10 +11,10 @@ export PGDOC_SOURCE_ARCHIVE PGDOC_SOURCE_SHA256
 export CFLAGS := -Wno-error=implicit-int -Wno-error=implicit-function-declaration -Wno-error=int-conversion
 # PG 6.x uses DocBook SGML V3.0 (Davenport); the shared deps only carry 4.2,
 # so the pg6x overlay catalog supplies the V3.0 DTD on top of the shared one.
-PGDOC_SGML_DEPS := $(REPO_ROOT)/tmp/pg10-13-from-14/20260909-150220/agents/archive_build/deps
-OSX ?= $(PGDOC_SGML_DEPS)/bin/osx
-NSGMLS ?= $(PGDOC_SGML_DEPS)/bin/onsgmls
-SGML_CATALOG_FILES ?= $(PGDOC_SGML_DEPS)/sgml-unicode.catalog:$(REPO_ROOT)/tmp/pg6x/deps/catalog
+PGDOC_SGML_DEPS := $(REPO_ROOT)/deps/sgml
+OSX ?= osx
+NSGMLS ?= onsgmls
+SGML_CATALOG_FILES ?= $(PGDOC_SGML_DEPS)/sgml-unicode.catalog
 SP_ENCODING ?= UTF-8
 SP_CHARSET_FIXED ?= YES
 export OSX NSGMLS SGML_CATALOG_FILES SP_ENCODING SP_CHARSET_FIXED
