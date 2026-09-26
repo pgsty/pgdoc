@@ -25,7 +25,7 @@ SP_CHARSET_FIXED ?= YES
 export OSX NSGMLS SGML_CATALOG_FILES SP_ENCODING SP_CHARSET_FIXED
 DOC_LANG := $(notdir $(abspath $(CURDIR)/..))
 
-BUILD_SCRIPT := $(REPO_ROOT)/tmp/pg7x/build_standalone_docsrc_7x.sh
+BUILD_SCRIPT := $(REPO_ROOT)/bin/build_standalone_docsrc.sh
 PDF_SCRIPT := $(REPO_ROOT)/bin/build_standalone_pdfsrc.sh
 DEFAULT_BUILD_OUT := $(CURDIR)/html
 BUILD_OUT ?= $(DEFAULT_BUILD_OUT)

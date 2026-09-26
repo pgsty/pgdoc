@@ -300,7 +300,13 @@ rsync -a \
 # --- Configure (minimal, just enough for docs) ---
 echo "Configuring source tree ..."
 extra_configure_flags="${CONFIGURE_FLAGS:-}"
-if [[ -f "${work_tree}/configure" ]]; then
+if [[ "${PGDOC_SKIP_CONFIGURE:-0}" == "1" ]]; then
+  # PG 7.1 – 7.3 的 configure 在现代工具链上跑不通，而它们的 doc 构建只从
+  # Makefile.global 取 VERSION/srcdir 等少量变量；直接写桩。
+  echo "Skipping configure (PGDOC_SKIP_CONFIGURE=1); writing stub src/Makefile.global."
+  printf 'srcdir = .\ntop_srcdir = ../..\nVERSION = %s\n' "${version}" \
+    > "${work_tree}/src/Makefile.global"
+elif [[ -f "${work_tree}/configure" ]]; then
   (cd "${work_tree}" && ./configure --without-icu --without-readline --without-zlib ${extra_configure_flags} >/dev/null)
 elif [[ -f "${work_tree}/src/configure" ]]; then
   # PG 6.x ships configure only under src/.  Its doc makefile treats
