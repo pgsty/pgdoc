@@ -152,9 +152,16 @@ def _scan_tag(s, i):
             raise ParseError('unterminated processing instruction')
         return 'pi', None, j + (2 if s[j:j + 2] == '?>' else 1)
     if s.startswith('<!', i):
-        # DOCTYPE and friends: respect quotes and the internal [ ] subset.
+        # DOCTYPE and friends: respect comments, quotes and the internal
+        # [ ] subset.
         k, quote, bracket = i + 2, '', 0
         while k < n:
+            if s.startswith('<!--', k):
+                k = s.find('-->', k + 4)
+                if k < 0:
+                    raise ParseError('unterminated comment in declaration')
+                k += 3
+                continue
             c = s[k]
             if quote:
                 if c == quote:
@@ -211,12 +218,17 @@ def _parse_range(s, lo, hi, root):
             stack[-1].children.append(('text', text_start, end))
 
     while i < hi:
-        if s[i] != '<':
-            i = s.find('<', text_start)
-            if i < 0 or i >= hi:
+        if s[i] == '<':
+            nxt = i + 1
+            if nxt < hi and s[nxt] not in '!/?' and not _NAME_RE.match(s, nxt):
+                i += 1  # bare '<' in prose (SGML-era leniency): plain text
+                continue
+        elif s[i] != '<':
+            j = s.find('<', i)
+            if j < 0 or j >= hi:
                 flush_text(hi)
-                i = hi
                 break
+            i = j
             continue
         flush_text(i)
         kind, name, j = _scan_tag(s, i)
