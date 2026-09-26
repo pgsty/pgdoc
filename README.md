@@ -4,9 +4,9 @@
 
 **读懂 PostgreSQL，从文档原典开始。**
 
-覆盖 PostgreSQL 10–20 的简体中文手册 · 对照上游原文 · 跨版本一致翻译
+覆盖 PostgreSQL 6.3–20 的 31 个版本简体中文手册 · 对照上游原文 · 跨版本一致翻译
 
-[![官方网站](https://img.shields.io/badge/官方网站-pgsql.cc%2Fdocs-336791?style=flat-square)](https://pgsql.cc/docs/) [![版本范围](https://img.shields.io/badge/PostgreSQL-10–20-4169E1?style=flat-square)](#版本导航) [![阅读格式](https://img.shields.io/badge/阅读格式-HTML%20%2F%20PDF-2F855A?style=flat-square)](https://pgsql.cc/docs/)
+[![官方网站](https://img.shields.io/badge/官方网站-pgsql.cc%2Fdocs-336791?style=flat-square)](https://pgsql.cc/docs/) [![版本范围](https://img.shields.io/badge/PostgreSQL-6.3–20-4169E1?style=flat-square)](#版本导航) [![阅读格式](https://img.shields.io/badge/阅读格式-HTML%20%2F%20PDF-2F855A?style=flat-square)](https://pgsql.cc/docs/)
 
 [**开始阅读 →**](https://pgsql.cc/docs/current/index.html) · [版本导航](#版本导航) · [翻译方法](#翻译方法) · [参与贡献](#参与贡献)
 
@@ -59,6 +59,8 @@
 
 </details>
 
+仓库还维护 6.3–6.5、7.0–7.4、8.0–8.4、9.0–9.6 共 20 个早期版本，可通过 `make -C zh/<版本> html` 和 `make -C zh/<版本> pdf PAPER=A4` 构建。上表列出的网站入口与本地构建状态分别维护。
+
 ## 翻译方法
 
 **准确 > 一致 > 流畅 > 本土化润色。**
@@ -73,7 +75,7 @@
 
 ```text
 pgdoc/
-├── zh/                   # PostgreSQL 10–20 中文源文档，按大版本维护
+├── zh/                   # PostgreSQL 6.3–20 中文源文档，按大版本维护
 │   ├── 18/               # 每版包含 SGML、样式、图示与独立 Makefile
 │   └── current -> 18     # 当前正式版的本地入口
 ├── docs/                 # 译风规范、术语表与翻译规则（随仓库版本管理）
@@ -124,10 +126,11 @@ make zh-pdf-all ZH_VERSIONS="17 18" PAPERS="A4 US"
 - 默认批量范围是 PostgreSQL 14–18，可通过 `ZH_VERSIONS` 指定；`VERSION` 是英文版本号，`ZH_VERSION` 是中文大版本目录。
 - 固定上游源码时，同时提供 `PGDOC_SOURCE_DIR` 与 `PGDOC_SOURCE_COMMIT`，或同时提供 `PGDOC_SOURCE_ARCHIVE` 与 `PGDOC_SOURCE_SHA256`。脚本会检查对应提交或归档校验和。
 - PostgreSQL 10–13 默认使用各版 Makefile 指定的已校验归档包，首次构建需准备相应文件，或覆盖 `PGDOC_SOURCE_ARCHIVE` 路径。PostgreSQL 10 还需要 OpenSP、DocBook SGML 4.2 和 SGML catalog，相关路径见 [PG10 构建入口](zh/10/Makefile)。
-- PostgreSQL 20 的译文基线固定于上游提交 [`86f7c82cf1023e3599f40f939727791a7090cd44`](https://github.com/postgres/postgres/commit/86f7c82cf1023e3599f40f939727791a7090cd44)。复现时通过 `PGDOC_SOURCE_DIR` 指向该提交的完整源码，并设置 `PGDOC_SOURCE_COMMIT`；开发分支的后续内容可能已变化。
+- PostgreSQL 20 使用 `en/SOURCES.json` 记录的 2026-09-11 开发快照，默认归档为 `.cache/upstream/postgresql-20devel-97c64fe3d54d.tar.bz2`，SHA256 为 `97c64fe3d54d9cdf570c9dab054463881695c388e6b77ceab889709ba6f025cb`。`zh/20/Makefile` 固定此输入，避免开发分支变化造成生成内容漂移；可用成对的 `PGDOC_SOURCE_ARCHIVE` / `PGDOC_SOURCE_SHA256` 显式指定其他已核实的归档。
 - PDF 默认使用阿里巴巴普惠体 3.0 和 Courier New，可通过 `PDF_CJK_FAMILY`、`PDF_MONO_FAMILY` 或对应字体文件变量指定本机字体。
 
 `make check-deps` 只检查部分可执行程序是否存在；完整验证应以实际 HTML / PDF 构建和页面检查为准。
+PDF 构建会把完整 FOP 诊断保存为 PDF 同目录的 `*.fop.log`，并在构建日志中显示警告；排版溢出警告仍须结合实际页面核对。
 
 </details>
 

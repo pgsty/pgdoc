@@ -1,8 +1,15 @@
-# zh/18/Makefile
+# zh/20/Makefile
 
 REPO_ROOT := $(abspath $(CURDIR)/../..)
 DOC_VERSION := $(notdir $(CURDIR))
 PG_VERSION ?= 20
+# Match the English baseline recorded in en/SOURCES.json (2026-09-11).
+# Never silently replace this manual's generators with a moving master.
+ifeq ($(strip $(PGDOC_SOURCE_DIR)$(PGDOC_SOURCE_COMMIT)),)
+PGDOC_SOURCE_ARCHIVE ?= $(REPO_ROOT)/.cache/upstream/postgresql-20devel-97c64fe3d54d.tar.bz2
+PGDOC_SOURCE_SHA256 ?= 97c64fe3d54d9cdf570c9dab054463881695c388e6b77ceab889709ba6f025cb
+endif
+export PGDOC_SOURCE_ARCHIVE PGDOC_SOURCE_SHA256
 DOC_LANG := $(notdir $(abspath $(CURDIR)/..))
 
 BUILD_SCRIPT := $(REPO_ROOT)/bin/build_standalone_docsrc.sh
