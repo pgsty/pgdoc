@@ -83,11 +83,9 @@ PG10 的原生 SGML 使用 `--native-sgml`。设置 `NSGMLS`、`OSX` 为 OpenSP 
 ## 验证
 
 ```sh
-python3 -m unittest discover -s tests -v
-# 只对未经修复的 738d5de PG18 基线运行；修复之后不应继续要求缺陷存在。
-python3 tests/assert_pg18_baseline.py outputs/pg18-alignment
+python3 -m unittest discover -s bin -p 'test_*.py' -v
 ```
 
-合成测试覆盖相等数量下的 ID 替换、重复 ID、父级与顺序变化、无 ID 节点、包含链、缺文件、实体、注释、CDATA、列别名/跨度、正常翻译标题及退出码。基线集成断言要求实际发现 SQL/JSON 测试表缺失、聚合表 27/20 行与 11 个缺失函数名、三处部分模式事实值错配。
+合成测试覆盖相等数量下的 ID 替换、重复 ID、父级与顺序变化、无 ID 节点、包含链、缺文件、实体、注释、CDATA、列别名/跨度、正常翻译标题及退出码。
 
 检查不运行全文机器翻译判卷，也不验证所有自然语言语义、默认值或代码逻辑。无 ID 多候选、未配对行、文本中的技术陈述仍需人工核查。此任务只新增审计工具，生成输入构建成功不等于 HTML/PDF 构建或发布成功。
