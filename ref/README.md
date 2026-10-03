@@ -11,6 +11,7 @@
 | 术语表定稿后跨版本统一正文译法 | [terminology.md](terminology.md) | 词族×版本矩阵、两层台账、五步审计、豁免分类 |
 | 单版本全量逐句中英对照审读（只审不改） | [full-review.md](full-review.md) | 阅读队列、findings 协议、横向矩阵、提取伪影判例 |
 | 修订后的独立验收，或带修复落地的验收 | [acceptance.md](acceptance.md) | 快照纪律、修改门槛、防回归纪律、构建三件套 |
+| PDF / HTML 构建后处理或排版修复 | [pdf-html.md](pdf-html.md) | 内容保护、完整幂等、可见文本、分页与页面证据 |
 | 中英全书结构对齐检查 | [alignment-check.md](alignment-check.md) | `bin/check_doc_alignment.py` 用法、退出码、假差异源 |
 
 ## 翻译规则文件（docs/，随仓库版本管理）

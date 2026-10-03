@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""Remove generated CJK spacing from HTML without reserializing its markup.
+"""Normalize generated CJK HTML without reserializing its markup.
 
 Source SGML is normalized separately.  XSL-generated index labels and copied
 cross-reference titles can introduce additional whitespace.  This pass uses
 an isolated instance of the source fixer's byte-preserving deletion engine,
 with HTML element classifications.  Code, raw-text blocks, SVG and MathML
 remain untouched.  Only ASCII whitespace may be removed.
+
+A second pass (cjk_spacing.normalize_prose) then spaces rendered prose
+outside code-ish elements: one space at every Han<->Latin/digit boundary,
+including boundaries across inline markup. Punctuation is retained: prose
+can describe technical tokens such as PO's #: and #, comment prefixes.
+Verbatim islands keep their exact text; attributes are never rewritten.
 """
 
 import argparse
 import hashlib
+import html as html_entities
 import importlib.util
 import json
 from pathlib import Path
@@ -17,14 +24,18 @@ import re
 import shutil
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cjk_spacing import normalize_prose, URL_RE  # noqa: E402
+
 
 def load_html_engine():
     spec = importlib.util.spec_from_file_location(
         '_pgdoc_html_spacing', Path(__file__).with_name('fix_cjk_spacing.py'))
     engine = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(engine)
-    engine.VERBATIM_BLOCK = frozenset(('pre', 'script', 'style', 'textarea', 'svg', 'math'))
-    engine.VERBATIM_INLINE = frozenset(('code', 'kbd', 'samp', 'var'))
+    engine.VERBATIM_BLOCK = frozenset(('pre', 'script', 'style', 'textarea', 'svg', 'math',
+                                     'listing', 'xmp', 'plaintext'))
+    engine.VERBATIM_INLINE = frozenset(('code', 'kbd', 'samp', 'var', 'tt'))
     engine.INLINE = frozenset((
         'a', 'span', 'em', 'strong', 'b', 'i', 'u', 's', 'del', 'ins',
         'mark', 'small', 'sub', 'sup', 'cite', 'abbr', 'acronym', 'time',
@@ -154,6 +165,103 @@ def sha256(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
+_HAN_CH = re.compile(r'[\u3400-\u9fff\uf900-\ufaff]')
+_LAT_CH = re.compile(r'[A-Za-z0-9]')
+_ENTITY = re.compile(r'&(?:#[0-9]+|#x[0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]+);')
+_OPAQUE = re.compile(URL_RE.pattern + '|' + _ENTITY.pattern)
+
+
+def normalize_html_prose(html):
+    """Edit text offsets, preserving markup, entities and verbatim content.
+
+    Inline elements share a visible run, so nested links/emphasis do not hide
+    Han/Latin boundaries. Entities supply decoded edge characters but their
+    original spelling is retained. The quote-aware tokenizer handles '>' in
+    attributes; no tag or attribute is passed to the prose normalizer.
+    """
+    masked = mask_raw_text(html)
+    root = ENGINE.Node('#document', 'block')
+    anomalies = ENGINE._parse_range(masked, 0, len(masked), root)
+    if anomalies:
+        raise ValueError(f'HTML tokenizer anomalies: {anomalies[:5]}')
+    edits, segments = [], []
+
+    def add_text(start, end, locked):
+        if locked:
+            segments.append([start, end, html[start:end], True])
+            return
+        cursor = start
+        for match in _OPAQUE.finditer(html, start, end):
+            if cursor < match.start():
+                segments.append([cursor, match.start(), normalize_prose(html[cursor:match.start()], punctuation=False), False])
+            segments.append([match.start(), match.end(), match[0], bool(URL_RE.fullmatch(match[0]))])
+            cursor = match.end()
+        if cursor < end:
+            segments.append([cursor, end, normalize_prose(html[cursor:end], punctuation=False), False])
+
+    def flush():
+        if not segments:
+            return
+        # Resolve boundaries from rendered text, not serialized '&...;' or
+        # an artificial space substituted for every inline tag.
+        active = [s for s in segments if html_entities.unescape(s[2]).strip()]
+        for left, right in zip(active, active[1:]):
+            lv, rv = html_entities.unescape(left[2]), html_entities.unescape(right[2])
+            lc, rc = lv.rstrip()[-1], rv.lstrip()[0]
+            between = [s for s in segments if left[1] <= s[0] < right[0]]
+            has_gap = lv[-1].isspace() or rv[0].isspace() or any(s[2].isspace() for s in between)
+            if ENGINE.drop_space(lc, rc):
+                if not left[3]:
+                    left[2] = left[2].rstrip(' \t\r\n')
+                if not right[3]:
+                    right[2] = right[2].lstrip(' \t\r\n')
+                for s in between:
+                    if not s[3] and s[2].isspace():
+                        s[2] = ''
+                continue
+            needs_gap = ((_HAN_CH.match(lc) and _LAT_CH.match(rc))
+                         or (_LAT_CH.match(lc) and _HAN_CH.match(rc))
+                         or (lc in "]\\*)\"'>%&" and _HAN_CH.match(rc))
+                         or (_HAN_CH.match(lc) and re.match(r'(?:~/|[%$]|--?|/)[\w.]', rv.lstrip())))
+            if needs_gap and not has_gap:
+                if not left[3] and _HAN_CH.match(lc):
+                    left[2] += ' '
+                elif not right[3]:
+                    right[2] = ' ' + right[2]
+                elif not left[3]:
+                    left[2] += ' '
+        for start, end, value, locked in segments:
+            if not locked and value != html[start:end]:
+                edits.append((start, end, value))
+        segments.clear()
+
+    def walk(node, locked=False):
+        if node.name in ENGINE.VERBATIM_BLOCK or node.name in ('br', 'hr', 'img'):
+            flush()
+            return
+        block = node.kind == 'block'
+        if block:
+            flush()
+        locked = locked or node.name in ENGINE.VERBATIM_INLINE
+        for child in node.children:
+            if isinstance(child, ENGINE.Node):
+                walk(child, locked)
+            else:
+                kind, start, end = child
+                add_text(start, end, locked or kind == 'verbatim-text')
+        if block:
+            flush()
+
+    walk(root)
+    flush()
+    pieces, cursor = [], 0
+    for start, end, value in sorted(edits):
+        pieces.extend((html[cursor:start], value))
+        cursor = end
+    pieces.append(html[cursor:])
+    return ''.join(pieces)
+
+
 def prepare_directory(directory, before_dir=None):
     directory = Path(directory)
     if before_dir is not None:
@@ -165,6 +273,7 @@ def prepare_directory(directory, before_dir=None):
         with page.open(encoding='utf-8', newline='') as stream:
             original = stream.read()
         normalized, deletions = normalize_html(original)
+        normalized = normalize_html_prose(normalized)
         relative = page.relative_to(directory)
         if before_dir is not None:
             saved = before_dir / relative
@@ -175,7 +284,7 @@ def prepare_directory(directory, before_dir=None):
             'after_sha256': sha256(normalized), 'deletions': deletions,
             'removed_characters': sum(end - start for start, end in deletions),
         })
-        if deletions:
+        if normalized != original:
             with page.open('w', encoding='utf-8', newline='') as stream:
                 stream.write(normalized)
     return rows
@@ -194,7 +303,7 @@ def main():
         return 1
     if args.report:
         args.report.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    changed = sum(bool(row['deletions']) for row in rows)
+    changed = sum(row['before_sha256'] != row['after_sha256'] for row in rows)
     removed = sum(row['removed_characters'] for row in rows)
     print(f'Chinese HTML spacing: {len(rows)} pages checked; {changed} changed; {removed} whitespace characters removed.')
     return 0

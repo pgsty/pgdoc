@@ -106,6 +106,12 @@ if [[ -n "${XML_CATALOG_FILES:-}" && -z "${SGML_CATALOG_FILES:-}" ]]; then
   export SGML_CATALOG_FILES="${XML_CATALOG_FILES}"
 fi
 
+# PostgreSQL 10's OpenSP conversion otherwise reads UTF-8 Chinese as bytes.
+if [[ "${lang}" == "zh" ]]; then
+  export SP_ENCODING="${SP_ENCODING:-UTF-8}"
+  export SP_CHARSET_FIXED="${SP_CHARSET_FIXED:-YES}"
+fi
+
 # --- Cache directories ---
 mkdir -p "${REPO_ROOT}/.cache/upstream" "${REPO_ROOT}/.cache/work"
 

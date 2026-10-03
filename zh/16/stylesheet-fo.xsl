@@ -53,6 +53,10 @@ an "Unresolved ID reference found" warning during PDF builds.
 </xsl:attribute-set>
 
 <!-- Make all tables default to left alignment, for consistency with HTML -->
+<xsl:attribute-set name="index.entry.properties">
+  <xsl:attribute name="font-size">9.5pt</xsl:attribute>
+</xsl:attribute-set>
+
 <xsl:attribute-set name="table.table.properties">
   <xsl:attribute name="text-align">left</xsl:attribute>
 </xsl:attribute-set>

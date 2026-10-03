@@ -36,6 +36,10 @@
   <xsl:attribute name="class">container-fluid col-10</xsl:attribute>
 </xsl:template>
 
+<xsl:template name="user.head.content">
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+</xsl:template>
+
 <!-- Change display of some elements -->
 
 <xsl:template match="command">
@@ -673,5 +677,12 @@ set       toc,title
     </xsl:if>
   </xsl:for-each>
 </xsl:template>
+
+<!-- pgdoc zh: Chinese run-in headings end with their own fullwidth
+     punctuation (发布日期：), so suppress the ASCII period the HTML
+     stylesheets append by default ("发布日期：.").  Mirrors the print-side
+     fix in stylesheet-fo.xsl. -->
+<xsl:param name="runinhead.default.title.end.punct"/>
+<xsl:param name="runinhead.title.end.punct">.!?：。？！；，、</xsl:param>
 
 </xsl:stylesheet>

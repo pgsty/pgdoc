@@ -57,6 +57,46 @@ OFFICIAL_CSS = 'https://www.postgresql.org/media/css/docs-complete.css'
 BUNDLE = Path(__file__).resolve().parent.parent / 'deps/pgweb'
 LINK_TAG = re.compile(r'<link\b[^>]*>', re.IGNORECASE)
 HREF = re.compile(r'''\bhref\s*=\s*(['"])(.*?)\1''', re.IGNORECASE)
+STYLESHEET_LINK = re.compile(
+    r'<link\b[^>]*rel\s*=\s*["\']?stylesheet[^>]*>', re.IGNORECASE)
+HEAD_END = re.compile(r'</head\s*>', re.IGNORECASE)
+
+
+def inject_design_links(output):
+    """Link the bundled official theme directly from every page's <head>.
+
+    stylesheet.css pulls docs-complete.css through a nested @import chain.
+    Desktop browsers handle it, but embedded WebKit views (IAB/Electron-era
+    readers) stop applying the chain two levels deep, leaving the whole site
+    on the 1998 fallback styling.  A direct <link> to the same local file is
+    applied everywhere (verified by computed-style A/B), so emit it in every
+    generated page after the last existing stylesheet link.
+    """
+    output = Path(output)
+    destination = output / '_static/pgweb/media/css/docs-complete.css'
+    if not destination.is_file():
+        return []
+    injected = []
+    for page in sorted(output.rglob('*.html')):
+        if '_static' in page.parts:
+            continue
+        text = page.read_text(encoding='utf-8')
+        relative = Path(os.path.relpath(destination, page.parent)).as_posix()
+        direct = ('<link rel="stylesheet" type="text/css" '
+                  f'href="{relative}" />')
+        links = list(STYLESHEET_LINK.finditer(text))
+        if any(relative in m.group(0) for m in links):
+            continue
+        if links:
+            anchor = links[-1].end()
+        else:
+            head = HEAD_END.search(text)
+            if not head:
+                continue
+            anchor = head.start()
+        page.write_text(text[:anchor] + direct + text[anchor:], encoding='utf-8')
+        injected.append(page.relative_to(output).as_posix())
+    return injected
 
 
 def localize_official_styles(output, bundle=BUNDLE):
@@ -195,16 +235,18 @@ def prepare_resources(sgml_dir, output_dir=None, localization_report=None, style
     newly_localized = localize_official_styles(output)
     localized.extend(newly_localized)
     if newly_localized:
-        extra_copied, checked_count = prepare_resources(sgml_dir, output, _adapt_styles=False)
+        extra_copied, checked_count, _extra_links = prepare_resources(
+            sgml_dir, output, _adapt_styles=False)
         copied.extend(extra_copied)
     else:
         checked_count = len(checked)
     adapted = adapt_legacy_css(output, class_elements, body_containers) if _adapt_styles else []
+    design_links = inject_design_links(output)
     if style_report is not None:
         Path(style_report).write_text(json.dumps(adapted, indent=2) + '\n')
     if localization_report is not None:
         Path(localization_report).write_text(json.dumps(localized, indent=2) + '\n')
-    return sorted(copied), checked_count
+    return sorted(copied), checked_count, design_links
 
 
 def main():
@@ -215,11 +257,13 @@ def main():
     parser.add_argument('--style-report', type=Path, help='record exact legacy CSS selector compatibility edits')
     args = parser.parse_args()
     try:
-        copied, checked = prepare_resources(args.sgml_dir, args.output_dir, args.localization_report, args.style_report)
+        copied, checked, design_links = prepare_resources(
+            args.sgml_dir, args.output_dir, args.localization_report, args.style_report)
     except (OSError, UnicodeError, ValueError) as exc:
         print(f'HTML resource verification failed:\n{exc}', file=sys.stderr)
         return 1
-    print(f'HTML resources: {checked} local files verified; {len(copied)} copied from source.')
+    print(f'HTML resources: {checked} local files verified; {len(copied)} copied from source; '
+          f'{len(design_links)} direct design links injected.')
     for relative in copied:
         print(f'  copied {relative}')
     return 0

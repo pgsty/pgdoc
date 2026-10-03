@@ -1,9 +1,54 @@
 import unittest
 
-from prepare_chinese_html import normalize_html
+from prepare_chinese_html import normalize_html, normalize_html_prose
 
 
 class ChineseHTMLSpacingTests(unittest.TestCase):
+    @staticmethod
+    def prepare(text):
+        return normalize_html_prose(normalize_html(text)[0])
+
+    def test_prose_technical_punctuation_is_not_rewritten(self):
+        source = '<p>如果使用SSL压缩，则返回"on"，否则返回"off"。</p><p>#: 注释和#, 标志；分钟:秒。</p>'
+        expected = source.replace('使用SSL压缩', '使用 SSL 压缩')
+        result = self.prepare(source)
+        self.assertEqual(result, expected)
+        self.assertEqual(self.prepare(result), result)
+
+    def test_complete_pipeline_preserves_entities_attributes_and_verbatim(self):
+        source = ('<p title="x > 中A">字符 &lt;、&gt;和 &amp;；&#34;中文&#34;。'
+                  '<code>"中 文", x&amp;y</code>继续。</p>'
+                  '<svg><text>中A,字</text></svg><math><mi>中A</mi></math>'
+                  '<script>if (a < b) { s = "中A,字"; }</script>'
+                  '<pre>中A,字\n中 文</pre>')
+        result = self.prepare(source)
+        self.assertIn('title="x > 中A"', result)
+        for entity in ('&lt;', '&gt;', '&amp;', '&#34;'):
+            self.assertEqual(source.count(entity), result.count(entity))
+        for island in ('<code>"中 文", x&amp;y</code>', '<svg><text>中A,字</text></svg>',
+                       '<math><mi>中A</mi></math>', '<pre>中A,字\n中 文</pre>',
+                       '<script>if (a < b) { s = "中A,字"; }</script>'):
+            self.assertIn(island, result)
+        self.assertEqual(self.prepare(result), result)
+
+    def test_real_inline_text_boundaries_are_spaced_without_changing_markup(self):
+        source = ('<p>使用<a href="pg.html"><em>PostgreSQL</em></a>数据库；'
+                  '异步<acronym>I/O</acronym>适用。参数<code>xmlbinary</code>的设置。</p>'
+                  '<p>中&#65;文；见<code>~/.pgpass</code>文件。</p>')
+        expected = ('<p>使用 <a href="pg.html"><em>PostgreSQL</em></a> 数据库；'
+                    '异步 <acronym>I/O</acronym> 适用。参数 <code>xmlbinary</code> 的设置。</p>'
+                    '<p>中 &#65; 文；见 <code>~/.pgpass</code> 文件。</p>')
+        result = self.prepare(source)
+        self.assertEqual(result, expected)
+        self.assertEqual(self.prepare(result), result)
+
+    def test_prose_urls_and_partial_quotes_are_preserved(self):
+        source = '<p>网址 https://example.org/中文A?x=中A&amp;y=中A；"中<a>文</a>"。</p>'
+        result = self.prepare(source)
+        self.assertIn('https://example.org/中文A?x=中A&amp;y=中A', result)
+        self.assertIn('"中<a>文</a>"', result)
+        self.assertEqual(self.prepare(result), result)
+
     def test_generated_index_and_cross_reference_titles(self):
         source = '<dt>类型 (见 <a href="#types">数据类型</a>)</dt><p>见 <a href="config.html"> 规划器代价常量\n </a>，继续。</p>'
         expected = '<dt>类型 (见<a href="#types">数据类型</a>)</dt><p>见<a href="config.html">规划器代价常量</a>，继续。</p>'

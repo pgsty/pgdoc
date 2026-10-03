@@ -46,6 +46,12 @@
   <xsl:attribute name="text-align">left</xsl:attribute>
 </xsl:attribute-set>
 
+<!-- The longest PG 20 parameter is 220.27pt at 10pt, wider than the
+     219.637pt A4 index column. Keep its name intact in a 9.5pt index. -->
+<xsl:attribute-set name="index.entry.properties">
+  <xsl:attribute name="font-size">9.5pt</xsl:attribute>
+</xsl:attribute-set>
+
 <!-- fix missing space after vertical simplelist
      https://github.com/docbook/xslt10-stylesheets/issues/31 -->
 <xsl:attribute-set name="normal.para.spacing">

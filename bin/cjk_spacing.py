@@ -69,3 +69,105 @@ def eff(s, reverse=False):
         if c not in SKIP:
             return c
     return None
+
+# ---------------------------------------------------------------------------
+# Build-time zh prose normalization (shared by PDF FO post-processing and the
+# HTML build).  Applied only to rendered prose text -- never to verbatim
+# code, monospace runs, URLs or identifiers inside markup.
+# ---------------------------------------------------------------------------
+
+_PANGU_L = re.compile(f'(?<=[{HAN_RANGE}])(?=[A-Za-z0-9])')
+_PANGU_R = re.compile(f'(?<=[A-Za-z0-9])(?=[{HAN_RANGE}])')
+# Symbol-leading literals (~/%, --options, /paths) take a space after Han;
+# only ~/% close against Han from the left ("…%APPDATA%\u6307" -> "% \u6307"),
+# '/'/'-' are skipped there so "B-\u6811" style terms stay intact.
+_PANGU_SYM_L = re.compile(f'(?<=[{HAN_RANGE}])(?=[~][/A-Za-z0-9]|[%/][A-Za-z0-9]|--[A-Za-z]|[$][A-Za-z0-9{HAN_RANGE}])')
+_PANGU_SYM_R = re.compile(r'(?<=[~%\*)\]=])(?=[㐀-鿿])')
+# Lone operator tokens (=, :=) and __dunder__/star-leading literals next to Han.
+_PANGU_OP_L = re.compile(r'(?<=[\u3400-\u9fff])(?==[^=]|::?=|__[A-Za-z_]|\*|-[A-Za-z])')
+HAN_ONLY_RE = re.compile(f'[{HAN_RANGE}]')
+# Product name directly followed by a version number (PostgreSQL14).  Words
+# like utf8/sha256 are legitimately joined, so only well-known product names
+# get the split.
+_PROD_VER = re.compile(r'(PostgreSQL|Postgres)(?=[0-9])')
+# , ; : ? !  adjacent to Han on either side.
+_HALF_PUNCT = re.compile(
+    f'(?<=[{HAN_RANGE}])[,;:?!]|[,;:?!](?=[{HAN_RANGE}])')
+_FULL = {',': '\uff0c', ';': '\uff1b', ':': '\uff1a', '?': '\uff1f', '!': '\uff01'}
+_COLON_R_HAN = re.compile(f':(?=[{HAN_RANGE}])')
+_DOT_L_HAN = re.compile(f'(?<=[{HAN_RANGE}])\\.')
+# Straight double quote with Han on either side, toggled open/close.
+_DQ = re.compile(f'"(?=[{HAN_RANGE}])|(?<=[{HAN_RANGE}])"')
+
+
+def _dquotes(text):
+    # A quote pair can span inline elements. Never guess the orientation of
+    # a lone quote in a text node; source <quote> markup handles those pairs.
+    if len(list(_DQ.finditer(text))) % 2:
+        return text
+    state = ['closed']
+    def repl(m):
+        opening = state[0] == 'closed'
+        state[0] = 'open' if opening else 'closed'
+        return '\u201c' if opening else '\u201d'
+    return _DQ.sub(repl, text)
+
+
+URL_RE = re.compile(r'(?:[A-Za-z][A-Za-z0-9+.-]*://|mailto:)[^\s<>"，。；：？！、（）《》]+')
+
+
+def _normalize_plain(text, punctuation=True):
+    """Normalize one prose text node; idempotent.
+
+    * pan-gu: exactly one U+0020 at every Han<->Latin/digit boundary;
+    * halfwidth , ; : ? ! -> fullwidth when adjacent to Han.  A colon is
+      additionally kept when its left neighbour is an ASCII digit/alnum
+      ("10:30", "psql:5432" survive); an ASCII dot is only converted when
+      its LEFT neighbour is Han (trailing period on a Chinese sentence),
+      so "v18.6" and "第 2.1 节" keep their dots;
+    * straight double quotes touching Han alternate into \u201c \u201d pairs.
+    """
+    if not text:
+        return text
+    out = _PANGU_L.sub(' ', text)
+    out = _PANGU_R.sub(' ', out)
+    out = _PANGU_SYM_L.sub(' ', out)
+    out = _PANGU_SYM_R.sub(' ', out)
+    out = _PANGU_OP_L.sub(' ', out)
+    out = _PROD_VER.sub(r'\1 ', out)
+    if not punctuation:
+        return out
+    out = _HALF_PUNCT.sub(lambda m: _FULL[m.group(0)], out)
+    # "literal, 则" -- half punct + space + Han (the space is the pan-gu
+    # insert at the element boundary); convert and drop the stray space.
+    out = re.sub(r'([,;:?!]) (?=[\u3400-\u9fff])',
+                 lambda m: _FULL[m.group(1)], out)
+    if ':' in out:
+        out = _COLON_R_HAN.sub(
+            lambda m: m.group(0)
+            if (out[max(0, m.start() - 1)].isascii() and out[max(0, m.start() - 1)].isalnum())
+            else '\uff1a', out)
+    out = _DOT_L_HAN.sub('\u3002', out)
+    if ('?' in out or '!' in out) and HAN_ONLY_RE.search(out):
+        # A trailing ASCII ?/! after Latin/digit inside a Han-bearing node is
+        # a Chinese sentence tail ("什么是PostgreSQL?" / "何时使用JIT?") —
+        # fullwidth it.  Nodes without Han keep ASCII punctuation untouched.
+        out = re.sub(r'(?<=[A-Za-z0-9])[?!]',
+                     lambda m: '\uff1f' if m.group(0) == '?' else '\uff01',
+                     out)
+    out = _dquotes(out)
+    out = WS_RUN.sub(lambda m: '' if m.start() and m.end() < len(out)
+                     and drop_space(out[m.start() - 1], out[m.end()]) else m[0], out)
+    return out
+
+
+def normalize_prose(text, *, punctuation=True):
+    """Normalize prose while preserving URLs; optionally change only spaces."""
+    if not text:
+        return text
+    pieces, cursor = [], 0
+    for match in URL_RE.finditer(text):
+        pieces.extend((_normalize_plain(text[cursor:match.start()], punctuation), match[0]))
+        cursor = match.end()
+    pieces.append(_normalize_plain(text[cursor:], punctuation))
+    return ''.join(pieces)

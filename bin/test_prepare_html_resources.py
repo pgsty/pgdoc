@@ -26,12 +26,12 @@ class HTMLResourceTests(unittest.TestCase):
         self.write(self.sgml / 'styles/theme.css', 'body { background: url(../paper.png) }')
         self.write(self.sgml / 'paper.png', 'paper image bytes')
         self.write(self.sgml.parent / 'graphics/clientserver.gif', 'legacy image bytes')
-        copied, checked = prepare_resources(self.sgml)
+        copied, checked, design_links = prepare_resources(self.sgml)
         self.assertEqual(checked, 4)
         self.assertEqual(len(copied), 4)
         self.assertEqual((self.output / 'clientserver.gif').read_text(), 'legacy image bytes')
         self.assertEqual((self.output / 'paper.png').read_text(), 'paper image bytes')
-        self.assertEqual(prepare_resources(self.sgml), ([], 4))
+        self.assertEqual(prepare_resources(self.sgml)[:2], ([], 4))
 
     def test_missing_stylesheet_is_an_error(self):
         self.write(self.output / 'index.html', '<link rel="stylesheet" href="missing.css">')
@@ -53,7 +53,7 @@ class HTMLResourceTests(unittest.TestCase):
 
     def test_remote_resources_are_not_downloaded(self):
         self.write(self.output / 'index.html', '<link rel="stylesheet" href="https://example.test/style.css"><img src="//example.test/a.png"><img src="data:image/png;base64,AA==">')
-        self.assertEqual(prepare_resources(self.sgml), ([], 0))
+        self.assertEqual(prepare_resources(self.sgml)[:2], ([], 0))
 
     def test_resource_cannot_escape_output(self):
         self.write(self.output / 'index.html', '<img src="../private.png">')

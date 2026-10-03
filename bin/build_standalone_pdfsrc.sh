@@ -145,6 +145,12 @@ if [[ -n "${XML_CATALOG_FILES:-}" && -z "${SGML_CATALOG_FILES:-}" ]]; then
   export SGML_CATALOG_FILES="${XML_CATALOG_FILES}"
 fi
 
+# PostgreSQL 10's OpenSP conversion otherwise reads UTF-8 Chinese as bytes.
+if [[ "${lang}" == "zh" ]]; then
+  export SP_ENCODING="${SP_ENCODING:-UTF-8}"
+  export SP_CHARSET_FIXED="${SP_CHARSET_FIXED:-YES}"
+fi
+
 mkdir -p "${REPO_ROOT}/.cache/upstream" "${REPO_ROOT}/.cache/work" "${REPO_ROOT}/.cache/tools"
 
 official_git_url="https://git.postgresql.org/git/postgresql.git"
@@ -676,6 +682,27 @@ if [[ "${lang}" == "zh" ]]; then
     pdf_math_family=""
   fi
 
+  # FOP 2.x applies GSUB ligatures from the embedded CJK font unconditionally
+  # (fi/ff/fl invade Latin identifiers in prose, TOC and headings). Strip the
+  # table from build-local copies; opt out with PDF_DISABLE_NOLIGA=1.
+  if [[ "${PDF_DISABLE_NOLIGA:-0}" != "1" ]]; then
+    cjk_ext="${pdf_cjk_regular##*.}"
+    noliga_regular="${work_tree}/doc/src/sgml/cjk-noliga-regular.${cjk_ext}"
+    if python3 "${SCRIPT_DIR}/make_noliga_font.py" "${pdf_cjk_regular}" "${noliga_regular}" >&2; then
+      pdf_cjk_regular="${noliga_regular}"
+    else
+      echo "WARN: GSUB strip failed (fontTools missing?); using original regular font." >&2
+    fi
+    if [[ "${pdf_cjk_bold}" != "${pdf_cjk_regular}" && -f "${pdf_cjk_bold}" ]]; then
+      noliga_bold="${work_tree}/doc/src/sgml/cjk-noliga-bold.${cjk_ext}"
+      if python3 "${SCRIPT_DIR}/make_noliga_font.py" "${pdf_cjk_bold}" "${noliga_bold}" >&2; then
+        pdf_cjk_bold="${noliga_bold}"
+      else
+        echo "WARN: GSUB strip failed; using original bold font." >&2
+      fi
+    fi
+  fi
+
   fop_config="${work_tree}/doc/src/sgml/fop-local.xconf"
   create_fop_config \
     "${fop_config}" \
@@ -704,6 +731,12 @@ if [[ "${lang}" == "zh" ]]; then
   append_xsltproc_flag "--stringparam sans.font.family '${pdf_cjk_family}${pdf_math_suffix:-}'"
   append_xsltproc_flag "--stringparam title.font.family '${pdf_cjk_family}${pdf_math_suffix:-}'"
   append_xsltproc_flag "--stringparam monospace.font.family '${pdf_mono_param}${pdf_math_suffix:-}'"
+  # FOP justifies by stretching inter-word spaces only: with CJK prose the
+  # stretch piles into the few spaces on a line and produces holes several
+  # em wide (word-spacing maximums are ignored; letter-spacing ranges crash
+  # FOP 2.11). Ragged right for CJK body text avoids them; set
+  # PDF_ZH_ALIGNMENT=justify to restore the old behaviour.
+  append_xsltproc_flag "--stringparam alignment '${PDF_ZH_ALIGNMENT:-start}'"
 fi
 
 # EN builds keep the base-14 body fonts but need the same system math
@@ -735,7 +768,11 @@ fi
 (cd "${work_tree}" && XSLTPROCFLAGS="${xslprocflags_extra}" "${MAKE_CMD}" -C doc/src/sgml DOC_LANG="${lang}" "postgres-${paper}.fo" >/dev/null)
 
 if [[ "${lang}" == "zh" ]]; then
-  python3 "${SCRIPT_DIR}/prepare_chinese_pdf.py" "${fo_path}" --cjk-family "${pdf_cjk_family}"
+  if [[ "${keep_work}" == "1" ]]; then
+    cp "${fo_path}" "${fo_path%.fo}.raw.fo"
+  fi
+  python3 "${SCRIPT_DIR}/prepare_chinese_pdf.py" "${fo_path}" \
+    --cjk-family "${pdf_cjk_family}" --mono-family "${pdf_mono_family}"
 fi
 
 echo "Rendering PDF (${lang} ${version}, ${paper}) ..."
@@ -744,6 +781,29 @@ export FOP_OPTS="${FOP_OPTS:--Xmx1500m}"
 fop_args=()
 if [[ -n "${fop_config}" ]]; then
   fop_args+=(-c "${fop_config}")
+fi
+
+if [[ "${lang}" == "zh" ]]; then
+  # FOP maps every integer keep strength to the same penalty. Measure real
+  # wrapped heights before using "always", so short examples stay intact
+  # and an oversized row or example can still span pages.
+  layout_probe="${fo_path%.fo}.probe.fo"
+  layout_areas="${fo_path%.fo}.areas.xml"
+  layout_manifest="${fo_path%.fo}.measure.json"
+  layout_report="${fo_path%.fo}.layout.json"
+  layout_log="${work_tree}/doc/src/sgml/fop-measure.log"
+  python3 "${SCRIPT_DIR}/measure_pdf_layout.py" probe "${fo_path}" "${layout_probe}" "${layout_manifest}"
+  if ! LANG=C "${FOP_CMD}" "${fop_args[@]}" -fo "${layout_probe}" -at application/pdf "${layout_areas}" >"${layout_log}" 2>&1; then
+    cat "${layout_log}" >&2
+    exit 1
+  fi
+  if grep -qE '(^|[[:space:]])(SEVERE:|ERROR:|\[ERROR\])' "${layout_log}"; then
+    cat "${layout_log}" >&2
+    exit 1
+  fi
+  python3 "${SCRIPT_DIR}/measure_pdf_layout.py" apply "${fo_path}" "${layout_areas}" "${layout_manifest}" "${layout_report}"
+  mkdir -p "$(dirname "${output_pdf}")"
+  cp "${layout_report}" "${output_pdf%.pdf}.layout.json"
 fi
 fop_args+=(-fo "${fo_path}" -pdf "${pdf_tmp}")
 
