@@ -11,14 +11,12 @@ image_targets = []
 fixup_svg_xsl = files('fixup-svg.xsl')
 
 all_files = [
+  'datachecksums.gv',
   'genetic-algorithm.gv',
   'gin.gv',
   'pagelayout.txt',
   'temporal-entities.txt',
   'temporal-references.txt',
-  'temporal-update.txt',
-  'temporal-delete.txt',
-  'temporal-isolation.txt',
 ]
 
 foreach file : all_files

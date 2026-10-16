@@ -24,9 +24,7 @@ PostgreSQL documentation
 
 <synopsis>
 [ WITH [ RECURSIVE ] <replaceable class="parameter">with_query</replaceable> [, ...] ]
-UPDATE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ]
-    [ FOR PORTION OF <replaceable class="parameter">range_column_name</replaceable> <replaceable class="parameter">for_portion_of_target</replaceable> ]
-    [ [ AS ] <replaceable class="parameter">alias</replaceable> ]
+UPDATE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ] [ [ AS ] <replaceable class="parameter">alias</replaceable> ]
     SET { <replaceable class="parameter">column_name</replaceable> = { <replaceable class="parameter">expression</replaceable> | DEFAULT } |
           ( <replaceable class="parameter">column_name</replaceable> [, ...] ) = [ ROW ] ( { <replaceable class="parameter">expression</replaceable> | DEFAULT } [, ...] ) |
           ( <replaceable class="parameter">column_name</replaceable> [, ...] ) = ( <replaceable class="parameter">sub-SELECT</replaceable> )
@@ -35,11 +33,6 @@ UPDATE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ]
     [ WHERE <replaceable class="parameter">condition</replaceable> | WHERE CURRENT OF <replaceable class="parameter">cursor_name</replaceable> ]
     [ RETURNING [ WITH ( { OLD | NEW } AS <replaceable class="parameter">output_alias</replaceable> [, ...] ) ]
                 { * | <replaceable class="parameter">output_expression</replaceable> [ [ AS ] <replaceable class="parameter">output_name</replaceable> ] } [, ...] ]
-
-<phrase>其中<replaceable class="parameter">for_portion_of_target</replaceable>为：</phrase>
-
-{ FROM <replaceable class="parameter">start_time</replaceable> TO <replaceable class="parameter">end_time</replaceable> |
-  ( <replaceable class="parameter">portion</replaceable> ) }
 </synopsis>
  </refsynopsisdiv>
 
@@ -60,16 +53,12 @@ UPDATE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ]
    基于每个实际更新的行计算并返回一个或多个值。可以计算任何使用该表列和/或
    <literal>FROM</literal>中提到的其他表列的表达式。默认使用该表列的新值（更新后值），但也可以请求旧值（更新前值）。<literal>RETURNING</literal>列表的语法与<command>SELECT</command>
    的输出列表相同。
-  </para><para>
-   如果使用<literal>FOR PORTION OF</literal>子句，更新只会影响与给定区间重叠的行。而且，如果某行的应用时间超出<literal>FOR PORTION OF</literal>边界，那么更新只会改变这些边界内的应用时间。实际上，只有由<literal>FOR PORTION OF</literal>所针对的历史会被更新，边界之外的时间点不会受到影响。此外，在一行被更新后，范围或多范围会先被缩短，使其应用时间不再超出被针对的<literal>FOR PORTION OF</literal>边界。随后，可能会插入新的<glossterm linkend="glossary-temporal-leftovers">时态残留</glossterm>：这些行的范围或多范围会接收位于被针对的<literal>FROM</literal>/<literal>TO</literal>
-   边界之外的剩余应用时间，而其他列保留原始值。对于范围列，可能插入零到两条记录，具体取决于原始应用时间是完全被更新、在目标范围之前或之后仍有部分保留，还是前后都有部分保留。多范围永远不需要两条时态残留，因为一个值就总能容纳剩余的应用时间。
   </para>
 
   <para>
    必须拥有该表上的<literal>UPDATE</literal>权限，或者至少拥有待更新列的<literal>UPDATE</literal>权限。对于其值会在
    <replaceable class="parameter">expressions</replaceable>或者
-   <replaceable class="parameter">condition</replaceable>中读取的任何列，还必须拥有<literal>SELECT</literal>权限。当使用<literal>FOR PORTION OF</literal>时，二次插入不需要该表上的
-   <literal>INSERT</literal>权限。（这是因为概念上并没有新增信息；插入的行只是在保留未被针对的时间段上的现有数据。）对于这些时态残留插入，仍会检查行级安全 INSERT 策略。
+   <replaceable class="parameter">condition</replaceable>中读取的任何列，还必须拥有<literal>SELECT</literal>权限。
   </para>
 
   
@@ -115,49 +104,6 @@ UPDATE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ]
     </listitem>
    </varlistentry>
 
-   <varlistentry id="zh20-auto-88b9cd2956004e80">
-    <term><replaceable class="parameter">range_column_name</replaceable></term>
-    <listitem>
-     <para>
-      执行时态更新时使用的范围或多范围列。
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry id="zh20-auto-7db4eeec0784049a">
-    <term><replaceable class="parameter">for_portion_of_target</replaceable></term>
-    <listitem>
-     <para>
-      要更新的区间。如果针对的是范围列，则可以采用
-      <literal>FROM</literal> <replaceable class="parameter">start_time</replaceable>
-      <literal>TO</literal> <replaceable class="parameter">end_time</replaceable>
-      形式。否则，它必须采用<literal>(</literal><replaceable class="parameter">portion</replaceable><literal>)</literal>
-      形式，其中<replaceable class="parameter">portion</replaceable>是一个表达式，其值的类型与
-      <replaceable class="parameter">range_column_name</replaceable>相同。
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry id="zh20-auto-74d86724aa076670">
-    <term><replaceable class="parameter">start_time</replaceable></term>
-    <listitem>
-     <para>
-      时态更新中要更改的最早时间（含）。这必须是与
-      <replaceable class="parameter">range_column_name</replaceable>所对应范围的基础类型匹配的值。此处的 NULL 值表示更新的起点没有下界（与范围类型一样）。
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry id="zh20-auto-c0c9d2e6e934dd0d">
-    <term><replaceable class="parameter">end_time</replaceable></term>
-    <listitem>
-     <para>
-      时态更新中要更改的最晚时间（不含）。这必须是与
-      <replaceable class="parameter">range_column_name</replaceable>所对应范围的基础类型匹配的值。此处的 NULL 值表示更新的终点没有上界（与范围类型一样）。
-     </para>
-    </listitem>
-   </varlistentry>
-
    <varlistentry id="zh18-auto-update-varlistentry-4">
     <term><replaceable class="parameter">column_name</replaceable></term>
     <listitem>
@@ -183,7 +129,7 @@ UPDATE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ]
     <listitem>
 
      <para>
-      把该列设置为其默认值（如果没有为它指定特定的默认表达式，则该值为 NULL）。标识列将被设置为由关联序列生成的新值。对于生成列，允许指定这一项，但这仅仅指定了根据其生成表达式计算该列的常规行为。
+      把该列设置为其默认值（如果没有为它指定特定的默认表达式，则该值为 NULL）。标识列将被设置为由关联的 sequence 生成的新值。对于生成列，允许指定这一项，但这仅仅指定了根据其生成表达式计算该列的常规行为。
      </para>
     </listitem>
    </varlistentry>
@@ -224,8 +170,7 @@ UPDATE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ]
     <listitem>
 
      <para>
-      要在<literal>WHERE CURRENT OF</literal>条件中使用的游标名。要被更新的行是最近一次从该游标中取出的那一行。该游标必须是针对<command>UPDATE</command>目标表的非分组查询。注意，<literal>WHERE CURRENT OF</literal>不能与布尔条件或
-      <literal>FOR PORTION OF</literal>同时指定。有关将游标用于<literal>WHERE CURRENT OF</literal>的更多信息，请见<xref linkend="sql-declare"/>。
+      要在<literal>WHERE CURRENT OF</literal>条件中使用的游标名。要被更新的行是最近一次从该游标中取出的那一行。该游标必须是针对<command>UPDATE</command>目标表的非分组查询。注意，<literal>WHERE CURRENT OF</literal>不能与布尔条件同时指定。有关将游标用于<literal>WHERE CURRENT OF</literal>的更多信息，请见<xref linkend="sql-declare"/>。
      </para>
    </listitem>
   </varlistentry>
@@ -291,15 +236,13 @@ UPDATE <replaceable class="parameter">count</replaceable>
    <replaceable class="parameter">count</replaceable>是被更新的行数，包括值没有改变的匹配行。注意，当更新被<literal>BEFORE UPDATE</literal>
    触发器抑制时，这个数量可能小于匹配
    <replaceable class="parameter">condition</replaceable>的行数。如果
-   <replaceable class="parameter">count</replaceable>为 0，则该查询没有更新任何行（这不被视为错误）。如果使用了
-   <literal>FOR PORTION OF</literal>，则
-   <replaceable class="parameter">count</replaceable>不包括已插入的<glossterm linkend="glossary-temporal-leftovers">时态残留</glossterm>。
+   <replaceable class="parameter">count</replaceable>为 0，则该查询没有更新任何行（这不被视为错误）。
   </para>
 
   <para>
    如果<command>UPDATE</command>命令包含<literal>RETURNING</literal>
    子句，其结果将类似于一个<command>SELECT</command>语句，其中包含
-   <literal>RETURNING</literal>列表中定义的列和值，并在该命令更新的行上进行计算。如果使用了<literal>FOR PORTION OF</literal>，<literal>RETURNING</literal>子句会为每个更新后的行给出一个结果，但不包括已插入的<glossterm linkend="glossary-temporal-leftovers">时态残留</glossterm>。应用时间列的值与更新后行的新值相匹配。
+   <literal>RETURNING</literal>列表中定义的列和值，并在该命令更新的行上进行计算。
   </para>
  </refsect1>
 
@@ -337,12 +280,8 @@ UPDATE <replaceable class="parameter">count</replaceable>
   <para>
    如果发现某个外键直接引用了源分区的某个祖先，并且这个祖先与
    <command>UPDATE</command>查询中提到的祖先不是同一个，那么尝试把一行从一个分区移动到另一个分区将会失败。
-  </para><para>
-   当使用<literal>FOR PORTION OF</literal>时，这可能会导致没有
-   <literal>INSERT</literal>权限的用户触发<literal>INSERT</literal>触发器。在使用<literal>SECURITY DEFINER</literal>触发器函数时应考虑这一点。
   </para>
 
-  
  </refsect1>
 
  <refsect1>
@@ -450,16 +389,6 @@ COMMIT;
    当前定位那一行的<structfield>kind</structfield>列：
 <programlisting>
 UPDATE films SET kind = 'Dramatic' WHERE CURRENT OF c_films;
-</programlisting>
-  </para>
-
-  <para>
-   一个时态更新的示例：
-<programlisting>
-UPDATE products
-  FOR PORTION OF valid_at FROM '2023-09-01' TO '2025-03-01'
-  SET price = 12.00
-  WHERE product_no = 5;
 </programlisting>
   </para>
 
