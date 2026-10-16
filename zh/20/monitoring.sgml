@@ -2675,7 +2675,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
         <structfield>hits</structfield> <type>bigint</type>
        </para>
        <para>
-        在共享缓冲区中找到所需块的次数。
+        在共享缓冲区中找到所需块的次数；当 <varname>object</varname> 为 <literal>wal</literal> 时，则是在 WAL 缓冲区中找到所需块的次数。对于 <varname>object</varname> 为 <literal>wal</literal> 的情况，即使只读取了页的一部分，也计为一次命中。
        </para>
       </entry>
      </row>
@@ -2748,7 +2748,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
   </para>
 
   <para>
-   对于 <varname>object</varname> 为 <literal>wal</literal> 的行，<varname>fsyncs</varname> 和 <varname>fsync_time</varname> 跟踪在 <function>issue_xlog_fsync</function> 中完成的 WAL 文件 fsync 活动；<varname>writes</varname> 和 <varname>write_time</varname> 跟踪在 <function>XLogWrite</function> 中完成的 WAL 文件写入活动。更多信息请参阅<xref linkend="wal-configuration"/>。
+   对于 <varname>object</varname> 为 <literal>wal</literal> 的行，<varname>fsyncs</varname> 和 <varname>fsync_time</varname> 跟踪在 <function>issue_xlog_fsync</function> 中完成的 WAL 文件 fsync 活动；<varname>writes</varname> 和 <varname>write_time</varname> 跟踪在 <function>XLogWrite</function> 中完成的 WAL 文件写入活动。<varname>hits</varname> 跟踪 <function>WALReadFromBuffers</function> 从 WAL 缓冲区读取 WAL 的次数，这些读取避免了读取 WAL 文件。更多信息请参阅<xref linkend="wal-configuration"/>。
   </para>
 
   <para>
@@ -2870,6 +2870,17 @@ description | Waiting for a newly initialized WAL file to reach durable storage
        <para>
        如果此类型的条目在关闭时持久化到统计信息文件，并在启动时重新加载，则为真；如果它们仅保存在共享内存中，则为假。
       </para>
+      </entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry">
+       <para role="column_definition">
+        <structfield>own_hash</structfield> <type>boolean</type>
+       </para>
+       <para>
+        对于条目数量可变的统计信息类型，如果此类型的条目存储在专用 hash 表中，则为真；如果存储在共享 hash 表中，则为假。对于条目数量固定的统计信息类型，此值为假。
+       </para>
       </entry>
      </row>
 
@@ -5291,7 +5302,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
         <returnvalue>record</returnvalue>
        </para>
        <para>
-        返回指定 ID 的后端进程的子事务信息记录。返回的字段包括 <parameter>subxact_count</parameter>（该后端进程子事务缓存中的子事务数量）以及 <parameter>subxact_overflow</parameter>（指示该后端进程的子事务缓存是否已溢出）。
+        返回指定 ID 的后端进程的子事务信息记录。返回的字段包括 <parameter>subxact_count</parameter>（该后端进程子事务缓存中的子事务数量）以及 <parameter>subxact_overflowed</parameter>（指示该后端进程的子事务缓存是否已溢出）。
        </para></entry>
       </row>
 
@@ -5705,7 +5716,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>command</structfield> <type>text</type>
       </para>
       <para>
-       正在运行的命令。<command>CLUSTER</command>或<command>VACUUM FULL</command>。由于此视图仅为向后兼容而存在，它会将任何<command>REPACK</command>命令映射为这两种命令之一。
+       正在运行的命令。<command>CLUSTER</command>或<command>VACUUM FULL</command>。由于此视图仅为向后兼容而存在，对于<command>REPACK</command>命令，如果要求按索引排序，则将其映射为<command>CLUSTER</command>；否则映射为<command>VACUUM FULL</command>。
       </para></entry>
      </row>
 
@@ -5723,7 +5734,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>cluster_index_relid</structfield> <type>oid</type>
       </para>
       <para>
-       如果正在使用索引对表进行扫描，这就是正在使用的索引的OID；否则为0。
+       定义重写后表的行顺序的索引 OID；如果未要求按索引排序，则为零。
       </para></entry>
      </row>
 
@@ -6324,7 +6335,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>repack_index_relid</structfield> <type>oid</type>
       </para>
       <para>
-       如果正在使用索引对表进行扫描，这就是正在使用的索引的OID；否则为0。
+       定义重写后表的行顺序的索引 OID；如果未要求按索引排序，则为零。
       </para></entry>
      </row>
 
@@ -6410,7 +6421,10 @@ FROM pg_stat_get_backend_idset() AS backendid;
      <row>
       <entry><literal>initializing</literal></entry>
       <entry>
-       命令正在准备开始扫描堆。这个阶段预计会非常短暂。
+       命令正在准备开始扫描堆。这个阶段预计会非常短暂，但<command>REPACK
+       CONCURRENTLY</command>除外：在该命令的这个阶段，还包括启用逻辑解码以及随后的初始化。如果<xref linkend="guc-effective-wal-level"/>已经是<literal>logical</literal>，启用阶段无需做任何事；否则它会等待所有进程确认自己已开始写入逻辑解码所需的额外
+       WAL 信息。初始化阶段随后会等待已被分配了事务 ID 的事务结束，包括在该等待进行期间才开始的事务，因此这一阶段的持续时间可能超过命令开始时正在运行的最长事务，其中包括其他
+       <command>REPACK CONCURRENTLY</command>，它们在结束之前一直持有事务 ID。
       </entry>
      </row>
      <row>
@@ -6440,7 +6454,8 @@ FROM pg_stat_get_backend_idset() AS backendid;
      <row>
       <entry><literal>catch-up</literal></entry>
       <entry>
-       <command>REPACK CONCURRENTLY</command> 正在处理其他事务在前述任一阶段执行的 DML 命令。
+       <command>REPACK CONCURRENTLY</command> 正在处理其他事务在前述任一阶段执行的 DML 命令。这个阶段还包括等待调换文件所需的<literal>ACCESS
+       EXCLUSIVE</literal>锁，因此被冲突锁阻塞的命令会停留在这一阶段。非并发模式下会跳过此阶段。
       </entry>
      </row>
      <row>
@@ -6475,7 +6490,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
   </indexterm>
 
   <para>
-   只要<command>VACUUM</command>正在运行，<structname>pg_stat_progress_vacuum</structname>视图就会为每个当前正在清理的后端（包括自动清理工作进程）包含一行。下表描述了将报告的信息，并说明如何解释这些信息。<command>VACUUM FULL</command>命令的进度通过<structname>pg_stat_progress_repack</structname>报告，也可以通过为向后兼容而保留的<structname>pg_stat_progress_cluster</structname>查看，因为<command>VACUUM FULL</command>和<command>CLUSTER</command>都会重写表，而常规的<command>VACUUM</command>只会原地修改表。参见<xref linkend="repack-progress-reporting"/>和<xref linkend="cluster-progress-reporting"/>。
+   只要<command>VACUUM</command>正在运行，<structname>pg_stat_progress_vacuum</structname>视图就会为每个当前正在清理的后端（包括自动清理工作进程，以及为<link linkend="sql-vacuum">并行清理</link>启动的并行工作进程）包含一行。下表描述了将报告的信息，并说明如何解释这些信息。<command>VACUUM FULL</command>命令的进度通过<structname>pg_stat_progress_repack</structname>报告，也可以通过为向后兼容而保留的<structname>pg_stat_progress_cluster</structname>查看，因为<command>VACUUM FULL</command>和<command>CLUSTER</command>都会重写表，而常规的<command>VACUUM</command>只会原地修改表。参见<xref linkend="repack-progress-reporting"/>和<xref linkend="cluster-progress-reporting"/>。
   </para>
 
   <table id="pg-stat-progress-vacuum-view" xreflabel="pg_stat_progress_vacuum">
@@ -6564,7 +6579,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>heap_blks_vacuumed</structfield> <type>bigint</type>
       </para>
       <para>
-       被清理的堆块数量。除非表没有索引，这个计数器仅在处于<literal>vacuuming heap</literal>阶段时才会前进。不包含死亡元组的块会被跳过，因此这个计数器有时可能会大幅跳增。
+       被清理的堆块数量。除非表没有索引，这个计数器仅在处于<literal>vacuuming heap</literal>阶段时才会前进。不包含死元组的块会被跳过，因此这个计数器有时可能会大幅跳增。
       </para></entry>
      </row>
 
@@ -6582,7 +6597,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>max_dead_tuple_bytes</structfield> <type>bigint</type>
       </para>
       <para>
-       在需要执行索引清理周期之前可存储的死亡元组数据量，取决于<xref linkend="guc-maintenance-work-mem"/>。
+       在需要执行索引清理周期之前可存储的死元组数据量，取决于<xref linkend="guc-maintenance-work-mem"/>。
       </para></entry>
      </row>
 
@@ -6591,7 +6606,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>dead_tuple_bytes</structfield> <type>bigint</type>
       </para>
       <para>
-       自上一个索引清理周期以来收集到的死亡元组数据量。
+       自上一个索引清理周期以来收集到的死元组数据量。
       </para></entry>
      </row>
 
@@ -6682,9 +6697,42 @@ FROM pg_stat_get_backend_idset() AS backendid;
      </row>
 
 
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>current_index_relid</structfield> <type>oid</type>
+      </para>
+      <para>
+        当前正在清理的索引的 OID；如果没有，则为 0。此字段仅在 <literal>vacuuming indexes</literal> 或 <literal>cleaning up indexes</literal> 阶段有效。
+       </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>index_blks_total</structfield> <type>bigint</type>
+      </para>
+      <para>
+        <structfield>current_index_relid</structfield> 标识的索引中的块总数。只有 B-树索引会报告此值；对于其他索引访问方法，以及没有正在进行的索引扫描时，此值为 0。
+       </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>index_blks_done</structfield> <type>bigint</type>
+      </para>
+      <para>
+        该索引中目前已扫描的块数。最终会比 <structfield>index_blks_total</structfield> 少一个块，因为后者计入了从不扫描的索引元页。
+       </para></entry>
+     </row>
+
     </tbody>
    </tgroup>
   </table>
+
+  <note>
+   <para>
+    在并行清理期间，领导者及其每个工作进程各自报告一行，所有行的 <structfield>relid</structfield> 均相同。工作进程的行只维护 <structfield>phase</structfield>、<structfield>current_index_relid</structfield>、<structfield>index_blks_total</structfield> 和 <structfield>index_blks_done</structfield>；其余列跟踪命令级进度，只由领导者维护。可以使用 <link linkend="monitoring-pg-stat-activity-view"><structname>pg_stat_activity</structname></link> 中的 <structfield>leader_pid</structfield> 来区分领导者的行和工作进程的行。
+   </para>
+  </note>
 
   <table id="vacuum-phases">
 
@@ -6718,7 +6766,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
 
     <row>
      <entry><literal>vacuuming indexes</literal></entry>
-     <entry><command>VACUUM</command>当前正在清理索引。如果表有索引，每次清理都会在堆扫描完成后至少执行一次此阶段。如果<xref linkend="guc-maintenance-work-mem"/>（或者，对于自动清理，已设置的<xref linkend="guc-autovacuum-work-mem"/>）不足以存储找到的死亡元组数量，则每次清理可能多次执行此阶段。</entry>
+     <entry><command>VACUUM</command>当前正在清理索引。如果表有索引，每次清理都会在堆扫描完成后至少执行一次此阶段。如果<xref linkend="guc-maintenance-work-mem"/>（或者，对于自动清理，已设置的<xref linkend="guc-autovacuum-work-mem"/>）不足以存储找到的死元组数量，则每次清理可能多次执行此阶段。</entry>
     </row>
 
     <row>
@@ -6805,7 +6853,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>backup_total</structfield> <type>bigint</type>
       </para>
       <para>
-       将被流式传输的数据总量。该值在<literal>streaming database files</literal>阶段开始时进行估算并报告。注意，这只是一个近似值，因为数据库可能会在<literal>streaming database files</literal>阶段期间发生变化，而 WAL 日志也可能在稍后的备份阶段被包含进来。一旦流式传输的数据量超过了估计的总大小，该值始终与<structfield>backup_streamed</structfield>相同。如果在<application>pg_basebackup</application>中禁用估算（也就是说，指定了<literal>--no-estimate-size</literal>选项），这为<literal>NULL</literal>。
+       将被流式传输的数据总量，按服务器端进行任何压缩之前的归档数据量计算。估计值在<literal>streaming database files</literal>阶段开始时报告。注意，这只是一个近似值，因为数据库可能会在<literal>streaming database files</literal>阶段期间发生变化，而 WAL 日志也可能在稍后的备份阶段被包含进来。一旦流式传输的数据量超过了估计的总大小，该值始终与<structfield>backup_streamed</structfield>相同。如果在<application>pg_basebackup</application>中禁用估算（也就是说，指定了<literal>--no-estimate-size</literal>选项），这为<literal>NULL</literal>。
       </para></entry>
      </row>
 
@@ -6814,7 +6862,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>backup_streamed</structfield> <type>bigint</type>
       </para>
       <para>
-       已流式传输的数据量。该计数器仅在<literal>streaming database files</literal>阶段或<literal>transferring wal files</literal>阶段递增。
+       已流式传输的数据量，按服务器端进行任何压缩之前的归档数据量计算。该计数器仅在<literal>streaming database files</literal>阶段或<literal>transferring wal files</literal>阶段递增。
       </para></entry>
      </row>
 
@@ -7034,7 +7082,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
         <structfield>blocks_total</structfield> <type>bigint</type>
        </para>
        <para>
-        当前关系中将要处理的块数，或者如果工作进程还没有计算出块数，则为 <literal>NULL</literal>。启动器进程将该值设为 <literal>NULL</literal>。
+        当前关系分支中将要处理的块数，或者如果工作进程还没有计算出块数，则为 <literal>NULL</literal>。启动器进程将该值设为 <literal>NULL</literal>。
        </para>
       </entry>
      </row>
@@ -7045,7 +7093,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
         <structfield>blocks_done</structfield> <type>bigint</type>
        </para>
        <para>
-        当前关系中已经处理的块数。启动器进程将该值设为 <literal>NULL</literal>。
+        当前关系分支中已经处理的块数。启动器进程将该值设为 <literal>NULL</literal>。
        </para>
       </entry>
      </row>
@@ -7733,7 +7781,7 @@ if (TRACE_POSTGRESQL_TRANSACTION_START_ENABLED())
    <title>确定磁盘使用情况</title>
 
    <indexterm zone="disk-usage">
-    <primary>disk usage</primary>
+    <primary>磁盘使用情况</primary>
    </indexterm>
 
    <para>

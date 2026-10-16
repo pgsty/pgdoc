@@ -50,62 +50,12 @@ REPACK [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] USING
   </para>
 
   <para>
-   如果指定了 <literal>USING INDEX</literal> 子句，行会根据索引中的信息在物理上重新排序。有关聚簇的说明，请参见下文注记。
+   如果指定了 <literal>USING INDEX</literal> 子句，行会根据索引中的信息在物理上重新排序。请参见下文的<xref linkend="sql-repack-notes-on-clustering"/>。
   </para>
 
   <para>
-   当对一个表执行重整时，会在该表上获取 <literal>ACCESS
-   EXCLUSIVE</literal> 锁。这会阻止任何其他数据库操作（包括读和写）在 <command>REPACK</command> 完成前访问该表。如果希望在重整期间保持该表可访问，可以考虑使用 <literal>CONCURRENTLY</literal> 选项。
+   当对一个表执行重整时，除非指定了 <literal>CONCURRENTLY</literal> 选项，否则会在该表上获取 <literal>ACCESS EXCLUSIVE</literal> 锁。有关该选项效果的讨论，请参见<xref linkend="sql-repack-notes-on-concurrently"/>。
   </para>
-
-  <refsect2 id="sql-repack-notes-on-clustering" xreflabel="Notes on Clustering">
-   <title>聚簇说明</title>
-
-   <para>
-    如果指定了 <literal>USING INDEX</literal> 子句，表中的行会按该索引指定的顺序存储；由于行会随后在物理上聚簇，因此称为<firstterm>聚簇</firstterm>。如果命令中指定了索引名，则使用该索引隐含的顺序，并将该索引配置为聚簇所用的索引。（这同样适用于传给 <command>CLUSTER</command> 命令的索引。）如果未指定索引名，则使用已经被配置为聚簇索引的索引；如果没有这样的索引，就会报错。可以使用 <command>ALTER TABLE ... CLUSTER ON</command> 手工设置索引，也可以使用
-    <command>ALTER TABLE ... SET WITHOUT CLUSTER</command> 清除设置。
-   </para>
-
-   <para>
-    如果在 <command>REPACK USING INDEX</command> 中没有指定表名，那么所有已经定义了聚簇索引、且调用用户有权限访问的表都会被处理。
-   </para>
-
-   <para>
-   聚簇是一次性操作：表随后被更新时，这些更改不会继续保持聚簇。也就是说，并不会尝试根据索引顺序存储新行或更新后的行。（如果愿意，可以通过再次发出该命令来定期重新聚簇。此外，把表的 <literal>fillfactor</literal>
-   存储参数设置为低于 100%，有助于在更新期间保持聚簇顺序，因为如果页面上有足够空间，更新后的行会保留在同一页面上。）
-  </para>
-
-   <para>
-    如果你是在表内随机访问单行，那么表中数据的实际顺序并不重要。但如果你倾向于更频繁地访问某些数据，并且有一个能把它们分组在一起的索引，那么使用聚簇就会受益。如果你从表中请求一个索引值范围，或者请求一个匹配多行的单个索引值，聚簇会有所帮助，因为一旦索引确定了第一个匹配行所在的表页，其他匹配行很可能已经在同一个表页上，因此可以节省磁盘访问并加快查询。
-   </para>
-
-   <para>
-    <command>REPACK</command> 可以通过在指定索引上进行索引扫描（如果该索引是 B-树），或者先执行顺序扫描再排序，来对表重新排序。它会根据规划器代价参数和可用的统计信息，尝试选择速度更快的方法。
-   </para>
-
-   <para>
-    因为规划器会记录有关表中数据顺序的统计信息，建议在新近重整过的表上运行<link linkend="sql-analyze"><command>ANALYZE</command></link>。否则，规划器可能会选择很差的查询计划。
-   </para>
-  </refsect2>
-
-  <refsect2 id="sql-repack-notes-on-resources" xreflabel="Notes on Resources">
-   <title>资源说明</title>
-
-   <para>
-    当使用索引扫描，或者使用不带排序的顺序扫描时，会创建一个临时副本，其中包含按索引顺序排列的表数据。同时也会为表上的每个索引创建临时副本。因此，你需要至少等于表大小与索引大小之和的磁盘可用空间。
-   </para>
-
-   <para>
-    当使用顺序扫描加排序时，还会创建一个临时排序文件，因此峰值临时空间需求最多可达到表大小的两倍，再加上索引大小。这种方法通常比索引扫描方法更快，但如果磁盘空间要求无法接受，可以通过临时将<xref linkend="guc-enable-sort"/>设为 <literal>off</literal>
-    来禁用这种选择。
-   </para>
-
-   <para>
-    建议在重整之前，将<xref linkend="guc-maintenance-work-mem"/>设置为一个相当大的值（但不要超过你可为 <command>REPACK</command>
-    操作预留的内存总量）。
-   </para>
-  </refsect2>
-
  </refsect1>
 
  <refsect1>
@@ -143,27 +93,149 @@ REPACK [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] USING
     <term><literal>CONCURRENTLY</literal></term>
     <listitem>
      <para>
-      允许其他事务在重整期间使用该表。
+      允许其他事务在重整期间使用该表。更多详细信息请参见<xref linkend="sql-repack-notes-on-concurrently"/>。
      </para>
 
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>VERBOSE</literal></term>
+    <listitem>
      <para>
-      在内部，<command>REPACK</command> 会把表内容（忽略死元组）复制到一个新文件中，并按指定索引排序，同时还会为每个索引创建一个新文件。然后它交换表及其所有索引的旧文件和新文件，并删除旧文件。需要 <literal>ACCESS EXCLUSIVE</literal> 锁，以确保处理过程中旧文件不会变化，因为这些变化会因交换而丢失。
+      以 <literal>INFO</literal> 级别打印每个表被重整时的进度报告。
      </para>
+    </listitem>
+   </varlistentry>
 
+   <varlistentry>
+    <term><literal>ANALYZE</literal></term>
+    <term><literal>ANALYSE</literal></term>
+    <listitem>
      <para>
-      使用 <literal>CONCURRENTLY</literal> 选项时，<literal>ACCESS EXCLUSIVE</literal> 锁只会在交换表文件和索引文件时获取。在创建新表和索引文件期间发生的数据更改会通过逻辑解码（<xref linkend="logicaldecoding"/>）捕获，并在请求
-      <literal>ACCESS EXCLUSIVE</literal> 锁之前应用。因此，该锁通常只会持有完成文件交换所需的时间，应该相当短。不过，如果 <command>REPACK</command> 等待锁期间对表做了太多数据更改，那么在持有 <literal>ACCESS EXCLUSIVE</literal> 锁时，必须先处理这些更改，然后才能交换文件，因此这段时间仍可能比较明显。
+      在重整表之后对该表执行<xref linkend="sql-analyze"/>。目前这只在指定单个（非分区）表时受支持。此选项不能在事务块内使用，也不能从函数、过程或<command>DO</command>块中使用。
      </para>
+    </listitem>
+   </varlistentry>
 
+   <varlistentry>
+    <term><replaceable class="parameter">boolean</replaceable></term>
+    <listitem>
      <para>
-      请注意，带 <literal>CONCURRENTLY</literal> 选项的 <command>REPACK</command> 不会尝试重新排列在重整开始之后插入到表中的行。还要注意，<command>REPACK</command> 可能会因为其他事务在重整期间对该表执行的 DDL 命令而无法完成。
+      指定所选选项应开启还是关闭。可以写 <literal>TRUE</literal>、<literal>ON</literal> 或 <literal>1</literal> 来启用该选项，也可以写 <literal>FALSE</literal>、<literal>OFF</literal> 或 <literal>0</literal> 来禁用它。<replaceable class="parameter">boolean</replaceable> 值也可以省略，此时默认视为 <literal>TRUE</literal>。
      </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
 
-     <note>
-      <para>
-       除了<xref linkend="sql-repack-notes-on-resources"/>中解释的临时空间要求之外，<literal>CONCURRENTLY</literal> 选项还可能会稍微增加一些临时空间的使用。原因是，其他事务可以执行 DML 操作，而这些操作在 <command>REPACK</command> 复制完旧文件中的所有现有元组之前无法应用到新文件中。因此，在复制期间插入到旧文件中的那些元组也会被单独存储在一个临时文件中，直到它们能够被处理为止。
-      </para>
-     </note>
+ <refsect1 id="sql-repack-notes">
+  <title>说明</title>
+
+   <para>
+    要重整表，必须对该表具有 <literal>MAINTAIN</literal> 特权。
+   </para>
+
+  <para>
+   <command>REPACK</command> 主要用于消除膨胀，并在使用 <literal>USING INDEX</literal> 时对表进行聚簇，以提高性能。虽然它也会推进表的 <structfield>relfrozenxid</structfield> 和 <structfield>relminmxid</structfield>，但它并不适合用来防止事务 ID 或多事务 ID 回卷：它会重写整个表及其所有索引，因此比 <command>VACUUM</command> 耗时长得多，而且可能在大部分工作完成后失败，尤其是在繁忙的表上使用 <literal>CONCURRENTLY</literal> 时。建议使用 <command>VACUUM</command> 来防止回卷（见<xref linkend="vacuum-for-wraparound"/>）。当表接近回卷时，<command>VACUUM</command> 会自行跳过索引清理（见<xref linkend="guc-vacuum-failsafe-age"/>），而其 <link linkend="sql-vacuum"><literal>INDEX_CLEANUP OFF</literal></link> 选项可以提前实现同样的效果。
+  </para>
+
+
+   <para>
+    <command>REPACK</command>拒绝处理存在无效索引的表。这类索引必须由用户提前删除或重建。
+   </para>
+
+   <para>
+    在 <command>REPACK</command> 运行期间，<xref linkend="guc-search-path"/>会临时改为 <literal>pg_catalog, pg_temp</literal>。
+   </para>
+
+  <para>
+    每个运行 <command>REPACK</command> 的后端都会在 <structname>pg_stat_progress_repack</structname> 视图中报告其进度。有关详细信息，请参见<xref linkend="repack-progress-reporting"/>。
+  </para>
+
+   <para>
+    重整分区表时，会重整其每个分区。如果指定了索引，则每个分区都会使用该索引的分区来重整。对分区表执行 <command>REPACK</command> 不能在事务块中进行。
+   </para>
+
+  <refsect2 id="sql-repack-notes-on-clustering" xreflabel="Notes on Clustering">
+   <title>聚簇说明</title>
+
+   <para>
+    如果指定了 <literal>USING INDEX</literal> 子句，表中的行会按指定索引隐含的顺序在物理上重新排列，这称为<firstterm>聚簇</firstterm>。这可能影响性能：如果是在表内随机访问单行，那么表中数据的实际顺序并不重要。但如果更频繁地访问某些数据，并且有一个能把它们聚集在一起的索引，就能从聚簇中受益。如果从表中请求一个索引值范围，或者请求一个匹配多行的单个索引值，聚簇也会有所帮助，因为一旦索引确定了第一个匹配行所在的表页，其他匹配行很可能已经在同一个表页上，从而节省磁盘访问并加快查询。
+   </para>
+
+   <para>
+    对于 B-树索引，聚簇使用索引的线性排序顺序。其他支持聚簇的索引访问方法可能使用不同的排序策略，这种策略不一定对应任何 SQL 排序顺序。如果命令中指定了索引名，则使用该索引，并将其记录为该表的聚簇索引。（这同样适用于传给 <command>CLUSTER</command> 命令的索引。）如果未指定索引名，则使用已经被配置为聚簇索引的索引；如果没有这样的索引，就会报错。可以使用 <command>ALTER TABLE ... CLUSTER ON</command> 手工设置索引，也可以使用
+    <command>ALTER TABLE ... SET WITHOUT CLUSTER</command> 清除设置。
+   </para>
+
+   <para>
+   聚簇是一次性操作：表随后被更新时，这些更改不会继续保持聚簇。也就是说，并不会尝试根据聚簇顺序存储新行或更新后的行。（如果愿意，可以通过再次发出该命令来定期重新聚簇。此外，把表的 <literal>fillfactor</literal>
+   存储参数设置为低于 100%，有助于在更新期间保持聚簇顺序，因为如果页面上有足够空间，更新后的行会保留在同一页面上。）
+  </para>
+
+   <para>
+    在 B-树索引上聚簇时，<command>REPACK</command> 可以通过在指定索引上进行索引扫描，或者先执行顺序扫描再排序，来重写表。它会根据规划器代价参数和可用的统计信息，尝试选择速度更快的方法。在使用 B-树以外的访问方法的索引上聚簇时，<command>REPACK</command> 始终使用索引扫描。
+   </para>
+
+   <para>
+    因为规划器会记录有关表中数据顺序的统计信息，建议指定 <literal>ANALYZE</literal> 选项，或者在新近重整过的表上运行 <link linkend="sql-analyze"><command>ANALYZE</command></link>。否则，规划器可能会选择很差的查询计划。
+   </para>
+
+   <para>
+    如果在 <command>REPACK USING INDEX</command> 中没有指定表名，那么所有已经定义了聚簇索引、且调用用户具有相应权限的表都会被处理。
+   </para>
+  </refsect2>
+
+  <refsect2 id="sql-repack-notes-on-resources" xreflabel="Notes on Resources">
+   <title>资源说明</title>
+
+   <para>
+    <command>REPACK</command> 会创建表及其所有索引的临时副本，因此需要至少等于表大小与索引大小之和的磁盘可用空间。
+   </para>
+
+   <para>
+    如果指定了 <literal>USING INDEX</literal> 子句，且规划器选择通过顺序扫描加排序来实现，那么除了上述空间之外，还需要一个最大可达表大小的临时排序文件。这种方法通常比索引扫描更快，但如果磁盘空间要求无法接受，可以通过临时将<xref linkend="guc-enable-sort"/>设为 <literal>off</literal> 来禁用这种选择；如果不需要重新排序表，也可以省略 <literal>USING INDEX</literal>。
+   </para>
+
+   <para>
+    就事务 ID 回卷而言（见<xref linkend="vacuum-for-wraparound"/>），<command>REPACK</command> 被视为一个长时间运行的事务，会阻止 <command>VACUUM</command> 清理其他表中的死行。在重整非常大的表时，建议监控运行 <command>REPACK</command> 的进程的 <structname>pg_stat_activity.backend_xid</structname>，以免导致其他表过度膨胀。
+   </para>
+
+   <para>
+    建议在重整之前，将<xref linkend="guc-maintenance-work-mem"/>设置为一个相当大的值（但不要超过你可为 <command>REPACK</command>
+    操作预留的内存总量）。
+   </para>
+  </refsect2>
+
+  <refsect2 id="sql-repack-notes-on-concurrently" xreflabel="Notes on Concurrent Operation">
+   <title>并发操作说明</title>
+
+   <warning>
+    <para>
+     带 <literal>CONCURRENTLY</literal> 选项的 <command>REPACK</command> 不是 MVCC 安全的。重整事务提交后，如果并发事务使用的是重整开始之前取得的快照，该表在这些事务看来将是空的。更多详细信息请参见<xref linkend="mvcc-caveats"/>。
+    </para>
+   </warning>
+
+   <para>
+    <command>REPACK</command> 会把表内容（忽略死元组）复制到一个新文件中，并按指定索引排序，同时还会为每个索引创建一个新文件。然后它交换表及其所有索引的旧文件和新文件，并删除旧文件。不使用 <literal>CONCURRENTLY</literal> 选项时，会在开始时获取 <literal>ACCESS EXCLUSIVE</literal> 锁，并在整个操作期间持续持有，以确保处理过程中旧文件不会变化；否则，任何并发更改都会因交换而丢失。
+   </para>
+
+   <para>
+    相比之下，指定 <literal>CONCURRENTLY</literal> 选项时，大部分操作在持有 <literal>SHARE UPDATE EXCLUSIVE</literal> 锁的情况下执行，只有在交换表文件和索引文件的最后阶段才会获取 <literal>ACCESS EXCLUSIVE</literal> 锁。在创建新表和索引文件期间发生的数据更改会通过逻辑解码（见<xref linkend="logicaldecoding"/>）捕获，并在请求 <literal>ACCESS EXCLUSIVE</literal> 锁之前应用。获取该锁后，会对捕获的剩余并发数据更改做最后一轮处理，然后交换文件。因此，该锁通常只会持有很短的时间，具体取决于等待锁期间积累的更改量。
+   </para>
+
+   <para>
+    处理这些并发更改时，每个被并发更新或删除的元组都需要占用少量固定大小的内存，这部分内存不受<xref linkend="guc-maintenance-work-mem"/>限制；如果在 <command>REPACK</command> 执行期间被并发更新或删除的行超过大约 1.04 亿，命令就会失败。此外，所有并发更改的完整元组数据（未被 <command>UPDATE</command> 修改的 TOAST 列除外）都会单独存储在磁盘上。
+   </para>
+
+   <para>
+    如果其他事务在重整期间对该表执行 DDL 命令，<command>REPACK (CONCURRENTLY)</command> 可能无法完成。
+   </para>
+
+   <para>
+    <command>REPACK (CONCURRENTLY) USING INDEX</command> 不会尝试对重整开始之后插入到表中的行进行排序。
+   </para>
 
      <para>
       <literal>CONCURRENTLY</literal> 选项不能在以下情况下使用：
@@ -225,65 +297,7 @@ REPACK [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] USING
        </listitem>
       </itemizedlist>
      </para>
-
-     <warning>
-      <para>
-       带 <literal>CONCURRENTLY</literal> 选项的 <command>REPACK</command> 不是 MVCC 安全的，详见<xref linkend="mvcc-caveats"/>。
-      </para>
-     </warning>
-
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>VERBOSE</literal></term>
-    <listitem>
-     <para>
-      以 <literal>INFO</literal> 级别打印每个表被重整时的进度报告。
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><literal>ANALYZE</literal></term>
-    <term><literal>ANALYSE</literal></term>
-    <listitem>
-     <para>
-      在重整表之后对该表执行<xref linkend="sql-analyze"/>。目前这只在指定单个（非分区）表时受支持。此选项不能在事务块内使用，也不能从函数、过程或<command>DO</command>块中使用。
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><replaceable class="parameter">boolean</replaceable></term>
-    <listitem>
-     <para>
-      指定所选选项应开启还是关闭。可以写 <literal>TRUE</literal>、<literal>ON</literal> 或 <literal>1</literal> 来启用该选项，也可以写 <literal>FALSE</literal>、<literal>OFF</literal> 或 <literal>0</literal> 来禁用它。<replaceable class="parameter">boolean</replaceable> 值也可以省略，此时默认视为 <literal>TRUE</literal>。
-     </para>
-    </listitem>
-   </varlistentry>
-  </variablelist>
- </refsect1>
-
- <refsect1>
-  <title>说明</title>
-
-   <para>
-    要重整表，必须对该表具有 <literal>MAINTAIN</literal> 特权。
-   </para>
-
-   <para>
-    在 <command>REPACK</command> 运行期间，<xref linkend="guc-search-path"/>会临时改为 <literal>pg_catalog, pg_temp</literal>。
-   </para>
-
-  <para>
-    每个运行 <command>REPACK</command> 的后端都会在 <structname>pg_stat_progress_repack</structname> 视图中报告其进度。有关详细信息，请参见<xref linkend="repack-progress-reporting"/>。
-  </para>
-
-   <para>
-    重整分区表时，会重整其每个分区。如果指定了索引，则每个分区都会使用该索引的分区来重整。对分区表执行 <command>REPACK</command> 不能在事务块中进行。
-   </para>
-
+  </refsect2>
  </refsect1>
 
  <refsect1>
