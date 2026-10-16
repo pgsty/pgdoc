@@ -3,11 +3,11 @@
 REPO_ROOT := $(abspath $(CURDIR)/../..)
 DOC_VERSION := $(notdir $(CURDIR))
 PG_VERSION ?= 20
-# Match the English baseline recorded in en/SOURCES.json (2026-09-11).
+# Match the English baseline recorded in en/SOURCES.json (snapshot 16-Oct-2026 08:22 UTC).
 # Never silently replace this manual's generators with a moving master.
 ifeq ($(strip $(PGDOC_SOURCE_DIR)$(PGDOC_SOURCE_COMMIT)),)
-PGDOC_SOURCE_ARCHIVE ?= $(REPO_ROOT)/.cache/upstream/postgresql-20devel-97c64fe3d54d.tar.bz2
-PGDOC_SOURCE_SHA256 ?= 97c64fe3d54d9cdf570c9dab054463881695c388e6b77ceab889709ba6f025cb
+PGDOC_SOURCE_ARCHIVE ?= $(REPO_ROOT)/.cache/upstream/postgresql-20devel-49c73aa4c9ca.tar.bz2
+PGDOC_SOURCE_SHA256 ?= 49c73aa4c9cacef8ca979276a28ac416c08e9e54c9baee4ae5fd116a35fa13ac
 endif
 export PGDOC_SOURCE_ARCHIVE PGDOC_SOURCE_SHA256
 DOC_LANG := $(notdir $(abspath $(CURDIR)/..))

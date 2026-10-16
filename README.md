@@ -126,13 +126,15 @@ make zh-pdf-all ZH_VERSIONS="17 18" PAPERS="A4 US"
 - 默认批量范围是 PostgreSQL 14–18，可通过 `ZH_VERSIONS` 指定；`VERSION` 是英文版本号，`ZH_VERSION` 是中文大版本目录。
 - 固定上游源码时，同时提供 `PGDOC_SOURCE_DIR` 与 `PGDOC_SOURCE_COMMIT`，或同时提供 `PGDOC_SOURCE_ARCHIVE` 与 `PGDOC_SOURCE_SHA256`。脚本会检查对应提交或归档校验和。
 - PostgreSQL 10–13 默认使用各版 Makefile 指定的已校验归档包，首次构建需准备相应文件，或覆盖 `PGDOC_SOURCE_ARCHIVE` 路径。PostgreSQL 10 还需要 OpenSP、DocBook SGML 4.2 和 SGML catalog，相关路径见 [PG10 构建入口](zh/10/Makefile)。
-- PostgreSQL 20 使用 `en/SOURCES.json` 记录的 2026-09-11 开发快照，默认归档为 `.cache/upstream/postgresql-20devel-97c64fe3d54d.tar.bz2`，SHA256 为 `97c64fe3d54d9cdf570c9dab054463881695c388e6b77ceab889709ba6f025cb`。`zh/20/Makefile` 固定此输入，避免开发分支变化造成生成内容漂移；可用成对的 `PGDOC_SOURCE_ARCHIVE` / `PGDOC_SOURCE_SHA256` 显式指定其他已核实的归档。
+- PostgreSQL 20 的当前开发快照记录在 `en/SOURCES.json`，中文构建由 `zh/20/Makefile` 固定对应归档与 SHA-256。更新快照时保持两处一致，避免开发分支变化造成生成内容漂移；中文底层构建可用成对的 `PGDOC_SOURCE_ARCHIVE` / `PGDOC_SOURCE_SHA256` 显式指定其他已核实的归档。
 - PDF 默认使用阿里巴巴普惠体 3.0 和 Courier New，可通过 `PDF_CJK_FAMILY`、`PDF_MONO_FAMILY` 或对应字体文件变量指定本机字体。
 
 `make check-deps` 只检查部分可执行程序是否存在；完整验证应以实际 HTML / PDF 构建和页面检查为准。
 PDF 构建会把完整 FOP 诊断保存为 PDF 同目录的 `*.fop.log`，并在构建日志中显示警告；排版溢出警告仍须结合实际页面核对。
 
 </details>
+
+英文 PDF 按 [来源规则](docs/pdf-sources.md) 单独处理：`make en-pdf-all EN_VERSIONS=18` 下载官方 A4 / US 原件；`make en-pdf-legacy` 仅首次补建缺失的 6.3–7.4，已有文件记录哈希后冻结；`make en-pdf-devel` 按 `en/SOURCES.json` 的固定开发快照构建两种纸型。`make clean-pdf` 保留英文成品及来源记录，只清理中文构建输出。
 
 ## 参与贡献
 
