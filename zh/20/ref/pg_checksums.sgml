@@ -44,7 +44,7 @@ PostgreSQL documentation
   </para>
 
   <para>
-   使用<application>pg_checksums</application>启用校验和时，如果集簇关闭时正处于<xref linkend="checksums-online-enable-disable"/>所述的在线启用过程中，<application>pg_checksums</application>仍会处理所有关系文件，而不管在线校验和处理的进度如何。
+   如果集簇关闭时正处于<xref linkend="checksums-online-enable-disable"/>所述的在线启用或禁用校验和的过程中，控制文件仍会记录该中断状态，<application>pg_checksums</application>将拒绝以任何模式运行。请启动集簇并将其干净关闭以重置该状态，然后重试；在备库上，请先让复制完成该转换。
   </para>
 
   <para>
@@ -211,14 +211,52 @@ PostgreSQL documentation
    在大型集簇中启用校验和可能需要很长时间。在此操作期间，不得启动该集簇，也不得启动任何会向数据目录写入内容的其他程序，否则可能发生数据丢失。
   </para>
   <para>
-   在复制环境中，如果配合会直接复制关系文件块的工具（例如<xref linkend="app-pgrewind"/>）使用，而又没有在所有节点上一致地执行启用或禁用校验和的操作，就可能造成表现为校验和不正确的页面损坏。因此，在复制环境中切换校验和时，建议先停止所有集簇，再一致地切换所有节点。另一种安全做法是销毁所有备库，在主库上执行该操作，最后从头重建各备库。
+   使用<application>pg_checksums</application>启用或禁用校验和只会更改本地数据目录；新状态不会被复制到任何其他节点。在复制环境中，必须对每个节点应用相同的更改：
+  </para>
+
+  <procedure>
+   <step id="shut-down-nodes">
+    <title>关闭所有节点</title>
+    <para>
+     参与复制的所有节点都必须以干净关闭的方式停止；<application>pg_checksums</application>拒绝在立即关闭后遗留的数据目录上运行。在停止备库之前，确保它已重放主库的所有 WAL：先停止主库，用<xref linkend="app-pgcontroldata"/>读取其<quote>Latest checkpoint
+     location</quote>（最新检查点位置），并检查备库上的<function>pg_last_wal_replay_lsn()</function>是否已推进到超过它。仅比较重放位置与<function>pg_last_wal_receive_lsn()</function>是不够的，因为后者只表明备库已接收的 WAL 已被重放。
+    </para>
+   </step>
+
+   <step>
+    <title>在每个节点上启用或禁用数据校验和</title>
+    <para>
+     在复制环境中每个节点的数据目录上运行<application>pg_checksums</application>。各节点可以在停机期间并行处理。必须所有节点都成功完成处理后才能继续。
+    </para>
+   </step>
+
+   <step>
+    <title>重启所有节点</title>
+    <para>
+     正常启动各节点，验证<xref linkend="guc-data-checksums"/>在所有节点上一致，并监视各备库的日志中是否出现数据校验和状态不匹配的警告。
+    </para>
+   </step>
+  </procedure>
+
+  <para>
+   <xref linkend="shut-down-nodes"/>中的重放要求存在的原因是：离线更改只记录在控制文件中，相对于节点尚未重放的 WAL 没有确定的顺序；见<xref linkend="checksums-offline-enable-disable"/>。在重放在线校验和状态更改之前停止的节点，会在重新启动时应用该更改，覆盖离线更改，各节点的状态会悄然分叉，直到稍后的检查点记录触发下述警告。因此，最好不要混用这两种机制：要么用上面的离线流程更改复制环境的状态，要么用在线转换，并确保在上一次更改到达每个节点之后再开始下一次更改。
+  </para>
+  <para>
+   如果更改的应用不一致，每个节点都会保持自己的状态，当重放的 WAL 中记录的状态与自身状态不同时，备库会记录一条警告。在备库通过重放 WAL 追赶进度时，如果所重放的 WAL 写于该更改被一致应用之前，也可能短暂出现同样的警告；一旦携带新状态的检查点记录被重放，警告就会停止。
+  </para>
+  <para>
+   如果备库的数据目录从未计算过校验和，就不得通过这种追赶方式启用校验和。请按上文所述在备库停机时对其运行<application>pg_checksums</application>、在线启用校验和，或者从基础备份重建它，以使集簇的校验和状态一致。注意，在线启用只能从校验和处于关闭状态的主库开始，因此如果主库上已经启用，请先在线禁用。
   </para>
   <para>
    如果在启用或禁用校验和期间<application>pg_checksums</application>被中止或杀掉，那么集簇的数据校验和配置将保持不变，并且可以重新运行<application>pg_checksums</application>以执行同一操作。
-  </para><para>
+  </para>
+  <para>
+   诸如<xref linkend="app-pgrewind"/>这类会在节点之间直接复制关系文件块的工具，要求所有节点处于相同的数据校验和状态，否则存在数据损坏的风险。
+  </para>
+  <para>
    目标集簇必须与 <application>pg_checksums</application> 具有相同的主版本。
   </para>
 
-  
+
  </refsect1>
 </refentry>
