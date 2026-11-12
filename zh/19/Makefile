@@ -2,11 +2,11 @@
 
 REPO_ROOT := $(abspath $(CURDIR)/../..)
 DOC_VERSION := $(notdir $(CURDIR))
-PG_VERSION ?= 19rc1
-# Match the verified English RC1 source recorded in en/SOURCES.json.
+PG_VERSION ?= 19rc2
+# Match the verified English RC2 source recorded in en/SOURCES.json.
 ifeq ($(strip $(PGDOC_SOURCE_DIR)$(PGDOC_SOURCE_COMMIT)),)
-PGDOC_SOURCE_ARCHIVE ?= $(REPO_ROOT)/.cache/upstream/postgresql-19rc1.tar.bz2
-PGDOC_SOURCE_SHA256 ?= af105fc8e960fc836a09fc2cd7f582b49fd17675d9d36631abe3a565bfd7d701
+PGDOC_SOURCE_ARCHIVE ?= $(REPO_ROOT)/.cache/upstream/postgresql-19rc2.tar.bz2
+PGDOC_SOURCE_SHA256 ?= 23a7bb862e4bac395c047305ed0084117b01e71255ce858b907cdcd78ce40351
 endif
 export PGDOC_SOURCE_ARCHIVE PGDOC_SOURCE_SHA256
 DOC_LANG := $(notdir $(abspath $(CURDIR)/..))

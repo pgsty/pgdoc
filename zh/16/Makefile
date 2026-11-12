@@ -2,7 +2,13 @@
 
 REPO_ROOT := $(abspath $(CURDIR)/../..)
 DOC_VERSION := $(notdir $(CURDIR))
-PG_VERSION ?= 16.15
+PG_VERSION ?= 16.16
+# Match the verified English release recorded in en/SOURCES.json.
+ifeq ($(strip $(PGDOC_SOURCE_DIR)$(PGDOC_SOURCE_COMMIT)),)
+PGDOC_SOURCE_ARCHIVE ?= $(REPO_ROOT)/.cache/upstream/postgresql-16.16.tar.bz2
+PGDOC_SOURCE_SHA256 ?= 9d5cd8633043b75740d5d59749c6b7365e6aeb53c47098b1a5e80bb18f87881a
+endif
+export PGDOC_SOURCE_ARCHIVE PGDOC_SOURCE_SHA256
 DOC_LANG := $(notdir $(abspath $(CURDIR)/..))
 
 BUILD_SCRIPT := $(REPO_ROOT)/bin/build_standalone_docsrc.sh

@@ -21,7 +21,7 @@
 
 以官方页面实际列出的链接为准：
 
-- [当前手册及测试版](https://www.postgresql.org/docs/)：核对时列出 14–18 和 19 beta 的 A4 / US PDF；Development snapshot 标为无 PDF。
+- [当前手册及测试版](https://www.postgresql.org/docs/)：2026-11-13 核对时列出 14.25、15.20、16.16、17.12、18.7 和 19rc2 的 A4 / US PDF；Development snapshot 标为无 PDF。
 - [历史手册归档](https://www.postgresql.org/docs/manuals/archive/)：核对时列出 8.0–13 的 A4 / US PDF；6.3–7.4 标为无 PDF。
 
 已核对的链接形式如下，以 PostgreSQL 18 为例：
@@ -51,7 +51,7 @@ make en-pdf-all EN_VERSIONS=18 EN_PDF_FLAGS=--refresh
 make en-pdf EN_VERSION=18 EN_PDF_FLAGS=--dry-run
 ```
 
-`en-pdf-all` 的默认范围仍为 14.24、15.19、16.15、17.11、18.6，可用 `EN_VERSIONS` 指定其他版本。完整版本号会校验 PDF 中的版本必须一致；若官方大版本 URL 的成品版本不同，应核对后改用实际版本号，或使用 `EN_VERSION=18` 这样的分支号。分支号下载仍会记录实际 PDF 版本，不能用它掩盖与站内 HTML 基线的差异。
+`en-pdf-all` 的默认范围为 14.25、15.20、16.16、17.12、18.7，可用 `EN_VERSIONS` 指定其他版本。完整版本号会校验 PDF 中的版本必须一致；若官方大版本 URL 的成品版本不同，应核对后改用实际版本号，或使用 `EN_VERSION=18` 这样的分支号。分支号下载仍会记录实际 PDF 版本，不能用它掩盖与站内 HTML 基线的差异。
 
 版本优先读取 PDF 元数据，没有时从封面读取；需要 Poppler 的 `pdfinfo` 和 `pdftotext`。旧版 pdfTeX 的 A4 尺寸允许 4 pt 内的历史偏差，实际尺寸照实记录，不重新排版。例如 2026-10-03 下载的官方 8.0 A4 是 **8.0.0**，尺寸为 **593.051 × 838.744 pt**，不能把它记作本地英文源码的 8.0.26。
 
@@ -135,7 +135,7 @@ make zh-pdf-all ZH_VERSIONS="17 18" PAPERS="A4 US"
 
 PG.CENTER（`~/pgsty/pg.center`）的英文下载与 PGSQL.CC（`~/pgsty/pgweb`）的中文下载分别维护。两站可使用相同的 URL 形式 `/files/documentation/pdf/<大版本>/postgresql-<大版本>-<A4|US>.pdf`，所以文件名本身不能证明语言。分发时按语言映射，保留已有两种语言的有效下载入口。
 
-站点导入、下载清单、文件复制和公开访问验证在对应网站项目进行。PG.CENTER 的现有清单是 `data/manuals/english.json`；其中的旧 `built_at`、`source_mode` 或源码 URL 不能被解释为 PDF 的官方下载证据。先备份、传输和校验文件，再同步清单；是否公开交付以完整下载和哈希核对为准。
+站点导入、下载清单、文件复制和公开访问验证在对应网站项目进行。PG.CENTER 当前使用 Go 应用及 `center` 数据库，通过完整双语手册快照、搜索代次和站点地图发布；操作见该仓库的 `docs/v2-manuals.md`。`data/manuals/english.json` 是旧 Django 的历史清单，其中的旧 `built_at`、`source_mode` 或源码 URL 不能被解释为 PDF 的官方下载证据。PGSQL.CC 继续使用 `pgweb` 的导入流程。先备份、传输和校验文件，再同步清单；是否公开交付以完整下载和哈希核对为准。
 
 ## 2026-10-03 本地核对与待校准项
 

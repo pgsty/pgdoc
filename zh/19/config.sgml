@@ -3276,7 +3276,7 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
        <listitem>
         <para>
          列出安装在<xref linkend="guc-dynamic-library-path"/>所指定位置中、同时也受信任、可供复制客户端用作逻辑输出插件的库。任何针对其他库的<link linkend="logicaldecoding-example">逻辑解码</link>或<link linkend="protocol-replication">复制</link>请求都将被拒绝。所有用户都受此限制。默认值为 <literal>'pgoutput, test_decoding'</literal>，它们是标准
-         <productname>PostgreSQL</productname> 发行版中包含的两个逻辑输出插件。
+         <productname>PostgreSQL</productname> 发行版中包含的两个逻辑输出插件。（<xref linkend="guc-output-plugin-libraries-builtins"/>说明了将它们从此列表中移除后系统的行为。）
         </para>
         <para>
          其格式为以逗号分隔的库名称列表，每个名称的解释方式与
@@ -3302,6 +3302,35 @@ HINT:  If it is safe for all REPLICATION users to use this library as an output 
 </programlisting>
          </para>
         </note>
+
+<table id="guc-output-plugin-libraries-builtins">
+         <title>默认允许的插件</title>
+         <tgroup cols="2">
+          <colspec colname="col1" colwidth="1*"/>
+          <colspec colname="col2" colwidth="2*"/>
+          <thead>
+           <row>
+            <entry>插件</entry>
+            <entry>描述</entry>
+           </row>
+          </thead>
+
+          <tbody>
+           <row>
+            <entry><xref linkend="logicaldecoding-pgoutput"/></entry>
+            <entry>
+             用于逻辑复制的核心插件。从 <literal>output_plugin_libraries</literal> 中移除 <literal>pgoutput</literal>，会导致后续订阅连接和订阅复制槽的维护报错失败。（请注意，服务器采用这种配置时，现有复制工具可能无法妥善处理这种情况。）
+            </entry>
+           </row>
+           <row>
+            <entry><xref linkend="test-decoding"/></entry>
+            <entry>
+             将 WAL 流解码为人类可读的文本表示。<xref linkend="app-pgrecvlogical"/>默认使用此插件，因此从 <literal>output_plugin_libraries</literal> 中移除它后，该工具将无法使用，除非安装了替代插件，并通过<link linkend="app-pgrecvlogical-option-plugin"><literal>--plugin</literal></link>显式选择该插件。
+            </entry>
+           </row>
+          </tbody>
+         </tgroup>
+        </table>
        </listitem>
       </varlistentry>
 
@@ -6953,7 +6982,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       <listitem>
 
        <para>
-        设置单个自动清理工作进程在处理索引时可使用的并行工作进程最大数量。此限制只适用于索引清理（index vacuuming）和索引收尾清理（index cleanup）阶段（有关自动清理各阶段的细节，请参见<xref linkend="vacuum-phases"/>）。实际可用的并行工作进程数量还会进一步受到<xref linkend="guc-max-parallel-workers"/>的限制。它相当于每个自动清理工作进程上的<link linkend="sql-vacuum"><command>VACUUM</command></link>命令<literal>PARALLEL</literal>选项。将该值设为 0 会在自动清理期间禁用并行清理。默认值为0。
+        设置单个自动清理工作进程在处理索引时可使用的并行工作进程最大数量。此限制只适用于索引清理（index vacuuming）和索引收尾清理（index cleanup）阶段（有关自动清理各阶段的细节，请参见<xref linkend="vacuum-phases"/>）。实际可用的并行工作进程数量还会进一步受到<xref linkend="guc-max-parallel-workers"/>的限制。它相当于每个自动清理工作进程上的<link linkend="sql-vacuum"><command>VACUUM</command></link>命令<literal>PARALLEL</literal>选项。将该值设为 0 会在自动清理期间禁用并行清理。默认值为0。这个参数只能在 <filename>postgresql.conf</filename> 文件中或服务器命令行上设置；但可以通过修改<link linkend="reloption-autovacuum-parallel-workers">对应的表存储参数</link>，为单个表调低该设置。
        </para>
       </listitem>
      </varlistentry>
@@ -7053,7 +7082,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
 
      <note>
       <para>
-       某些操作持有关键的锁，因此应尽快完成。这些操作期间不会发生基于代价的清理延迟，所以累计代价可能远超指定上限。为避免此时出现无益的长时间延迟，实际延迟按 <varname>vacuum_cost_delay</varname> * <varname>accumulated_balance</varname> / <varname>vacuum_cost_limit</varname> 计算，但最大不超过 <varname>vacuum_cost_delay</varname> * 4。
+       某些操作持有关键的锁，因此应尽快完成。这些操作期间不会发生基于代价的清理延迟，所以累计代价可能远超指定上限。为避免此时出现无益的长时间延迟，对于非并行清理，实际延迟按 <varname>vacuum_cost_delay</varname> * <varname>accumulated_balance</varname> / <varname>vacuum_cost_limit</varname> 计算，但最大不超过 <varname>vacuum_cost_delay</varname> * 4。对于<xref linkend="parallel-vacuum"/>，每个进程使用该上限的一部分，因此延迟按 <varname>vacuum_cost_delay</varname> * <varname>accumulated_balance</varname> * <varname>active_processes</varname> / <varname>vacuum_cost_limit</varname> 计算，最大不超过 <varname>vacuum_cost_delay</varname> * 4 * <varname>active_processes</varname>，而且每次最多延迟一秒。
       </para>
      </note>
     </sect2>
@@ -7191,7 +7220,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         请注意，当急切扫描启用时，只有冻结失败才会计入上限，成功的冻结不会计入。成功冻结的页面在内部会被限制为关系中所有 all-visible 但未 all-frozen 页面数的 20%。对成功冻结页面设置上限有助于将成本分摊到多次常规清理中，并限制在下次激进清理之前页面再次被修改时急切冻结可能带来的浪费。
        </para>
        <para>
-        这个参数只能在<filename>postgresql.conf</filename>文件中或服务器命令行上设置；但也可以通过修改<link linkend="reloption-vacuum-max-eager-freeze-failure-rate">对应的表存储参数</link>为单个表覆盖该设置。关于调整清理冻结行为的更多信息，见<xref linkend="vacuum-for-wraparound"/>。
+        可以通过修改<link linkend="reloption-vacuum-max-eager-freeze-failure-rate">对应的表存储参数</link>为单个表覆盖该设置。关于调整清理冻结行为的更多信息，见<xref linkend="vacuum-for-wraparound"/>。
        </para>
       </listitem>
      </varlistentry>
@@ -9463,6 +9492,22 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
 
        <para>
         在读取过程中检测到校验和失败通常会导致<productname>PostgreSQL</productname>报告错误，中止当前事务。将<varname>ignore_checksum_failure</varname>设置为 on 会使系统忽略失败（但仍报告警告），并继续处理。这种行为可能<emphasis>导致崩溃、传播或隐藏损坏，或引发其他严重问题</emphasis>。但是，如果块首部仍然正常，它可能允许你跳过错误，检索表中可能仍然存在的未损坏元组。如果首部损坏，即使启用此选项也会报告错误。默认设置为<literal>off</literal>。只有超级用户和具有适当<literal>SET</literal>权限的用户才能更改此设置。
+       </para>
+      </listitem>
+     </varlistentry>
+
+<varlistentry id="guc-composite-type-mismatch" xreflabel="composite_type_mismatch">
+      <term><varname>composite_type_mismatch</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>composite_type_mismatch</varname> 配置参数</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        如果一个复合值的行类型在该值创建后发生了不兼容的修改，读取该值通常会使 <productname>PostgreSQL</productname> 报错。这个参数控制此行为。默认值 <literal>error</literal> 会报告错误并中止当前事务。设置为 <literal>warn</literal> 时，系统会就不匹配情况发出警告，但允许继续执行。设置为 <literal>disabled</literal> 时，完全不执行此项检查。
+       </para>
+       <para>
+        <literal>error</literal> 以外的设置可能<emphasis>导致崩溃、错误结果或其他严重问题</emphasis>。只有超级用户和具有相应 <literal>SET</literal> 权限的用户才能修改此设置。
        </para>
       </listitem>
      </varlistentry>

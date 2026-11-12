@@ -2,7 +2,13 @@
 
 REPO_ROOT := $(abspath $(CURDIR)/../..)
 DOC_VERSION := $(notdir $(CURDIR))
-PG_VERSION ?= 18.6
+PG_VERSION ?= 18.7
+# Match the verified English release recorded in en/SOURCES.json.
+ifeq ($(strip $(PGDOC_SOURCE_DIR)$(PGDOC_SOURCE_COMMIT)),)
+PGDOC_SOURCE_ARCHIVE ?= $(REPO_ROOT)/.cache/upstream/postgresql-18.7.tar.bz2
+PGDOC_SOURCE_SHA256 ?= 441dfae4280cae3e0425e5f876f80559fb0731c140f1aae22b3e5a54d0411bfd
+endif
+export PGDOC_SOURCE_ARCHIVE PGDOC_SOURCE_SHA256
 DOC_LANG := $(notdir $(abspath $(CURDIR)/..))
 
 BUILD_SCRIPT := $(REPO_ROOT)/bin/build_standalone_docsrc.sh

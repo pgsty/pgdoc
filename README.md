@@ -37,12 +37,12 @@
 
 | PostgreSQL | 译文基线 | 在线阅读 | 离线下载 |
 | :--- | :--- | :--- | :--- |
-| **18** | 18.6 | [中文手册](https://pgsql.cc/docs/18/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/18/postgresql-18-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/18/postgresql-18-US.pdf) |
-| **17** | 17.11 | [中文手册](https://pgsql.cc/docs/17/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/17/postgresql-17-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/17/postgresql-17-US.pdf) |
-| **16** | 16.15 | [中文手册](https://pgsql.cc/docs/16/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/16/postgresql-16-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/16/postgresql-16-US.pdf) |
-| **15** | 15.19 | [中文手册](https://pgsql.cc/docs/15/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/15/postgresql-15-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/15/postgresql-15-US.pdf) |
-| **14** | 14.24 | [中文手册](https://pgsql.cc/docs/14/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/14/postgresql-14-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/14/postgresql-14-US.pdf) |
-| **19 · 测试版** | 19beta4 | [中文手册](https://pgsql.cc/docs/19/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-US.pdf) |
+| **18** | 18.7 | [中文手册](https://pgsql.cc/docs/18/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/18/postgresql-18-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/18/postgresql-18-US.pdf) |
+| **17** | 17.12 | [中文手册](https://pgsql.cc/docs/17/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/17/postgresql-17-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/17/postgresql-17-US.pdf) |
+| **16** | 16.16 | [中文手册](https://pgsql.cc/docs/16/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/16/postgresql-16-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/16/postgresql-16-US.pdf) |
+| **15** | 15.20 | [中文手册](https://pgsql.cc/docs/15/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/15/postgresql-15-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/15/postgresql-15-US.pdf) |
+| **14** | 14.25 | [中文手册](https://pgsql.cc/docs/14/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/14/postgresql-14-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/14/postgresql-14-US.pdf) |
+| **19 · 测试版** | 19rc2 | [中文手册](https://pgsql.cc/docs/19/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-US.pdf) |
 | **20 · 开发版** | 20devel | [开发快照](https://pgsql.cc/docs/devel/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/20/postgresql-20-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/20/postgresql-20-US.pdf) |
 
 <details>
@@ -59,7 +59,7 @@
 
 </details>
 
-仓库还维护 6.3–6.5、7.0–7.4、8.0–8.4、9.0–9.6 共 20 个早期版本，可通过 `make -C zh/<版本> html` 和 `make -C zh/<版本> pdf PAPER=A4` 构建。上表列出的网站入口与本地构建状态分别维护。
+仓库还维护 6.3–6.5、7.0–7.4、8.0–8.4、9.0–9.6 共 20 个早期版本，可通过 `make -C zh/<版本> html` 和 `make -C zh/<版本> pdf PAPER=A4` 构建。上表的译文基线指本地源文件；网站入口与本地构建状态分别维护，2026-11-12 批次的本地更新尚未发布到网站。
 
 ## 翻译方法
 
@@ -96,14 +96,14 @@ pgdoc/
 make check-deps
 
 # 构建中文 HTML，输出到 zh/18/html/
-make zh VERSION=18.6
+make zh VERSION=18.7
 
 # 构建 A4 / US Letter PDF，输出到 tmp/pdf/zh/
-make zh-pdf VERSION=18.6 PAPER=A4
-make zh-pdf VERSION=18.6 PAPER=US
+make zh-pdf VERSION=18.7 PAPER=A4
+make zh-pdf VERSION=18.7 PAPER=US
 
 # 构建并预览：http://127.0.0.1:8000/
-make serve-zh VERSION=18.6 HOST=127.0.0.1
+make serve-zh VERSION=18.7 HOST=127.0.0.1
 ```
 
 构建工具会准备 PostgreSQL 上游源码，将中文源文件叠加到独立工作区，再沿用上游的 DocBook 构建流程。需要 GNU Make、Python 3、C 编译器、`xmllint`、`xsltproc`、`rsync` 及 DocBook DTD / XSL；PDF 另需 Java、Fontconfig 和中文字体，脚本可自动下载 Apache FOP。完整依赖与可选参数见 [HTML 构建脚本](bin/build_standalone_docsrc.sh)和 [PDF 构建脚本](bin/build_standalone_pdfsrc.sh)。
