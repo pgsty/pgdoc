@@ -99,7 +99,7 @@ US  87b6371b142b784adb9f7b901fa40e4ffe7912c80447b36cbdaa089aea0d68b5
 PDF is '19rc2', requested 19.0; use its actual version or major 19
 ```
 
-官方文档页面已将 19 列为 Current，但下载文件尚未同步；A4 响应的 `Last-Modified` 仍为 `Thu, 12 Nov 2026 14:03:52 GMT`，带刷新缓存请求也相同。未将 RC2 改名为正式版、未回退到自行构建，未替换已有英文 PDF。此项不影响已核验的 19.0 源码与 HTML。
+官方文档页面已将 19 列为 Current，但下载文件尚未同步；A4 响应的 `Last-Modified` 仍为 `Thu, 12 Nov 2026 14:03:52 GMT`，带刷新缓存请求也相同。该次下载未将 RC2 改名为正式版，也未自动回退到自行构建。11 月 20 日重试仍被拒绝；其后获准的单次自建见下节。此项不影响已核验的 19.0 源码与 HTML。
 
 上游 PDF 更新后，按完整版本号重试并检查实际版本、纸型、哈希及同目录来源记录：
 
@@ -107,7 +107,20 @@ PDF is '19rc2', requested 19.0; use its actual version or major 19
 make en-pdf-all EN_VERSIONS=19.0 EN_PDF_FLAGS=--refresh
 ```
 
-通过后输出为 `tmp/pdf/en/postgresql-19.0-en-A4.pdf`、`postgresql-19.0-en-US.pdf` 及各自的 `.source.json`。当前默认英文 PDF 批次仍为 14.25–18.7。
+通过后输出为 `tmp/pdf/en/postgresql-19.0-en-A4.pdf`、`postgresql-19.0-en-US.pdf` 及各自的 `.source.json`。当前同名路径保存下面获准的自建版；未来替换时须保留旧文件和来源记录。默认英文 PDF 批次仍为 14.25–18.7。
+
+## 获准的英文 PDF 单次自建
+
+2026-11-20 用户明确授权“允许本次自建英文 19.0 PDF，完成两站发布”。据此从上文已校验的官方 19.0 源码包构建 A4 / US，身份为**项目自建英文版，非官方 PDF 原件**。这仅适用于本次两份制品，不改变 [PDF 来源规则](pdf-sources.md) 的官方下载入口、版本校验或失败退出策略。
+
+| 纸型 | 页数 | 字节数 | SHA-256 |
+| --- | ---: | ---: | --- |
+| A4 | 3,066 | 16,101,959 | `443826ab2986086dd598d7bd602ac079869806ee2ca06cd919f820fa62a754bb` |
+| US | 3,241 | 16,011,534 | `36a4dd2e63f919ce35252513d899c2d49a648c5c46d06a1613d781eaf2add6a1` |
+
+同目录 `*.source.json` 记录 `mode=local-source-exception`、用户授权、固定源码、构建参数和产物哈希。两份 PDF 的版本、纸型和 4,094 个书签目标均正确，全文无替换字符，FOP 无错误、缺字或溢出；日志中的四条通用字体／断词／继承提示保留。实际渲染并检查两种纸型共 18 个物理页，覆盖封面、目录、变更章节、致谢和索引，未发现裁切、重叠或缺图。证据位于 `outputs/pg-center-19.0-20261119/english-pdf-acceptance.json` 及同目录日志、文字提取和联系表。
+
+英文补充包为 `tmp/release-19.0-english-supplement-20261120.tar.gz`，18,574,020 字节，SHA-256 `daaaceb29c4f99ecb6065416162ddc7f644837c2dd231cdf0ebbf868c607f07d`。它单独封存英文 PDF、来源和验收证据；原始最终交付包未重写。
 
 ## 复现取源
 
@@ -127,4 +140,4 @@ python3 bin/fetch_en_docs.py 19.0 \
 
 发布前两端全库备份均实际恢复到隔离库，逐表内容指纹一致；1,160 个文档记录的 ID 全部保留，新增和删除均为零。入库后的 1,155 页正文、锚点、4,214 个代码／语法块及 5 个 SVG 已与冻结源核对；原生 Tidy 对五个运算符列表的空格转换单独留档。公网完整下载的两份 PDF 哈希与上文一致，本地与公网的正文、版本入口及两类搜索检查通过。详细回执、部署提交和回退位置见 [PGSQL.CC 发布记录](https://github.com/pgsty/pgweb/blob/main/docs/docs-publication-19.0-20261119.md)。
 
-封存包 `tmp/release-19.0-final-20261119.tar.gz` 为 64,489,515 字节，SHA-256 为 `be427be2f7a2ee8ea853b9a3f6835702a6d7b357c90b93c07b5624f5a350dc54`。包内保留实际构建源码（含既有人工修改）、规则、工具和验收制品，发布后未重写。PG.CENTER 的双语发布本批未切换，原因是上述官方英文 PDF 尚未通过 19.0 版本检查。
+封存包 `tmp/release-19.0-final-20261119.tar.gz` 为 64,489,515 字节，SHA-256 为 `be427be2f7a2ee8ea853b9a3f6835702a6d7b357c90b93c07b5624f5a350dc54`。包内保留实际构建源码（含既有人工修改）、规则、工具和验收制品，发布后未重写。2026-11-20，在用户授权本次自建英文 PDF 后，PG.CENTER 已发布 [19.0 英文手册](https://pg.center/docs/19/index.html)、[中文手册](https://pg.center/zh/docs/19/index.html) 及两种语言的 A4/US PDF；默认稳定版、发行说明、搜索和站点地图同步更新。生产完整备份已实际恢复并完成回退重放，源站和公网四份 PDF 完整下载哈希一致。范围、回执及本地 canonical 镜像仍保留旧基线的说明见 [PG.CENTER 发布记录](https://github.com/pgsty/pg.center/blob/main/docs/docs-publication-19.0-20261120.md)。英文 PDF 明确为获准的项目自建版，非官方原件。
