@@ -37,13 +37,15 @@
 
 | PostgreSQL | 译文基线 | 在线阅读 | 离线下载 |
 | :--- | :--- | :--- | :--- |
+| **19** | 19.0 | [中文手册](https://pgsql.cc/docs/19/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-US.pdf) |
 | **18** | 18.7 | [中文手册](https://pgsql.cc/docs/18/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/18/postgresql-18-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/18/postgresql-18-US.pdf) |
 | **17** | 17.12 | [中文手册](https://pgsql.cc/docs/17/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/17/postgresql-17-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/17/postgresql-17-US.pdf) |
 | **16** | 16.16 | [中文手册](https://pgsql.cc/docs/16/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/16/postgresql-16-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/16/postgresql-16-US.pdf) |
 | **15** | 15.20 | [中文手册](https://pgsql.cc/docs/15/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/15/postgresql-15-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/15/postgresql-15-US.pdf) |
 | **14** | 14.25 | [中文手册](https://pgsql.cc/docs/14/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/14/postgresql-14-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/14/postgresql-14-US.pdf) |
-| **19 · 测试版** | 19rc2 | [中文手册](https://pgsql.cc/docs/19/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-US.pdf) |
 | **20 · 开发版** | 20devel | [开发快照](https://pgsql.cc/docs/devel/index.html) | [A4](https://pgsql.cc/files/documentation/pdf/20/postgresql-20-A4.pdf) · [US](https://pgsql.cc/files/documentation/pdf/20/postgresql-20-US.pdf) |
+
+PostgreSQL 19 已于 2026-11-19 正式发布。英文基线为 `en/19.0/`，中文 `zh/19/` 已同步至 19.0；`en/current` 指向 19.0，`zh/current` 指向 19。取源、增量翻译和构建验证见 [19.0 更新记录](docs/sync-19.0-20261119.md)。
 
 <details>
 <summary><strong>历史版本：PostgreSQL 10–13</strong></summary>
@@ -59,7 +61,7 @@
 
 </details>
 
-仓库还维护 6.3–6.5、7.0–7.4、8.0–8.4、9.0–9.6 共 20 个早期版本，可通过 `make -C zh/<版本> html` 和 `make -C zh/<版本> pdf PAPER=A4` 构建。上表的译文基线指本地源文件；网站入口与本地构建状态分别维护，2026-11-12 批次的本地更新尚未发布到网站。
+仓库还维护 6.3–6.5、7.0–7.4、8.0–8.4、9.0–9.6 共 20 个早期版本，可通过 `make -C zh/<版本> html` 和 `make -C zh/<版本> pdf PAPER=A4` 构建。上表的译文基线指本地源文件；网站入口与本地构建状态分别维护，本次 19.0 更新尚未发布到网站。
 
 ## 翻译方法
 
@@ -76,8 +78,8 @@
 ```text
 pgdoc/
 ├── zh/                   # PostgreSQL 6.3–20 中文源文档，按大版本维护
-│   ├── 18/               # 每版包含 SGML、样式、图示与独立 Makefile
-│   └── current -> 18     # 当前正式版的本地入口
+│   ├── 19/               # 每版包含 SGML、样式、图示与独立 Makefile
+│   └── current -> 19     # 当前正式版的本地入口
 ├── docs/                 # 译风规范、术语表与翻译规则（随仓库版本管理）
 ├── ref/                  # 可复用任务流程：同步、迁移、校准、审读、验收
 ├── bin/                  # HTML / PDF 构建、对齐检查工具与回归测试
@@ -89,21 +91,21 @@ pgdoc/
 
 ## 本地构建
 
-以 PostgreSQL 18 为例，在仓库根目录执行：
+以 PostgreSQL 19 为例，在仓库根目录执行：
 
 ```bash
 # 检查依赖
 make check-deps
 
-# 构建中文 HTML，输出到 zh/18/html/
-make zh VERSION=18.7
+# 构建中文 HTML，输出到 zh/19/html/
+make zh VERSION=19.0
 
 # 构建 A4 / US Letter PDF，输出到 tmp/pdf/zh/
-make zh-pdf VERSION=18.7 PAPER=A4
-make zh-pdf VERSION=18.7 PAPER=US
+make zh-pdf VERSION=19.0 PAPER=A4
+make zh-pdf VERSION=19.0 PAPER=US
 
 # 构建并预览：http://127.0.0.1:8000/
-make serve-zh VERSION=18.7 HOST=127.0.0.1
+make serve-zh VERSION=19.0 HOST=127.0.0.1
 ```
 
 构建工具会准备 PostgreSQL 上游源码，将中文源文件叠加到独立工作区，再沿用上游的 DocBook 构建流程。需要 GNU Make、Python 3、C 编译器、`xmllint`、`xsltproc`、`rsync` 及 DocBook DTD / XSL；PDF 另需 Java、Fontconfig 和中文字体，脚本可自动下载 Apache FOP。完整依赖与可选参数见 [HTML 构建脚本](bin/build_standalone_docsrc.sh)和 [PDF 构建脚本](bin/build_standalone_pdfsrc.sh)。
@@ -116,14 +118,14 @@ make serve-zh VERSION=18.7 HOST=127.0.0.1
 make -C zh/17 html
 make -C zh/19 pdf PAPER=A4
 
-# 批量构建 PostgreSQL 14–18 的 A4 / US Letter PDF
+# 批量构建 PostgreSQL 14–19 的 A4 / US Letter PDF
 make zh-pdf-all
 
 # 指定批量构建范围和纸型
 make zh-pdf-all ZH_VERSIONS="17 18" PAPERS="A4 US"
 ```
 
-- 默认批量范围是 PostgreSQL 14–18，可通过 `ZH_VERSIONS` 指定；`VERSION` 是英文版本号，`ZH_VERSION` 是中文大版本目录。
+- 默认版本为 19.0，中文批量范围是 PostgreSQL 14–19，可通过 `ZH_VERSIONS` 指定；`VERSION` 是英文版本号，`ZH_VERSION` 是中文大版本目录。
 - 固定上游源码时，同时提供 `PGDOC_SOURCE_DIR` 与 `PGDOC_SOURCE_COMMIT`，或同时提供 `PGDOC_SOURCE_ARCHIVE` 与 `PGDOC_SOURCE_SHA256`。脚本会检查对应提交或归档校验和。
 - PostgreSQL 10–13 默认使用各版 Makefile 指定的已校验归档包，首次构建需准备相应文件，或覆盖 `PGDOC_SOURCE_ARCHIVE` 路径。PostgreSQL 10 还需要 OpenSP、DocBook SGML 4.2 和 SGML catalog，相关路径见 [PG10 构建入口](zh/10/Makefile)。
 - PostgreSQL 20 的当前开发快照记录在 `en/SOURCES.json`，中文构建由 `zh/20/Makefile` 固定对应归档与 SHA-256。更新快照时保持两处一致，避免开发分支变化造成生成内容漂移；中文底层构建可用成对的 `PGDOC_SOURCE_ARCHIVE` / `PGDOC_SOURCE_SHA256` 显式指定其他已核实的归档。

@@ -1,11 +1,11 @@
 # pgdoc top-level Makefile
 # Batch build PostgreSQL documentation artifacts across tracked versions.
 
-VERSION ?= 18.7
+VERSION ?= 19.0
 # Stable archives use X.Y while prereleases use XbetaN/XrcN; both map to zh/X.
 ZH_VERSION ?= $(firstword $(subst beta, ,$(subst rc, ,$(basename $(VERSION)))))
 EN_VERSION ?= $(VERSION)
-ZH_VERSIONS ?= 14 15 16 17 18
+ZH_VERSIONS ?= 14 15 16 17 18 19
 EN_VERSIONS ?= 14.25 15.20 16.16 17.12 18.7
 EN_LEGACY_VERSIONS := 6.3.2 6.4.2 6.5.3 7.0.3 7.1.3 7.2.8 7.3.21 7.4.30
 EN_DEVEL_VERSION ?= 20devel

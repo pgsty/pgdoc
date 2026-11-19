@@ -21,8 +21,10 @@
 
 以官方页面实际列出的链接为准：
 
-- [当前手册及测试版](https://www.postgresql.org/docs/)：2026-11-13 核对时列出 14.25、15.20、16.16、17.12、18.7 和 19rc2 的 A4 / US PDF；Development snapshot 标为无 PDF。
+- [当前手册](https://www.postgresql.org/docs/)：2026-11-19 核对时列出 15–19 的 A4 / US PDF，19 标为 Current；Development snapshot 标为无 PDF。
 - [历史手册归档](https://www.postgresql.org/docs/manuals/archive/)：核对时列出 8.0–13 的 A4 / US PDF；6.3–7.4 标为无 PDF。
+
+2026-11-19 的 19.0 源码和官方 HTML 已核验导入，但当日请求官方 19 的 A4 / US PDF 时，两份文件仍声明为 **19rc2**。`make en-pdf EN_VERSION=19.0` 的版本检查拒绝了导入；未生成或标记为 19.0 英文 PDF，现有英文 PDF 保留。中文 19.0 PDF 仍按本项目翻译构建。完整记录及重试入口见 [19.0 更新记录](sync-19.0-20261119.md)。
 
 已核对的链接形式如下，以 PostgreSQL 18 为例：
 
@@ -119,7 +121,7 @@ make -C zh/18 pdf PAPER=US
 make zh-pdf-all ZH_VERSIONS="17 18" PAPERS="A4 US"
 ```
 
-默认产物为 `tmp/pdf/zh/postgresql-<大版本>-zh-A4.pdf` 和 `...-US.pdf`。顶层批量构建默认只覆盖 14–18；需要其他版本时必须显式指定范围。开发版使用 `zh/20/Makefile` 与 `en/SOURCES.json` 中核对一致的固定输入，不追随变化中的 master。
+默认产物为 `tmp/pdf/zh/postgresql-<大版本>-zh-A4.pdf` 和 `...-US.pdf`。顶层默认版本为 19.0，中文批量构建覆盖 14–19；需要其他版本时必须显式指定范围。开发版使用 `zh/20/Makefile` 与 `en/SOURCES.json` 中核对一致的固定输入，不追随变化中的 master。
 
 中文构建使用同一个独立 PDF 脚本的 `zh` 分支，以及中文字体和 [中文 FO 后处理](../bin/prepare_chinese_pdf.py)。字体、SGML/DocBook 工具与固定源码准备方式以脚本和各版本 Makefile 为准。`make check-deps` 只检查部分依赖，不能代替实际构建。
 
