@@ -119,4 +119,12 @@ python3 bin/fetch_en_docs.py 19.0 \
   --register
 ```
 
-英文 HTML 使用上述官方文档包的 `postgresql-19.0/doc/src/sgml/html/` 子树，逐字节展开至 `en/19.0/html/`，随后检查首页版本、发行日期、内部链接和资源。网站发布在对应网站仓库另行执行，本次更新本地中英文文档。
+英文 HTML 使用上述官方文档包的 `postgresql-19.0/doc/src/sgml/html/` 子树，逐字节展开至 `en/19.0/html/`，随后检查首页版本、发行日期、内部链接和资源。网站导入与公开访问验收在对应网站仓库执行。
+
+## 正式发布
+
+2026-11-19，源更新提交 `b04ebc03e0c08b0922738836c7e574bde6a568f3` 已推送；PGSQL.CC 本地与生产已发布 [19.0 中文手册](https://pgsql.cc/docs/19/index.html) 和 [A4](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-A4.pdf)／[US](https://pgsql.cc/files/documentation/pdf/19/postgresql-19-US.pdf) PDF。`/docs/current/` 同步指向正式中文手册，版本比较已原位转正，相关搜索索引已更新。
+
+发布前两端全库备份均实际恢复到隔离库，逐表内容指纹一致；1,160 个文档记录的 ID 全部保留，新增和删除均为零。入库后的 1,155 页正文、锚点、4,214 个代码／语法块及 5 个 SVG 已与冻结源核对；原生 Tidy 对五个运算符列表的空格转换单独留档。公网完整下载的两份 PDF 哈希与上文一致，本地与公网的正文、版本入口及两类搜索检查通过。详细回执、部署提交和回退位置见 [PGSQL.CC 发布记录](https://github.com/pgsty/pgweb/blob/main/docs/docs-publication-19.0-20261119.md)。
+
+封存包 `tmp/release-19.0-final-20261119.tar.gz` 为 64,489,515 字节，SHA-256 为 `be427be2f7a2ee8ea853b9a3f6835702a6d7b357c90b93c07b5624f5a350dc54`。包内保留实际构建源码（含既有人工修改）、规则、工具和验收制品，发布后未重写。PG.CENTER 的双语发布本批未切换，原因是上述官方英文 PDF 尚未通过 19.0 版本检查。

@@ -61,7 +61,7 @@ PostgreSQL 19 已于 2026-11-19 正式发布。英文基线为 `en/19.0/`，中�
 
 </details>
 
-仓库还维护 6.3–6.5、7.0–7.4、8.0–8.4、9.0–9.6 共 20 个早期版本，可通过 `make -C zh/<版本> html` 和 `make -C zh/<版本> pdf PAPER=A4` 构建。上表的译文基线指本地源文件；网站入口与本地构建状态分别维护，本次 19.0 更新尚未发布到网站。
+仓库还维护 6.3–6.5、7.0–7.4、8.0–8.4、9.0–9.6 共 20 个早期版本，可通过 `make -C zh/<版本> html` 和 `make -C zh/<版本> pdf PAPER=A4` 构建。上表的译文基线指本地源文件；网站入口与本地构建状态分别维护。本次 19.0 中文 HTML 与 A4/US PDF 已发布到 PGSQL.CC，详见 [正式发布记录](https://github.com/pgsty/pgweb/blob/main/docs/docs-publication-19.0-20261119.md)。
 
 ## 翻译方法
 
